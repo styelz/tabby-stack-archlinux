@@ -2,7 +2,7 @@
 """Draw Cursor-style chat frames from the replies a user actually sees. No GPU.
 
 Phrase slides use help_text / list_text / switch_reply_text / image_ready copy.
-Mixed slides show Write + generate_image + Shell cards — not the injected hint.
+Mixed slides show the server-owned wait and download — not generate_image.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from common.image_paths import (  # noqa: E402
     image_download_command,
     image_download_note,
     image_poll_wait_command,
+    image_running_note,
 )
 from common.phrase_switch import (  # noqa: E402
     _image_url_block,
@@ -289,12 +290,15 @@ def session_pages() -> list[dict]:
     download_cmd = image_download_command(pairs)
     job = SimpleNamespace(
         id="7f3a2c1e",
+        status="running",
+        urls=[],
         items=[
-            SimpleNamespace(output_path="harbor/images/header.png", count=1),
-            SimpleNamespace(output_path="harbor/images/logo.png", count=1),
+            SimpleNamespace(output_path="harbor/images/header.png", count=1, urls=[]),
+            SimpleNamespace(output_path="harbor/images/logo.png", count=1, urls=[]),
         ],
     )
     wait_cmd = image_poll_wait_command(job)
+    running_note = image_running_note(job)
     batch_wait = image_job_wait_text(
         prompts=[
             "a neon diner street at night",
@@ -343,13 +347,17 @@ def session_pages() -> list[dict]:
             "caption": "webpage + header + logo",
             "user": mixed_user_lines,
             "blocks": [
-                ("tool", "Write", "harbor/index.html"),
                 (
-                    "tool",
-                    "generate_image",
-                    "images: harbor/images/header.png, harbor/images/logo.png  ·  job 7f3a2c1e",
+                    "text",
+                    wrap_block(
+                        draw,
+                        "The API queued the PNG job. " + batch_wait,
+                        font(13),
+                        TEXT_W,
+                    ),
+                    False,
                 ),
-                ("text", wrap_block(draw, batch_wait, font(13), TEXT_W), False),
+                ("tool", "Shell", wait_cmd),
             ],
         }
     )
@@ -358,6 +366,7 @@ def session_pages() -> list[dict]:
             "caption": "job running",
             "user": mixed_user_lines,
             "blocks": [
+                ("text", wrap_block(draw, running_note, font(13), TEXT_W), False),
                 ("tool", "Shell", wait_cmd),
             ],
         }
@@ -369,6 +378,11 @@ def session_pages() -> list[dict]:
             "blocks": [
                 ("text", wrap_block(draw, download_note, font(13), TEXT_W), False),
                 ("tool", "Shell", download_cmd),
+                (
+                    "tool",
+                    "Write",
+                    "harbor/index.html  ·  img src harbor/images/header.png, harbor/images/logo.png",
+                ),
             ],
         }
     )
