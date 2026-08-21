@@ -1,0 +1,23 @@
+pretty: GLM-4.1V-9B-Thinking - think (vision off on 12 GB)
+model:
+  model_name: GLM-4.1V-9B-Thinking-exl3-4.00bpw
+  max_seq_len: 65536
+  cache_size: 65536
+  cache_mode: Q4
+  chunk_size: 2048
+  max_batch_size: 1
+  autosplit_reserve: [256]
+  vision: false
+  template_vars_default: {}
+  template_vars_force: {}
+  reasoning: true
+  reasoning_start_token: "<think>"
+  reasoning_end_token: "</think>"
+  start_in_reasoning: always
+  tool_format:
+  harmony: false
+  muse_glimmer: false
+draft_model:
+  draft_mode: ngram
+sampling:
+  override_preset: safe_defaults

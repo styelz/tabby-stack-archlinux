@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Start TabbyAPI from the tabby-stack install root (not from tabbyAPI/).
+# The installer copies this file to $DEST/start.sh.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+TABBY="$ROOT/tabbyAPI"
+ENV_FILE="$TABBY/deploy/arch/tabby.env"
+
+if [[ ! -x "$TABBY/venv/bin/python" ]]; then
+  echo "TabbyAPI is not installed here ($TABBY/venv is missing)."
+  echo "From the tabby-stack source root run: bash install.sh"
+  exit 1
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet tabbyapi 2>/dev/null; then
+  echo "tabbyapi is already running via systemd."
+  echo "  status: systemctl --user status tabbyapi"
+  echo "  stop:   systemctl --user stop tabbyapi"
+  exit 0
+fi
+
+cd "$TABBY"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+export TABBY_LOG_CONSOLE_WIDTH="${TABBY_LOG_CONSOLE_WIDTH:-256}"
+exec "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"

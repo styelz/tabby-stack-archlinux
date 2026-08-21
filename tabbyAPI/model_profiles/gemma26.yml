@@ -1,0 +1,24 @@
+pretty: Gemma 4 26B-A4B - stronger general, 2.10bpw
+model:
+  model_name: gemma-4-26B-A4B-it-exl3-2.10bpw
+  max_seq_len: 262144
+  cache_size: 262144
+  cache_mode: Q4
+  chunk_size: 2048
+  max_batch_size: 1
+  autosplit_reserve: [384]
+  vision: false
+  template_vars_default: {}
+  template_vars_force:
+    enable_thinking: false
+  reasoning: true
+  reasoning_start_token: "<|channel>thought"
+  reasoning_end_token: "<channel|>"
+  start_in_reasoning: always
+  tool_format: gemma4
+  harmony: false
+  muse_glimmer: false
+draft_model:
+  draft_mode: ngram
+sampling:
+  override_preset: gemma4

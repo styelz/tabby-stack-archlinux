@@ -1,0 +1,48 @@
+# Portable installer extras (USB / Windows cache). Never publish these.
+ComfyUI/
+.ssh/
+.cursor/
+.vscode/
+AppData/
+
+# Local agent notes (this machine only — not for GitHub)
+/CURSOR.md
+/HANDOFF.md
+
+# Editor and OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+
+# Accidental dumps in this tree
+/new/
+/harbor/
+/spacediner/
+
+# Runtime and secrets (also ignored inside tabbyAPI/)
+**/venv/
+**/models/
+**/logs/
+**/pasted-images/
+**/.infinity_cache/
+**/__pycache__/
+**/*.pyc
+**/*.log
+**/config.yml
+**/api_tokens.yml
+**/tabby.env
+**/HOW-TO-ARCH.txt
+**/switch-model.log
+**/ssh-forwarder.log
+**/.env
+
+# Keys and Cursor auth
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pem
+*.key
+auth.json

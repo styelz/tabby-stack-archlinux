@@ -1,0 +1,22 @@
+[Unit]
+Description=TabbyAPI (ExLlamaV3)
+After=network-online.target
+Wants=network-online.target
+# watch_api.py already gives up after repeated fast crashes. Without a start
+# limit here systemd would restart the watchdog and reset its counter, turning
+# a reproducible OOM on load into an endless loop.
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=__TABBY_DIR__
+EnvironmentFile=-__TABBY_DIR__/deploy/arch/tabby.env
+Environment=TABBY_LOG_CONSOLE_WIDTH=256
+ExecStart=__TABBY_DIR__/venv/bin/python watch_api.py
+# on-failure, not always: a clean exit means someone asked it to stop.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

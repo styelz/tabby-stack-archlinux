@@ -1,0 +1,24 @@
+pretty: Qwen3.5-35B-A3B - coding upgrade, 2.13bpw
+model:
+  model_name: Qwen3.5-35B-A3B-exl3-2.13bpw
+  max_seq_len: 196608
+  cache_size: 196608
+  cache_mode: Q4
+  chunk_size: 2048
+  max_batch_size: 1
+  autosplit_reserve: [384]
+  vision: false
+  template_vars_default: {}
+  template_vars_force:
+    enable_thinking: false
+  reasoning: false
+  reasoning_start_token: "<think>"
+  reasoning_end_token: "</think>"
+  start_in_reasoning: auto
+  tool_format: qwen3_5
+  harmony: false
+  muse_glimmer: false
+draft_model:
+  draft_mode: ngram
+sampling:
+  override_preset: safe_defaults

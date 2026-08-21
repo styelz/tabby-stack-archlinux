@@ -1,0 +1,99 @@
+{
+  "sets": {
+    "core": ["qwen", "embed", "flux", "qwen-image-unet", "qwen-image-clip", "qwen-image-vae", "qwen-image-lora"],
+    "all": ["qwen", "qwen35", "qwen36", "gemma", "gemma26", "glm", "embed", "flux", "qwen-image-unet", "qwen-image-clip", "qwen-image-vae", "qwen-image-lora"]
+  },
+  "items": {
+    "qwen": {
+      "kind": "snapshot",
+      "repo": "turboderp/Qwen3.5-9B-exl3",
+      "revision": "4.00bpw",
+      "dest": "tabby/models/Qwen3.5-9B-exl3-4.00bpw",
+      "cache": ["tabbyAPI/models/Qwen3.5-9B-exl3-4.00bpw"],
+      "ready": ["model.safetensors", "quantization_config.json"]
+    },
+    "qwen35": {
+      "kind": "snapshot",
+      "repo": "turboderp/Qwen3.5-35B-A3B-exl3",
+      "revision": "2.13bpw",
+      "dest": "tabby/models/Qwen3.5-35B-A3B-exl3-2.13bpw",
+      "cache": ["tabbyAPI/models/Qwen3.5-35B-A3B-exl3-2.13bpw"],
+      "ready": ["model.safetensors", "model-00001-of-00002.safetensors", "quantization_config.json"]
+    },
+    "qwen36": {
+      "kind": "snapshot",
+      "repo": "turboderp/Qwen3.6-27B-exl3",
+      "revision": "2.00bpw",
+      "dest": "tabby/models/Qwen3.6-27B-exl3-2.00bpw",
+      "cache": ["tabbyAPI/models/Qwen3.6-27B-exl3-2.00bpw"],
+      "ready": ["model.safetensors", "quantization_config.json"]
+    },
+    "gemma": {
+      "kind": "snapshot",
+      "repo": "turboderp/gemma-4-12B-it-exl3",
+      "revision": "4.00bpw",
+      "dest": "tabby/models/gemma-4-12B-it-exl3-4.00bpw",
+      "cache": ["tabbyAPI/models/gemma-4-12B-it-exl3-4.00bpw"],
+      "ready": ["model.safetensors", "quantization_config.json"]
+    },
+    "gemma26": {
+      "kind": "snapshot",
+      "repo": "turboderp/gemma-4-26B-A4B-it-exl3",
+      "revision": "2.10bpw",
+      "dest": "tabby/models/gemma-4-26B-A4B-it-exl3-2.10bpw",
+      "cache": ["tabbyAPI/models/gemma-4-26B-A4B-it-exl3-2.10bpw"],
+      "ready": ["model.safetensors", "quantization_config.json"]
+    },
+    "glm": {
+      "kind": "snapshot",
+      "repo": "turboderp/GLM-4.1V-9B-Thinking-exl3",
+      "revision": "4.00bpw",
+      "dest": "tabby/models/GLM-4.1V-9B-Thinking-exl3-4.00bpw",
+      "cache": ["tabbyAPI/models/GLM-4.1V-9B-Thinking-exl3-4.00bpw"],
+      "ready": ["model.safetensors", "quantization_config.json"]
+    },
+    "embed": {
+      "kind": "snapshot",
+      "repo": "Qwen/Qwen3-Embedding-0.6B",
+      "revision": null,
+      "dest": "tabby/models/Qwen3-Embedding-0.6B",
+      "cache": ["tabbyAPI/models/Qwen3-Embedding-0.6B"],
+      "ready": ["model.safetensors"]
+    },
+    "flux": {
+      "kind": "file",
+      "repo": "Comfy-Org/flux1-schnell",
+      "remote": "flux1-schnell-fp8.safetensors",
+      "dest": "comfy/models/checkpoints/flux1-schnell-fp8.safetensors",
+      "cache": ["ComfyUI/models/checkpoints/flux1-schnell-fp8.safetensors"]
+    },
+    "qwen-image-unet": {
+      "kind": "file",
+      "repo": "city96/Qwen-Image-gguf",
+      "remote": "qwen-image-Q4_K_M.gguf",
+      "dest": "comfy/models/unet/qwen-image-Q4_K_M.gguf",
+      "cache": ["ComfyUI/models/unet/qwen-image-Q4_K_M.gguf"]
+    },
+    "qwen-image-clip": {
+      "kind": "file",
+      "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+      "remote": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "dest": "comfy/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "cache": ["ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"]
+    },
+    "qwen-image-vae": {
+      "kind": "file",
+      "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+      "remote": "split_files/vae/qwen_image_vae.safetensors",
+      "dest": "comfy/models/vae/qwen_image_vae.safetensors",
+      "cache": ["ComfyUI/models/vae/qwen_image_vae.safetensors"]
+    },
+    "qwen-image-lora": {
+      "kind": "file",
+      "repo": "lightx2v/Qwen-Image-Lightning",
+      "remote": "Qwen-Image-Lightning-8steps-V1.0.safetensors",
+      "dest": "comfy/models/loras/Qwen-Image-Lightning-8steps-V1.0.safetensors",
+      "cache": ["ComfyUI/models/loras/Qwen-Image-Lightning-8steps-V1.0.safetensors"]
+    }
+  }
+}

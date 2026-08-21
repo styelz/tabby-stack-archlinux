@@ -1,0 +1,18 @@
+[Unit]
+Description=ComfyUI (Flux)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__COMFY_DIR__
+ExecStart=__COMFY_DIR__/start.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=comfyui
+
+# Do not enable at boot. GPU is exclusive: start only via switch to comfy.
+
+[Install]
+WantedBy=default.target
