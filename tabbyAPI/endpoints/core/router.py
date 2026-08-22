@@ -803,7 +803,7 @@ async def generated_images_index(page: int = 1, per_page: int = 24):
             when = ""
         cards.append(
             f'<figure data-name="{name}" data-index="{index}">'
-            f'<label class="pick"><input type="checkbox" aria-label="Select {name}"></label>'
+            f'<span class="pick"><input type="checkbox" aria-label="Select {name}"></span>'
             f'<a class="open" href="{name}" data-full="{name}">'
             f'<img src="{thumb}" alt="{name}" loading="lazy" decoding="async"></a>'
             f"<figcaption>{name}<br>{html.escape(when)}</figcaption>"
@@ -912,12 +912,10 @@ async def generated_images_index(page: int = 1, per_page: int = 24):
         "e.preventDefault();"
         "var a=Math.min(last,i),z=Math.max(last,i);"
         "for(var j=a;j<=z;j++)boxes[j].checked=true;"
-        "}else if(!(e.ctrlKey||e.metaKey)){"
-        "e.preventDefault();"
-        "boxes.forEach(function(other,k){other.checked=k===i;});"
         "}"
         "last=i;paint();"
         "});"
+        "box.addEventListener('change',paint);"
         "});"
         "function wipe(body){"
         "return fetch('delete',{method:'POST',headers:{'Content-Type':'application/json'},"

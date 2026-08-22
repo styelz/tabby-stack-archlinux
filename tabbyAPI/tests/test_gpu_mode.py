@@ -2563,6 +2563,16 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.media_type, "image/png")
         self.assertTrue(str(response.path).endswith(name))
 
+    async def test_gallery_checkboxes_toggle_instead_of_radio(self):
+        from endpoints.core.router import generated_images_index
+
+        with temp_generated_dir(["generated-20260101-000001.png"]):
+            response = await generated_images_index()
+        html = bytes(response.body).decode("utf-8")
+        self.assertIn('type="checkbox"', html)
+        self.assertNotIn("other.checked=k===i", html)
+        self.assertIn("box.addEventListener('change',paint)", html)
+
 
 if __name__ == "__main__":
     unittest.main()
