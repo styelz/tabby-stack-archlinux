@@ -546,9 +546,12 @@ def generate_image(
     timeout: float = 300,
     source_image: Optional[Path] = None,
 ) -> bytes:
-    from common.image_prompts import rewrite_comfy_prompt
+    from common.image_prompts import rewrite_comfy_prompt, wants_transparent
+    from common.png_alpha import apply_requested_alpha
 
+    wanted = wants_transparent(prompt)
     prompt = rewrite_comfy_prompt(prompt)
+    wanted = wanted or wants_transparent(prompt)
     if not comfy_up():
         raise RuntimeError(f"ComfyUI is not running at {COMFY_HOST}:{COMFY_PORT}")
     width, height = parse_size(size)
@@ -573,7 +576,8 @@ def generate_image(
             if status.get("status_str") == "error":
                 raise RuntimeError(f"ComfyUI job failed: {status}")
             if item.get("outputs") or status.get("completed"):
-                return strip_png_text(fetch_comfy_image(_first_image_ref(item)))
+                raw = strip_png_text(fetch_comfy_image(_first_image_ref(item)))
+                return apply_requested_alpha(raw, wanted=wanted)
         time.sleep(0.5)
     raise TimeoutError(f"ComfyUI job {prompt_id} timed out after {timeout:.0f}s")
 
@@ -799,7 +803,12 @@ def ensure_gallery_thumb(src: Path) -> Optional[Path]:
 
         tmp = dest.with_name(dest.name + ".tmp")
         with Image.open(src) as im:
-            rgb = im.convert("RGB")
+            if im.mode == "RGBA":
+                bg = Image.new("RGB", im.size, (221, 221, 221))
+                bg.paste(im, mask=im.split()[-1])
+                rgb = bg
+            else:
+                rgb = im.convert("RGB")
             rgb.thumbnail((GALLERY_THUMB_MAX, GALLERY_THUMB_MAX))
             rgb.save(tmp, "JPEG", quality=GALLERY_THUMB_QUALITY, optimize=True)
         tmp.replace(dest)

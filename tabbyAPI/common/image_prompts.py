@@ -70,7 +70,18 @@ LOGO_TAIL = (
     "isolated logo mark only, centered, simple background, "
     "emblem, no browser chrome, no navigation bar, no page layout"
 )
+# Flux/Qwen paint a Photoshop checkerboard if the prompt says "transparent".
+# Ask for a chroma-key color instead; png_alpha punches it to a real alpha.
+CHROMA_HEX = "#FF00FF"
+CHROMA_TAIL = (
+    "solid flat magenta (#FF00FF) background, no checkerboard, "
+    "no pattern, no shadows, no floor"
+)
 TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
+TRANSPARENT_PHRASE_RE = re.compile(
+    r"(?is)\btransparent(?:\s+pngs?)?(?:\s+(?:files?|images?|background))?\b"
+)
+CHECKER_WORD_RE = re.compile(r"(?is)\bcheckerboards?\b|\bcheckered\b")
 # A mixed coding+images chat line mentions "logo" but is still a site spec.
 # Qwen-Image then paints a finished webpage. Collapse those to a short mark.
 PAGE_SPEC_RE = re.compile(
@@ -214,6 +225,44 @@ def _collapse(text: str) -> str:
     return text.strip(" ,.;:-")
 
 
+def wants_transparent(text: str) -> bool:
+    """True when the user asked for a cutout, or the rewrite already set chroma."""
+    raw = text or ""
+    return bool(TRANSPARENT_RE.search(raw) or CHROMA_HEX.lower() in raw.lower())
+
+
+def _strip_transparent_words(text: str) -> str:
+    cleaned = TRANSPARENT_PHRASE_RE.sub(" ", text or "")
+    # Do not eat "no checkerboard" inside CHROMA_TAIL on a second rewrite.
+    if CHROMA_HEX.lower() not in cleaned.lower():
+        cleaned = CHECKER_WORD_RE.sub(" ", cleaned)
+    return _collapse(cleaned)
+
+
+def _logo_tail(*, chroma: bool) -> str:
+    if not chroma:
+        return LOGO_TAIL
+    return LOGO_TAIL.replace("simple background", CHROMA_TAIL)
+
+
+def _with_logo_tail(cleaned: str, *, chroma: bool) -> str:
+    if "isolated logo mark only" in cleaned:
+        return cleaned
+    tail = _logo_tail(chroma=chroma)
+    if chroma and CHROMA_TAIL in cleaned:
+        tail = LOGO_TAIL.replace(", simple background", "")
+    return f"{cleaned}, {tail}"
+
+
+def _with_chroma(text: str, *, chroma: bool) -> str:
+    cleaned = _strip_transparent_words(text)
+    if not chroma:
+        return cleaned
+    if CHROMA_TAIL in cleaned or CHROMA_HEX.lower() in cleaned.lower():
+        return cleaned
+    return f"{cleaned}, {CHROMA_TAIL}" if cleaned else CHROMA_TAIL
+
+
 def _strip_noise(body: str) -> str:
     cleaned = WEBSITE_NOISE.sub(" ", body)
     cleaned = UI_SHOT.sub(" ", cleaned)
@@ -279,6 +328,14 @@ def named_planets(text: str) -> list[str]:
     return found
 
 
+def _planet_title(name: str) -> str:
+    key = (name or "").strip().lower()
+    for planet, _scene in PLANET_SCENES:
+        if planet == key:
+            return planet.title()
+    return (name or "a planet").strip() or "a planet"
+
+
 def _planet_scene(name: str) -> str:
     key = (name or "").strip().lower()
     for planet, scene in PLANET_SCENES:
@@ -294,6 +351,14 @@ def _planet_scene(name: str) -> str:
     return f"{body}, {SCENE_TAIL}"
 
 
+def _planet_chroma(name: str) -> str:
+    titled = _planet_title(name)
+    return (
+        f"photograph of planet {titled} as an isolated sphere, "
+        f"no stars, no space backdrop, {CHROMA_TAIL}"
+    )
+
+
 def _is_page_spec(body: str) -> bool:
     raw = body or ""
     if PAGE_SPEC_RE.search(raw):
@@ -304,34 +369,41 @@ def _is_page_spec(body: str) -> bool:
 def _isolated_logo_prompt(raw: str, body: str) -> str:
     """Short Qwen mark. Drop leftover HTML/SPA instructions."""
     brand = company_name(raw)
-    extra = ", transparent background" if TRANSPARENT_RE.search(raw) else ""
+    extra = f", {CHROMA_TAIL}" if wants_transparent(raw) else ""
     if _is_page_spec(body):
         if brand:
             return (
                 f"logo that says {brand}, clean brand mark, readable letters{extra}"
             )
         return f"elegant brand logo, clean readable letters{extra}"
-    cleaned = _strip_noise(body)
+    cleaned = _strip_transparent_words(_strip_noise(body))
     if not cleaned:
         cleaned = "elegant brand logo"
-    if extra and "transparent" not in cleaned.lower():
+    if extra and CHROMA_HEX.lower() not in cleaned.lower():
         cleaned = f"{cleaned}{extra}"
     return cleaned
 
 
 def rewrite_comfy_prompt(prompt: str) -> str:
     """Return the prompt Comfy should actually render."""
-    raw = (prompt or "").strip()
+    original = (prompt or "").strip()
+    raw = original
     if not raw:
         return raw
-    if LOGO_TAIL in raw:
+    if CHROMA_TAIL in raw and (
+        "isolated logo mark only" in raw or "isolated sphere" in raw
+    ):
+        return raw
+    if LOGO_TAIL in raw or "isolated logo mark only" in raw:
         return raw
     if SCENE_TAIL in raw and not QWEN_PREFIX.match(raw):
         return raw
 
+    chroma = wants_transparent(original)
     flux_prefixed = FLUX_PREFIX.match(raw)
     if flux_prefixed:
         body = _collapse((flux_prefixed.group(1) or "").strip())
+        body = _with_chroma(body, chroma=chroma)
         return f"flux: {body}" if body else raw
     wants_flux = bool(FORCE_FLUX_RE.search(raw))
     if wants_flux:
@@ -359,6 +431,8 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         and not wants_text
         and not explicit_ui
     ):
+        if chroma:
+            return _planet_chroma(planet.group(1))
         return _planet_scene(planet.group(1))
 
     if UI_SHOT.search(body) and not is_logo and not wants_text and not explicit_ui:
@@ -368,9 +442,8 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         return f"{cleaned}, {SCENE_TAIL}"
 
     if is_logo:
-        cleaned = _isolated_logo_prompt(raw, body)
-        if LOGO_TAIL not in cleaned:
-            cleaned = f"{cleaned}, {LOGO_TAIL}"
+        cleaned = _isolated_logo_prompt(original, body)
+        cleaned = _with_logo_tail(cleaned, chroma=chroma)
         if wants_flux:
             return f"flux: {cleaned}"
         if cleaned.lower().startswith("qwen-image"):
@@ -379,17 +452,21 @@ def rewrite_comfy_prompt(prompt: str) -> str:
 
     if prefixed or explicit_ui:
         cleaned = _strip_vector_noise(body)
-        return raw if prefixed else f"qwen-image: {cleaned}"
+        result = original if prefixed else f"qwen-image: {cleaned}"
+        return _with_chroma(result, chroma=chroma)
 
     if WEBSITE_NOISE.search(body):
         cleaned = _strip_noise(body)
         if not cleaned:
-            return raw
+            return _with_chroma(original, chroma=chroma)
         if wants_text:
-            return cleaned
-        return f"{cleaned}, no text, no user interface, no website mockup"
+            return _with_chroma(cleaned, chroma=chroma)
+        return _with_chroma(
+            f"{cleaned}, no text, no user interface, no website mockup",
+            chroma=chroma,
+        )
 
-    return raw
+    return _with_chroma(original, chroma=chroma)
 
 
 def plan_mixed_images(text: str) -> list[dict[str, str]]:
@@ -414,8 +491,9 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
         )
 
     brand = company_name(raw)
+    want_alpha = wants_transparent(raw)
+    extra = f", {CHROMA_TAIL}" if want_alpha else ""
     if LOGO_SLOT.search(raw):
-        extra = ", transparent background" if TRANSPARENT_RE.search(raw) else ""
         if brand:
             add(
                 f"logo that says {brand}, clean brand mark, readable letters{extra}",
@@ -435,10 +513,16 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
     if len(listed) >= 2:
         scenes = {name: scene for name, scene in PLANET_SCENES}
         for name in listed:
-            add(scenes.get(name) or f"photograph of planet {name}", f"{name}.png")
+            if want_alpha:
+                add(_planet_chroma(name), f"{name}.png")
+            else:
+                add(scenes.get(name) or f"photograph of planet {name}", f"{name}.png")
     elif EACH_PLANET_RE.search(raw):
         for name, scene in PLANET_SCENES:
-            add(scene, f"{name}.png")
+            if want_alpha:
+                add(_planet_chroma(name), f"{name}.png")
+            else:
+                add(scene, f"{name}.png")
 
     return items
 

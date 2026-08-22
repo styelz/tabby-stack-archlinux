@@ -3,6 +3,8 @@ import unittest
 
 from common.gpu_mode import wants_qwen_image
 from common.image_prompts import (
+    CHROMA_HEX,
+    CHROMA_TAIL,
     SCENE_TAIL,
     images_folder,
     mixed_image_plan_text,
@@ -75,6 +77,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("contact form", rewritten.lower())
         self.assertNotIn("booking", rewritten.lower())
         self.assertLess(len(rewritten), 280)
+        self.assertNotIn("transparent", rewritten.lower())
+        self.assertIn(CHROMA_HEX, rewritten)
         items = plan_mixed_images(line)
         self.assertEqual(items[0]["output_path"], "images/logo.png")
         self.assertEqual(items[0]["prompt"], rewritten)
@@ -230,6 +234,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertIn("atom", items[0]["prompt"].lower())
         self.assertTrue(items[0]["prompt"].lower().startswith("flux:"))
         self.assertNotIn("qwen-image:", items[0]["prompt"].lower())
+        self.assertNotIn("transparent", items[0]["prompt"].lower())
+        self.assertIn(CHROMA_HEX, items[0]["prompt"])
         self.assertFalse(wants_qwen_image(items[0]["prompt"]))
         qwen = plan_image_redo(
             "improve the logo, generate a better png image", "pbptours"
@@ -259,14 +265,64 @@ class ImagePromptRewriteTests(unittest.TestCase):
         logo = items[0]["prompt"].lower()
         self.assertTrue(logo.startswith("qwen-image:"))
         self.assertIn("cosmos tours", logo)
-        self.assertIn("transparent", logo)
+        self.assertNotIn("transparent", logo)
+        self.assertIn(CHROMA_HEX.lower(), logo)
         self.assertIn("isolated logo mark", logo)
         self.assertNotIn("website", logo)
         self.assertNotIn("space-tourism", logo)
         for row in items[1:]:
             self.assertNotIn("qwen-image:", row["prompt"].lower())
-            self.assertIn(SCENE_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn("transparent", row["prompt"].lower())
+            self.assertIn(CHROMA_HEX, row["prompt"])
+            self.assertIn(CHROMA_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
+
+    def test_cosmos_tours_production_spec_queues_named_planets(self):
+        """The live VS Code prompt says 'The logo should be large' and lists
+        Mars/Jupiter/Saturn/Neptune. plan_mixed_images must still queue all
+        five dests — the redo classifier is tested in test_gpu_mode."""
+        line = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The website should be a '
+            "single-page application. The logo should be large and "
+            "prominently displayed. Package section displaying tours to "
+            "different planets (Mars, Jupiter, Saturn, Neptune, etc.). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
+        )
+        items = plan_mixed_images(line)
+        paths = [row["output_path"] for row in items]
+        self.assertEqual(
+            paths,
+            [
+                "images/logo.png",
+                "images/mars.png",
+                "images/jupiter.png",
+                "images/saturn.png",
+                "images/neptune.png",
+            ],
+        )
+        logo = items[0]["prompt"].lower()
+        self.assertTrue(logo.startswith("qwen-image:"))
+        self.assertNotIn("transparent", logo)
+        self.assertIn(CHROMA_HEX.lower(), logo)
+        for row in items[1:]:
+            self.assertNotIn("transparent", row["prompt"].lower())
+            self.assertIn(CHROMA_HEX, row["prompt"])
+            self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
+            self.assertFalse(wants_qwen_image(row["prompt"]))
+
+    def test_transparent_ask_never_says_transparent_to_comfy(self):
+        rewritten = rewrite_comfy_prompt("transparent PNG of a coffee cup")
+        self.assertNotIn("transparent", rewritten.lower())
+        self.assertIn(CHROMA_HEX, rewritten)
+        self.assertEqual(rewrite_comfy_prompt(rewritten), rewritten)
+        hero = rewrite_comfy_prompt(
+            "transparent website hero banner, purple dusk over dunes"
+        )
+        self.assertIn(SCENE_TAIL.split(",")[0], hero)
+        self.assertNotIn(CHROMA_HEX, hero)
 
 
 if __name__ == "__main__":
