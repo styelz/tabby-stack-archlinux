@@ -2,11 +2,11 @@
 
 Use **gpt-4o** as the model name in your editor, and leave it. That is not ChatGPT — it is only a name. Many editors sandbox or block tools unless they see a known OpenAI name. The GPU still runs the local model you switched to.
 
-This file is for **any** editor that talks to the TabbyAPI server (Cursor, VS Code, Continue, Cline, Roo, JetBrains with an OpenAI-compatible plugin, plain HTTP clients, and so on). The coding workspace is a different computer. Treat this API like OpenAI: chat and HTTP only.
+This file is for **any** editor that talks to the TabbyAPI server (Cursor, VS Code, Continue, Cline, Roo, JetBrains with an OpenAI-compatible plugin, plain HTTP clients, and so on). The coding workspace is a different computer. Treat this API like OpenAI: chat and HTTP only. Some editors will only accept an `https://` endpoint; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
 
 ## API
 
-- Base URL: the `/v1` URL you configured in your editor or IDE (LAN, Tailscale, or a tunnel)
+- Base URL: the `/v1` URL you configured in your editor or IDE (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
 

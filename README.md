@@ -24,11 +24,11 @@ flowchart LR
         API --> Comfy
     end
 
-    IDE -->|"chat, switch to …, generate an image"| API
+    IDE -->|"HTTP on LAN, or HTTPS via SSH reverse tunnel"| API
     API -->|"replies, tool calls, PNG URLs"| IDE
 ```
 
-1. Your editor talks to TabbyAPI over HTTP, same shape as OpenAI (`/v1`, model name `gpt-4o` — that's only a label).
+1. Your editor talks to TabbyAPI, same shape as OpenAI (`/v1`, model name `gpt-4o` — that's only a label). On a LAN that can be plain HTTP. Some editors will only take `https://`, so traffic goes through a reverse SSH tunnel from an HTTPS host — still the same API.
 2. TabbyAPI runs a local model on the GPU, or hands that card to image generation. It cannot do both at once.
 3. Replies and PNG URLs come back to the editor. The assistant writes code and saves pictures into your project.
 
@@ -41,7 +41,7 @@ flowchart LR
 - Model switching from right inside the chat (`switch to qwen`, `switch to comfy`, …)
 - An Arch installer that handles packages, Python, model weights, and a service that starts on boot
 
-It's built around a 12 GB NVIDIA card (RTX 4070-class), and everything stays on your own network unless you go out of your way to open a public tunnel.
+It's built around a 12 GB NVIDIA card (RTX 4070-class), and everything stays on your own network unless you set up the HTTPS reverse tunnel below (some editors require that).
 
 Under the hood it's just this git repo plus some downloaded model weights (either fetched during install or copied in from a folder you already have) — no ChatGPT, no Cursor cloud models, no separate desktop app to install.
 
@@ -54,10 +54,14 @@ Under the hood it's just this git repo plus some downloaded model weights (eithe
 
 Once it's installed, the API listens on the GPU host. Point your editor at it:
 
-- **Base URL:** `http://<gpu-host>:5000/v1` (or your LAN / Tailscale / tunnel URL)
+- **Base URL:** `http://<gpu-host>:5000/v1` on the LAN or Tailscale — **or** an `https://…/v1` URL if the editor will not accept HTTP
 - **Model:** `gpt-4o`
 
 Don't worry about that model name — it's just a label so editors that only trust known OpenAI names will still let you use tools. Under the hood the GPU is actually running whichever local model you last switched to, which for day-to-day coding is usually **qwen**.
+
+**HTTPS:** some editors refuse a plain `http://` endpoint even on a private LAN. They only accept `https://`. TabbyAPI itself still speaks HTTP on the GPU box. That is the whole reason for the optional reverse SSH tunnel: a host that already has HTTPS (a VPS, a reverse proxy with a real certificate) forwards back to the API. You point those editors at that HTTPS `/v1` URL. The tunnel is a pipe, not a second machine running the model.
+
+The installer asks about this under **Public URL / tunnel**. You can also set `TABBY_PUBLIC_BASE` and `TABBY_SSH_REMOTE` later — see [tabbyAPI/deploy/arch/README.md](tabbyAPI/deploy/arch/README.md).
 
 ## Install
 
