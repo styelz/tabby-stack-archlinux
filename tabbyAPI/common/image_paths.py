@@ -412,8 +412,13 @@ def image_download_note(pairs: Iterable[tuple[str, str]]) -> str:
     rows = image_download_pairs(pairs)
     if not rows:
         return ""
-    lines = ["Images are ready. Downloading each URL into the project:"]
+    lines = [
+        "Images are ready. Downloading each URL into the project:",
+    ]
     lines.extend(f"- {dest}  {url}" for url, dest in rows)
+    lines.append(
+        "Do not overwrite these files with Pillow, SVG, or a Python drawing script."
+    )
     return "\n".join(lines)
 
 

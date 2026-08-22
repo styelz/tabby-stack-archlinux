@@ -1961,6 +1961,75 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("curl ", args)
         self.assertNotIn("generated-20260822-021552-239881.png", args)
 
+    def test_logo_redo_downloads_its_own_job_once_done(self):
+        """'delete the current logo.png and create a new logo png image ...
+        atom with electrons ...' matches IMAGE_REDO_RE, and it stays the last
+        user message for the whole wait loop (no new user text is sent while
+        Comfy renders). gpu_busy_image_response must still drive the
+        download once *this chat's own* job finishes, not treat it as a
+        stale leftover just because the ask looks like a redo."""
+        item = mock.Mock(
+            output_path="images/logo.png",
+            urls=["https://gpu.example/v1/images/generated-atom.png"],
+            prompt="atom with electrons",
+            status="done",
+            error="",
+        )
+        job = mock.Mock(
+            id="1555fa7c-7476-443a-8362-50e861504e91",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[item],
+            urls=["https://gpu.example/v1/images/generated-atom.png"],
+            client_saved=False,
+            download_attempts=0,
+            error="",
+        )
+        ask = (
+            "delete the current logo.png and create a new logo png image, "
+            "it should be an image of an atom with electrons swirling "
+            "around it and be transparent background and rectangle not "
+            "square"
+        )
+        data = _chat(ask, tools=["Shell"])
+        data.messages.append(
+            ChatCompletionMessage(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        function=Tool(
+                            name="Shell",
+                            arguments=(
+                                '{"command":"sleep 20; echo job '
+                                f"'{job.id}' still running; ls -l -- "
+                                "'images/logo.png'\"}"
+                            ),
+                        ),
+                        type="function",
+                    )
+                ],
+            )
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
+            ),
+        ):
+            response = gpu_busy_image_response(data)
+        self.assertIsNotNone(response)
+        calls = response.choices[0].message.tool_calls
+        self.assertEqual(calls[0].function.name, "Shell")
+        args = calls[0].function.arguments
+        self.assertIn("curl -fsSL", args)
+        self.assertIn("images/logo.png", args)
+        self.assertIn("generated-atom.png", args)
+        self.assertFalse(job.client_saved)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,12 @@ SCENE_TAIL = (
     "wide photographic scene, no text, no letters, no logo, "
     "no user interface, no website, no browser, no mockup"
 )
+LOGO_TAIL = (
+    "isolated logo mark only, centered, simple background, "
+    "not a screenshot of a website, not a webpage layout, "
+    "not a browser window, no navigation bar"
+)
+TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
 
 PLANET_SCENES: tuple[tuple[str, str], ...] = (
     (
@@ -144,10 +150,14 @@ IMAGES_DIR_RE = re.compile(
     r"(?is)\b([A-Za-z][A-Za-z0-9._-]*/images)\b"
 )
 COMPANY_RE = re.compile(
-    r"(?is)\b(?:company|brand|called|named)\s+[\"“]([^\"”]{2,80})[\"”]"
-    r"|\blogo\b.{0,80}(?:says?|called|named)\s+[\"“]([^\"”]{2,80})[\"”]"
+    r"(?is)\b(?:company|brand|called|named)\s+[\"“']([^\"”']{2,80})[\"”']"
+    r"|\blogo\b.{0,80}(?:says?|called|named)\s+[\"“']([^\"”']{2,80})[\"”']"
     r"|\b(?:company|brand)\s+"
     r"([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){1,6})"
+    r"|\b(?:website|web\s*site|web\s*page|webpage|site|company|brand)"
+    r"\s+(?:for|called|named)\s+"
+    r"(?:[\"“']([^\"”']{2,80})[\"”']|"
+    r"([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){0,6}))"
 )
 ASKED_SVG_RE = re.compile(
     r"(?is)\b(?:use|using|as|want|need|prefer|make|create|generate)\b"
@@ -221,6 +231,18 @@ def company_name(text: str) -> str:
     return _quoted_or_group(match)
 
 
+def named_planets(text: str) -> list[str]:
+    """Planet names the user listed, in the order they appear."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in PLANET_NAME_RE.finditer(text or ""):
+        name = (match.group(1) or "").strip().lower()
+        if name and name not in seen:
+            seen.add(name)
+            found.append(name)
+    return found
+
+
 def _planet_scene(name: str) -> str:
     key = (name or "").strip().lower()
     for planet, scene in PLANET_SCENES:
@@ -286,6 +308,10 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         cleaned = _strip_noise(body)
         if not cleaned:
             cleaned = "elegant brand logo"
+        if TRANSPARENT_RE.search(raw) and "transparent" not in cleaned.lower():
+            cleaned = f"{cleaned}, transparent background"
+        if LOGO_TAIL not in cleaned:
+            cleaned = f"{cleaned}, {LOGO_TAIL}"
         if wants_flux:
             return f"flux: {cleaned}"
         if cleaned.lower().startswith("qwen-image"):
@@ -330,14 +356,14 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
 
     brand = company_name(raw)
     if LOGO_SLOT.search(raw):
+        extra = ", transparent background" if TRANSPARENT_RE.search(raw) else ""
         if brand:
             add(
-                f"logo that says {brand}, clean space-tourism brand mark, "
-                "readable letters",
+                f"logo that says {brand}, clean brand mark, readable letters{extra}",
                 "logo.png",
             )
         else:
-            add("elegant brand logo, clean readable letters", "logo.png")
+            add(f"elegant brand logo, clean readable letters{extra}", "logo.png")
 
     if HERO_IMAGE_ASK.search(raw):
         scene = brand or folder or "the destination"
@@ -347,7 +373,12 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
             "header.png",
         )
 
-    if EACH_PLANET_RE.search(raw):
+    listed = named_planets(raw)
+    if len(listed) >= 2:
+        scenes = {name: scene for name, scene in PLANET_SCENES}
+        for name in listed:
+            add(scenes.get(name) or f"photograph of planet {name}", f"{name}.png")
+    elif EACH_PLANET_RE.search(raw):
         for name, scene in PLANET_SCENES:
             add(scene, f"{name}.png")
 
@@ -394,7 +425,9 @@ def format_mixed_image_plan(
     lines = [
         f"{MIXED_PLAN_MARK} ({len(items)} PNG files). "
         "Write HTML/CSS/JS under the site folder; do not switch the project to React/Vite. "
-        "Create raster PNG files, not .svg or CSS planet art.",
+        "Create raster PNG files, not .svg, CSS planet art, or Pillow/PIL drawings.",
+        "Do not write generate_images.py. Do not convert SVG to PNG. "
+        "Do not overwrite a GPU PNG with a local drawing.",
         "Do not use generate_image. The server already queued this batch.",
         "Write the page after those files exist on disk.",
     ]

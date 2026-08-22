@@ -487,7 +487,7 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
             "Do not use generate_image and do not POST /v1/mcp for that batch.",
             "  Keep using the wait or download tool this API requests until the PNGs exist.",
             "  Then use Write or StrReplace for HTML/CSS/JS. A chat dump is not a file.",
-            "  Do not fake images with SVG, CSS art, emoji, placeholder URLs, or Unsplash.",
+            "  Do not fake images with SVG, CSS art, Pillow/PIL, emoji, placeholder URLs, or Unsplash.",
             "  Point img src at the planned local PNG paths. Never use the browser.",
             f"  Flux draft: about {format_duration(flux) if flux else 'a few minutes'} each. "
             f"Qwen-Image (text / UI / logo): about {format_duration(qwen_img) if qwen_img else 'a few minutes'} each. "
@@ -866,6 +866,28 @@ MIXED_FOLLOWUP_RE = re.compile(
     r")"
 )
 MIXED_IMAGE_HINT_MARK = "This turn is a coding task that also needs images."
+FAKE_IMAGE_SCRIPT_RE = re.compile(
+    r"(?is)("
+    r"generate_images\.py|"
+    r"make_images\.py|"
+    r"create_(?:the_)?images\.py|"
+    r"from\s+PIL(?:\s+import|\s*\.)|"
+    r"import\s+PIL\b|"
+    r"\bImageDraw\b|"
+    r"\bImageFont\b|"
+    r"PIL\.Image|"
+    r"\bsvgwrite\b|"
+    r"\bcairosvg\b|"
+    r"\bsvg2png\b|"
+    r"Image\.new\s*\("
+    r")"
+)
+FAKE_PNG_NOTE = (
+    "Those PNG files must come from the GPU job, not from Pillow, SVG, "
+    "or a Python drawing script. Do not write or run generate_images.py. "
+    "Do not overwrite the planned .png paths with local drawings. "
+    "Downloading the real GPU PNGs again. After they land, write HTML/CSS/JS only."
+)
 IMAGE_REDO_RE = re.compile(
     r"(?is)("
     r"\b(?:improve|better|regenerat\w*|re-?generat\w*|redo|re-?do|"
@@ -1432,6 +1454,51 @@ async def prepare_mixed_image_turn(
     return await await_gpu_busy_image_response(data)
 
 
+def _messages_since_last_user(data: ChatCompletionRequest):
+    messages = list(data.messages or [])
+    last_user = -1
+    for index, message in enumerate(messages):
+        if message.role == "user":
+            last_user = index
+    if last_user < 0:
+        return messages
+    return messages[last_user + 1 :]
+
+
+def _chat_is_faking_images(data: ChatCompletionRequest) -> bool:
+    """True when the agent is drawing PNGs with Pillow/SVG instead of the GPU job."""
+    blob_parts: list[str] = []
+    for message in _messages_since_last_user(data):
+        if message.role == "user":
+            continue
+        blob_parts.append(_content_text(message.content))
+        for call in message.tool_calls or []:
+            blob_parts.append(_tool_name_of(call))
+            blob_parts.append(
+                str(getattr(getattr(call, "function", None), "arguments", "") or "")
+            )
+    return bool(FAKE_IMAGE_SCRIPT_RE.search("\n".join(blob_parts)))
+
+
+def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
+    """Stop Pillow/SVG stand-ins and re-curl the GPU PNGs if they exist."""
+    if not job or not _chat_is_faking_images(data):
+        return None
+    if getattr(job, "status", "") in ("queued", "running"):
+        xlogger.info(f"Image job {job.id}: refusing Pillow/SVG while still rendering")
+        return _drive_running_image_job(data, job)
+    if not getattr(job, "urls", None):
+        xlogger.info("Refusing Pillow/SVG stand-in with no GPU URLs yet")
+        return text_response(data, FAKE_PNG_NOTE)
+    try:
+        job.client_saved = False
+        job.download_attempts = 0
+    except Exception:
+        pass
+    xlogger.info(f"Image job {job.id}: re-curling GPU PNGs after Pillow/SVG stand-in")
+    return _drive_image_download(data, job, extra_note=FAKE_PNG_NOTE)
+
+
 def gpu_busy_image_response(data: ChatCompletionRequest):
     """Keep the agent loop alive while Comfy owns the GPU, then save PNGs."""
     try:
@@ -1464,7 +1531,11 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
             "not driving a download on this chat"
         )
         return None
-    if not missing and _text_is_image_redo(_last_ask_text(data)):
+    if (
+        not missing
+        and _text_is_image_redo(_last_ask_text(data))
+        and not _chat_waited_on_job(data, job)
+    ):
         xlogger.info(
             f"Image job {job.id} is a leftover batch; "
             "not curling it on a logo/image redo"
@@ -1566,7 +1637,9 @@ def _drive_running_image_job(data: ChatCompletionRequest, job) -> object:
     )
 
 
-def _drive_image_download(data: ChatCompletionRequest, job) -> object:
+def _drive_image_download(
+    data: ChatCompletionRequest, job, extra_note: str = ""
+) -> object:
     from common.image_paths import (
         download_pairs_from_job,
         image_download_command,
@@ -1580,6 +1653,8 @@ def _drive_image_download(data: ChatCompletionRequest, job) -> object:
     if not command:
         return None
     notes = []
+    if extra_note:
+        notes.append(extra_note)
     if job.status == "error":
         notes.append(
             f"Job {job.id} did not finish ({job.error or 'unknown error'}). "
@@ -1638,6 +1713,9 @@ def mixed_image_hint(
         "Do not paste the webpage into chat. "
         "Do not fake images with SVG, CSS shapes, Pillow/PIL circles, emoji, "
         "placeholder URLs, or Unsplash. "
+        "Do not write generate_images.py or any Python drawing script. "
+        "Do not convert SVG to PNG. If a curl 404s, wait — do not invent "
+        "substitute images. "
         "Unless the user explicitly asked for SVG, every image is a generated PNG. "
         "Do not use the browser. Do not use Cursor's built-in GenerateImage tool. "
         "Do not use generate_image. The server already queued the PNG job.\n"

@@ -1,21 +1,21 @@
 # tabby-stack
 
-Install this on an Arch Linux box that has an NVIDIA GPU. That box becomes a **private coding assistant and image generator**. You keep using Cursor, VS Code, Continue, Cline, or a script on any other machine — you just point your editor or IDE at this box instead of OpenAI.
+Got an Arch Linux box with an NVIDIA GPU sitting around? Put this on it and it turns into your own private coding assistant and image generator. You keep working in Cursor, VS Code, Continue, Cline, or whatever you already use on your everyday machine — you just point it at this box instead of OpenAI.
 
-There is no extra chat window on the GPU machine. Your editor or IDE is the UI.
+There's no separate chat window to open on the GPU machine. Your editor is the whole interface.
 
 ![A short walkthrough in your editor or IDE: help, list models, switch, then a page plus generated images](docs/ide-chat.gif)
 
 ## What you get
 
-- Chat and code help from a model that runs on **your** GPU
-- Image generation on the **same** API URL
-- A way to switch models from chat (`switch to qwen`, `switch to comfy`, …)
-- An Arch installer that sets packages, Python, model weights, and a service that starts at boot
+- Chat and code help from a model running on **your own** GPU
+- Image generation on that **same** API, no separate setup
+- Model switching from right inside the chat (`switch to qwen`, `switch to comfy`, …)
+- An Arch installer that handles packages, Python, model weights, and a service that starts on boot
 
-Aimed at a 12 GB NVIDIA card (RTX 4070-class). Prompts stay on your machines unless you open a public tunnel.
+It's built around a 12 GB NVIDIA card (RTX 4070-class), and everything stays on your own network unless you go out of your way to open a public tunnel.
 
-This is not ChatGPT, not Cursor’s cloud models, and not a desktop app. The git repo is the software. Model weights download during install (or copy from a folder you already have).
+Under the hood it's just this git repo plus some downloaded model weights (either fetched during install or copied in from a folder you already have) — no ChatGPT, no Cursor cloud models, no separate desktop app to install.
 
 ## Two machines
 
@@ -24,16 +24,16 @@ This is not ChatGPT, not Cursor’s cloud models, and not a desktop app. The git
 | **GPU host** (Arch Linux) | Runs the API, the language model, and image generation |
 | **Your computer** | Runs your editor or IDE. You open your project here. |
 
-After install, the API listens on the GPU host. In your editor or IDE set:
+Once it's installed, the API listens on the GPU host. Point your editor at it:
 
 - **Base URL:** `http://<gpu-host>:5000/v1` (or your LAN / Tailscale / tunnel URL)
 - **Model:** `gpt-4o`
 
-`gpt-4o` is only a label. Many editors refuse tools unless they see a familiar OpenAI name. The GPU still runs whichever local model you last switched to — usually **qwen** for daily coding.
+Don't worry about that model name — it's just a label so editors that only trust known OpenAI names will still let you use tools. Under the hood the GPU is actually running whichever local model you last switched to, which for day-to-day coding is usually **qwen**.
 
 ## Install
 
-**Needs:** Arch Linux, an NVIDIA GPU, internet. Run as **your user**, not root. Install onto the Linux disk, not a USB.
+You'll need Arch Linux, an NVIDIA GPU, and an internet connection. Run this as **your normal user**, not root, and install it onto the Linux disk itself rather than a USB drive.
 
 ```bash
 sudo pacman -S --needed git
@@ -42,32 +42,32 @@ cd tabby-stack-archlinux
 bash install.sh
 ```
 
-Default destination: `$HOME/tabby-stack`. The installer asks for the install folder, an optional weights cache, which models to download, and which addresses to listen on.
+It installs to `$HOME/tabby-stack` by default. Along the way it'll ask where to put things, whether you want a weights cache, which models to grab, and which addresses to listen on.
 
 - **core** — enough to code and make images (qwen 9B, Flux, Qwen-Image, plus a small embedder on CPU)
-- **all** — those, plus the larger models in the switch list below
+- **all** — everything in core, plus the bigger models in the switch table below
 
-If Hugging Face returns 401 or 403, run `huggingface-cli login` (or set `HF_TOKEN`) and re-run.
+If Hugging Face throws a 401 or 403 at you, run `huggingface-cli login` (or set `HF_TOKEN`) and try the install again.
 
-USB cache, non-interactive flags, and troubleshooting: [tabbyAPI/deploy/arch/README.md](tabbyAPI/deploy/arch/README.md).
+Need a USB cache, non-interactive flags, or something went wrong? See [tabbyAPI/deploy/arch/README.md](tabbyAPI/deploy/arch/README.md).
 
 ## First use
 
-The installer starts the API at boot (no login needed). Check that it is up:
+The installer sets things up to start on boot, so there's no login step. Just check it's actually running:
 
 ```bash
 curl -sS http://127.0.0.1:5000/health
 ```
 
-If it is stopped:
+Nothing there? Start it yourself:
 
 ```bash
 systemctl --user enable --now tabbyapi
 ```
 
-Logs: `journalctl --user -u tabbyapi -f`
+Want to watch the logs? `journalctl --user -u tabbyapi -f`
 
-In your editor or IDE, send a message that is **only** one of these phrases — the whole message, not “please switch to qwen”:
+From your editor's chat, type one of these as the whole message — just `switch to qwen`, not "please switch to qwen":
 
 | Phrase | What it does | Ready (warm, 4070 Ti 12 GB) |
 |---|---|---|
@@ -83,20 +83,20 @@ In your editor or IDE, send a message that is **only** one of these phrases — 
 | `switch to comfy` / `flux` | Hand the GPU to image generation | ~35 seconds, then the picture |
 | `switch to llm` | Free image gen; reload the last coding model | ~65 seconds |
 
-The card can run **chat or images, not both at once**. First Flux picture ~3 minutes; first Qwen-Image ~4 minutes. After that, the coding model takes about 65 seconds to come back.
+One catch: the card can only do **chat or images at a time, never both**. The first Flux picture takes about 3 minutes to warm up, the first Qwen-Image about 4 minutes, and then it takes roughly 65 seconds to bring the coding model back afterward.
 
-Daily work stays on `qwen`. Notes for any editor or IDE: [AGENTS.md](AGENTS.md).
+For day-to-day work, just stay on `qwen`. If you want the full rundown for any editor or IDE, it's in [AGENTS.md](AGENTS.md).
 
 ## Images
 
-**Just a picture.** Send `generate an image of a neon diner at night`. The API moves the GPU to image generation, returns a PNG URL on the same host, then reloads the coding model.
+**Just want a picture?** Send something like `generate an image of a neon diner at night`. The API hands the GPU over to image generation, hands you back a PNG URL on the same host, then quietly reloads the coding model when it's done.
 
-- Photos and scenes (headers, backgrounds): describe the **scene**, not a website.
-- Logos, posters, buttons, anything with **readable words**: start the prompt with `qwen-image:`, e.g. `qwen-image: a logo that says Harbor Cafe`.
+- For photos and scenes (headers, backgrounds), describe the **scene** itself, not a mockup of a website.
+- For logos, posters, buttons, or anything that needs **readable text**, start the prompt with `qwen-image:` — e.g. `qwen-image: a logo that says Harbor Cafe`.
 
-You can also send `switch to comfy`, wait until it is ready, then describe the picture. When you are done, `switch to qwen` (or `switch to llm`).
+You can also just say `switch to comfy`, wait for it to come up, and describe pictures one after another. `switch to qwen` (or `switch to llm`) whenever you're ready to code again.
 
-**A page plus its pictures.** A line like “create a landing page and generate a header and logo” is a **coding** request. The agent should write the HTML/CSS into files, generate the PNGs, and point the page at those files — not paste a screenshot of a finished site into the header.
+**Building a page and want images to go with it?** Something like "create a landing page and generate a header and logo" is really a coding task — the assistant writes the HTML/CSS to files, generates the PNGs, and wires the page up to point at those files, rather than dropping in a screenshot of a finished site.
 
 ```
 Create a cafe landing page under harbor/. Write the HTML and CSS.
@@ -105,13 +105,13 @@ and qwen-image: harbor/images/logo.png that says Harbor Cafe.
 Point the page at those files.
 ```
 
-Name the PNG paths under the site folder, or they land in `images/` at the project root. Budget about 3 minutes per Flux picture, 4 minutes per Qwen-Image, then about 65 seconds to bring the coding model back.
+Give the PNGs a path under your site folder, otherwise they'll land in `images/` at the project root. Same timing as above: roughly 3 minutes per Flux picture, 4 per Qwen-Image, then about 65 seconds for the coding model to come back.
 
 ## Saving PNGs into the project
 
-The API returns a URL. The agent downloads that file into the project. Chat phrases and `POST /v1/images/generations` work in any editor that can call an OpenAI-compatible API.
+The API hands back a URL, and your coding assistant downloads that file straight into the project for you. Chat phrases and `POST /v1/images/generations` both work from any editor that can talk to an OpenAI-compatible API.
 
-For a page plus pictures, the API starts the image job from the user line and then drives the download. You do not add a plugin or an `mcp.json` for that.
+When you're building a page plus images, the API kicks off that image job itself from what you typed, and manages the download too — no plugin or `mcp.json` needed for that part.
 
 ## License
 

@@ -65,7 +65,10 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(len(items), 2)
-        self.assertEqual(items[0]["prompt"], "qwen-image: a cafe logo")
+        self.assertTrue(items[0]["prompt"].lower().startswith("qwen-image:"))
+        self.assertIn("cafe logo", items[0]["prompt"].lower())
+        self.assertIn("isolated logo mark", items[0]["prompt"].lower())
+        self.assertNotIn("website", items[0]["prompt"].lower())
         self.assertEqual(items[0]["output_path"], "images/logo.png")
         self.assertEqual(items[1]["output_path"], "images/header.png")
         abs_items = parse_image_items(

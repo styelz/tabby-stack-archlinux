@@ -9,6 +9,7 @@ from common.image_prompts import (
     plan_mixed_images,
     rewrite_comfy_prompt,
     site_folder,
+    company_name,
     user_asked_for_svg,
 )
 
@@ -46,7 +47,11 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertTrue(rewritten.lower().startswith("qwen-image:"))
         self.assertIn("Lumina", rewritten)
         self.assertNotIn("website", rewritten.lower())
+        self.assertIn("isolated logo mark", rewritten.lower())
+        self.assertIn("no page layout", rewritten.lower())
         self.assertTrue(wants_qwen_image(rewritten))
+        again = rewrite_comfy_prompt(rewritten)
+        self.assertEqual(again, rewritten)
 
     def test_rewrite_is_idempotent(self):
         first = rewrite_comfy_prompt("cosmic nebula website header banner")
@@ -108,6 +113,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("Call generate_image", brief)
         self.assertNotIn("--data-binary", brief)
         self.assertNotIn("/v1/mcp", brief)
+        self.assertIn("generate_images.py", brief)
+        self.assertIn("Pillow/PIL", brief)
         self.assertFalse(user_asked_for_svg(line))
         self.assertFalse(
             user_asked_for_svg(
@@ -180,6 +187,37 @@ class ImagePromptRewriteTests(unittest.TestCase):
         )
         self.assertEqual(qwen[0]["output_path"], "pbptours/images/logo.png")
         self.assertTrue(qwen[0]["prompt"].lower().startswith("qwen-image:"))
+
+    def test_named_planets_queue_flux_photos_not_all_eight(self):
+        line = (
+            "create a website for Cosmos Tours with a nice logo image and "
+            "transparent PNG images of Mars, Jupiter, Saturn and Neptune. "
+            "Put files under llm-testing."
+        )
+        self.assertEqual(company_name(line), "Cosmos Tours")
+        items = plan_mixed_images(line)
+        paths = [row["output_path"] for row in items]
+        self.assertEqual(
+            paths,
+            [
+                "llm-testing/images/logo.png",
+                "llm-testing/images/mars.png",
+                "llm-testing/images/jupiter.png",
+                "llm-testing/images/saturn.png",
+                "llm-testing/images/neptune.png",
+            ],
+        )
+        logo = items[0]["prompt"].lower()
+        self.assertTrue(logo.startswith("qwen-image:"))
+        self.assertIn("cosmos tours", logo)
+        self.assertIn("transparent", logo)
+        self.assertIn("isolated logo mark", logo)
+        self.assertNotIn("website", logo)
+        self.assertNotIn("space-tourism", logo)
+        for row in items[1:]:
+            self.assertNotIn("qwen-image:", row["prompt"].lower())
+            self.assertIn(SCENE_TAIL.split(",")[0], row["prompt"])
+            self.assertFalse(wants_qwen_image(row["prompt"]))
 
 
 if __name__ == "__main__":
