@@ -112,6 +112,45 @@ class PngAlphaTests(unittest.TestCase):
         self.assertGreater(mark[3], 200)
         self.assertEqual(mark[:3], (255, 0, 255))
 
+    def test_white_studio_with_checkerboard_floor_becomes_alpha(self):
+        """Flux often paints a fake transparency grid only on the bottom."""
+        light = (255, 255, 255)
+        dark = (190, 190, 190)
+        im = Image.new("RGB", (64, 64), light)
+        for y in range(48, 64):
+            for x in range(64):
+                im.putpixel(
+                    (x, y),
+                    light if ((x // 8) + (y // 8)) % 2 == 0 else dark,
+                )
+        for y in range(16, 48):
+            for x in range(16, 48):
+                if (x - 32) ** 2 + (y - 32) ** 2 <= 14 ** 2:
+                    im.putpixel((x, y), (210, 90, 40))
+        out = apply_requested_alpha(_png(im), wanted=True)
+        result = _open(out)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        self.assertEqual(result.getpixel((8, 63))[3], 0)
+        self.assertEqual(result.getpixel((40, 63))[3], 0)
+        subject = result.getpixel((32, 32))
+        self.assertGreater(subject[3], 200)
+        self.assertGreater(subject[0], 150)
+
+    def test_small_corner_studio_blob_is_removed(self):
+        im = Image.new("RGB", (64, 64), (250, 250, 250))
+        for y in range(18, 46):
+            for x in range(18, 46):
+                im.putpixel((x, y), (20, 90, 200))
+        for y in range(52, 64):
+            for x in range(0, 12):
+                im.putpixel((x, y), (160, 165, 170))
+        out = apply_requested_alpha(_png(im), wanted=True)
+        result = _open(out)
+        self.assertEqual(result.getpixel((2, 60))[3], 0)
+        subject = result.getpixel((32, 32))
+        self.assertGreater(subject[3], 200)
+        self.assertEqual(subject[:3], (20, 90, 200))
+
 
 if __name__ == "__main__":
     unittest.main()

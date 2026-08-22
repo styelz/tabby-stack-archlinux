@@ -407,6 +407,15 @@ class GpuModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("even if the spec asked", hint)
         self.assertIn("get_image_job", hint)
         self.assertNotIn("Do not use Write or WebFetch for the file", hint)
+        cosmos = _chat(
+            'Create a website for "Cosmos Tours." All images must be generated '
+            "as transparent PNG files (not SVG) - create them using Python "
+            "with PIL/Pillow. The logo should be large."
+        )
+        inject_mixed_image_hint(cosmos, api_base="https://gpu.example/v1")
+        cosmos_text = cosmos.messages[0].content
+        self.assertNotIn("create them using Python with PIL/Pillow", cosmos_text)
+        self.assertIn("generated on the GPU", cosmos_text)
         help_body = help_text()
         self.assertIn("Do not fake images with SVG", help_body)
         self.assertIn("Pillow/PIL", help_body)
@@ -769,7 +778,11 @@ class GpuModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mercury.output_path, "pbptours/images/mercury.png")
 
     async def test_download_stops_without_tool_role_after_max_curls(self):
-        """VS Code often runs curl then POSTs without a tool-role ls result."""
+        """VS Code often runs curl then POSTs without a tool-role ls result.
+
+        After the cap, do not end the chat on a stop note — let the coding
+        model write HTML pointing at the planned dests.
+        """
         job = self._done_logo_job()
         job.download_attempts = 4
         mixed = _with_job_wait(
@@ -789,14 +802,9 @@ class GpuModeTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             response = await gpu_busy_image_response(mixed)
-        self.assertIsNotNone(response)
-        self.assertFalse(response.choices[0].message.tool_calls)
-        text = response.choices[0].message.content or ""
-        self.assertIn("still has", text.lower())
-        self.assertIn("https://gpu.example/v1/images/generated-logo.png", text)
-        self.assertNotIn("gone from this host", text)
+        self.assertIsNone(response)
         self.assertTrue(job.download_stopped)
-        self.assertFalse(job.client_saved)
+        self.assertTrue(job.client_saved)
 
     def _done_logo_job(self):
         item = mock.Mock(
@@ -1726,6 +1734,22 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             error="",
         )
 
+    def test_missing_planned_items_skips_existing_dests(self):
+        from common.mixed_image import missing_planned_items
+
+        job = mock.Mock(
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(output_path="images/logo.png", count=1),
+            ],
+        )
+        planned = [
+            {"output_path": "images/logo.png", "prompt": "logo"},
+            {"output_path": "images/mars.png", "prompt": "mars"},
+        ]
+        gap = missing_planned_items(job, planned)
+        self.assertEqual([row["output_path"] for row in gap], ["images/mars.png"])
+
     async def test_mixed_user_line_starts_job_and_does_not_reach_llm(self):
         job = self._running_job()
         state = {"job": None}
@@ -1806,6 +1830,24 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_matching_job_is_not_started_again(self):
         job = self._running_job()
+        job.items = [
+            mock.Mock(
+                output_path="images/logo.png",
+                urls=[],
+                prompt="logo",
+                status="running",
+                error="",
+                count=1,
+            ),
+            mock.Mock(
+                output_path="images/header.png",
+                urls=[],
+                prompt="header",
+                status="running",
+                error="",
+                count=1,
+            ),
+        ]
         data = _chat(
             "create a webpage and generate a header and logo images for it"
         )
@@ -2520,10 +2562,10 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_start(**kwargs):
             paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
-            self.assertIn("images/logo.png", paths)
             self.assertIn("images/mars.png", paths)
-            self.assertGreaterEqual(len(paths), 5)
-            return new_job, "started"
+            self.assertIn("images/neptune.png", paths)
+            self.assertNotIn("images/logo.png", paths)
+            return new_job, "appended"
 
         data = _chat(
             'create a website for a company called "Cosmos Tours" with a '
@@ -2552,6 +2594,90 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             )
         start.assert_awaited_once()
         self.assertIs(job, new_job)
+
+    async def test_waited_running_logo_job_appends_planets_on_tool_turn(self):
+        """sleep/ls on a logo-only job used to skip ensure (last_role is
+        tool), so planets never queued. QUEUE must still append the gap."""
+        running = mock.Mock(
+            id="job-logo-only",
+            status="running",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[],
+                    prompt="logo that says Cosmos Tours",
+                    status="running",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+
+        async def fake_start(**kwargs):
+            paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
+            self.assertIn("images/mars.png", paths)
+            self.assertIn("images/jupiter.png", paths)
+            self.assertNotIn("images/logo.png", paths)
+            return running, "appended"
+
+        spec = (
+            'create a website for a company called "Cosmos Tours" with a '
+            "logo and transparent PNG images of Mars, Jupiter, Saturn and Neptune"
+        )
+        data = _chat(spec)
+        data.messages.extend(
+            [
+                ChatCompletionMessage(
+                    role="assistant",
+                    tool_calls=[
+                        ToolCall(
+                            function=Tool(
+                                name="Shell",
+                                arguments=(
+                                    '{"command":"sleep 20; echo job '
+                                    f"'{running.id}' still running; "
+                                    "ls -l -- 'images/logo.png'\"}"
+                                ),
+                            ),
+                            type="function",
+                        )
+                    ],
+                ),
+                ChatCompletionMessage(
+                    role="tool",
+                    content="job 'job-logo-only' still running\nexisting none",
+                ),
+            ]
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=running,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=running,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[running],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+        ):
+            job = await ensure_mixed_image_job(
+                data, api_base="https://git.pbptech.com/openai/v1"
+            )
+        start.assert_awaited_once()
+        self.assertIs(job, running)
 
     async def test_this_chats_dead_gpu_files_requeue_once(self):
         dead_url = (
@@ -2728,11 +2854,9 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             response = await gpu_busy_image_response(data)
-            self.assertFalse(response.choices[0].message.tool_calls)
-            text = response.choices[0].message.content or ""
-            self.assertNotIn("sleep ", text)
+            self.assertIsNone(response)
             self.assertTrue(job.download_stopped)
-            self.assertIn("https://gpu.example/v1/images/generated-logo.png", text)
+            self.assertTrue(job.client_saved)
 
             again = await gpu_busy_image_response(data)
         self.assertIsNone(again)

@@ -1557,18 +1557,9 @@ def _job_download_attempts(job) -> int:
 
 def _job_covers_planned_dests(job, planned: list[dict]) -> bool:
     """True when this job already has every dest the mixed planner wants."""
-    from common.image_paths import job_output_paths, safe_rel_png_path
+    from common.mixed_image import missing_planned_items
 
-    have = {safe_rel_png_path(path) for path in job_output_paths(job)}
-    need = {
-        safe_rel_png_path(str(row.get("output_path") or ""))
-        for row in planned or []
-        if isinstance(row, dict)
-    }
-    need.discard("")
-    if not need:
-        return True
-    return need <= have
+    return not missing_planned_items(job, planned)
 
 
 def _download_stop_text(job, *, files_missing: bool) -> str:
@@ -1587,7 +1578,11 @@ def _download_stop_text(job, *, files_missing: bool) -> str:
 
 
 def _should_reuse_mixed_job(data: ChatCompletionRequest, job) -> bool:
-    """False for a leftover done job this chat never waited on, or dead URLs."""
+    """False for a leftover done job this chat never waited on, or dead URLs.
+
+    Completeness (covers the planned dests) is decided by
+    ensure_mixed_image_job. This only answers "is it this chat's job?"
+    """
     if job is None:
         return False
     if not _job_matches_this_chat(data, job):
@@ -1645,40 +1640,49 @@ def _planned_mixed_items(data: ChatCompletionRequest) -> list[dict[str, str]]:
 async def ensure_mixed_image_job(
     data: ChatCompletionRequest, api_base: Optional[str] = None
 ):
-    """Queue Comfy from a mixed user line. The 9B does not submit the batch."""
+    """QUEUE: start or append Comfy dests. The 9B does not submit the batch.
+
+    Tool-role wait turns still queue dests the current job is missing. A
+    logo-only in-flight job used to skip this function entirely (last_role
+    was tool), so planets never started.
+    """
     if not is_mixed_image_request(data):
         return None
-    if last_role(data) in ("tool", "function"):
-        return None
+    from common.mixed_image import missing_planned_items
+
     existing = _matching_mixed_job(data)
     planned = _planned_mixed_items(data)
-    if existing and _should_reuse_mixed_job(data, existing):
-        covers = _job_covers_planned_dests(existing, planned)
-        running = getattr(existing, "status", "") in ("queued", "running")
-        waited = _chat_waited_on_job(data, existing)
-        missing = user_says_images_missing(data)
-        # Reuse a complete job, or an in-flight job this chat already
-        # waited on. Do not reuse a done logo-only job — Cosmos Tours
-        # waited on images/logo.png then never queued the planets.
-        # A fresh mixed ask vs a running one-item MCP dump still falls
-        # through so the planned batch can replace it.
-        reuse = covers or (waited and running)
-        if missing and not covers:
-            reuse = not _is_fresh_mixed_image_ask(data)
-        if reuse:
-            if missing:
-                try:
-                    existing.client_saved = False
-                except Exception:
-                    pass
-            return existing
-    if not _is_fresh_mixed_image_ask(data) and not (
-        _text_is_pillow_debug(_last_ask_text(data))
-        or _chat_is_faking_images(data)
-    ):
-        return None
+    if not planned:
+        return existing
+    running = bool(existing) and getattr(existing, "status", "") in (
+        "queued",
+        "running",
+    )
+    gap = missing_planned_items(existing, planned) if existing else list(planned)
+    covers = not gap
+    images_missing = user_says_images_missing(data)
+    if existing and covers and _should_reuse_mixed_job(data, existing):
+        if images_missing:
+            try:
+                existing.client_saved = False
+            except Exception:
+                pass
+        return existing
 
-    items = planned
+    tool_turn = last_role(data) in ("tool", "function")
+    pillow = _text_is_pillow_debug(_last_ask_text(data)) or _chat_is_faking_images(
+        data
+    )
+    fresh = _is_fresh_mixed_image_ask(data)
+    incomplete = bool(existing and gap)
+    if not incomplete and not fresh and not pillow:
+        return existing if existing and covers else None
+    if tool_turn and not incomplete:
+        return existing
+
+    # Append only the gap onto an in-flight job so logo.png is not renamed.
+    # A done incomplete job starts a new full plan (one download at the end).
+    items = gap if (existing and running) else planned
     prompts = [str(row.get("prompt") or "") for row in items]
     try:
         from endpoints.core.image_jobs import start_mcp_image_job
@@ -1707,7 +1711,9 @@ async def ensure_mixed_image_job(
             job.is_requeue = True
         except Exception:
             pass
-    xlogger.info(f"Mixed chat queued image job {job.id} ({_kind}, {len(items)} dests)")
+    xlogger.info(
+        f"Mixed chat queued image job {job.id} ({_kind}, {len(items)} dests)"
+    )
     return job
 
 
@@ -1782,7 +1788,11 @@ def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
 
 
 def _gpu_busy_sync(data: ChatCompletionRequest):
-    """Keep the agent loop alive while Comfy owns the GPU, then save PNGs."""
+    """WAIT / DOWNLOAD / STOP / REFUSE. CODE is returning None.
+
+    QUEUE lives in ensure_mixed_image_job (called first). A mixed turn must
+    not reach the 9B while dests are still missing or files are unsaved.
+    """
     try:
         from endpoints.core.image_jobs import active_mcp_image_job
     except Exception:
@@ -1865,22 +1875,29 @@ def _gpu_busy_sync(data: ChatCompletionRequest):
         attempts = int(getattr(job, "download_attempts", 0) or 0)
     except (TypeError, ValueError):
         attempts = 0
-    if (
-        (curl_failed or files_missing or attempts >= IMAGE_DOWNLOAD_MAX_ATTEMPTS)
-        and not missing
-    ):
-        xlogger.info(
-            f"Image job {job.id} download stop "
-            f"(404={curl_failed} missing={files_missing} attempts={attempts})"
-        )
+    if files_missing and not missing:
+        xlogger.info(f"Image job {job.id} download stop (GPU files gone)")
         try:
             job.download_stopped = True
         except Exception:
             pass
         return text_response(
             data,
-            _download_stop_text(job, files_missing=files_missing),
+            _download_stop_text(job, files_missing=True),
         )
+    if (curl_failed or attempts >= IMAGE_DOWNLOAD_MAX_ATTEMPTS) and not missing:
+        # VS Code often omits tool-role `ls`. GPU files exist. Do not end
+        # the chat on IMAGE_DOWNLOAD_UNCONFIRMED_NOTE — write the page.
+        xlogger.info(
+            f"Image job {job.id} download unconfirmed "
+            f"(404={curl_failed} attempts={attempts}); coding model writes HTML"
+        )
+        try:
+            job.download_stopped = True
+            job.client_saved = True
+        except Exception:
+            pass
+        return None
 
     return _drive_image_download(data, job)
 
@@ -2109,20 +2126,22 @@ def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str
 
 def _insert_hint(content: str, hint: str) -> str:
     """Put the brief inside <userRequest>/<user_query> so Copilot sees it."""
+    from common.image_prompts import neutralize_local_image_script
+
     if MIXED_IMAGE_HINT_MARK in content:
         return content
     matches = list(QUERY_TAG_RE.finditer(content))
     if matches:
         last = matches[-1]
         tag = last.group(1)
-        inner = (last.group(2) or "").rstrip()
+        inner = neutralize_local_image_script((last.group(2) or "").rstrip())
         rewritten = f"{inner}\n\n{hint}"
         return (
             content[: last.start()]
             + f"<{tag}>\n{rewritten}\n</{tag}>"
             + content[last.end() :]
         )
-    return content + "\n" + hint
+    return neutralize_local_image_script(content) + "\n" + hint
 
 
 def inject_mixed_image_hint(
@@ -2141,9 +2160,18 @@ def inject_mixed_image_hint(
             message.content = _insert_hint(content, hint)
             return
         if isinstance(content, list):
+            from common.image_prompts import neutralize_local_image_script
+
             for part in content:
                 if MIXED_IMAGE_HINT_MARK in (getattr(part, "text", None) or ""):
                     return
+            for part in content:
+                text = getattr(part, "text", None)
+                if text:
+                    try:
+                        part.text = neutralize_local_image_script(text)
+                    except Exception:
+                        pass
             message.content = list(content) + [
                 ChatCompletionMessagePart(type="text", text=hint)
             ]

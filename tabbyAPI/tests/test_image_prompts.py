@@ -5,9 +5,11 @@ from common.gpu_mode import wants_qwen_image
 from common.image_prompts import (
     CHROMA_HEX,
     CUTOUT_TAIL,
+    GPU_PNG_NOTE,
     SCENE_TAIL,
     images_folder,
     mixed_image_plan_text,
+    neutralize_local_image_script,
     plan_image_redo,
     plan_mixed_images,
     rewrite_comfy_prompt,
@@ -319,6 +321,37 @@ class ImagePromptRewriteTests(unittest.TestCase):
             self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
+    def test_cosmos_spec_does_not_queue_css3_or_pricing_junk(self):
+        """Live specs list HTML5/CSS3 and 'image of that planet - Multiple
+        pricing tiers (Basic, Premium…)'. Those must not become PNGs."""
+        line = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The website should be a '
+            "single-page application. All images must be generated as "
+            "transparent PNG files (not SVG). The logo should be large. "
+            "Package section displaying tours to different planets (Mars, "
+            "Jupiter, Saturn, Neptune, etc.). Each planet package should "
+            "have a generated transparent PNG image of that planet - "
+            "Multiple pricing tiers (Basic, Premium, Luxury). "
+            "Use modern HTML5, CSS3, and JavaScript (or React/Vue). "
+            "Python script to generate all required transparent PNG images "
+            "(logo, planets, icons)."
+        )
+        paths = [row["output_path"] for row in plan_mixed_images(line)]
+        self.assertEqual(
+            paths,
+            [
+                "images/logo.png",
+                "images/mars.png",
+                "images/jupiter.png",
+                "images/saturn.png",
+                "images/neptune.png",
+            ],
+        )
+        self.assertNotIn("images/css3.png", paths)
+        self.assertNotIn("images/premium.png", paths)
+        self.assertFalse(any("pricing" in path for path in paths))
+
     def test_transparent_ask_never_says_transparent_to_comfy(self):
         rewritten = rewrite_comfy_prompt("transparent PNG of a coffee cup")
         self.assertNotIn("transparent", rewritten.lower())
@@ -372,6 +405,21 @@ class ImagePromptRewriteTests(unittest.TestCase):
         paths = [row["output_path"] for row in items]
         self.assertIn("images/logo.png", paths)
         self.assertTrue(set(paths) <= {"images/logo.png", "images/header.png"})
+
+    def test_neutralize_strips_pillow_orders_from_cosmos_spec(self):
+        spec = (
+            'Create a complete, production-ready website for "Cosmos Tours." '
+            "All images must be generated as transparent PNG files (not SVG) - "
+            "create them using Python with PIL/Pillow. Deliverables: Complete "
+            "HTML/CSS/JS and a Python script to generate the logo, planets, "
+            "and icons."
+        )
+        cleaned = neutralize_local_image_script(spec)
+        self.assertNotIn("PIL/Pillow", cleaned)
+        self.assertNotIn("create them using Python", cleaned)
+        self.assertNotIn("Python script to generate", cleaned)
+        self.assertIn(GPU_PNG_NOTE, cleaned)
+        self.assertEqual(neutralize_local_image_script("plain site spec"), "plain site spec")
 
 
 if __name__ == "__main__":

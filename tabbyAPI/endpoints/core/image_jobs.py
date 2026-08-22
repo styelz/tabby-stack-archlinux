@@ -43,7 +43,7 @@ LOAD_FIELDS = (
 # job, return a job id immediately, then hand off after this delay so the
 # agent can still issue get_image_job (or a short sleep) on the coding model.
 MCP_HANDOFF_DELAY_S = 12.0
-MCP_MAX_BATCH = 8
+MCP_MAX_BATCH = 12
 MCP_POLL_WAIT_S = 20
 MCP_POLL_WAIT_MAX_S = 45
 _MCP_JOBS: dict[str, "McpImageJob"] = {}

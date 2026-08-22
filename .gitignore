@@ -8,6 +8,7 @@ AppData/
 # Local agent notes (this machine only — not for GitHub)
 /CURSOR.md
 /HANDOFF.md
+/REPEATED-ISSUES.md
 
 # Editor and OS junk
 .DS_Store

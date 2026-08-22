@@ -76,12 +76,11 @@ LOGO_TAIL = (
 # chroma / dark space) to alpha.
 CHROMA_HEX = "#FF00FF"
 CHROMA_TAIL = (
-    "solid flat magenta (#FF00FF) background, no checkerboard, "
-    "no pattern, no shadows, no floor"
+    "solid even white background, even lighting, no floor, no wall"
 )
 CUTOUT_TAIL = (
-    "plain even studio background, fully inside the frame, "
-    "no checkerboard, no pattern, no shadows, no floor, no stars"
+    "solid even white background, subject fully inside the frame, "
+    "even lighting, no floor, no wall, no gradient"
 )
 TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
 TRANSPARENT_PHRASE_RE = re.compile(
@@ -204,12 +203,30 @@ REJECTED_SVG_RE = re.compile(
 )
 MAX_PLANNED_IMAGES = 12
 MIXED_PLAN_MARK = "Interpreted PNG jobs from the user request"
+# Specs often say "create them using Python with PIL/Pillow". The 9B obeys
+# that line and never waits for Comfy. Replace it before the coding model sees
+# the user query.
+PILLOW_ORDER_RE = re.compile(
+    r"(?is)"
+    r"(?:create|generate|make|draw)\s+them\s+using\s+python(?:3)?\s+with\s+"
+    r"pil(?:low)?"
+    r"|using\s+python(?:3)?\s+with\s+pil(?:low)?"
+    r"|python(?:3)?\s+(?:drawing\s+)?script\s+to\s+generate"
+    r"|python(?:3)?\s+(?:drawing\s+)?script.{0,80}"
+    r"(?:pil(?:low)?|generate_images)"
+    r"|generate_images\.py"
+    r"|(?:from\s+PIL\s+import|import\s+PIL\b)"
+)
+GPU_PNG_NOTE = (
+    "PNG files are generated on the GPU (not with Python, Pillow, or "
+    "generate_images.py)"
+)
 IMAGE_OF_RE = re.compile(
     r"(?is)\b(?:generated\s+)?"
     r"(?:(?:transparent\s+)?png\s+images?|(?:transparent\s+)?pngs?|"
     r"images?|pictures?|photos?|pics?)\s+of\s+"
-    r"(?!each\b|every\b|your\s+choice\b)"
-    r"([^.;]+)"
+    r"(?!each\b|every\b|your\s+choice\b|that\s+planet\b)"
+    r"([^\n.;]{1,80})"
 )
 _SUBJECT_ARTICLES = re.compile(r"(?is)^(an?|the)\s+")
 _SUBJECT_TRAIL = re.compile(
@@ -230,6 +247,7 @@ _SKIP_SUBJECTS = frozenset(
         "header",
         "banner",
         "icon",
+        "icons",
         "favicon",
         "the logo",
         "the header",
@@ -248,7 +266,32 @@ _SKIP_SUBJECTS = frozenset(
         "each planet",
         "every planet",
         "etc",
+        "css",
+        "css3",
+        "html",
+        "html5",
+        "javascript",
+        "python",
+        "react",
+        "vue",
+        "premium",
+        "basic",
+        "luxury",
+        "png",
+        "pngs",
+        "file",
+        "files",
+        "application",
+        "deliverables",
+        "requirements",
     }
+)
+_JUNK_SUBJECT_RE = re.compile(
+    r"(?is)("
+    r"[*`]|html5|css3|\breact\b|\bvue\b|javascript|"
+    r"pricing\s+tiers?|deliverables?|technical|"
+    r"floating|twinkling|animations?"
+    r")"
 )
 # API URL paths that look like site/images dirs (".../openai/v1/images/generated-...").
 _API_IMAGES_DIRS = frozenset({"v1/images", "openai/v1/images", "api/images"})
@@ -344,6 +387,14 @@ def _strip_vector_noise(body: str) -> str:
     return _collapse(VECTOR_NOISE.sub(" ", body))
 
 
+def neutralize_local_image_script(text: str) -> str:
+    """Drop PIL/Pillow orders so the 9B cannot treat them as the image path."""
+    raw = text or ""
+    if not PILLOW_ORDER_RE.search(raw):
+        return raw
+    return PILLOW_ORDER_RE.sub(GPU_PNG_NOTE, raw)
+
+
 def user_asked_for_svg(text: str) -> bool:
     """True only when the user wants SVG as the file format."""
     raw = text or ""
@@ -428,6 +479,8 @@ def listed_image_subjects(text: str) -> list[str]:
         key = cleaned.lower()
         if key in _SKIP_SUBJECTS or key in seen or key == brand:
             return
+        if _JUNK_SUBJECT_RE.search(cleaned):
+            return
         slug = _subject_slug(cleaned)
         if not slug or slug in {"logo", "header", "banner", "generated"}:
             return
@@ -445,6 +498,7 @@ def listed_image_subjects(text: str) -> list[str]:
             take(name)
     for match in IMAGE_OF_RE.finditer(raw):
         chunk = match.group(1) or ""
+        chunk = re.split(r"\s+[-–—]\s+", chunk, maxsplit=1)[0]
         parts = re.split(r"\s*(?:,|&|\band\b)\s*", chunk)
         for part in parts:
             take(part)
@@ -485,8 +539,7 @@ def _planet_scene(name: str) -> str:
 def _planet_chroma(name: str) -> str:
     titled = _planet_title(name)
     return (
-        f"photograph of planet {titled} as an isolated sphere, "
-        f"no stars, no space backdrop, {CUTOUT_TAIL}"
+        f"photograph of planet {titled} as an isolated sphere, {CUTOUT_TAIL}"
     )
 
 
@@ -520,6 +573,8 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     original = (prompt or "").strip()
     raw = original
     if not raw:
+        return raw
+    if _already_cutout(raw) and not LOGO_SLOT.search(raw):
         return raw
     if _already_cutout(raw) and (
         "isolated logo mark only" in raw or "isolated sphere" in raw
