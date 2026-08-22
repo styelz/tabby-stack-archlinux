@@ -4,6 +4,34 @@ Got an Arch Linux box with an NVIDIA GPU sitting around? Put this on it and it t
 
 There's no separate chat window to open on the GPU machine. Your editor is the whole interface.
 
+```mermaid
+flowchart LR
+    subgraph client ["Your computer"]
+        You["You type in chat"]
+        IDE["Editor / IDE"]
+        Files["Your project"]
+        You --> IDE
+        IDE --> Files
+    end
+
+    subgraph host ["GPU host"]
+        API["TabbyAPI /v1"]
+        subgraph gpu ["One NVIDIA GPU — chat or images, never both"]
+            LLM["Language model"]
+            Comfy["Image generation"]
+        end
+        API --> LLM
+        API --> Comfy
+    end
+
+    IDE -->|"chat, switch to …, generate an image"| API
+    API -->|"replies, tool calls, PNG URLs"| IDE
+```
+
+1. Your editor talks to TabbyAPI over HTTP, same shape as OpenAI (`/v1`, model name `gpt-4o` — that's only a label).
+2. TabbyAPI runs a local model on the GPU, or hands that card to image generation. It cannot do both at once.
+3. Replies and PNG URLs come back to the editor. The assistant writes code and saves pictures into your project.
+
 ![A short walkthrough in your editor or IDE: help, list models, switch, then a page plus generated images](docs/ide-chat.gif)
 
 ## What you get
