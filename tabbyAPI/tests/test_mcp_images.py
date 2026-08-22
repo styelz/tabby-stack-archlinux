@@ -8,6 +8,7 @@ from common.mcp_images import (
     GET_JOB_NAME,
     TOOL_NAME,
     dispatch,
+    format_mcp_job_text,
     initialize_result,
     list_tools_result,
     normalize_prompt,
@@ -102,6 +103,63 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guessed[2]["output_path"], "images/generated.png")
         self.assertEqual(guessed[3]["output_path"], "images/generated-2.png")
         self.assertIn("no website", guessed[1]["prompt"])
+
+    def test_running_job_text_hides_finished_item_urls(self):
+        """A partial batch must not leak generated-*.png URLs to the 9B."""
+        logo = mock.Mock(
+            output_path="images/logo.png",
+            urls=["https://gpu.example/v1/images/generated-20260822-000945-234740.png"],
+            prompt="logo that says Cosmos Tours",
+            status="done",
+        )
+        mars = mock.Mock(
+            output_path="images/mars.png",
+            urls=[],
+            prompt="photograph of planet Mars",
+            status="running",
+        )
+        job = mock.Mock(
+            id="job-partial",
+            status="running",
+            phase="generating",
+            wait_text="About 12 minutes.",
+            wait_s=720,
+            prompt="2 images",
+            output_path="images/",
+            items=[logo, mars],
+            urls=[logo.urls[0]],
+            error="",
+            started_at=0,
+            current_index=1,
+            done_count=1,
+            count=2,
+        )
+        text = format_mcp_job_text(job)
+        self.assertIn("[done] images/logo.png", text)
+        self.assertIn("[running] images/mars.png", text)
+        self.assertNotIn("generated-20260822-000945-234740.png", text)
+        self.assertNotIn("https://gpu.example", text)
+        self.assertIn("Do not invent generated-*.png URLs", text)
+        done_job = mock.Mock(
+            id="job-done",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            prompt="2 images",
+            output_path="images/",
+            items=[logo, mars],
+            urls=[logo.urls[0]],
+            error="",
+            started_at=0,
+            current_index=1,
+            done_count=2,
+            count=2,
+        )
+        mars.urls = ["https://gpu.example/v1/images/generated-20260822-001312-234741.png"]
+        mars.status = "done"
+        done_text = format_mcp_job_text(done_job)
+        self.assertIn("generated-20260822-000945-234740.png", done_text)
+        self.assertIn("generated-20260822-001312-234741.png", done_text)
 
     async def test_initialize_and_list(self):
         init = await dispatch(

@@ -1106,6 +1106,9 @@ SHELL_TOOL_NAMES = (
 )
 IMAGE_POLL_TOOL_NAMES = ("get_image_job",)
 IMAGE_DOWNLOAD_MAX_ATTEMPTS = 4
+# Pace /v1/chat/completions when no LLM is loaded and there is no image job
+# to wait on. Without this, a client that cannot run Shell 1 Hz-loops.
+LLM_NOT_READY_WAIT_S = 5
 
 
 def _spec_tool_name(spec) -> str:
@@ -1421,18 +1424,27 @@ def _job_matches_this_chat(data: ChatCompletionRequest, job) -> bool:
     return chat_folder in job_folders
 
 
-async def await_gpu_busy_image_response(data: ChatCompletionRequest):
-    """Same as gpu_busy_image_response, but pace running jobs before returning."""
+async def gpu_busy_image_response(data: ChatCompletionRequest):
+    """Keep the agent loop alive while Comfy owns the GPU, then save PNGs.
+
+    Sleeps IMAGE_POLL_WAIT_S before returning a wait tool so a client that
+    cannot run Shell does not 1 Hz-loop /v1/chat/completions.
+    """
     try:
         from common.image_paths import IMAGE_POLL_WAIT_S
         from endpoints.core.image_jobs import active_mcp_image_job
     except Exception:
-        return gpu_busy_image_response(data)
+        return _gpu_busy_sync(data)
 
     job = active_mcp_image_job()
     if job and getattr(job, "status", "") in ("queued", "running"):
         await asyncio.sleep(IMAGE_POLL_WAIT_S)
-    return gpu_busy_image_response(data)
+    return _gpu_busy_sync(data)
+
+
+async def await_gpu_busy_image_response(data: ChatCompletionRequest):
+    """Alias kept for callers that already await this name."""
+    return await gpu_busy_image_response(data)
 
 
 def _matching_mixed_job(data: ChatCompletionRequest):
@@ -1769,7 +1781,7 @@ def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
     return text_response(data, FAKE_PNG_NOTE)
 
 
-def gpu_busy_image_response(data: ChatCompletionRequest):
+def _gpu_busy_sync(data: ChatCompletionRequest):
     """Keep the agent loop alive while Comfy owns the GPU, then save PNGs."""
     try:
         from endpoints.core.image_jobs import active_mcp_image_job
@@ -2196,15 +2208,16 @@ def last_llm_profile_name() -> str:
     return "qwen"
 
 
-def yield_comfy_to_llm_response(data: ChatCompletionRequest):
+async def yield_comfy_to_llm_response(data: ChatCompletionRequest):
     """Reload the last LLM so mixed Agent / tool turns can keep coding."""
-    busy = gpu_busy_image_response(data)
+    busy = await gpu_busy_image_response(data)
     if busy:
         return busy
     if switch_in_progress():
-        return llm_not_ready_response(data)
+        return await llm_not_ready_response(data)
     name = last_llm_profile_name()
     start_switch(name)
+    await asyncio.sleep(LLM_NOT_READY_WAIT_S)
     return text_response(data, llm_loading_text(name))
 
 
@@ -2262,10 +2275,11 @@ def switch_in_progress() -> bool:
     return False
 
 
-def llm_not_ready_response(data: ChatCompletionRequest):
-    busy = gpu_busy_image_response(data)
+async def llm_not_ready_response(data: ChatCompletionRequest):
+    busy = await gpu_busy_image_response(data)
     if busy:
         return busy
+    await asyncio.sleep(LLM_NOT_READY_WAIT_S)
     if switch_in_progress():
         name = ""
         try:
@@ -2278,10 +2292,11 @@ def llm_not_ready_response(data: ChatCompletionRequest):
     return text_response(data, llm_not_ready_text())
 
 
-def comfy_idle_response(data: ChatCompletionRequest, api_base: Optional[str] = None):
-    busy = gpu_busy_image_response(data)
+async def comfy_idle_response(data: ChatCompletionRequest, api_base: Optional[str] = None):
+    busy = await gpu_busy_image_response(data)
     if busy:
         return busy
+    await asyncio.sleep(LLM_NOT_READY_WAIT_S)
     if already_made_image(data):
         return text_response(
             data,

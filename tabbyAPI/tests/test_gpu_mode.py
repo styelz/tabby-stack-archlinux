@@ -43,6 +43,8 @@ from common.phrase_switch import (
     comfy_idle_response,
     ensure_mixed_image_job,
     gpu_busy_image_response,
+    llm_not_ready_response,
+    LLM_NOT_READY_WAIT_S,
     user_says_images_missing,
     has_new_user_after_image,
     help_text,
@@ -122,7 +124,16 @@ def temp_generated_dir(names: list[str]):
             yield folder
 
 
-class GpuModeTests(unittest.TestCase):
+class GpuModeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._sleep = mock.patch(
+            "common.phrase_switch.asyncio.sleep", new=mock.AsyncMock()
+        )
+        self._slept = self._sleep.start()
+
+    async def asyncTearDown(self):
+        self._sleep.stop()
+
     def test_skip_startup_load_follows_gpu_mode(self):
         from common import gpu_mode as gm
 
@@ -402,7 +413,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertIn("Write/StrReplace", help_body)
         self.assertIn("Do not use generate_image", help_body)
 
-    def test_comfy_yields_mixed_and_tool_turns_to_llm(self):
+    async def test_comfy_yields_mixed_and_tool_turns_to_llm(self):
         mixed = _chat(
             "create a website under the folder new, make it what you like, "
             "generate images for the header/logo and a couple of other images"
@@ -425,8 +436,17 @@ class GpuModeTests(unittest.TestCase):
             mock.patch(
                 "common.phrase_switch.last_llm_profile_name", return_value="qwen"
             ),
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs", return_value=[]
+            ),
         ):
-            response = yield_comfy_to_llm_response(mixed)
+            response = await yield_comfy_to_llm_response(mixed)
             start.assert_called_once_with("qwen")
             body = response.choices[0].message.content
             self.assertIn("still loading", body.lower())
@@ -439,7 +459,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
             ),
         ):
-            idle = comfy_idle_response(tool_follow)
+            idle = await comfy_idle_response(tool_follow)
         idle_text = idle.choices[0].message.content
         self.assertNotIn("already has previews", idle_text)
         self.assertIn("ComfyUI", idle_text)
@@ -448,7 +468,28 @@ class GpuModeTests(unittest.TestCase):
         self.assertNotIn("generated-latest.png", empty_block)
         self.assertIn("No generated images", empty_block)
 
-    def test_running_mcp_job_does_not_switch_away_or_claim_previews(self):
+    async def test_llm_not_ready_response_waits_before_returning(self):
+        data = _chat("hello")
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs", return_value=[]
+            ),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=False),
+        ):
+            response = await llm_not_ready_response(data)
+        self._slept.assert_awaited()
+        waited = [call.args[0] for call in self._slept.await_args_list]
+        self.assertIn(LLM_NOT_READY_WAIT_S, waited)
+        body = response.choices[0].message.content or ""
+        self.assertIn("No LLM is loaded", body)
+
+    async def test_running_mcp_job_does_not_switch_away_or_claim_previews(self):
         job = mock.Mock(
             id="job-123",
             status="running",
@@ -466,21 +507,21 @@ class GpuModeTests(unittest.TestCase):
             ),
             mock.patch("common.phrase_switch.start_switch") as start,
         ):
-            response = yield_comfy_to_llm_response(mixed)
+            response = await yield_comfy_to_llm_response(mixed)
             start.assert_not_called()
             calls = response.choices[0].message.tool_calls
             self.assertEqual(calls[0].function.name, "Shell")
             self.assertIn("sleep ", calls[0].function.arguments)
             self.assertNotIn("python -c", calls[0].function.arguments)
             self.assertNotIn("get_image_job", calls[0].function.arguments)
-            self.assertIsNotNone(gpu_busy_image_response(mixed))
+            self.assertIsNotNone(await gpu_busy_image_response(mixed))
 
-            idle = comfy_idle_response(_chat("a red bicycle"))
+            idle = await comfy_idle_response(_chat("a red bicycle"))
             idle_calls = idle.choices[0].message.tool_calls
             self.assertEqual(idle_calls[0].function.name, "Shell")
             self.assertNotIn("already has previews", idle.choices[0].message.content or "")
 
-            shelled = gpu_busy_image_response(
+            shelled = await gpu_busy_image_response(
                 _chat(mixed.messages[0].content, tools=["Shell"])
             )
             shell_calls = shelled.choices[0].message.tool_calls
@@ -507,13 +548,13 @@ class GpuModeTests(unittest.TestCase):
                     ChatCompletionMessage(role="tool", content="running"),
                 ]
             )
-            named = gpu_busy_image_response(history)
+            named = await gpu_busy_image_response(history)
             self.assertEqual(
                 named.choices[0].message.tool_calls[0].function.name,
                 "mcp_tabby-images_get-image-job",
             )
 
-            polled = gpu_busy_image_response(
+            polled = await gpu_busy_image_response(
                 _chat(mixed.messages[0].content, tools=["get_image_job", "Shell"])
             )
             listed = polled.choices[0].message.tool_calls
@@ -521,7 +562,7 @@ class GpuModeTests(unittest.TestCase):
             self.assertEqual(listed[0].function.name, "get_image_job")
             self.assertIn("job-123", listed[0].function.arguments)
 
-    def test_running_job_does_not_curl_unfinished_images(self):
+    async def test_running_job_does_not_curl_unfinished_images(self):
         """First PNG done must not teach Copilot to GET planets still on the GPU."""
         logo = mock.Mock(
             output_path="pbptours/images/logo.png",
@@ -562,7 +603,7 @@ class GpuModeTests(unittest.TestCase):
         with mock.patch(
             "endpoints.core.image_jobs.active_mcp_image_job", return_value=job
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         args = response.choices[0].message.tool_calls[0].function.arguments
         text = response.choices[0].message.content or ""
         self.assertIn("sleep ", args)
@@ -572,7 +613,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertIn("Still generating", text)
         self.assertIn("Do not invent", text)
 
-    def test_busy_tool_calls_stream_as_openai_deltas(self):
+    async def test_busy_tool_calls_stream_as_openai_deltas(self):
         from common.phrase_switch import stream_tool_calls
 
         message = ChatCompletionMessage(
@@ -593,7 +634,7 @@ class GpuModeTests(unittest.TestCase):
         async def collect():
             return [json.loads(chunk) async for chunk in stream_tool_calls(data, message)]
 
-        chunks = asyncio.run(collect())
+        chunks = await collect()
         deltas = [chunk["choices"][0]["delta"] for chunk in chunks]
         tool_delta = next(delta for delta in deltas if delta.get("tool_calls"))
         self.assertEqual(tool_delta["tool_calls"][0]["function"]["name"], "get_image_job")
@@ -601,7 +642,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
         self.assertFalse(any("content" in delta and delta["content"] is None for delta in deltas))
 
-    def test_finished_image_job_saves_pngs_via_shell(self):
+    async def test_finished_image_job_saves_pngs_via_shell(self):
         item = mock.Mock(
             output_path="images/logo.png",
             urls=["https://gpu.example/v1/images/generated-logo.png"],
@@ -637,7 +678,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         calls = response.choices[0].message.tool_calls
         self.assertEqual(calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", calls[0].function.arguments)
@@ -661,13 +702,13 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            untitled_response = gpu_busy_image_response(untitled)
+            untitled_response = await gpu_busy_image_response(untitled)
         self.assertEqual(untitled_response.choices[0].message.tool_calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", untitled_response.choices[0].message.tool_calls[0].function.arguments)
         self.assertNotIn("python -c", untitled_response.choices[0].message.tool_calls[0].function.arguments)
         self.assertFalse(job.client_saved)
 
-    def test_collapsed_logo_dests_are_realigned_to_the_site_folder(self):
+    async def test_collapsed_logo_dests_are_realigned_to_the_site_folder(self):
         logo = mock.Mock(
             output_path="images/logo.png",
             urls=["https://gpu.example/v1/images/generated-logo.png"],
@@ -719,7 +760,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         args = response.choices[0].message.tool_calls[0].function.arguments
         self.assertIn("pbptours/images/logo.png", args)
         self.assertIn("pbptours/images/mercury.png", args)
@@ -727,7 +768,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertEqual(logo.output_path, "pbptours/images/logo.png")
         self.assertEqual(mercury.output_path, "pbptours/images/mercury.png")
 
-    def test_download_stops_without_tool_role_after_max_curls(self):
+    async def test_download_stops_without_tool_role_after_max_curls(self):
         """VS Code often runs curl then POSTs without a tool-role ls result."""
         job = self._done_logo_job()
         job.download_attempts = 4
@@ -747,7 +788,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         self.assertIsNotNone(response)
         self.assertFalse(response.choices[0].message.tool_calls)
         text = response.choices[0].message.content or ""
@@ -810,7 +851,7 @@ class GpuModeTests(unittest.TestCase):
             messages.append(ChatCompletionMessage(role="user", content=extra_user))
         return ChatCompletionRequest(messages=messages)
 
-    def test_download_waits_until_ls_shows_pngs(self):
+    async def test_download_waits_until_ls_shows_pngs(self):
         job = self._done_logo_job()
         confirmed = self._after_shell_download(
             "-rw-r--r-- 1 pbp pbp 204812 Aug 21 06:23 images/logo.png"
@@ -826,15 +867,15 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            self.assertIsNone(gpu_busy_image_response(confirmed))
+            self.assertIsNone(await gpu_busy_image_response(confirmed))
             self.assertTrue(job.client_saved)
             job.client_saved = False
-            retry = gpu_busy_image_response(missing)
+            retry = await gpu_busy_image_response(missing)
         self.assertEqual(retry.choices[0].message.tool_calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", retry.choices[0].message.tool_calls[0].function.arguments)
         self.assertFalse(job.client_saved)
 
-    def test_user_says_images_missing_redownloads(self):
+    async def test_user_says_images_missing_redownloads(self):
         job = self._done_logo_job()
         job.client_saved = True
         data = self._after_shell_download(
@@ -850,12 +891,12 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertFalse(job.client_saved)
         self.assertEqual(response.choices[0].message.tool_calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", response.choices[0].message.tool_calls[0].function.arguments)
 
-    def test_pillow_script_redownloads_gpu_pngs(self):
+    async def test_pillow_script_redownloads_gpu_pngs(self):
         """After Copilot writes generate_images.py, curl the GPU PNGs again."""
         job = self._done_logo_job()
         job.client_saved = True
@@ -889,7 +930,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
             self.assertIsNotNone(response)
             self.assertFalse(job.client_saved)
             self.assertEqual(job.download_attempts, 2)
@@ -901,12 +942,12 @@ class GpuModeTests(unittest.TestCase):
             self.assertIn("Pillow", text)
             self.assertIn("generate_images.py", text)
 
-            again = gpu_busy_image_response(data)
+            again = await gpu_busy_image_response(data)
         self.assertFalse(again.choices[0].message.tool_calls)
         self.assertEqual(job.download_attempts, 2)
         self.assertIn("Pillow", again.choices[0].message.content or "")
 
-    def test_pillow_script_bug_followup_redownloads_gpu_pngs(self):
+    async def test_pillow_script_bug_followup_redownloads_gpu_pngs(self):
         """A 'bug in the python image generator' follow-up must not go to the 9B."""
         job = self._done_logo_job()
         job.client_saved = True
@@ -936,7 +977,7 @@ class GpuModeTests(unittest.TestCase):
                 return_value=[job],
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertIsNotNone(response)
         self.assertFalse(job.client_saved)
         self.assertTrue(job.pillow_redownload)
@@ -947,7 +988,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertIn("Pillow", text)
         self.assertIn("generate_images.py", text)
 
-    def test_errored_job_still_saves_the_images_it_finished(self):
+    async def test_errored_job_still_saves_the_images_it_finished(self):
         item_done = mock.Mock(
             output_path="images/logo.png",
             urls=["https://gpu.example/v1/images/a.png"],
@@ -989,7 +1030,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         calls = response.choices[0].message.tool_calls
         self.assertEqual(calls[0].function.name, "Shell")
         args = calls[0].function.arguments
@@ -1001,7 +1042,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertFalse(job.client_saved)
         self.assertIn("restarted", (response.choices[0].message.content or "").lower())
 
-    def test_stale_job_for_another_folder_is_not_downloaded(self):
+    async def test_stale_job_for_another_folder_is_not_downloaded(self):
         item = mock.Mock(
             output_path="spacediner/images/logo.png",
             urls=["https://gpu.example/v1/images/old-logo.png"],
@@ -1035,10 +1076,10 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            self.assertIsNone(gpu_busy_image_response(planet))
+            self.assertIsNone(await gpu_busy_image_response(planet))
         self.assertFalse(job.client_saved)
 
-    def test_stale_site_job_is_not_downloaded_for_a_folder_less_chat(self):
+    async def test_stale_site_job_is_not_downloaded_for_a_folder_less_chat(self):
         """A site-scoped leftover job must not hijack a chat that names no folder.
 
         Regression for the empty-chat_folder fallback in
@@ -1094,10 +1135,10 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            self.assertIsNone(gpu_busy_image_response(no_folder))
+            self.assertIsNone(await gpu_busy_image_response(no_folder))
         self.assertFalse(job.client_saved)
 
-    def test_job_this_chat_already_waited_on_is_downloaded(self):
+    async def test_job_this_chat_already_waited_on_is_downloaded(self):
         item = mock.Mock(
             output_path="pbptours/images/logo.png",
             urls=["https://gpu.example/v1/images/logo.png"],
@@ -1158,13 +1199,13 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertIsNotNone(response)
         args = response.choices[0].message.tool_calls[0].function.arguments
         self.assertIn("curl -fsSL", args)
         self.assertIn("pbptours/images/logo.png", args)
 
-    def test_kill_terminal_is_not_used_to_curl_pngs(self):
+    async def test_kill_terminal_is_not_used_to_curl_pngs(self):
         job = self._done_logo_job()
         mixed = _with_job_wait(
             _chat(
@@ -1181,12 +1222,12 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(mixed)
+            response = await gpu_busy_image_response(mixed)
         name = response.choices[0].message.tool_calls[0].function.name
         self.assertEqual(name, "Shell")
         self.assertNotEqual(name, "kill_terminal")
 
-    def test_finished_job_still_saves_after_model_says_wait_five_minutes(self):
+    async def test_finished_job_still_saves_after_model_says_wait_five_minutes(self):
         item = mock.Mock(
             output_path="images/logo.png",
             urls=["https://gpu.example/v1/images/generated-logo.png"],
@@ -1244,7 +1285,7 @@ class GpuModeTests(unittest.TestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertEqual(response.choices[0].message.tool_calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", response.choices[0].message.tool_calls[0].function.arguments)
         self.assertNotIn("python -c", response.choices[0].message.tool_calls[0].function.arguments)
@@ -1663,6 +1704,15 @@ class GpuModeTests(unittest.TestCase):
 
 
 class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._sleep = mock.patch(
+            "common.phrase_switch.asyncio.sleep", new=mock.AsyncMock()
+        )
+        self._slept = self._sleep.start()
+
+    async def asyncTearDown(self):
+        self._sleep.stop()
+
     def _running_job(self):
         return mock.Mock(
             id="job-new",
@@ -1915,7 +1965,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
                 new=mock.AsyncMock(),
             ) as start,
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         start.assert_not_awaited()
         args = response.choices[0].message.tool_calls[0].function.arguments
         self.assertIn("curl ", args)
@@ -2287,7 +2337,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         start.assert_awaited_once()
         self.assertIs(job, new_job)
 
-    def test_logo_redo_downloads_its_own_job_once_done(self):
+    async def test_logo_redo_downloads_its_own_job_once_done(self):
         """'delete the current logo.png and create a new logo png image ...
         atom with electrons ...' matches IMAGE_REDO_RE, and it stays the last
         user message for the whole wait loop (no new user text is sent while
@@ -2346,7 +2396,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertIsNotNone(response)
         calls = response.choices[0].message.tool_calls
         self.assertEqual(calls[0].function.name, "Shell")
@@ -2582,7 +2632,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("curl ", args)
         self.assertNotIn("generated-20260822-214723-251774.png", args)
 
-    def test_missing_timestamped_gpu_file_is_not_curled(self):
+    async def test_missing_timestamped_gpu_file_is_not_curled(self):
         dead_url = (
             "https://gpu.example/v1/images/generated-20260822-214723-251774.png"
         )
@@ -2624,7 +2674,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch("common.gpu_mode.generated_image_path", return_value=None),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
         self.assertFalse(response.choices[0].message.tool_calls)
         self.assertNotIn(
             "generated-20260822-214723-251774.png",
@@ -2632,7 +2682,7 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(job.download_stopped)
 
-    def test_assistant_404_without_tool_role_does_not_sleep_loop(self):
+    async def test_assistant_404_without_tool_role_does_not_sleep_loop(self):
         item = mock.Mock(
             output_path="images/logo.png",
             urls=["https://gpu.example/v1/images/generated-logo.png"],
@@ -2677,14 +2727,14 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
                 "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
             ),
         ):
-            response = gpu_busy_image_response(data)
+            response = await gpu_busy_image_response(data)
             self.assertFalse(response.choices[0].message.tool_calls)
             text = response.choices[0].message.content or ""
             self.assertNotIn("sleep ", text)
             self.assertTrue(job.download_stopped)
             self.assertIn("https://gpu.example/v1/images/generated-logo.png", text)
 
-            again = gpu_busy_image_response(data)
+            again = await gpu_busy_image_response(data)
         self.assertIsNone(again)
 
     def test_pngs_ready_false_for_global_leftover_done_job(self):

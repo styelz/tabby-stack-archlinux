@@ -198,9 +198,9 @@ async def chat_completion_request(
         )
     if not llm_ready:
         if not gpu_is_comfy():
-            return llm_not_ready_response(data)
+            return await llm_not_ready_response(data)
         if should_yield_comfy_to_llm(data):
-            return yield_comfy_to_llm_response(data)
+            return await yield_comfy_to_llm_response(data)
         image_prompt = requested_image_prompt(data)
         if not image_prompt and source_image:
             image_prompt = last_user_text(data).strip() or "cartoon style"
@@ -210,7 +210,7 @@ async def chat_completion_request(
             return await _chat_generate_images(
                 data, image_prompt, source_image, api_base, restore=False
             )
-        return comfy_idle_response(data, api_base=api_base)
+        return await comfy_idle_response(data, api_base=api_base)
 
     inject_mixed_image_hint(data, api_base=api_base)
     async with load_lock:
@@ -221,9 +221,9 @@ async def chat_completion_request(
         if not (model.container and getattr(model.container, "model_dir", None)):
             if gpu_is_comfy():
                 if should_yield_comfy_to_llm(data):
-                    return yield_comfy_to_llm_response(data)
-                return comfy_idle_response(data, api_base=api_base)
-            return llm_not_ready_response(data)
+                    return await yield_comfy_to_llm_response(data)
+                return await comfy_idle_response(data, api_base=api_base)
+            return await llm_not_ready_response(data)
         model_path = model.container.model_dir
 
     # Prepare raw prompt

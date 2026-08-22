@@ -401,9 +401,12 @@ def format_mcp_job_text(
     ]
     if items:
         body.append("Assets:")
+        # Running batches must not list generated-*.png URLs. The coding
+        # model copies the timestamp pattern and GETs planets still on GPU.
+        show_urls = job.status not in ("queued", "running")
         for item in items:
             bit = f"  [{item.status}] {item.output_path}: {item.prompt}"
-            if item.urls:
+            if show_urls and item.urls:
                 bit += " -> " + ", ".join(item.urls)
             body.append(bit)
     body.extend(
@@ -411,6 +414,7 @@ def format_mcp_job_text(
             "Call get_image_job again (it waits up to 20s for a progress tick). "
             "Do not Shell-sleep the full estimate. Do not stop. "
             "Do not tell the user to download. "
+            "Do not invent generated-*.png URLs for items still rendering. "
             f"job_id={job.id}.",
             "A MCP error -32001 (Request timed out) does not stop this job. "
             "Further generate_image calls are added to this same batch until it restores the LLM.",
