@@ -46,6 +46,27 @@ class ImagePathsTests(unittest.TestCase):
             safe_rel_png_path("/home/pbp/Cursor/llm-test/images/logo.png"),
             "images/logo.png",
         )
+        self.assertEqual(safe_rel_png_path("v1/images/logo.png"), "images/logo.png")
+        self.assertEqual(
+            safe_rel_png_path("openai/v1/images/mars.png"), "images/mars.png"
+        )
+        self.assertEqual(
+            dest_project_folder("v1/images/logo.png"),
+            "",
+        )
+        aligned = align_item_dests(
+            [
+                {
+                    "prompt": "logo",
+                    "output_path": "v1/images/logo.png",
+                },
+                {
+                    "prompt": "photograph of planet Mars",
+                    "output_path": "v1/images/mars.png",
+                },
+            ]
+        )
+        self.assertEqual(aligned, ["images/logo.png", "images/mars.png"])
         items = [
             {
                 "prompt": "logo that says Planet By Planet Tours",

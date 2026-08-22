@@ -187,6 +187,25 @@ REJECTED_SVG_RE = re.compile(
 )
 MAX_PLANNED_IMAGES = 12
 MIXED_PLAN_MARK = "Interpreted PNG jobs from the user request"
+# API URL paths that look like site/images dirs (".../openai/v1/images/generated-...").
+_API_IMAGES_DIRS = frozenset({"v1/images", "openai/v1/images", "api/images"})
+_RESERVED_SITE_FOLDERS = frozenset(
+    {
+        "v1",
+        "openai",
+        "api",
+        "http",
+        "https",
+        "www",
+        "localhost",
+        "images",
+        "image",
+        "img",
+        "the",
+        "a",
+        "an",
+    }
+)
 
 
 def _collapse(text: str) -> str:
@@ -222,17 +241,21 @@ def _quoted_or_group(match: re.Match[str]) -> str:
 
 
 def site_folder(text: str) -> str:
-    match = FOLDER_RE.search(text or "")
-    if not match:
-        return ""
-    return _quoted_or_group(match).rstrip(".,;:")
+    for match in FOLDER_RE.finditer(text or ""):
+        name = _quoted_or_group(match).rstrip(".,;:")
+        if name and name.lower() not in _RESERVED_SITE_FOLDERS:
+            return name
+    return ""
 
 
 def images_folder(text: str, folder: str = "") -> str:
-    match = IMAGES_DIR_RE.search(text or "")
-    if match:
-        return match.group(1).replace("\\", "/").strip("/")
-    if folder:
+    for match in IMAGES_DIR_RE.finditer(text or ""):
+        rel = match.group(1).replace("\\", "/").strip("/")
+        parent = (rel.split("/")[0] or "").lower()
+        if rel.lower() in _API_IMAGES_DIRS or parent in _RESERVED_SITE_FOLDERS:
+            continue
+        return rel
+    if folder and folder.lower() not in _RESERVED_SITE_FOLDERS:
         return f"{folder}/images"
     return "images"
 
@@ -402,10 +425,9 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
             add(f"elegant brand logo, clean readable letters{extra}", "logo.png")
 
     if HERO_IMAGE_ASK.search(raw):
-        scene = brand or folder or "the destination"
+        place = brand or "a vast landscape"
         add(
-            f"wide cinematic photograph for {scene}, atmospheric, "
-            "no website, no user interface",
+            f"wide cinematic photograph of {place}, atmospheric, {SCENE_TAIL}",
             "header.png",
         )
 

@@ -51,7 +51,8 @@ _PROJECT_PARENTS = frozenset(
         "dev",
     }
 )
-_WORKSPACE_PARENTS = _MACHINE_PARENTS | _PROJECT_PARENTS
+_API_IMAGES_PARENTS = frozenset({"v1", "openai", "api"})
+_WORKSPACE_PARENTS = _MACHINE_PARENTS | _PROJECT_PARENTS | _API_IMAGES_PARENTS
 
 
 def _looks_absolute(text: str, path: Path) -> bool:
@@ -111,6 +112,16 @@ def project_png_from_abs(raw: str) -> Optional[str]:
     return Path(*cleaned).as_posix()
 
 
+def _strip_api_images_prefix(parts: list[str]) -> list[str]:
+    """v1/images/logo.png is the API URL path, not a project folder."""
+    lower = [part.lower() for part in parts]
+    if lower[:3] == ["openai", "v1", "images"]:
+        return ["images", *parts[3:]]
+    if lower[:2] == ["v1", "images"]:
+        return ["images", *parts[2:]]
+    return parts
+
+
 def safe_rel_png_path(raw: str, default: str = DEFAULT_PNG_PATH) -> str:
     """Keep generated PNGs inside the project. Reject escapes and unknown abs paths."""
     text = str(raw or "").strip().replace("\\", "/")
@@ -125,6 +136,7 @@ def safe_rel_png_path(raw: str, default: str = DEFAULT_PNG_PATH) -> str:
     if path.suffix.lower() != ".png":
         path = path.with_suffix(".png")
     parts = [part for part in path.parts if part not in ("", ".")]
+    parts = _strip_api_images_prefix(parts)
     if not parts:
         parts = list(Path(default).parts)
     return Path(*parts).as_posix()

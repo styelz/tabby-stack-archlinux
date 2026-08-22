@@ -4,6 +4,7 @@ import unittest
 from common.gpu_mode import wants_qwen_image
 from common.image_prompts import (
     SCENE_TAIL,
+    images_folder,
     mixed_image_plan_text,
     plan_image_redo,
     plan_mixed_images,
@@ -77,6 +78,29 @@ class ImagePromptRewriteTests(unittest.TestCase):
         items = plan_mixed_images(line)
         self.assertEqual(items[0]["output_path"], "images/logo.png")
         self.assertEqual(items[0]["prompt"], rewritten)
+
+    def test_api_image_url_is_not_a_project_folder(self):
+        line = (
+            'create a website for a company called "Cosmos Tours" with a logo '
+            "image and transparent PNG images of Mars, Jupiter and Saturn. "
+            "The pasted image lives at "
+            "https://git.pbptech.com/openai/v1/images/pasted/latest.png"
+        )
+        self.assertEqual(images_folder(line), "images")
+        self.assertEqual(site_folder(line), "")
+        items = plan_mixed_images(line)
+        paths = [row["output_path"] for row in items]
+        self.assertTrue(all(path.startswith("images/") for path in paths))
+        self.assertFalse(any(path.startswith("v1/") for path in paths))
+        self.assertIn("images/logo.png", paths)
+        self.assertIn("images/mars.png", paths)
+        header = next(
+            (row for row in items if row["output_path"].endswith("header.png")),
+            None,
+        )
+        if header:
+            self.assertNotIn("qwen-image:", header["prompt"].lower())
+            self.assertIn(SCENE_TAIL.split(",")[0], header["prompt"])
 
     def test_rewrite_is_idempotent(self):
         first = rewrite_comfy_prompt("cosmic nebula website header banner")
