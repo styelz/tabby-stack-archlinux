@@ -80,7 +80,7 @@ class CalibrateDocsTests(unittest.TestCase):
         cursor = cursor_wait_paragraph(SAMPLE, "Test GPU 8 GB")
         self.assertIn("Warm wait on this Test GPU 8 GB", cursor)
         self.assertIn("qwen35 about 2 minutes", cursor)
-        self.assertIn("Images come back as URLs on the same API host the IDE already uses.", cursor)
+        self.assertIn("Images come back as URLs on the same API host your editor or IDE already uses.", cursor)
         sample = (
             "- After `switch to …`, wait for the GPU (warm 12 GB 4070 Ti: qwen ~65s). "
             "GLM is thinking-only on 12 GB (vision off)."

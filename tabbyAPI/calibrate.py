@@ -61,7 +61,7 @@ README_TIMES_RE = re.compile(r"Warm switch times on (?:a|an|this) [^\n]+\n")
 CURSOR_WAIT_RE = re.compile(
     r"Do not (?:restart or )?kill `main\.py`.+?"
     r"(?:ComfyUI is http://127\.0\.0\.1:8188\.|"
-    r"Images come back as URLs on the same API host the IDE already uses\.)",
+    r"Images come back as URLs on the same API host your editor or IDE already uses\.)",
     re.S,
 )
 DEPLOY_WAIT_RE = re.compile(
@@ -243,7 +243,7 @@ def cursor_wait_paragraph(times: dict, label: str) -> str:
         f"qwen36 about {qwen36}; gemma26 about {gemma26}; qwen35 about {qwen35}; "
         f"{glm_bit}. After `switch to comfy`, wait about {comfy} "
         f"(first Flux about {flux_s}, first Qwen-Image about {qwen_s}). "
-        "Images come back as URLs on the same API host the IDE already uses."
+        "Images come back as URLs on the same API host your editor or IDE already uses."
     )
 
 

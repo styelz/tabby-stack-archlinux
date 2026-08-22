@@ -2,6 +2,7 @@ import unittest
 
 from common.image_paths import (
     align_item_dests,
+    dest_project_folder,
     dests_look_collapsed,
     download_pairs_from_job,
     ensure_site_prefix,
@@ -11,6 +12,7 @@ from common.image_paths import (
     image_poll_wait_command,
     image_running_note,
     image_running_shell_command,
+    job_project_folders,
     tool_result_has_pngs,
     match_tool_name,
     resolve_output_paths,
@@ -191,6 +193,31 @@ class ImagePathsTests(unittest.TestCase):
                 ["images/logo.png"],
             )
         )
+
+    def test_dest_project_folder_needs_a_site_prefix(self):
+        """No folder is detected for a workspace-root images/ dest.
+
+        This is the failure mode a broken site_folder() falls back to: every
+        dest looks like plain images/x.png, so job_project_folders is empty
+        and the cross-site guard in phrase_switch._job_matches_this_chat has
+        nothing to compare against.
+        """
+        self.assertEqual(dest_project_folder("images/logo.png"), "")
+        self.assertEqual(dest_project_folder("pbptours/images/logo.png"), "pbptours")
+        item = type(
+            "Item", (), {"output_path": "images/logo.png", "count": 1}
+        )()
+        job = type("Job", (), {"items": [item], "output_path": "images/logo.png"})()
+        self.assertEqual(job_project_folders(job), set())
+        site_item = type(
+            "Item", (), {"output_path": "pbptours/images/logo.png", "count": 1}
+        )()
+        site_job = type(
+            "Job",
+            (),
+            {"items": [site_item], "output_path": "pbptours/images/logo.png"},
+        )()
+        self.assertEqual(job_project_folders(site_job), {"pbptours"})
 
     def test_match_tool_name(self):
         self.assertEqual(match_tool_name(["Shell", "Read"], ["shell"]), "Shell")

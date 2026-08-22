@@ -1,10 +1,10 @@
 # tabby-stack
 
-Install this on an Arch Linux box that has an NVIDIA GPU. That box becomes a **private coding assistant and image generator**. You keep using Cursor, VS Code, Continue, Cline, or a script on any other machine — you just point the editor at this box instead of OpenAI.
+Install this on an Arch Linux box that has an NVIDIA GPU. That box becomes a **private coding assistant and image generator**. You keep using Cursor, VS Code, Continue, Cline, or a script on any other machine — you just point your editor or IDE at this box instead of OpenAI.
 
-There is no extra chat window on the GPU machine. The editor is the UI.
+There is no extra chat window on the GPU machine. Your editor or IDE is the UI.
 
-![A short walkthrough in the editor: help, list models, switch, then a page plus generated images](docs/ide-chat.gif)
+![A short walkthrough in your editor or IDE: help, list models, switch, then a page plus generated images](docs/ide-chat.gif)
 
 ## What you get
 
@@ -22,9 +22,9 @@ This is not ChatGPT, not Cursor’s cloud models, and not a desktop app. The git
 | Machine | What it does |
 |---|---|
 | **GPU host** (Arch Linux) | Runs the API, the language model, and image generation |
-| **Your computer** | Runs the editor. You open your project here. |
+| **Your computer** | Runs your editor or IDE. You open your project here. |
 
-After install, the API listens on the GPU host. In the editor set:
+After install, the API listens on the GPU host. In your editor or IDE set:
 
 - **Base URL:** `http://<gpu-host>:5000/v1` (or your LAN / Tailscale / tunnel URL)
 - **Model:** `gpt-4o`
@@ -67,7 +67,7 @@ systemctl --user enable --now tabbyapi
 
 Logs: `journalctl --user -u tabbyapi -f`
 
-In the editor, send a message that is **only** one of these phrases — the whole message, not “please switch to qwen”:
+In your editor or IDE, send a message that is **only** one of these phrases — the whole message, not “please switch to qwen”:
 
 | Phrase | What it does | Ready (warm, 4070 Ti 12 GB) |
 |---|---|---|
@@ -85,7 +85,7 @@ In the editor, send a message that is **only** one of these phrases — the whol
 
 The card can run **chat or images, not both at once**. First Flux picture ~3 minutes; first Qwen-Image ~4 minutes. After that, the coding model takes about 65 seconds to come back.
 
-Daily work stays on `qwen`. Editor notes (any IDE): [AGENTS.md](AGENTS.md).
+Daily work stays on `qwen`. Notes for any editor or IDE: [AGENTS.md](AGENTS.md).
 
 ## Images
 

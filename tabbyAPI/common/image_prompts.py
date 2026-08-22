@@ -14,6 +14,10 @@ import json
 import re
 
 QWEN_PREFIX = re.compile(r"(?is)^\s*qwen-image\s*:\s*(.*)$")
+FLUX_PREFIX = re.compile(r"(?is)^\s*flux\s*:\s*(.*)$")
+FORCE_FLUX_RE = re.compile(r"(?is)(?:^\s*(?:use\s+)?flux\s*:?\s*|\buse\s+flux\b)")
+NAMED_PNG_RE = re.compile(r"(?i)\b([\w.-]+\.png)\b")
+RECTANGLE_ASK = re.compile(r"(?is)\brectangl")
 LOGO_SLOT = re.compile(
     r"(?is)\b(logo|wordmark|word[-\s]?mark|favicon|brand\s*mark)\b"
 )
@@ -126,6 +130,15 @@ FOLDER_RE = re.compile(
     r"(?is)\b(?:under|in|into|inside)\s+(?:the\s+)?"
     r"(?:folder|directory|dir)\s+[\"`'“”]?([A-Za-z][A-Za-z0-9._-]*)"
     r"|\b(?:folder|directory)\s+[\"`'“”]?([A-Za-z][A-Za-z0-9._-]*)"
+    r"|\b([A-Za-z][A-Za-z0-9._-]{1,40})\s+(?:folder|directory)\b"
+    # Bare "under/in/into/inside <name>" with no "folder"/"directory" word
+    # ("create a site under pbptours and generate a logo ..."). Only accept
+    # it when the name is immediately followed by punctuation/end or by an
+    # "and <verb>" clause, so ordinary phrases like "under construction and
+    # needs a logo" (no matching verb) do not get misread as a site name.
+    r"|\b(?:under|in|into|inside)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9._-]{1,40})\b"
+    r"(?:\s*,)?(?:\s+and)?\s*"
+    r"(?=(?:generat|creat|mak|build|draw|render|writ|sav|add|includ)\w*\b|[.,]|$)"
 )
 IMAGES_DIR_RE = re.compile(
     r"(?is)\b([A-Za-z][A-Za-z0-9._-]*/images)\b"
@@ -231,6 +244,13 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     if SCENE_TAIL in raw and not QWEN_PREFIX.match(raw):
         return raw
 
+    flux_prefixed = FLUX_PREFIX.match(raw)
+    if flux_prefixed:
+        body = _collapse((flux_prefixed.group(1) or "").strip())
+        return f"flux: {body}" if body else raw
+    wants_flux = bool(FORCE_FLUX_RE.search(raw))
+    if wants_flux:
+        raw = _collapse(FORCE_FLUX_RE.sub(" ", raw))
     prefixed = QWEN_PREFIX.match(raw)
     body = _collapse((prefixed.group(1) if prefixed else raw) or "")
     body = _strip_vector_noise(body)
@@ -266,6 +286,8 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         cleaned = _strip_noise(body)
         if not cleaned:
             cleaned = "elegant brand logo"
+        if wants_flux:
+            return f"flux: {cleaned}"
         if cleaned.lower().startswith("qwen-image"):
             return cleaned
         return f"qwen-image: {cleaned}"
@@ -330,6 +352,34 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
             add(scene, f"{name}.png")
 
     return items
+
+
+def plan_image_redo(text: str, site: str = "") -> list[dict[str, str]]:
+    """One PNG dest from a follow-up like 'improve the logo' or 'use flux…'."""
+    raw = text or ""
+    if not raw.strip():
+        return []
+    folder = site or site_folder(raw)
+    dest_dir = images_folder(raw, folder)
+    named = NAMED_PNG_RE.search(raw)
+    if named and named.group(1).lower() not in {"image.png", "picture.png"}:
+        filename = named.group(1)
+        if not filename.lower().endswith(".png"):
+            filename = f"{filename}.png"
+    elif LOGO_SLOT.search(raw):
+        filename = "logo.png"
+    elif HERO_SLOT.search(raw):
+        filename = "header.png"
+    else:
+        filename = "generated.png"
+    path = f"{dest_dir}/{filename}".replace("//", "/")
+    item = {
+        "prompt": rewrite_comfy_prompt(raw),
+        "output_path": path,
+    }
+    if RECTANGLE_ASK.search(raw):
+        item["size"] = "1536x768"
+    return [item]
 
 
 def format_mixed_image_plan(

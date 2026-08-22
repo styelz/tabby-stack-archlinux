@@ -157,7 +157,7 @@ A short chat like `hello` is slow on `qwen35` because Cursor still sends the who
 
 ## 5. Images (Comfy)
 
-Coding machines are remote. The GPU server generates the PNG and returns a URL on the same API host the IDE already uses. Chat phrases and `POST /v1/images/generations` work in **any** editor — no MCP required.
+Coding machines are remote. The GPU server generates the PNG and returns a URL on the same API host your editor or IDE already uses. Chat phrases and `POST /v1/images/generations` work in **any** editor — no MCP required.
 
 1. `switch to comfy`, wait ~35 seconds, then describe the image
 2. Or one line: `generate an image of a red bicycle` (API hands off the GPU, returns a URL, reloads the last LLM)

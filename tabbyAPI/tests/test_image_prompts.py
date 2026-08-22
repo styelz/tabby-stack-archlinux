@@ -5,6 +5,7 @@ from common.gpu_mode import wants_qwen_image
 from common.image_prompts import (
     SCENE_TAIL,
     mixed_image_plan_text,
+    plan_image_redo,
     plan_mixed_images,
     rewrite_comfy_prompt,
     site_folder,
@@ -114,6 +115,71 @@ class ImagePromptRewriteTests(unittest.TestCase):
             )
         )
         self.assertTrue(user_asked_for_svg("please use SVG icons for the nav"))
+
+    def test_site_folder_from_bare_under_phrase(self):
+        """'under <name>' with no 'folder' word must still be detected.
+
+        This is the exact phrasing from a real mixed ask; before the fix
+        every planned PNG collapsed to workspace-root images/ instead of
+        pbptours/images/.
+        """
+        self.assertEqual(
+            site_folder(
+                "create a site under pbptours and generate a logo + an "
+                "image of each planet"
+            ),
+            "pbptours",
+        )
+        self.assertEqual(
+            site_folder("create a site under pbptours."), "pbptours"
+        )
+        self.assertEqual(
+            site_folder(
+                "create a site under pbptours, generate a logo and header "
+                "images"
+            ),
+            "pbptours",
+        )
+        items = plan_mixed_images(
+            "create a site under pbptours and generate a logo + an image "
+            "of each planet"
+        )
+        paths = [row["output_path"] for row in items]
+        self.assertTrue(all(path.startswith("pbptours/images/") for path in paths))
+
+    def test_site_folder_ignores_unrelated_under_phrases(self):
+        """Common English 'under X' phrases must not be read as a site name."""
+        self.assertEqual(
+            site_folder(
+                "the project is under active development and will include "
+                "a logo image"
+            ),
+            "",
+        )
+        self.assertEqual(
+            site_folder("the site is under construction and needs a logo"),
+            "",
+        )
+
+    def test_logo_redo_is_one_dest_and_honors_flux(self):
+        line = (
+            "use flux generate the logo image, it should be an image of an "
+            "atom with electrons swirling around it and be transparent "
+            "background and rectangle not square"
+        )
+        items = plan_image_redo(line, "pbptours")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["output_path"], "pbptours/images/logo.png")
+        self.assertEqual(items[0]["size"], "1536x768")
+        self.assertIn("atom", items[0]["prompt"].lower())
+        self.assertTrue(items[0]["prompt"].lower().startswith("flux:"))
+        self.assertNotIn("qwen-image:", items[0]["prompt"].lower())
+        self.assertFalse(wants_qwen_image(items[0]["prompt"]))
+        qwen = plan_image_redo(
+            "improve the logo, generate a better png image", "pbptours"
+        )
+        self.assertEqual(qwen[0]["output_path"], "pbptours/images/logo.png")
+        self.assertTrue(qwen[0]["prompt"].lower().startswith("qwen-image:"))
 
 
 if __name__ == "__main__":

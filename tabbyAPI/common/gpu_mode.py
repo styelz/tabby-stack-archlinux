@@ -358,10 +358,17 @@ def load_workflow(path: Optional[Path] = None) -> dict:
 
 def wants_qwen_image(prompt: str) -> bool:
     """True when the chat line needs readable words, not a Flux draft."""
-    from common.image_prompts import SCENE_TAIL, rewrite_comfy_prompt
+    from common.image_prompts import (
+        FLUX_PREFIX,
+        FORCE_FLUX_RE,
+        SCENE_TAIL,
+        rewrite_comfy_prompt,
+    )
 
+    if FORCE_FLUX_RE.search(prompt or "") or FLUX_PREFIX.match(prompt or ""):
+        return False
     text = rewrite_comfy_prompt(prompt or "")
-    if SCENE_TAIL in text:
+    if SCENE_TAIL in text or FLUX_PREFIX.match(text):
         return False
     if QWEN_IMAGE_PREFIX.match(text):
         return True
@@ -370,6 +377,16 @@ def wants_qwen_image(prompt: str) -> bool:
 
 def qwen_image_prompt_text(prompt: str) -> str:
     match = QWEN_IMAGE_PREFIX.match(prompt or "")
+    if match:
+        cleaned = (match.group(1) or "").strip()
+        return cleaned or (prompt or "").strip()
+    return (prompt or "").strip()
+
+
+def flux_prompt_text(prompt: str) -> str:
+    from common.image_prompts import FLUX_PREFIX
+
+    match = FLUX_PREFIX.match(prompt or "")
     if match:
         cleaned = (match.group(1) or "").strip()
         return cleaned or (prompt or "").strip()
@@ -400,7 +417,7 @@ def build_prompt(
 ) -> dict:
     graph = load_workflow()
     graph["1"]["inputs"]["ckpt_name"] = CHECKPOINT_NAME
-    graph["2"]["inputs"]["text"] = prompt
+    graph["2"]["inputs"]["text"] = flux_prompt_text(prompt)
     graph["5"]["inputs"]["width"] = width
     graph["5"]["inputs"]["height"] = height
     graph["6"]["inputs"]["seed"] = int(seed)

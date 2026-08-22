@@ -1555,15 +1555,15 @@ Start / stop
   Do not run start.bat.
   If you used a USB cache you can unmount it.
 
-IDE / agents
+Your editor or IDE
   Full notes (any editor):  $DEST/AGENTS.md
   Base URL:  $API_URL/v1
-  Model:     gpt-4o   (leave it — not ChatGPT; else the editor may sandbox / block tools)
+  Model:     gpt-4o   (leave it — not ChatGPT; else your editor or IDE may sandbox / block tools)
   Public base: ${TABBY_PUBLIC_BASE:- (none — local only)}
   SSH tunnel:  ${TABBY_SSH_REMOTE:- (none)}
 
 Switch models (warm 12 GB: qwen ~65s; qwen35 ~3 min; comfy ~35s)
-  In the IDE chat, send only:
+  In your editor or IDE chat, send only:
     help                    full usage guide
     list models
     restart                 bounce the API; last model reloads
@@ -1652,7 +1652,7 @@ ${START_NOTE:+
   API:     $API_URL
   Start:   $DEST/start.sh
   Health:  GET $API_URL/health
-  IDE:     $API_URL/v1   model gpt-4o  (leave it — else the editor may sandbox / block tools)
+  Editor:  $API_URL/v1   model gpt-4o  (leave it — else your editor or IDE may sandbox / block tools)
   Agents:  $DEST/AGENTS.md
   Images:  chat “generate an image of …” or POST /v1/images/generations
 

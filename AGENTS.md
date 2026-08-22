@@ -6,7 +6,7 @@ This file is for **any** editor that talks to the TabbyAPI server (Cursor, VS Co
 
 ## API
 
-- Base URL: the `/v1` URL you configured in the IDE (LAN, Tailscale, or a tunnel)
+- Base URL: the `/v1` URL you configured in your editor or IDE (LAN, Tailscale, or a tunnel)
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
 
@@ -53,7 +53,7 @@ Returns `b64_json` and `url`. Save the PNG into the project with a shell command
 A line like “create a webpage and generate a header and logo” is a **coding task**. The API plans the PNG dests and **starts the Comfy job itself**. Do not turn it into React/Vite boilerplate or SVG/CSS/Pillow art unless the user asked for those.
 
 1. Keep using the wait or download tool this API requests (Shell `sleep`/`ls`, then `curl` when the job is done). Do not invent `/v1/images/generated-*.png` URLs. A queued or backgrounded command is not success.
-2. After those PNG files exist on disk: save HTML/CSS/JS with the editor’s file tools. Do not dump the page in chat. Point `img src` at the planned local paths such as `images/logo.png`.
+2. After those PNG files exist on disk: save HTML/CSS/JS with your editor’s file tools. Do not dump the page in chat. Point `img src` at the planned local paths such as `images/logo.png`.
 3. Prefix `qwen-image:` for logos and readable text. Hero/header photos: describe a scene, not a website. Flux draft about 3 minutes each, Qwen-Image about 4 minutes each, then about 65 seconds to reload the coding model once.
 
 Text editors cannot save PNG bytes. Several PNGs share one Comfy batch.

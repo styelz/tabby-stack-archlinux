@@ -935,6 +935,65 @@ class GpuModeTests(unittest.TestCase):
             self.assertIsNone(gpu_busy_image_response(planet))
         self.assertFalse(job.client_saved)
 
+    def test_stale_site_job_is_not_downloaded_for_a_folder_less_chat(self):
+        """A site-scoped leftover job must not hijack a chat that names no folder.
+
+        Regression for the empty-chat_folder fallback in
+        _job_matches_this_chat: it used to return True ("matches") whenever
+        this chat's ask did not mention any site folder at all, even though
+        the leftover job clearly belonged to a different site (spacediner).
+        Uses a tool-role continuation turn (an unrelated Read call) so the
+        separate "fresh mixed ask" guard does not mask this check.
+        """
+        item = mock.Mock(
+            output_path="spacediner/images/logo.png",
+            urls=["https://gpu.example/v1/images/old-logo.png"],
+            prompt="logo",
+            status="done",
+            error="",
+        )
+        job = mock.Mock(
+            id="job-spacediner-2",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="spacediner/images/logo.png",
+            items=[item],
+            urls=["https://gpu.example/v1/images/old-logo.png"],
+            client_saved=False,
+            download_attempts=0,
+            error="",
+        )
+        no_folder = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="generate a logo and header for me",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    tool_calls=[
+                        ToolCall(
+                            function=Tool(name="Read", arguments="{}"),
+                            type="function",
+                        )
+                    ],
+                ),
+                ChatCompletionMessage(role="tool", content="some unrelated file"),
+            ]
+        )
+        self.assertEqual(last_role(no_folder), "tool")
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
+            ),
+        ):
+            self.assertIsNone(gpu_busy_image_response(no_folder))
+        self.assertFalse(job.client_saved)
+
     def test_job_this_chat_already_waited_on_is_downloaded(self):
         item = mock.Mock(
             output_path="pbptours/images/logo.png",
@@ -1755,6 +1814,85 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             result = await ensure_mixed_image_job(data)
         self.assertIsNone(result)
         start.assert_not_awaited()
+
+    async def test_logo_redo_does_not_reuse_a_saved_site_job(self):
+        leftover = mock.Mock(
+            id="40093aa5-669f-4ec1-9046-a4ec5f63b681",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="pbptours/images/logo.png",
+            items=[],
+            urls=[
+                "https://gpu.example/v1/images/generated-20260822-021552-239881.png",
+            ],
+            client_saved=True,
+            download_attempts=1,
+            error="",
+        )
+        new_job = mock.Mock(
+            id="job-redo",
+            status="running",
+            wait_text="About 3 minutes.",
+            wait_s=180,
+            output_path="pbptours/images/logo.png",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+        state = {"job": None}
+
+        async def fake_start(**kwargs):
+            state["started"] = kwargs
+            state["job"] = new_job
+            return new_job, "started"
+
+        page = (
+            "create a one page website under the folder pbptours and generate "
+            'a logo image for the company "Planet By Planet Tours" and an '
+            "image of each planet."
+        )
+        data = _with_job_wait(_chat(page), leftover.id)
+        data.messages.append(
+            ChatCompletionMessage(
+                role="user",
+                content=(
+                    "generate the logo image, it should be an image of an atom "
+                    "with electrons swirling around it and be transparent "
+                    "background and rectangle not square"
+                ),
+            )
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                side_effect=lambda: state["job"],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                side_effect=lambda: state["job"] or leftover,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+            mock.patch(
+                "common.phrase_switch.asyncio.sleep", new=mock.AsyncMock()
+            ),
+        ):
+            response = await prepare_mixed_image_turn(
+                data, api_base="https://gpu.example/v1"
+            )
+        start.assert_awaited_once()
+        items = state["started"]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["output_path"], "pbptours/images/logo.png")
+        self.assertIn("atom", items[0]["prompt"].lower())
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("sleep ", args)
+        self.assertNotIn("curl ", args)
+        self.assertNotIn("generated-20260822-021552-239881.png", args)
 
 
 if __name__ == "__main__":

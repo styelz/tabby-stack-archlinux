@@ -844,6 +844,27 @@ MIXED_FOLLOWUP_RE = re.compile(
     r")"
 )
 MIXED_IMAGE_HINT_MARK = "This turn is a coding task that also needs images."
+IMAGE_REDO_RE = re.compile(
+    r"(?is)("
+    r"\b(?:improve|better|regenerat\w*|re-?generat\w*|redo|re-?do|"
+    r"re-?creat\w*|replac\w*)\b.{0,80}"
+    r"\b(?:logo|header|banner)(?:\s+image|\.png)?\b"
+    r"|"
+    r"\b(?:logo|header|banner)(?:\s+image|\.png)?\b.{0,80}"
+    r"\b(?:improve|better|regenerat\w*|re-?creat\w*|replac\w*)\b"
+    r"|"
+    r"\b(?:delete|remove|rm)\b.{0,100}\b(?:logo|header).{0,80}"
+    r"\b(?:creat|generat|mak|draw|new)\b"
+    r"|"
+    r"\b(?:generat|creat|mak|draw|render)\w*\s+"
+    r"(?:me\s+)?(?:the\s+|a\s+new\s+|an?\s+improved\s+)"
+    r"(?:logo|header)(?:\s+image|\.png)?"
+    r"|"
+    r"\buse\s+flux\b.{0,60}\b(?:logo|header|generat|creat)\w*"
+    r"|"
+    r"\b(?:the\s+)?(?:logo|header)(?:\s+image)?\s+should\s+be\b"
+    r")"
+)
 
 
 def is_coding_task(text: str) -> bool:
@@ -862,6 +883,19 @@ def _text_is_mixed_image(text: str) -> bool:
     return bool(text) and is_coding_task(text) and bool(IMAGE_NOUN_RE.search(text))
 
 
+def _text_is_image_redo(text: str) -> bool:
+    """True when the user wants one existing PNG replaced, not the whole site."""
+    return bool(text) and bool(IMAGE_REDO_RE.search(text))
+
+
+def _last_ask_text(data: ChatCompletionRequest) -> str:
+    raw = last_user_raw(data)
+    text = _unwrap_query(raw) or last_user_text(data)
+    if MIXED_IMAGE_HINT_MARK in text:
+        text = text.split(MIXED_IMAGE_HINT_MARK, 1)[0]
+    return (text or "").strip()
+
+
 def conversation_asked_for_page_images(data: ChatCompletionRequest) -> bool:
     """True if this chat already asked for a page plus generated images."""
     for message in data.messages or []:
@@ -878,7 +912,7 @@ def conversation_asked_for_page_images(data: ChatCompletionRequest) -> bool:
 
 def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
     text = last_user_text(data)
-    if _text_is_mixed_image(text):
+    if _text_is_mixed_image(text) or _text_is_image_redo(_last_ask_text(data)):
         return True
     if not text or not conversation_asked_for_page_images(data):
         return False
@@ -1215,8 +1249,16 @@ def _job_matches_this_chat(data: ChatCompletionRequest, job) -> bool:
     blob = _user_ask_without_hint(data).lower()
     if any(dest.lower() in blob for dest in dests if dest):
         return True
-    if not chat_folder or not job_folders:
+    if not job_folders:
+        # The leftover job never had a site folder (plain images/*.png) —
+        # nothing to disagree with, so treat it as a continuation.
         return True
+    if not chat_folder:
+        # The job was scoped to a specific site (pbptours/images/...) but
+        # this chat names no folder at all. Do not silently match — that
+        # let an unrelated site's leftover job get downloaded into a
+        # folder-less follow-up. Require an explicit dest/folder mention.
+        return False
     return chat_folder in job_folders
 
 
@@ -1256,14 +1298,11 @@ def _matching_mixed_job(data: ChatCompletionRequest):
 
 
 def _is_fresh_mixed_image_ask(data: ChatCompletionRequest) -> bool:
-    """True on a new page+images user line, not a follow-up or tool result."""
+    """True on a new page+images or redo line, not a tool result."""
     if last_role(data) in ("tool", "function"):
         return False
-    raw = last_user_raw(data)
-    text = _unwrap_query(raw) or last_user_text(data)
-    if MIXED_IMAGE_HINT_MARK in text:
-        text = text.split(MIXED_IMAGE_HINT_MARK, 1)[0]
-    return _text_is_mixed_image(text)
+    text = _last_ask_text(data)
+    return _text_is_mixed_image(text) or _text_is_image_redo(text)
 
 
 def _job_download_attempts(job) -> int:
@@ -1285,6 +1324,8 @@ def _should_reuse_mixed_job(data: ChatCompletionRequest, job) -> bool:
         return False
     if user_says_images_missing(data):
         return True
+    if _text_is_image_redo(_last_ask_text(data)):
+        return False
     if _chat_waited_on_job(data, job):
         return True
     if _is_fresh_mixed_image_ask(data):
@@ -1300,6 +1341,14 @@ def _planned_mixed_items(data: ChatCompletionRequest) -> list[dict[str, str]]:
         site_folder,
     )
 
+    last = _last_ask_text(data)
+    if _text_is_image_redo(last):
+        from common.image_prompts import plan_image_redo
+
+        site = _chat_project_folder(data) or site_folder(mixed_source_text(data))
+        items = plan_image_redo(last, site)
+        if items:
+            return items
     text = mixed_source_text(data)
     items = plan_mixed_images(text)
     if items:
@@ -1386,6 +1435,12 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
         xlogger.info(
             f"Image job {job.id} dests are for another folder; "
             "not driving a download on this chat"
+        )
+        return None
+    if not missing and _text_is_image_redo(_last_ask_text(data)):
+        xlogger.info(
+            f"Image job {job.id} is a leftover batch; "
+            "not curling it on a logo/image redo"
         )
         return None
     if (
@@ -1592,13 +1647,29 @@ def mixed_source_text(data: ChatCompletionRequest) -> str:
 
 
 def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str:
-    from common.image_prompts import MIXED_PLAN_MARK, mixed_image_plan_text
+    from common.image_prompts import (
+        MIXED_PLAN_MARK,
+        format_mixed_image_plan,
+        mixed_image_plan_text,
+        plan_image_redo,
+        site_folder,
+        user_asked_for_svg,
+    )
 
     has_tool = _chat_has_generate_image(data)
     hint = mixed_image_hint(api_base, has_generate_image=has_tool)
-    plan = mixed_image_plan_text(
-        mixed_source_text(data), has_generate_image=has_tool
-    )
+    last = _last_ask_text(data)
+    if _text_is_image_redo(last):
+        site = _chat_project_folder(data) or site_folder(mixed_source_text(data))
+        plan = format_mixed_image_plan(
+            plan_image_redo(last, site),
+            asked_for_svg=user_asked_for_svg(last),
+            has_generate_image=has_tool,
+        )
+    else:
+        plan = mixed_image_plan_text(
+            mixed_source_text(data), has_generate_image=has_tool
+        )
     if plan and MIXED_PLAN_MARK not in hint:
         hint = f"{hint}\n{plan}"
     return hint
