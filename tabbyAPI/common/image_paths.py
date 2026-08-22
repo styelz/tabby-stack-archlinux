@@ -298,6 +298,35 @@ def download_pairs_from_job(job) -> list[tuple[str, str]]:
     return [(url, dest) for (url, _), dest in zip(planned, dests)]
 
 
+def generated_png_name_from_url(url: str) -> str:
+    """Filename from a /v1/images/generated-*.png URL (query stripped)."""
+    try:
+        path = urlparse(str(url or "")).path
+    except ValueError:
+        return ""
+    name = path.rsplit("/", 1)[-1]
+    return name.split("?")[0]
+
+
+def gpu_generated_file_missing(url: str) -> bool:
+    """True when this URL is a timestamped generated PNG that is not on disk."""
+    from common.gpu_mode import generated_image_path, is_public_generated_png
+
+    name = generated_png_name_from_url(url)
+    if not is_public_generated_png(name):
+        return False
+    return generated_image_path(name) is None
+
+
+def living_download_pairs(job) -> list[tuple[str, str]]:
+    """download_pairs_from_job minus timestamped URLs whose GPU files are gone."""
+    return [
+        (url, dest)
+        for url, dest in download_pairs_from_job(job)
+        if not gpu_generated_file_missing(url)
+    ]
+
+
 def is_http_url(url: str) -> bool:
     try:
         parsed = urlparse(url)

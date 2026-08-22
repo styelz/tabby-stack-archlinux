@@ -2,7 +2,7 @@ import asyncio
 import pathlib
 from typing import Optional
 from common.multimodal import MultimodalEmbeddingWrapper
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sse_starlette import EventSourceResponse
 
@@ -1045,12 +1045,22 @@ async def generated_image_thumb(name: str):
     raise HTTPException(404, "Image not found.")
 
 
-@router.get("/v1/images/{name}", dependencies=[Depends(check_api_key)])
-async def generated_image(name: str):
-    """Serve a generated PNG by filename (generated-*.png only)."""
-    from common.gpu_mode import generated_image_path
+@router.get("/v1/images/{name}")
+async def generated_image(
+    name: str,
+    x_api_key: str = Header(None),
+    authorization: str = Header(None),
+):
+    """Serve a generated PNG by filename (generated-*.png only).
+
+    Timestamped gallery files (generated-YYYYMMDD-HHMMSS-PID.png) are public so
+    the coding PC can curl them without a bearer. Keep auth on latest.png.
+    """
+    from common.gpu_mode import generated_image_path, is_public_generated_png
 
     path = generated_image_path(name)
     if not path:
         raise HTTPException(404, "Image not found.")
+    if not is_public_generated_png(name):
+        await check_api_key(x_api_key=x_api_key, authorization=authorization)
     return FileResponse(path, media_type="image/png", filename=name)

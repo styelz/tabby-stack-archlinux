@@ -84,6 +84,10 @@ class McpImageJob:
     current_index: int = 0
     client_saved: bool = False
     download_attempts: int = 0
+    pillow_redownload: bool = False
+    dead_requeued: bool = False
+    is_requeue: bool = False
+    download_stopped: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     progress: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -688,7 +692,8 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                     ]
                 )
                 item.urls = [
-                    public_image_url(path.name, api_base=job.api_base) for path in paths
+                    public_image_url(path.name, api_base=job.api_base, bust=False)
+                    for path in paths
                 ]
                 job.urls.extend(item.urls)
                 item.status = "done"

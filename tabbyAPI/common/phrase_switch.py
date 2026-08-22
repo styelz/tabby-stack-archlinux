@@ -888,6 +888,11 @@ FAKE_PNG_NOTE = (
     "Do not overwrite the planned .png paths with local drawings. "
     "Downloading the real GPU PNGs again. After they land, write HTML/CSS/JS only."
 )
+IMAGE_DOWNLOAD_STOP_NOTE = (
+    "The GPU PNG download failed (HTTP 404 or the file is gone from this host). "
+    "Do not keep curling that URL. Do not write generate_images.py or Pillow "
+    "stand-ins. Wait for a new image job, then curl only URLs this API invents."
+)
 IMAGE_REDO_RE = re.compile(
     r"(?is)("
     r"\b(?:improve|better|regenerat\w*|re-?generat\w*|redo|re-?do|"
@@ -1119,7 +1124,11 @@ def _tool_name_of(call) -> str:
 
 
 def chat_is_waiting_on_images(data: ChatCompletionRequest) -> bool:
-    """True when this turn is still the webpage+images job, not a new user line."""
+    """True when this turn is still the webpage+images job, not a new user line.
+
+    A brand-new mixed user message (no tools yet) is not waiting — that used
+    to let a leftover done job invent curl instead of starting Comfy.
+    """
     if last_role(data) in ("tool", "function"):
         return True
     for message in reversed(data.messages or []):
@@ -1135,7 +1144,7 @@ def chat_is_waiting_on_images(data: ChatCompletionRequest) -> bool:
             return False
         if message.role == "user":
             break
-    return is_mixed_image_request(data)
+    return False
 
 
 def _history_has_image_tools(data: ChatCompletionRequest) -> bool:
@@ -1304,11 +1313,37 @@ def _chat_waited_on_job(data: ChatCompletionRequest, job) -> bool:
     return False
 
 
+def _chat_curled_job_dests(data: ChatCompletionRequest, job) -> bool:
+    """True when this chat already ran Shell curl/ls for this job's PNG dests."""
+    from common.image_paths import job_output_paths
+
+    dests = job_output_paths(job)
+    for message in data.messages or []:
+        if message.role != "assistant":
+            continue
+        for call in message.tool_calls or []:
+            name = _tool_name_of(call).lower()
+            args = str(
+                getattr(getattr(call, "function", None), "arguments", "") or ""
+            )
+            if name in SHELL_TOOL_NAMES or name.endswith("shell"):
+                if _shell_args_reference_dests(args, dests):
+                    return True
+    return False
+
+
 def _job_matches_this_chat(data: ChatCompletionRequest, job) -> bool:
-    """False when a leftover job is for a different site folder than this chat."""
+    """False when a leftover job is for a different site folder than this chat.
+
+    A folder-less leftover (plain images/logo.png) is not every new chat.
+    Only treat it as this chat if we already waited on the job id, the user
+    named that dest, or the job is still queued/running (just started here).
+    """
     from common.image_paths import job_output_paths, job_project_folders
 
     if _chat_waited_on_job(data, job):
+        return True
+    if _chat_curled_job_dests(data, job):
         return True
     chat_folder = _chat_project_folder(data)
     job_folders = job_project_folders(job)
@@ -1316,10 +1351,14 @@ def _job_matches_this_chat(data: ChatCompletionRequest, job) -> bool:
     blob = _user_ask_without_hint(data).lower()
     if any(dest.lower() in blob for dest in dests if dest):
         return True
+    if getattr(job, "status", "") in ("queued", "running"):
+        if not job_folders:
+            return True
+        if not chat_folder:
+            return True
+        return chat_folder in job_folders
     if not job_folders:
-        # The leftover job never had a site folder (plain images/*.png) —
-        # nothing to disagree with, so treat it as a continuation.
-        return True
+        return False
     if not chat_folder:
         # The job was scoped to a specific site (pbptours/images/...) but
         # this chat names no folder at all. Do not silently match — that
@@ -1395,6 +1434,55 @@ def _is_fresh_mixed_image_ask(data: ChatCompletionRequest) -> bool:
     return _text_is_mixed_image(text) or _text_is_image_redo(text)
 
 
+def _job_flag(job, name: str) -> bool:
+    """True only for a real True bool (unittest Mock auto-attrs are truthy)."""
+    return getattr(job, name, False) is True
+
+
+def _job_gpu_files_missing(job) -> bool:
+    """True when every timestamped generated-*.png URL on this job is gone."""
+    from common.gpu_mode import is_public_generated_png
+    from common.image_paths import (
+        download_pairs_from_job,
+        generated_png_name_from_url,
+        gpu_generated_file_missing,
+    )
+
+    pairs = download_pairs_from_job(job)
+    stamped = [
+        url
+        for url, _ in pairs
+        if is_public_generated_png(generated_png_name_from_url(url))
+    ]
+    if not stamped:
+        return False
+    return all(gpu_generated_file_missing(url) for url in stamped)
+
+
+def _recent_curl_failed(data: ChatCompletionRequest) -> bool:
+    """True when a recent assistant or tool result shows a curl 404.
+
+    VS Code often omits a tool-role `ls`, so scan assistant text too. Do not
+    match the invented `curl -fsSL` command (no colon after curl).
+    """
+    parts: list[str] = []
+    for message in reversed(data.messages or []):
+        if message.role in ("tool", "function"):
+            parts.append(_content_text(message.content))
+            continue
+        if message.role == "assistant":
+            parts.append(_content_text(message.content))
+            if parts:
+                break
+            continue
+        if message.role == "user":
+            break
+    blob = "\n".join(reversed(parts)).lower()
+    if "404" in blob:
+        return True
+    return bool(re.search(r"curl:\s*\(", blob))
+
+
 def _job_download_attempts(job) -> int:
     try:
         return int(getattr(job, "download_attempts", 0) or 0)
@@ -1410,16 +1498,22 @@ def _should_reuse_mixed_job(data: ChatCompletionRequest, job) -> bool:
         return False
     if getattr(job, "status", "") in ("queued", "running"):
         return True
-    if _job_download_attempts(job) >= IMAGE_DOWNLOAD_MAX_ATTEMPTS:
-        return False
     if user_says_images_missing(data):
         return True
-    if _text_is_image_redo(_last_ask_text(data)):
+    if _text_is_image_redo(_last_ask_text(data)) and not _chat_waited_on_job(
+        data, job
+    ):
         return False
+    if _is_fresh_mixed_image_ask(data) and not _chat_waited_on_job(data, job):
+        return False
+    if _job_gpu_files_missing(job):
+        if _job_flag(job, "is_requeue") or _job_flag(job, "dead_requeued"):
+            return True
+        return False
+    if _job_download_attempts(job) >= IMAGE_DOWNLOAD_MAX_ATTEMPTS:
+        return True
     if _chat_waited_on_job(data, job):
         return True
-    if _is_fresh_mixed_image_ask(data):
-        return False
     return True
 
 
@@ -1468,6 +1562,8 @@ async def ensure_mixed_image_job(
             except Exception:
                 pass
         return existing
+    if not _is_fresh_mixed_image_ask(data):
+        return None
 
     items = _planned_mixed_items(data)
     prompts = [str(row.get("prompt") or "") for row in items]
@@ -1475,6 +1571,16 @@ async def ensure_mixed_image_job(
         from endpoints.core.image_jobs import start_mcp_image_job
     except Exception:
         return None
+    if (
+        existing
+        and _chat_waited_on_job(data, existing)
+        and _job_gpu_files_missing(existing)
+        and not _job_flag(existing, "dead_requeued")
+    ):
+        try:
+            existing.dead_requeued = True
+        except Exception:
+            pass
     job, _kind = await start_mcp_image_job(
         items=items,
         seed=None,
@@ -1483,6 +1589,11 @@ async def ensure_mixed_image_job(
         wait_text=image_job_wait_text(prompts=prompts),
         wait_s=image_job_wait_seconds(prompts=prompts),
     )
+    if existing and _job_flag(existing, "dead_requeued"):
+        try:
+            job.is_requeue = True
+        except Exception:
+            pass
     xlogger.info(f"Mixed chat queued image job {job.id} ({_kind}, {len(items)} dests)")
     return job
 
@@ -1536,9 +1647,14 @@ def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
         and getattr(job, "status", "") in ("done", "error")
         and _job_matches_this_chat(data, job)
     ):
+        if _job_flag(job, "pillow_redownload"):
+            xlogger.info(
+                f"Image job {job.id}: Pillow/SVG again; not resetting download cap"
+            )
+            return text_response(data, FAKE_PNG_NOTE)
         try:
             job.client_saved = False
-            job.download_attempts = 0
+            job.pillow_redownload = True
         except Exception:
             pass
         xlogger.info(
@@ -1586,8 +1702,11 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
         chat_is_waiting_on_images(data)
         or _history_has_image_tools(data)
         or missing
+        or _chat_waited_on_job(data, job)
     )
-    if not waiting or getattr(job, "client_saved", False):
+    if not waiting or _job_flag(job, "client_saved"):
+        return None
+    if _job_flag(job, "download_stopped") and not missing:
         return None
     if not missing and not _job_matches_this_chat(data, job):
         xlogger.info(
@@ -1624,21 +1743,25 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
             xlogger.info(f"Image job {job.id} PNGs confirmed on disk")
             return None
 
-    # VS Code Copilot often omits a tool-role result after run_in_terminal.
-    # The 4-try cap used to live inside that tool-role gate, so a finished
-    # job re-invented curl forever (~50s per turn) after the PNGs existed.
+    curl_failed = _recent_curl_failed(data)
+    files_missing = _job_gpu_files_missing(job)
     try:
         attempts = int(getattr(job, "download_attempts", 0) or 0)
     except (TypeError, ValueError):
         attempts = 0
-    if attempts >= IMAGE_DOWNLOAD_MAX_ATTEMPTS and not missing:
-        # Do not mark saved. Copilot then writes Pillow/SVG placeholders.
-        # Keep the agent on a wait; the next mixed ask starts a new job.
+    if (
+        (curl_failed or files_missing or attempts >= IMAGE_DOWNLOAD_MAX_ATTEMPTS)
+        and not missing
+    ):
         xlogger.info(
-            f"Image job {job.id} download stop after {attempts} curls "
-            "(no ls confirmation; not releasing the coding model)"
+            f"Image job {job.id} download stop "
+            f"(404={curl_failed} missing={files_missing} attempts={attempts})"
         )
-        return _drive_running_image_job(data, job)
+        try:
+            job.download_stopped = True
+        except Exception:
+            pass
+        return text_response(data, IMAGE_DOWNLOAD_STOP_NOTE)
 
     return _drive_image_download(data, job)
 
@@ -1705,14 +1828,14 @@ def _drive_image_download(
     data: ChatCompletionRequest, job, extra_note: str = ""
 ) -> object:
     from common.image_paths import (
-        download_pairs_from_job,
         image_download_command,
         image_download_note,
+        living_download_pairs,
         match_tool_name,
     )
 
     _align_job_dests_for_chat(data, job)
-    pairs = download_pairs_from_job(job)
+    pairs = living_download_pairs(job)
     command = image_download_command(pairs)
     if not command:
         return None
@@ -1839,19 +1962,8 @@ def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str
     has_tool = _chat_has_generate_image(data)
     pngs_ready = False
     try:
-        from endpoints.core.image_jobs import active_mcp_image_job, get_mcp_image_job
-
-        job = active_mcp_image_job() or get_mcp_image_job()
-        pngs_ready = bool(
-            job
-            and (
-                getattr(job, "client_saved", False)
-                or (
-                    getattr(job, "status", "") in ("done", "error")
-                    and getattr(job, "urls", None)
-                )
-            )
-        )
+        job = _matching_mixed_job(data)
+        pngs_ready = bool(job and _job_flag(job, "client_saved"))
     except Exception:
         pngs_ready = False
     hint = mixed_image_hint(

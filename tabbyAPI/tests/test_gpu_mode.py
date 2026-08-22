@@ -726,7 +726,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertEqual(mercury.output_path, "pbptours/images/mercury.png")
 
     def test_download_stops_without_tool_role_after_max_curls(self):
-        """VS Code Copilot runs curl then POSTs without a tool-role ls result."""
+        """VS Code often runs curl then POSTs without a tool-role ls result."""
         job = self._done_logo_job()
         job.download_attempts = 4
         mixed = _with_job_wait(
@@ -747,14 +747,10 @@ class GpuModeTests(unittest.TestCase):
         ):
             response = gpu_busy_image_response(mixed)
         self.assertIsNotNone(response)
-        self.assertIn(
-            "sleep ",
-            response.choices[0].message.tool_calls[0].function.arguments,
-        )
-        self.assertNotIn(
-            "curl ",
-            response.choices[0].message.tool_calls[0].function.arguments,
-        )
+        self.assertFalse(response.choices[0].message.tool_calls)
+        text = response.choices[0].message.content or ""
+        self.assertIn("404", text)
+        self.assertTrue(job.download_stopped)
         self.assertFalse(job.client_saved)
 
     def _done_logo_job(self):
@@ -890,15 +886,21 @@ class GpuModeTests(unittest.TestCase):
             ),
         ):
             response = gpu_busy_image_response(data)
-        self.assertIsNotNone(response)
-        self.assertFalse(job.client_saved)
-        self.assertEqual(job.download_attempts, 1)
-        args = response.choices[0].message.tool_calls[0].function.arguments
-        self.assertIn("curl -fsSL", args)
-        self.assertNotIn("generate_images.py", args)
-        text = response.choices[0].message.content or ""
-        self.assertIn("Pillow", text)
-        self.assertIn("generate_images.py", text)
+            self.assertIsNotNone(response)
+            self.assertFalse(job.client_saved)
+            self.assertEqual(job.download_attempts, 2)
+            self.assertTrue(job.pillow_redownload)
+            args = response.choices[0].message.tool_calls[0].function.arguments
+            self.assertIn("curl -fsSL", args)
+            self.assertNotIn("generate_images.py", args)
+            text = response.choices[0].message.content or ""
+            self.assertIn("Pillow", text)
+            self.assertIn("generate_images.py", text)
+
+            again = gpu_busy_image_response(data)
+        self.assertFalse(again.choices[0].message.tool_calls)
+        self.assertEqual(job.download_attempts, 2)
+        self.assertIn("Pillow", again.choices[0].message.content or "")
 
     def test_errored_job_still_saves_the_images_it_finished(self):
         item_done = mock.Mock(
@@ -1415,6 +1417,16 @@ class GpuModeTests(unittest.TestCase):
             "generated-latest.png", bust=False, api_base="http://gpu.example:5000/v1"
         )
         self.assertEqual(remote, "http://gpu.example:5000/v1/images/generated-latest.png")
+        job_url = public_image_url(
+            "generated-20260822-214723-251774.png",
+            bust=False,
+            api_base="https://git.pbptech.com/openai/v1",
+        )
+        self.assertEqual(
+            job_url,
+            "https://git.pbptech.com/openai/v1/images/generated-20260822-214723-251774.png",
+        )
+        self.assertNotIn("?t=", job_url)
 
         class _Req:
             headers = {"host": "192.168.1.20:5000", "x-forwarded-proto": "http"}
@@ -2144,6 +2156,341 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("images/logo.png", args)
         self.assertIn("generated-atom.png", args)
         self.assertFalse(job.client_saved)
+
+    async def test_folderless_leftover_does_not_curl_on_a_fresh_mixed_ask(self):
+        leftover = mock.Mock(
+            id="274c874c-old",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[
+                        "https://git.pbptech.com/openai/v1/images/"
+                        "generated-20260822-214723-251774.png"
+                    ],
+                    prompt="logo",
+                    status="done",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[
+                "https://git.pbptech.com/openai/v1/images/"
+                "generated-20260822-214723-251774.png"
+            ],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+        )
+        new_job = mock.Mock(
+            id="job-new-cosmos",
+            status="running",
+            wait_text="About 4 minutes.",
+            wait_s=280,
+            output_path="images/logo.png",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+        state = {"job": None}
+
+        async def fake_start(**kwargs):
+            state["job"] = new_job
+            return new_job, "started"
+
+        data = _chat(
+            "create a one page website for Cosmos Tours with a nice logo image"
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                side_effect=lambda: state["job"],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                side_effect=lambda: state["job"] or leftover,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                side_effect=lambda: [state["job"] or leftover],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+            mock.patch(
+                "common.phrase_switch.asyncio.sleep", new=mock.AsyncMock()
+            ),
+        ):
+            response = await prepare_mixed_image_turn(
+                data, api_base="https://git.pbptech.com/openai/v1"
+            )
+        start.assert_awaited_once()
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("sleep ", args)
+        self.assertNotIn("curl ", args)
+        self.assertNotIn("generated-20260822-214723-251774.png", args)
+
+    async def test_this_chats_dead_gpu_files_requeue_once(self):
+        dead_url = (
+            "https://gpu.example/v1/images/generated-20260822-214723-251774.png"
+        )
+        leftover = mock.Mock(
+            id="job-dead-own",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[dead_url],
+                    prompt="logo",
+                    status="done",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[dead_url],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+            dead_requeued=False,
+            is_requeue=False,
+        )
+        new_job = mock.Mock(
+            id="job-requeued",
+            status="running",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+        state = {"job": None}
+
+        async def fake_start(**kwargs):
+            state["job"] = new_job
+            return new_job, "started"
+
+        data = _with_job_wait(
+            _chat("create a webpage and generate a logo image for it"),
+            leftover.id,
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                side_effect=lambda: state["job"],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                side_effect=lambda: state["job"] or leftover,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                side_effect=lambda: [state["job"] or leftover],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+            mock.patch(
+                "common.phrase_switch.asyncio.sleep", new=mock.AsyncMock()
+            ),
+            mock.patch("common.gpu_mode.generated_image_path", return_value=None),
+        ):
+            response = await prepare_mixed_image_turn(data)
+        start.assert_awaited_once()
+        self.assertTrue(leftover.dead_requeued)
+        self.assertTrue(new_job.is_requeue)
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("sleep ", args)
+        self.assertNotIn("curl ", args)
+        self.assertNotIn("generated-20260822-214723-251774.png", args)
+
+    def test_missing_timestamped_gpu_file_is_not_curled(self):
+        dead_url = (
+            "https://gpu.example/v1/images/generated-20260822-214723-251774.png"
+        )
+        job = mock.Mock(
+            id="job-missing-png",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[dead_url],
+                    prompt="logo",
+                    status="done",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[dead_url],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+        )
+        data = _with_job_wait(
+            _chat("create a webpage and generate a logo image for it"),
+            job.id,
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[job],
+            ),
+            mock.patch("common.gpu_mode.generated_image_path", return_value=None),
+        ):
+            response = gpu_busy_image_response(data)
+        self.assertFalse(response.choices[0].message.tool_calls)
+        self.assertNotIn(
+            "generated-20260822-214723-251774.png",
+            response.choices[0].message.content or "",
+        )
+        self.assertTrue(job.download_stopped)
+
+    def test_assistant_404_without_tool_role_does_not_sleep_loop(self):
+        item = mock.Mock(
+            output_path="images/logo.png",
+            urls=["https://gpu.example/v1/images/generated-logo.png"],
+            prompt="logo",
+            status="done",
+            error="",
+            count=1,
+        )
+        job = mock.Mock(
+            id="job-done",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[item],
+            urls=["https://gpu.example/v1/images/generated-logo.png"],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+        )
+        data = _with_job_wait(
+            _chat(
+                "create a webpage and generate a logo image for it",
+                tools=["run_in_terminal"],
+            ),
+            job.id,
+        )
+        data.messages.append(
+            ChatCompletionMessage(
+                role="assistant",
+                content=(
+                    "curl: (22) The requested URL returned error: 404\n"
+                    "https://gpu.example/v1/images/generated-logo.png"
+                ),
+            )
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
+            ),
+        ):
+            response = gpu_busy_image_response(data)
+            self.assertFalse(response.choices[0].message.tool_calls)
+            text = response.choices[0].message.content or ""
+            self.assertIn("404", text)
+            self.assertNotIn("sleep ", text)
+            self.assertTrue(job.download_stopped)
+
+            again = gpu_busy_image_response(data)
+        self.assertIsNone(again)
+
+    def test_pngs_ready_false_for_global_leftover_done_job(self):
+        leftover = mock.Mock(
+            id="job-global-leftover",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[],
+            urls=[
+                "https://gpu.example/v1/images/generated-20260822-214723-251774.png"
+            ],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+        )
+        data = _chat("create a webpage and generate a logo image for it")
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=leftover
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[leftover],
+            ),
+        ):
+            inject_mixed_image_hint(data, api_base="https://gpu.example/v1")
+        hint = data.messages[0].content
+        self.assertNotIn("The GPU PNGs already exist", hint)
+
+        leftover.client_saved = True
+        waited = _with_job_wait(
+            _chat("create a webpage and generate a logo image for it"),
+            leftover.id,
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=leftover
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[leftover],
+            ),
+        ):
+            inject_mixed_image_hint(waited, api_base="https://gpu.example/v1")
+        self.assertIn(
+            "The GPU PNGs already exist", waited.messages[0].content
+        )
+
+    def test_is_public_generated_png(self):
+        from common.gpu_mode import is_public_generated_png
+
+        self.assertTrue(
+            is_public_generated_png("generated-20260822-214723-251774.png")
+        )
+        self.assertFalse(is_public_generated_png("generated-latest.png"))
+        self.assertFalse(is_public_generated_png("generated-logo.png"))
+        self.assertFalse(is_public_generated_png("latest.png"))
+
+    async def test_timestamped_png_get_without_bearer(self):
+        from endpoints.core.router import generated_image
+
+        name = "generated-20260822-214723-251774.png"
+        with temp_generated_dir([name]):
+            response = await generated_image(name)
+        self.assertEqual(response.media_type, "image/png")
+        self.assertTrue(str(response.path).endswith(name))
 
 
 if __name__ == "__main__":

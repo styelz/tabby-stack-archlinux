@@ -6,6 +6,8 @@ from common.image_paths import (
     dests_look_collapsed,
     download_pairs_from_job,
     ensure_site_prefix,
+    generated_png_name_from_url,
+    gpu_generated_file_missing,
     guess_output_path,
     image_download_command,
     image_download_note,
@@ -13,6 +15,7 @@ from common.image_paths import (
     image_running_note,
     image_running_shell_command,
     job_project_folders,
+    living_download_pairs,
     tool_result_has_pngs,
     match_tool_name,
     resolve_output_paths,
@@ -291,6 +294,39 @@ class StdioSaverTests(unittest.TestCase):
             ),
             "images/header.png",
         )
+
+    def test_living_download_pairs_drops_missing_timestamped_urls(self):
+        from pathlib import Path
+        from unittest import mock
+
+        dead = (
+            "https://gpu.example/v1/images/generated-20260822-214723-251774.png?t=1"
+        )
+        self.assertEqual(
+            generated_png_name_from_url(dead),
+            "generated-20260822-214723-251774.png",
+        )
+        item = type(
+            "Item",
+            (),
+            {"output_path": "images/logo.png", "urls": [dead], "count": 1},
+        )()
+        job = type(
+            "Job",
+            (),
+            {"items": [item], "output_path": "images/logo.png", "urls": [dead]},
+        )()
+        with mock.patch("common.gpu_mode.generated_image_path", return_value=None):
+            self.assertTrue(gpu_generated_file_missing(dead))
+            self.assertEqual(living_download_pairs(job), [])
+        with mock.patch(
+            "common.gpu_mode.generated_image_path",
+            return_value=Path("/tmp/generated-20260822-214723-251774.png"),
+        ):
+            self.assertFalse(gpu_generated_file_missing(dead))
+            self.assertEqual(living_download_pairs(job), [(dead, "images/logo.png")])
+        alias = "https://gpu.example/v1/images/generated-logo.png"
+        self.assertFalse(gpu_generated_file_missing(alias))
 
     def test_spawn_saver_skips_detached_process(self):
         from pathlib import Path

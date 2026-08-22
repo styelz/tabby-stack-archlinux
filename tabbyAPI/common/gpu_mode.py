@@ -752,6 +752,17 @@ def public_image_url(
     return url
 
 
+# Live saver names: generated-YYYYMMDD-HHMMSS-PID.png (optional extra suffix).
+TIMESTAMPED_GENERATED_PNG_RE = re.compile(
+    r"^generated-\d{8}-\d{6}-\d+(?:-\d+)?\.png$"
+)
+
+
+def is_public_generated_png(name: str) -> bool:
+    """Timestamped gallery PNGs can be fetched without a bearer (coding-PC curl)."""
+    return bool(TIMESTAMPED_GENERATED_PNG_RE.match(name or ""))
+
+
 def generated_image_path(name: str) -> Optional[Path]:
     if name in ("latest", "latest.png"):
         name = "generated-latest.png"
