@@ -390,10 +390,13 @@ class GpuModeTests(unittest.TestCase):
         self.assertIn("Write or StrReplace", hint)
         self.assertIn("Do not apologize", hint)
         self.assertIn("SVG", hint)
+        self.assertIn("generate_images.py", hint)
+        self.assertIn("Pillow/PIL", hint)
         self.assertIn("get_image_job", hint)
         self.assertNotIn("Do not use Write or WebFetch for the file", hint)
         help_body = help_text()
         self.assertIn("Do not fake images with SVG", help_body)
+        self.assertIn("Pillow/PIL", help_body)
         self.assertIn("Write/StrReplace", help_body)
         self.assertIn("Do not use generate_image", help_body)
 
@@ -852,6 +855,51 @@ class GpuModeTests(unittest.TestCase):
         self.assertEqual(response.choices[0].message.tool_calls[0].function.name, "Shell")
         self.assertIn("curl -fsSL", response.choices[0].message.tool_calls[0].function.arguments)
 
+    def test_pillow_script_redownloads_gpu_pngs(self):
+        """After Copilot writes generate_images.py, curl the GPU PNGs again."""
+        job = self._done_logo_job()
+        job.client_saved = True
+        data = _with_job_wait(
+            _chat(
+                "create a webpage for Cosmos Tours with a logo image "
+                "and images of Mars",
+                tools=["run_in_terminal"],
+            ),
+            job.id,
+        )
+        data.messages.append(
+            ChatCompletionMessage(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        function=Tool(
+                            name="run_in_terminal",
+                            arguments='{"command":"python3 generate_images.py"}',
+                        ),
+                        type="function",
+                    )
+                ],
+            )
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=job
+            ),
+        ):
+            response = gpu_busy_image_response(data)
+        self.assertIsNotNone(response)
+        self.assertFalse(job.client_saved)
+        self.assertEqual(job.download_attempts, 1)
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("curl -fsSL", args)
+        self.assertNotIn("generate_images.py", args)
+        text = response.choices[0].message.content or ""
+        self.assertIn("Pillow", text)
+        self.assertIn("generate_images.py", text)
+
     def test_errored_job_still_saves_the_images_it_finished(self):
         item_done = mock.Mock(
             output_path="images/logo.png",
@@ -1263,7 +1311,7 @@ class GpuModeTests(unittest.TestCase):
         self.assertIn("Planet By Planet Tours", body)
         self.assertIn("Do not apologize", body)
         self.assertIn("not switch the project to React/Vite", body)
-        self.assertIn("not .svg or CSS planet art", body)
+        self.assertIn("not .svg, CSS planet art, or Pillow/PIL drawings", body)
         self.assertIn('"images":', body)
         self.assertIn("Do not use generate_image", body)
         self.assertNotIn("Call generate_image", body)

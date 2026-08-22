@@ -1466,14 +1466,16 @@ def _messages_since_last_user(data: ChatCompletionRequest):
 
 
 def _chat_is_faking_images(data: ChatCompletionRequest) -> bool:
-    """True when the agent is drawing PNGs with Pillow/SVG instead of the GPU job."""
+    """True when a tool is drawing PNGs with Pillow/SVG instead of the GPU job.
+
+    Only tool arguments and tool results count. Assistant prose is ignored so
+    our own 'do not write generate_images.py' note cannot loop.
+    """
     blob_parts: list[str] = []
     for message in _messages_since_last_user(data):
-        if message.role == "user":
-            continue
-        blob_parts.append(_content_text(message.content))
+        if message.role in ("tool", "function"):
+            blob_parts.append(_content_text(message.content))
         for call in message.tool_calls or []:
-            blob_parts.append(_tool_name_of(call))
             blob_parts.append(
                 str(getattr(getattr(call, "function", None), "arguments", "") or "")
             )
@@ -1482,21 +1484,28 @@ def _chat_is_faking_images(data: ChatCompletionRequest) -> bool:
 
 def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
     """Stop Pillow/SVG stand-ins and re-curl the GPU PNGs if they exist."""
-    if not job or not _chat_is_faking_images(data):
+    if not _chat_is_faking_images(data) or not is_mixed_image_request(data):
         return None
-    if getattr(job, "status", "") in ("queued", "running"):
+    if job and getattr(job, "status", "") in ("queued", "running"):
         xlogger.info(f"Image job {job.id}: refusing Pillow/SVG while still rendering")
         return _drive_running_image_job(data, job)
-    if not getattr(job, "urls", None):
-        xlogger.info("Refusing Pillow/SVG stand-in with no GPU URLs yet")
-        return text_response(data, FAKE_PNG_NOTE)
-    try:
-        job.client_saved = False
-        job.download_attempts = 0
-    except Exception:
-        pass
-    xlogger.info(f"Image job {job.id}: re-curling GPU PNGs after Pillow/SVG stand-in")
-    return _drive_image_download(data, job, extra_note=FAKE_PNG_NOTE)
+    if (
+        job
+        and getattr(job, "urls", None)
+        and getattr(job, "status", "") in ("done", "error")
+        and _job_matches_this_chat(data, job)
+    ):
+        try:
+            job.client_saved = False
+            job.download_attempts = 0
+        except Exception:
+            pass
+        xlogger.info(
+            f"Image job {job.id}: re-curling GPU PNGs after Pillow/SVG stand-in"
+        )
+        return _drive_image_download(data, job, extra_note=FAKE_PNG_NOTE)
+    xlogger.info("Refusing Pillow/SVG stand-in with no matching GPU URLs")
+    return text_response(data, FAKE_PNG_NOTE)
 
 
 def gpu_busy_image_response(data: ChatCompletionRequest):
@@ -1508,9 +1517,15 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
 
     job = active_mcp_image_job()
     if job:
+        refused = _refuse_fake_pngs(data, job)
+        if refused:
+            return refused
         return _drive_running_image_job(data, job)
 
     job = get_mcp_image_job()
+    refused = _refuse_fake_pngs(data, job)
+    if refused:
+        return refused
     if not job or job.status not in ("done", "error") or not job.urls:
         return None
 
@@ -1697,7 +1712,10 @@ def _chat_has_generate_image(data: ChatCompletionRequest) -> bool:
 
 
 def mixed_image_hint(
-    api_base: Optional[str] = None, *, has_generate_image: bool = False
+    api_base: Optional[str] = None,
+    *,
+    has_generate_image: bool = False,
+    pngs_ready: bool = False,
 ) -> str:
     """Tell a remote agent to write the page after the server-owned PNGs exist."""
     flux = extra_seconds("comfy", "flux_s")
@@ -1705,12 +1723,20 @@ def mixed_image_hint(
     flux_s = format_duration(flux) if flux else "a few minutes"
     qwen_s = format_duration(qwen) if qwen else "a few minutes"
     llm_s = format_duration(ready_seconds("llm"))
+    ready_line = (
+        "The GPU PNGs already exist at the planned paths (or this API is curling them). "
+        "Write HTML/CSS/JS now. Do not create generate_images.py and do not overwrite "
+        "those .png files.\n"
+        if pngs_ready
+        else ""
+    )
     return (
         f"{MIXED_IMAGE_HINT_MARK} "
         "This is a new task. Do not apologize, and do not mention repeated "
         "errors or prior attempts — just do the steps below. "
         "Do not treat this as a single image prompt. "
         "Do not paste the webpage into chat. "
+        f"{ready_line}"
         "Do not fake images with SVG, CSS shapes, Pillow/PIL circles, emoji, "
         "placeholder URLs, or Unsplash. "
         "Do not write generate_images.py or any Python drawing script. "
@@ -1762,7 +1788,26 @@ def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str
     )
 
     has_tool = _chat_has_generate_image(data)
-    hint = mixed_image_hint(api_base, has_generate_image=has_tool)
+    pngs_ready = False
+    try:
+        from endpoints.core.image_jobs import active_mcp_image_job, get_mcp_image_job
+
+        job = active_mcp_image_job() or get_mcp_image_job()
+        pngs_ready = bool(
+            job
+            and (
+                getattr(job, "client_saved", False)
+                or (
+                    getattr(job, "status", "") in ("done", "error")
+                    and getattr(job, "urls", None)
+                )
+            )
+        )
+    except Exception:
+        pngs_ready = False
+    hint = mixed_image_hint(
+        api_base, has_generate_image=has_tool, pngs_ready=pngs_ready
+    )
     last = _last_ask_text(data)
     if _text_is_image_redo(last):
         site = _chat_project_folder(data) or site_folder(mixed_source_text(data))

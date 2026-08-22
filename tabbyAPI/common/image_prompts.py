@@ -68,8 +68,7 @@ SCENE_TAIL = (
 )
 LOGO_TAIL = (
     "isolated logo mark only, centered, simple background, "
-    "not a screenshot of a website, not a webpage layout, "
-    "not a browser window, no navigation bar"
+    "emblem, no browser chrome, no navigation bar, no page layout"
 )
 TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
 
@@ -153,11 +152,11 @@ COMPANY_RE = re.compile(
     r"(?is)\b(?:company|brand|called|named)\s+[\"“']([^\"”']{2,80})[\"”']"
     r"|\blogo\b.{0,80}(?:says?|called|named)\s+[\"“']([^\"”']{2,80})[\"”']"
     r"|\b(?:company|brand)\s+"
-    r"([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){1,6})"
+    r"(?-i:([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){1,6}))"
     r"|\b(?:website|web\s*site|web\s*page|webpage|site|company|brand)"
     r"\s+(?:for|called|named)\s+"
     r"(?:[\"“']([^\"”']{2,80})[\"”']|"
-    r"([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){0,6}))"
+    r"(?-i:([A-Z][A-Za-z0-9&']+(?:\s+[A-Z][A-Za-z0-9&']+){0,6})))"
 )
 ASKED_SVG_RE = re.compile(
     r"(?is)\b(?:use|using|as|want|need|prefer|make|create|generate)\b"
@@ -262,6 +261,8 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     """Return the prompt Comfy should actually render."""
     raw = (prompt or "").strip()
     if not raw:
+        return raw
+    if LOGO_TAIL in raw:
         return raw
     if SCENE_TAIL in raw and not QWEN_PREFIX.match(raw):
         return raw
