@@ -467,6 +467,12 @@ def get_mcp_image_job(job_id: Optional[str] = None) -> Optional[McpImageJob]:
     return _MCP_JOBS.get(_MCP_ORDER[-1])
 
 
+def recent_mcp_image_jobs() -> list[McpImageJob]:
+    """Newest MCP/Comfy jobs first (in-process queue + persisted)."""
+    _load_persisted_jobs()
+    return [_MCP_JOBS[job_id] for job_id in reversed(_MCP_ORDER) if job_id in _MCP_JOBS]
+
+
 def mcp_job_to_dict(job: McpImageJob) -> dict:
     """JSON for GET /v1/images/jobs and the local stdio saver."""
     return {

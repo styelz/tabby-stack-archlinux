@@ -433,7 +433,10 @@ def format_mixed_image_plan(
         "Write the page after those files exist on disk.",
     ]
     if not asked_for_svg:
-        lines.append("Point every img src at these .png paths.")
+        paths = ", ".join(row["output_path"] for row in items)
+        lines.append(
+            f"Point every img src at these exact paths (include the images/ folder): {paths}"
+        )
     lines.append(json.dumps({"images": payload}, ensure_ascii=False))
     return "\n".join(lines)
 

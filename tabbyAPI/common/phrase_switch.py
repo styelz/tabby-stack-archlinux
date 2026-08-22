@@ -1223,6 +1223,24 @@ def _recent_tool_text(data: ChatCompletionRequest) -> str:
     return "\n".join(reversed(parts))
 
 
+def _shell_args_reference_dests(args: str, dests: list[str]) -> bool:
+    """True when Shell args name this job's PNG dests, not a substring collision."""
+    from common.image_paths import safe_rel_png_path
+
+    text = str(args or "")
+    if "curl" in text and "/v1/images/" in text:
+        return True
+    quoted: set[str] = set()
+    for match in re.finditer(r"'([^']+)'|\"([^\"]+)\"", text):
+        token = match.group(1) or match.group(2)
+        if token.lower().endswith(".png"):
+            quoted.add(safe_rel_png_path(token))
+    needed = {safe_rel_png_path(dest) for dest in dests if dest}
+    if not needed:
+        return False
+    return needed.issubset(quoted)
+
+
 def _last_assistant_was_image_shell(data: ChatCompletionRequest, job) -> bool:
     from common.image_paths import job_output_paths
 
@@ -1233,7 +1251,7 @@ def _last_assistant_was_image_shell(data: ChatCompletionRequest, job) -> bool:
                 name = _tool_name_of(call).lower()
                 args = str(getattr(getattr(call, "function", None), "arguments", "") or "")
                 if name in SHELL_TOOL_NAMES or name.endswith("shell"):
-                    if "curl" in args or any(dest in args for dest in dests):
+                    if _shell_args_reference_dests(args, dests):
                         return True
             return False
         if message.role == "user":
@@ -1328,13 +1346,26 @@ async def await_gpu_busy_image_response(data: ChatCompletionRequest):
 def _matching_mixed_job(data: ChatCompletionRequest):
     """Active or unsaved job that belongs to this mixed chat, if any."""
     try:
-        from endpoints.core.image_jobs import active_mcp_image_job, get_mcp_image_job
+        from endpoints.core.image_jobs import (
+            active_mcp_image_job,
+            get_mcp_image_job,
+            recent_mcp_image_jobs,
+        )
     except Exception:
         return None
 
     busy = active_mcp_image_job()
     if busy and _job_matches_this_chat(data, busy):
         return busy
+
+    for job in recent_mcp_image_jobs():
+        if job.status not in ("done", "error"):
+            continue
+        if not (job.urls or job.status == "done"):
+            continue
+        if _chat_waited_on_job(data, job):
+            return job
+
     done = get_mcp_image_job()
     if (
         done
@@ -1343,6 +1374,16 @@ def _matching_mixed_job(data: ChatCompletionRequest):
         and _job_matches_this_chat(data, done)
     ):
         return done
+
+    for job in recent_mcp_image_jobs():
+        if job.status not in ("done", "error"):
+            continue
+        if not (job.urls or job.status == "done"):
+            continue
+        if getattr(job, "client_saved", False):
+            continue
+        if _job_matches_this_chat(data, job):
+            return job
     return None
 
 
@@ -1511,22 +1552,30 @@ def _refuse_fake_pngs(data: ChatCompletionRequest, job) -> object:
 def gpu_busy_image_response(data: ChatCompletionRequest):
     """Keep the agent loop alive while Comfy owns the GPU, then save PNGs."""
     try:
-        from endpoints.core.image_jobs import active_mcp_image_job, get_mcp_image_job
+        from endpoints.core.image_jobs import active_mcp_image_job
     except Exception:
         return None
 
-    job = active_mcp_image_job()
-    if job:
+    job = _matching_mixed_job(data)
+    if job and job.status in ("queued", "running"):
         refused = _refuse_fake_pngs(data, job)
         if refused:
             return refused
         return _drive_running_image_job(data, job)
 
-    job = get_mcp_image_job()
+    if not job:
+        job = active_mcp_image_job()
+        if job:
+            refused = _refuse_fake_pngs(data, job)
+            if refused:
+                return refused
+            return _drive_running_image_job(data, job)
+        return None
+
     refused = _refuse_fake_pngs(data, job)
     if refused:
         return refused
-    if not job or job.status not in ("done", "error") or not job.urls:
+    if job.status not in ("done", "error") or not job.urls:
         return None
 
     missing = user_says_images_missing(data)

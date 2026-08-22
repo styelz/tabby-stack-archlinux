@@ -1798,6 +1798,73 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         slept.assert_not_awaited()
         self.assertIsNone(response)
 
+    async def test_stale_saved_job_does_not_block_waited_download(self):
+        """A leftover done+saved job must not hide this chat's unsaved batch."""
+        stale = mock.Mock(
+            id="job-stale",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[],
+            urls=["https://gpu.example/v1/images/stale.png"],
+            client_saved=True,
+            download_attempts=1,
+            error="",
+        )
+        current = mock.Mock(
+            id="job-current",
+            status="done",
+            wait_text="About 20 minutes.",
+            wait_s=1200,
+            output_path="llm-testing/images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="llm-testing/images/logo.png",
+                    urls=["https://gpu.example/v1/images/logo.png"],
+                    prompt="logo",
+                    status="done",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=["https://gpu.example/v1/images/logo.png"],
+            client_saved=False,
+            download_attempts=0,
+            error="",
+        )
+        data = _with_job_wait(
+            _chat(
+                "create a website for Cosmos Tours with a nice logo image and "
+                "transparent PNG images of Mars, Jupiter, Saturn and Neptune. "
+                "Put files under llm-testing.",
+                tools=["run_in_terminal"],
+            ),
+            current.id,
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[current, stale],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=stale
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                new=mock.AsyncMock(),
+            ) as start,
+        ):
+            response = gpu_busy_image_response(data)
+        start.assert_not_awaited()
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("curl ", args)
+        self.assertIn("llm-testing/images/logo.png", args)
+        self.assertNotIn("stale.png", args)
+
     async def test_done_unsaved_job_this_chat_waited_on_curls_once(self):
         item = mock.Mock(
             output_path="images/logo.png",
