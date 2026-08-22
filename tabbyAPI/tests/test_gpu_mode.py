@@ -749,7 +749,9 @@ class GpuModeTests(unittest.TestCase):
         self.assertIsNotNone(response)
         self.assertFalse(response.choices[0].message.tool_calls)
         text = response.choices[0].message.content or ""
-        self.assertIn("404", text)
+        self.assertIn("still has", text.lower())
+        self.assertIn("https://gpu.example/v1/images/generated-logo.png", text)
+        self.assertNotIn("gone from this host", text)
         self.assertTrue(job.download_stopped)
         self.assertFalse(job.client_saved)
 
@@ -2235,6 +2237,75 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("curl ", args)
         self.assertNotIn("generated-20260822-214723-251774.png", args)
 
+    async def test_incomplete_running_mcp_job_does_not_block_planned_batch(self):
+        """A one-item generate_image dump must not skip the planned planet dests."""
+        running = mock.Mock(
+            id="job-mcp-dump",
+            status="running",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[],
+                    prompt="qwen-image: Create a complete production-ready website",
+                    status="running",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+        new_job = mock.Mock(
+            id="job-planned",
+            status="queued",
+            wait_text="About 17 minutes.",
+            wait_s=1114,
+            output_path="images/",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+
+        async def fake_start(**kwargs):
+            paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
+            self.assertIn("images/logo.png", paths)
+            self.assertIn("images/mars.png", paths)
+            self.assertGreaterEqual(len(paths), 5)
+            return new_job, "started"
+
+        data = _chat(
+            'create a website for a company called "Cosmos Tours" with a '
+            "logo and transparent PNG images of Mars, Jupiter, Saturn and Neptune"
+        )
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=running,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=running,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[running],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+        ):
+            job = await ensure_mixed_image_job(
+                data, api_base="https://git.pbptech.com/openai/v1"
+            )
+        start.assert_awaited_once()
+        self.assertIs(job, new_job)
+
     async def test_this_chats_dead_gpu_files_requeue_once(self):
         dead_url = (
             "https://gpu.example/v1/images/generated-20260822-214723-251774.png"
@@ -2412,9 +2483,9 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             response = gpu_busy_image_response(data)
             self.assertFalse(response.choices[0].message.tool_calls)
             text = response.choices[0].message.content or ""
-            self.assertIn("404", text)
             self.assertNotIn("sleep ", text)
             self.assertTrue(job.download_stopped)
+            self.assertIn("https://gpu.example/v1/images/generated-logo.png", text)
 
             again = gpu_busy_image_response(data)
         self.assertIsNone(again)

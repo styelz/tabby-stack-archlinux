@@ -893,6 +893,12 @@ IMAGE_DOWNLOAD_STOP_NOTE = (
     "Do not keep curling that URL. Do not write generate_images.py or Pillow "
     "stand-ins. Wait for a new image job, then curl only URLs this API invents."
 )
+IMAGE_DOWNLOAD_UNCONFIRMED_NOTE = (
+    "The GPU still has these PNGs. The coding client never confirmed they "
+    "landed on disk (no ls listing, or curl failed through the tunnel). "
+    "Do not write generate_images.py or Pillow stand-ins. "
+    "Save them with Shell curl of only these URLs, then write HTML/CSS/JS."
+)
 IMAGE_REDO_RE = re.compile(
     r"(?is)("
     r"\b(?:improve|better|regenerat\w*|re-?generat\w*|redo|re-?do|"
@@ -1490,6 +1496,37 @@ def _job_download_attempts(job) -> int:
         return 0
 
 
+def _job_covers_planned_dests(job, planned: list[dict]) -> bool:
+    """True when this job already has every dest the mixed planner wants."""
+    from common.image_paths import job_output_paths, safe_rel_png_path
+
+    have = {safe_rel_png_path(path) for path in job_output_paths(job)}
+    need = {
+        safe_rel_png_path(str(row.get("output_path") or ""))
+        for row in planned or []
+        if isinstance(row, dict)
+    }
+    need.discard("")
+    if not need:
+        return True
+    return need <= have
+
+
+def _download_stop_text(job, *, files_missing: bool) -> str:
+    """404 only when the GPU file is gone. Otherwise keep the living URLs."""
+    if files_missing:
+        return IMAGE_DOWNLOAD_STOP_NOTE
+    from common.image_paths import image_download_note, living_download_pairs
+
+    pairs = living_download_pairs(job)
+    if not pairs:
+        return IMAGE_DOWNLOAD_STOP_NOTE
+    extra = image_download_note(pairs)
+    return "\n".join(
+        part for part in (IMAGE_DOWNLOAD_UNCONFIRMED_NOTE, extra) if part
+    )
+
+
 def _should_reuse_mixed_job(data: ChatCompletionRequest, job) -> bool:
     """False for a leftover done job this chat never waited on, or dead URLs."""
     if job is None:
@@ -1555,17 +1592,24 @@ async def ensure_mixed_image_job(
     if last_role(data) in ("tool", "function"):
         return None
     existing = _matching_mixed_job(data)
+    planned = _planned_mixed_items(data)
     if existing and _should_reuse_mixed_job(data, existing):
-        if user_says_images_missing(data):
-            try:
-                existing.client_saved = False
-            except Exception:
-                pass
-        return existing
+        covers = _job_covers_planned_dests(existing, planned)
+        if (
+            covers
+            or _chat_waited_on_job(data, existing)
+            or user_says_images_missing(data)
+        ):
+            if user_says_images_missing(data):
+                try:
+                    existing.client_saved = False
+                except Exception:
+                    pass
+            return existing
     if not _is_fresh_mixed_image_ask(data):
         return None
 
-    items = _planned_mixed_items(data)
+    items = planned
     prompts = [str(row.get("prompt") or "") for row in items]
     try:
         from endpoints.core.image_jobs import start_mcp_image_job
@@ -1761,7 +1805,10 @@ def gpu_busy_image_response(data: ChatCompletionRequest):
             job.download_stopped = True
         except Exception:
             pass
-        return text_response(data, IMAGE_DOWNLOAD_STOP_NOTE)
+        return text_response(
+            data,
+            _download_stop_text(job, files_missing=files_missing),
+        )
 
     return _drive_image_download(data, job)
 

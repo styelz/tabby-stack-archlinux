@@ -71,6 +71,20 @@ LOGO_TAIL = (
     "emblem, no browser chrome, no navigation bar, no page layout"
 )
 TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
+# A mixed coding+images chat line mentions "logo" but is still a site spec.
+# Qwen-Image then paints a finished webpage. Collapse those to a short mark.
+PAGE_SPEC_RE = re.compile(
+    r"(?is)\b("
+    r"single[- ]page(?:\s+application)?|production[- ]ready|"
+    r"pillow|\bpil\b|html5|css3|\breact\b|\bvue\b|"
+    r"contact form|booking system|pricing tiers?|"
+    r"deliverables?|technical requirements?|"
+    r"python script|generate_images|"
+    r"content structure|visual design|"
+    r"complete html|package section"
+    r")\b"
+)
+PAGE_SPEC_MAX_LOGO_CHARS = 400
 
 PLANET_SCENES: tuple[tuple[str, str], ...] = (
     (
@@ -227,7 +241,7 @@ def company_name(text: str) -> str:
     match = COMPANY_RE.search(text or "")
     if not match:
         return ""
-    return _quoted_or_group(match)
+    return _quoted_or_group(match).rstrip(".,;:")
 
 
 def named_planets(text: str) -> list[str]:
@@ -255,6 +269,31 @@ def _planet_scene(name: str) -> str:
     if SCENE_TAIL in body:
         return body
     return f"{body}, {SCENE_TAIL}"
+
+
+def _is_page_spec(body: str) -> bool:
+    raw = body or ""
+    if PAGE_SPEC_RE.search(raw):
+        return True
+    return len(_strip_noise(raw)) > PAGE_SPEC_MAX_LOGO_CHARS
+
+
+def _isolated_logo_prompt(raw: str, body: str) -> str:
+    """Short Qwen mark. Drop leftover HTML/SPA instructions."""
+    brand = company_name(raw)
+    extra = ", transparent background" if TRANSPARENT_RE.search(raw) else ""
+    if _is_page_spec(body):
+        if brand:
+            return (
+                f"logo that says {brand}, clean brand mark, readable letters{extra}"
+            )
+        return f"elegant brand logo, clean readable letters{extra}"
+    cleaned = _strip_noise(body)
+    if not cleaned:
+        cleaned = "elegant brand logo"
+    if extra and "transparent" not in cleaned.lower():
+        cleaned = f"{cleaned}{extra}"
+    return cleaned
 
 
 def rewrite_comfy_prompt(prompt: str) -> str:
@@ -306,11 +345,7 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         return f"{cleaned}, {SCENE_TAIL}"
 
     if is_logo:
-        cleaned = _strip_noise(body)
-        if not cleaned:
-            cleaned = "elegant brand logo"
-        if TRANSPARENT_RE.search(raw) and "transparent" not in cleaned.lower():
-            cleaned = f"{cleaned}, transparent background"
+        cleaned = _isolated_logo_prompt(raw, body)
         if LOGO_TAIL not in cleaned:
             cleaned = f"{cleaned}, {LOGO_TAIL}"
         if wants_flux:

@@ -53,6 +53,31 @@ class ImagePromptRewriteTests(unittest.TestCase):
         again = rewrite_comfy_prompt(rewritten)
         self.assertEqual(again, rewritten)
 
+    def test_website_spec_logo_collapses_to_isolated_mark(self):
+        line = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The website should be a '
+            "single-page application with a hero section, contact form, "
+            "booking system, and pricing tiers. All images must be generated "
+            "as transparent PNG files using Python with PIL/Pillow. The logo "
+            "should be large. Deliverables: Complete HTML/CSS/JS and a Python "
+            "script to generate the logo, planets, and icons."
+        )
+        self.assertEqual(company_name(line), "Cosmos Tours")
+        rewritten = rewrite_comfy_prompt(line)
+        self.assertTrue(rewritten.lower().startswith("qwen-image:"))
+        self.assertIn("Cosmos Tours", rewritten)
+        self.assertNotIn("Cosmos Tours.", rewritten)
+        self.assertIn("isolated logo mark", rewritten.lower())
+        self.assertNotIn("single-page", rewritten.lower())
+        self.assertNotIn("pillow", rewritten.lower())
+        self.assertNotIn("contact form", rewritten.lower())
+        self.assertNotIn("booking", rewritten.lower())
+        self.assertLess(len(rewritten), 280)
+        items = plan_mixed_images(line)
+        self.assertEqual(items[0]["output_path"], "images/logo.png")
+        self.assertEqual(items[0]["prompt"], rewritten)
+
     def test_rewrite_is_idempotent(self):
         first = rewrite_comfy_prompt("cosmic nebula website header banner")
         self.assertEqual(rewrite_comfy_prompt(first), first)

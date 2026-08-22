@@ -1045,7 +1045,7 @@ async def generated_image_thumb(name: str):
     raise HTTPException(404, "Image not found.")
 
 
-@router.get("/v1/images/{name}")
+@router.api_route("/v1/images/{name}", methods=["GET", "HEAD"])
 async def generated_image(
     name: str,
     x_api_key: str = Header(None),
