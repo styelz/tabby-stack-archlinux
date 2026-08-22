@@ -426,7 +426,15 @@ class GpuModeTests(unittest.TestCase):
             body = response.choices[0].message.content
             self.assertIn("still loading", body.lower())
 
-        idle = comfy_idle_response(tool_follow)
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
+            ),
+        ):
+            idle = comfy_idle_response(tool_follow)
         idle_text = idle.choices[0].message.content
         self.assertNotIn("already has previews", idle_text)
         self.assertIn("ComfyUI", idle_text)
@@ -1162,6 +1170,36 @@ class GpuModeTests(unittest.TestCase):
             is_mixed_image_request(_chat("fix the CSS padding on the header"))
         )
 
+    def test_ide_title_request_is_not_a_mixed_image_ask(self):
+        """A title/summary meta-request that echoes the user's own logo/page
+        ask must not itself be classified as that ask (see
+        test_ide_title_request_does_not_start_a_bogus_job)."""
+        self.assertFalse(
+            is_mixed_image_request(
+                _chat(
+                    "Please write a brief title for the following request: "
+                    "create a webpage of your choice, and create images for "
+                    "the logo, and some to use on the webpage content"
+                )
+            )
+        )
+        self.assertFalse(
+            is_mixed_image_request(
+                _chat(
+                    "Write a short title for this conversation: delete the "
+                    "current logo.png and create a new logo png image, an atom"
+                )
+            )
+        )
+        self.assertFalse(
+            is_mixed_image_request(
+                _chat(
+                    "Summarize the following: generate the logo image, it "
+                    "should be an image of an atom"
+                )
+            )
+        )
+
     def test_mixed_followup_still_gets_hint(self):
         data = ChatCompletionRequest(
             messages=[
@@ -1581,6 +1619,35 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "curl ", response.choices[0].message.tool_calls[0].function.arguments
         )
+
+    async def test_ide_title_request_does_not_start_a_bogus_job(self):
+        """GitHub Copilot/Cursor send a separate 'write a title' completion
+        that echoes the user's own request verbatim. That echoed text can
+        match the logo-redo pattern just like the real ask, which queued a
+        second, unwanted render (see mcp_jobs.json job df6dfb93: two items,
+        one for the title request, one for the real ask)."""
+        title_request = (
+            "Please write a brief title for the following request: delete "
+            "the current logo.png and create a new logo png image, it "
+            "should be an image of an atom with electrons swirling around "
+            "it and be transparent background and rectangle not square"
+        )
+        data = _chat(title_request)
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                new=mock.AsyncMock(),
+            ) as start,
+        ):
+            result = await ensure_mixed_image_job(data)
+        self.assertIsNone(result)
+        start.assert_not_awaited()
 
     async def test_matching_job_is_not_started_again(self):
         job = self._running_job()

@@ -94,6 +94,28 @@ META_IMAGE_RE = re.compile(
     r"showed a preview|over and over|the image is not"
     r")\b"
 )
+# IDEs (GitHub Copilot, Cursor, ...) send a separate, low-stakes completion
+# asking the model to name the conversation/PR, and they typically echo the
+# user's own request verbatim inside it. "delete the current logo.png and
+# create a new logo png image..." inside that wrapper matches IMAGE_REDO_RE
+# just as well as the real ask, so a title request must not be treated as a
+# fresh image/redo turn — that queued a second, unwanted Comfy render on top
+# of the real one (two items, one job) and briefly wedged the mixed-image
+# helpers, since none of them expect the "last user message" to be a title
+# prompt rather than the user's actual line.
+META_WRAPPER_RE = re.compile(
+    r"(?is)^\s*(?:please\s+)?"
+    r"(?:write|generate|give|suggest|create)\s+(?:me\s+)?(?:a\s+)?"
+    r"(?:brief|short|concise|one[- ]word|few[- ]word|catchy)?\s*"
+    r"(?:title|summary|name)\s+for\s+(?:the\s+|this\s+)?(?:following\s+)?"
+    r"(?:request|conversation|chat|task|message|prompt)?"
+    r"|^\s*(?:please\s+)?summariz\w*\s+(?:the\s+)?(?:following|this)\b"
+)
+
+
+def _is_meta_wrapper_text(text: str) -> bool:
+    """True for an IDE's own title/summary request, not a user ask."""
+    return bool(text) and bool(META_WRAPPER_RE.match(text.strip()))
 AGENT_MARKERS = (
     "<user_query>",
     "<userRequest>",
@@ -893,7 +915,10 @@ def _last_ask_text(data: ChatCompletionRequest) -> str:
     text = _unwrap_query(raw) or last_user_text(data)
     if MIXED_IMAGE_HINT_MARK in text:
         text = text.split(MIXED_IMAGE_HINT_MARK, 1)[0]
-    return (text or "").strip()
+    text = (text or "").strip()
+    if _is_meta_wrapper_text(text):
+        return ""
+    return text
 
 
 def conversation_asked_for_page_images(data: ChatCompletionRequest) -> bool:
@@ -912,6 +937,8 @@ def conversation_asked_for_page_images(data: ChatCompletionRequest) -> bool:
 
 def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
     text = last_user_text(data)
+    if _is_meta_wrapper_text(text):
+        return False
     if _text_is_mixed_image(text) or _text_is_image_redo(_last_ask_text(data)):
         return True
     if not text or not conversation_asked_for_page_images(data):
@@ -1740,6 +1767,8 @@ def requested_image_prompt(
     if any(marker.lower() in text.lower() for marker in AGENT_MARKERS):
         return None
     if len(text) > MAX_IMAGE_PROMPT_CHARS or META_IMAGE_RE.search(text):
+        return None
+    if _is_meta_wrapper_text(text):
         return None
     if explicit_only and is_coding_task(text):
         return None

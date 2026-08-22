@@ -38,6 +38,15 @@ POLL_TOOLS = {
     "get_image_job",
     "generate_image",
 }
+# gpu_busy_image_response invents a Shell "sleep N; echo job '<id>' still
+# running; ls -l ..." call (see common/image_paths.image_poll_wait_command)
+# whenever an MCP poll tool is not listed — which is the common case for
+# GitHub Copilot / Cursor Cloud. That command is identical turn after turn
+# by design, so it must be recognized as a poll, the same as get_image_job,
+# or the anti-loop hint fires mid-render and appends a fake "user" message
+# that makes every image-job helper misread the conversation (last_role /
+# last_user_text) as a plain, non-image turn.
+_IMAGE_WAIT_ARGS_RE = re.compile(r"\bsleep\s+\d+\b.*\bstill running\b", re.I | re.S)
 EDIT_TOOLS = {
     "write",
     "strreplace",
@@ -114,6 +123,17 @@ def _is_poll_tool(name: str) -> bool:
     return text in POLL_TOOLS or text.endswith("get_image_job")
 
 
+def _is_image_wait_repeat(name: str, args: str) -> bool:
+    """True for our own invented Shell wait/poll command, any tool name.
+
+    The name varies by client (Shell, run_in_terminal, bash, ...) so this
+    checks the fingerprint instead of a fixed name list.
+    """
+    if _is_poll_tool(name):
+        return True
+    return bool(_IMAGE_WAIT_ARGS_RE.search(args or ""))
+
+
 def _image_job_still_running() -> bool:
     try:
         from endpoints.core.image_jobs import active_mcp_image_job
@@ -129,14 +149,15 @@ def looks_like_tool_loop(data: ChatCompletionRequest) -> bool:
 
     last_three = turns[-3:]
     if last_three[0] == last_three[1] == last_three[2]:
-        if _is_poll_tool(last_three[0][0]) and _image_job_still_running():
+        name, args = last_three[0]
+        if _is_image_wait_repeat(name, args) and _image_job_still_running():
             return False
         return True
 
     last_four = turns[-4:]
     names = [name for name, _ in last_four]
     if len(last_four) >= 4 and all(names) and len(set(names)) == 1:
-        if _is_poll_tool(names[0]) and _image_job_still_running():
+        if _is_image_wait_repeat(names[0], last_four[0][1]) and _image_job_still_running():
             return False
         return True
 
