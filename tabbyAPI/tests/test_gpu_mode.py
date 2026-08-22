@@ -50,6 +50,7 @@ from common.phrase_switch import (
     inject_mixed_image_hint,
     is_help_request,
     is_mixed_image_request,
+    _text_is_image_redo,
     is_restart_request,
     last_role,
     mixed_image_hint,
@@ -2089,6 +2090,160 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sleep ", args)
         self.assertNotIn("curl ", args)
         self.assertNotIn("generated-20260822-021552-239881.png", args)
+
+    async def test_website_spec_logo_should_be_is_not_a_redo(self):
+        """'The logo should be large' inside a full site spec used to match
+        IMAGE_REDO_RE, so ensure_mixed_image_job queued only images/logo.png.
+        Job e428f7b0 on the GPU host was that failure: one Qwen logo, then
+        invented planet URLs, HTTP 404, Pillow."""
+        spec = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The website should be a '
+            "single-page application. The logo should be large and "
+            "prominently displayed. Package section displaying tours to "
+            "different planets (Mars, Jupiter, Saturn, Neptune, etc.). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
+        )
+        self.assertFalse(_text_is_image_redo(spec))
+        self.assertTrue(is_mixed_image_request(_chat(spec)))
+        self.assertTrue(
+            _text_is_image_redo(
+                "delete the current logo.png and create a new logo png image, "
+                "it should be an image of an atom with electrons"
+            )
+        )
+
+        new_job = mock.Mock(
+            id="job-cosmos-full",
+            status="queued",
+            wait_text="About 17 minutes.",
+            wait_s=1114,
+            output_path="images/logo.png",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+
+        async def fake_start(**kwargs):
+            paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
+            self.assertEqual(
+                paths,
+                [
+                    "images/logo.png",
+                    "images/mars.png",
+                    "images/jupiter.png",
+                    "images/saturn.png",
+                    "images/neptune.png",
+                ],
+            )
+            return new_job, "started"
+
+        data = _chat(spec)
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+        ):
+            job = await ensure_mixed_image_job(
+                data, api_base="https://git.pbptech.com/openai/v1"
+            )
+        start.assert_awaited_once()
+        self.assertIs(job, new_job)
+
+    async def test_logo_only_job_does_not_block_missing_planet_dests(self):
+        """Once the chat waited on a logo-only job, reuse used to skip the
+        covers check. Re-running the Cosmos prompt then never queued planets."""
+        leftover = mock.Mock(
+            id="e428f7b0-4cc5-4eff-925a-ba730aaccfba",
+            status="done",
+            wait_text="About 4 minutes.",
+            wait_s=240,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(
+                    output_path="images/logo.png",
+                    urls=[
+                        "https://git.pbptech.com/openai/v1/images/"
+                        "generated-20260823-053850-313512.png"
+                    ],
+                    prompt="logo that says Cosmos Tours",
+                    status="done",
+                    error="",
+                    count=1,
+                )
+            ],
+            urls=[
+                "https://git.pbptech.com/openai/v1/images/"
+                "generated-20260823-053850-313512.png"
+            ],
+            client_saved=False,
+            download_attempts=1,
+            error="",
+        )
+        new_job = mock.Mock(
+            id="job-planets",
+            status="queued",
+            wait_text="About 17 minutes.",
+            wait_s=1114,
+            output_path="images/mars.png",
+            items=[],
+            urls=[],
+            client_saved=False,
+            error="",
+        )
+
+        async def fake_start(**kwargs):
+            paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
+            self.assertIn("images/mars.png", paths)
+            self.assertIn("images/neptune.png", paths)
+            self.assertGreaterEqual(len(paths), 5)
+            return new_job, "started"
+
+        spec = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The logo should be large. '
+            "Tours to Mars, Jupiter, Saturn, Neptune. Each planet package "
+            "should have a generated transparent PNG image of that planet."
+        )
+        data = _with_job_wait(_chat(spec), leftover.id)
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=leftover,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[leftover],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+        ):
+            job = await ensure_mixed_image_job(
+                data, api_base="https://git.pbptech.com/openai/v1"
+            )
+        start.assert_awaited_once()
+        self.assertIs(job, new_job)
 
     def test_logo_redo_downloads_its_own_job_once_done(self):
         """'delete the current logo.png and create a new logo png image ...

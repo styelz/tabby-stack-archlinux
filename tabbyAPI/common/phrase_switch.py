@@ -920,6 +920,8 @@ IMAGE_REDO_RE = re.compile(
     r"\b(?:the\s+)?(?:logo|header)(?:\s+image)?\s+should\s+be\b"
     r")"
 )
+# "The logo should be large" also matches a full website spec. _text_is_image_redo
+# returns false when the same text is a mixed coding+images ask.
 
 
 def is_coding_task(text: str) -> bool:
@@ -939,8 +941,18 @@ def _text_is_mixed_image(text: str) -> bool:
 
 
 def _text_is_image_redo(text: str) -> bool:
-    """True when the user wants one existing PNG replaced, not the whole site."""
-    return bool(text) and bool(IMAGE_REDO_RE.search(text))
+    """True when the user wants one existing PNG replaced, not the whole site.
+
+    A page+images spec often says "The logo should be large". That matches
+    IMAGE_REDO_RE but is not a follow-up redo — plan_mixed_images must still
+    queue every PNG (logo plus named planets). Treating it as a redo is how
+    Cosmos Tours jobs ended up with only images/logo.png.
+    """
+    if not text or not IMAGE_REDO_RE.search(text):
+        return False
+    if _text_is_mixed_image(text):
+        return False
+    return True
 
 
 def _last_ask_text(data: ChatCompletionRequest) -> str:
@@ -1595,12 +1607,19 @@ async def ensure_mixed_image_job(
     planned = _planned_mixed_items(data)
     if existing and _should_reuse_mixed_job(data, existing):
         covers = _job_covers_planned_dests(existing, planned)
-        if (
-            covers
-            or _chat_waited_on_job(data, existing)
-            or user_says_images_missing(data)
-        ):
-            if user_says_images_missing(data):
+        running = getattr(existing, "status", "") in ("queued", "running")
+        waited = _chat_waited_on_job(data, existing)
+        missing = user_says_images_missing(data)
+        # Reuse a complete job, or an in-flight job this chat already
+        # waited on. Do not reuse a done logo-only job — Cosmos Tours
+        # waited on images/logo.png then never queued the planets.
+        # A fresh mixed ask vs a running one-item MCP dump still falls
+        # through so the planned batch can replace it.
+        reuse = covers or (waited and running)
+        if missing and not covers:
+            reuse = not _is_fresh_mixed_image_ask(data)
+        if reuse:
+            if missing:
                 try:
                     existing.client_saved = False
                 except Exception:
