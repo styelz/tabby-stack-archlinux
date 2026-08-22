@@ -863,6 +863,15 @@ MIXED_FOLLOWUP_RE = re.compile(
     r"\binstead of\s+svgs?\b"
     r"|"
     r"\bnot\s+(?:an?\s+)?svgs?\b"
+    r"|"
+    r"generate_images\.py|"
+    r"make_images\.py|"
+    r"image generator script|"
+    r"python image generator|"
+    r"(?:bug|error|fix|debug|issue).{0,80}"
+    r"(?:pillow|\bpil\b|generate_images|image generator)|"
+    r"(?:pillow|\bpil\b|generate_images|image generator).{0,80}"
+    r"(?:bug|error|fix|debug|issue)"
     r")"
 )
 MIXED_IMAGE_HINT_MARK = "This turn is a coding task that also needs images."
@@ -870,6 +879,7 @@ FAKE_IMAGE_SCRIPT_RE = re.compile(
     r"(?is)("
     r"generate_images\.py|"
     r"make_images\.py|"
+    r"image_generator\.py|"
     r"create_(?:the_)?images\.py|"
     r"from\s+PIL(?:\s+import|\s*\.)|"
     r"import\s+PIL\b|"
@@ -882,9 +892,25 @@ FAKE_IMAGE_SCRIPT_RE = re.compile(
     r"Image\.new\s*\("
     r")"
 )
+PILLOW_DEBUG_RE = re.compile(
+    r"(?is)("
+    r"generate_images\.py|"
+    r"make_images\.py|"
+    r"image_generator\.py|"
+    r"image generator script|"
+    r"python image generator|"
+    r"(?:bug|error|fix|debug|issue).{0,80}"
+    r"(?:pillow|\bpil\b|generate_images|image generator)|"
+    r"(?:pillow|\bpil\b|generate_images|image generator).{0,80}"
+    r"(?:bug|error|fix|debug|issue)|"
+    r"from\s+PIL\s+import|"
+    r"\bImageDraw\b"
+    r")"
+)
 FAKE_PNG_NOTE = (
     "Those PNG files must come from the GPU job, not from Pillow, SVG, "
-    "or a Python drawing script. Do not write or run generate_images.py. "
+    "or a Python drawing script. Do not write, run, or debug "
+    "generate_images.py. Transparency is applied on the GPU after Comfy. "
     "Do not overwrite the planned .png paths with local drawings. "
     "Downloading the real GPU PNGs again. After they land, write HTML/CSS/JS only."
 )
@@ -955,6 +981,11 @@ def _text_is_image_redo(text: str) -> bool:
     return True
 
 
+def _text_is_pillow_debug(text: str) -> bool:
+    """True when the coding client is stuck fixing a local drawing script."""
+    return bool(PILLOW_DEBUG_RE.search(text or ""))
+
+
 def _last_ask_text(data: ChatCompletionRequest) -> str:
     raw = last_user_raw(data)
     text = _unwrap_query(raw) or last_user_text(data)
@@ -988,7 +1019,11 @@ def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
         return True
     if not text or not conversation_asked_for_page_images(data):
         return False
-    return bool(is_coding_task(text) or MIXED_FOLLOWUP_RE.search(text))
+    return bool(
+        is_coding_task(text)
+        or MIXED_FOLLOWUP_RE.search(text)
+        or _text_is_pillow_debug(text)
+    )
 
 
 def _render_seconds(prompt: str = "") -> int:
@@ -1625,7 +1660,10 @@ async def ensure_mixed_image_job(
                 except Exception:
                     pass
             return existing
-    if not _is_fresh_mixed_image_ask(data):
+    if not _is_fresh_mixed_image_ask(data) and not (
+        _text_is_pillow_debug(_last_ask_text(data))
+        or _chat_is_faking_images(data)
+    ):
         return None
 
     items = planned
@@ -1683,9 +1721,12 @@ def _messages_since_last_user(data: ChatCompletionRequest):
 def _chat_is_faking_images(data: ChatCompletionRequest) -> bool:
     """True when a tool is drawing PNGs with Pillow/SVG instead of the GPU job.
 
-    Only tool arguments and tool results count. Assistant prose is ignored so
-    our own 'do not write generate_images.py' note cannot loop.
+    Only tool arguments and tool results count, plus a user follow-up that
+    is debugging generate_images.py. Assistant prose is ignored so our own
+    'do not write generate_images.py' note cannot loop.
     """
+    if _text_is_pillow_debug(_last_ask_text(data)):
+        return True
     blob_parts: list[str] = []
     for message in _messages_since_last_user(data):
         if message.role in ("tool", "function"):
@@ -1977,7 +2018,9 @@ def mixed_image_hint(
         f"{ready_line}"
         "Do not fake images with SVG, CSS shapes, Pillow/PIL circles, emoji, "
         "placeholder URLs, or Unsplash. "
-        "Do not write generate_images.py or any Python drawing script. "
+        "Do not write generate_images.py or any Python drawing script, even "
+        "if the spec asked for PIL/Pillow or transparent PNGs. "
+        "Transparency is applied on the GPU after Comfy. "
         "Do not convert SVG to PNG. If a curl 404s, wait — do not invent "
         "substitute images. "
         "Unless the user explicitly asked for SVG, every image is a generated PNG. "

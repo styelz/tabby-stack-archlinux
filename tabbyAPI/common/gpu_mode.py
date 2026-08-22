@@ -549,9 +549,8 @@ def generate_image(
     from common.image_prompts import rewrite_comfy_prompt, wants_transparent
     from common.png_alpha import apply_requested_alpha
 
-    wanted = wants_transparent(prompt)
     prompt = rewrite_comfy_prompt(prompt)
-    wanted = wanted or wants_transparent(prompt)
+    wanted = wants_transparent(prompt)
     if not comfy_up():
         raise RuntimeError(f"ComfyUI is not running at {COMFY_HOST}:{COMFY_PORT}")
     width, height = parse_size(size)

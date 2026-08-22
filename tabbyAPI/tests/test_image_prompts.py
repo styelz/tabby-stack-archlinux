@@ -4,7 +4,7 @@ import unittest
 from common.gpu_mode import wants_qwen_image
 from common.image_prompts import (
     CHROMA_HEX,
-    CHROMA_TAIL,
+    CUTOUT_TAIL,
     SCENE_TAIL,
     images_folder,
     mixed_image_plan_text,
@@ -14,6 +14,7 @@ from common.image_prompts import (
     site_folder,
     company_name,
     user_asked_for_svg,
+    wants_transparent,
 )
 
 
@@ -76,9 +77,10 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("pillow", rewritten.lower())
         self.assertNotIn("contact form", rewritten.lower())
         self.assertNotIn("booking", rewritten.lower())
-        self.assertLess(len(rewritten), 280)
+        self.assertLess(len(rewritten), 360)
         self.assertNotIn("transparent", rewritten.lower())
-        self.assertIn(CHROMA_HEX, rewritten)
+        self.assertNotIn(CHROMA_HEX, rewritten)
+        self.assertIn(CUTOUT_TAIL.split(",")[0], rewritten)
         items = plan_mixed_images(line)
         self.assertEqual(items[0]["output_path"], "images/logo.png")
         self.assertEqual(items[0]["prompt"], rewritten)
@@ -235,7 +237,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertTrue(items[0]["prompt"].lower().startswith("flux:"))
         self.assertNotIn("qwen-image:", items[0]["prompt"].lower())
         self.assertNotIn("transparent", items[0]["prompt"].lower())
-        self.assertIn(CHROMA_HEX, items[0]["prompt"])
+        self.assertNotIn(CHROMA_HEX, items[0]["prompt"])
+        self.assertIn(CUTOUT_TAIL, items[0]["prompt"])
         self.assertFalse(wants_qwen_image(items[0]["prompt"]))
         qwen = plan_image_redo(
             "improve the logo, generate a better png image", "pbptours"
@@ -266,15 +269,16 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertTrue(logo.startswith("qwen-image:"))
         self.assertIn("cosmos tours", logo)
         self.assertNotIn("transparent", logo)
-        self.assertIn(CHROMA_HEX.lower(), logo)
+        self.assertNotIn(CHROMA_HEX.lower(), logo)
+        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
         self.assertIn("isolated logo mark", logo)
         self.assertNotIn("website", logo)
         self.assertNotIn("space-tourism", logo)
         for row in items[1:]:
             self.assertNotIn("qwen-image:", row["prompt"].lower())
             self.assertNotIn("transparent", row["prompt"].lower())
-            self.assertIn(CHROMA_HEX, row["prompt"])
-            self.assertIn(CHROMA_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn(CHROMA_HEX, row["prompt"])
+            self.assertIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
             self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
@@ -306,23 +310,68 @@ class ImagePromptRewriteTests(unittest.TestCase):
         logo = items[0]["prompt"].lower()
         self.assertTrue(logo.startswith("qwen-image:"))
         self.assertNotIn("transparent", logo)
-        self.assertIn(CHROMA_HEX.lower(), logo)
+        self.assertNotIn(CHROMA_HEX.lower(), logo)
+        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
         for row in items[1:]:
             self.assertNotIn("transparent", row["prompt"].lower())
-            self.assertIn(CHROMA_HEX, row["prompt"])
+            self.assertNotIn(CHROMA_HEX, row["prompt"])
+            self.assertIn(CUTOUT_TAIL, row["prompt"])
             self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
     def test_transparent_ask_never_says_transparent_to_comfy(self):
         rewritten = rewrite_comfy_prompt("transparent PNG of a coffee cup")
         self.assertNotIn("transparent", rewritten.lower())
-        self.assertIn(CHROMA_HEX, rewritten)
+        self.assertNotIn(CHROMA_HEX, rewritten)
+        self.assertIn(CUTOUT_TAIL.split(",")[0], rewritten)
+        self.assertTrue(wants_transparent(rewritten))
         self.assertEqual(rewrite_comfy_prompt(rewritten), rewritten)
         hero = rewrite_comfy_prompt(
             "transparent website hero banner, purple dusk over dunes"
         )
         self.assertIn(SCENE_TAIL.split(",")[0], hero)
         self.assertNotIn(CHROMA_HEX, hero)
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], hero)
+        self.assertNotIn("transparent", hero.lower())
+        self.assertFalse(wants_transparent(hero))
+
+    def test_any_listed_subjects_queue_pngs_not_just_planets(self):
+        line = (
+            'create a website for a bakery called "Sweet Crust" with a logo '
+            "and transparent PNG images of a croissant, a loaf of bread, "
+            "and a cake. Put files under sweetcrust."
+        )
+        items = plan_mixed_images(line)
+        paths = [row["output_path"] for row in items]
+        self.assertEqual(
+            paths,
+            [
+                "sweetcrust/images/logo.png",
+                "sweetcrust/images/croissant.png",
+                "sweetcrust/images/loaf-of-bread.png",
+                "sweetcrust/images/cake.png",
+            ],
+        )
+        logo = items[0]["prompt"].lower()
+        self.assertTrue(logo.startswith("qwen-image:"))
+        self.assertIn("sweet crust", logo)
+        self.assertNotIn("transparent", logo)
+        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
+        for row in items[1:]:
+            self.assertNotIn("qwen-image:", row["prompt"].lower())
+            self.assertNotIn("transparent", row["prompt"].lower())
+            self.assertIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
+            self.assertIn("isolated object", row["prompt"].lower())
+            self.assertFalse(wants_qwen_image(row["prompt"]))
+
+    def test_images_of_your_choice_does_not_invent_subjects(self):
+        items = plan_mixed_images(
+            "create a webpage and generate a header and logo images for it "
+            "and a couple of other images on the page of your choice"
+        )
+        paths = [row["output_path"] for row in items]
+        self.assertIn("images/logo.png", paths)
+        self.assertTrue(set(paths) <= {"images/logo.png", "images/header.png"})
 
 
 if __name__ == "__main__":

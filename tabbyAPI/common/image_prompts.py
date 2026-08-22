@@ -70,12 +70,18 @@ LOGO_TAIL = (
     "isolated logo mark only, centered, simple background, "
     "emblem, no browser chrome, no navigation bar, no page layout"
 )
-# Flux/Qwen paint a Photoshop checkerboard if the prompt says "transparent".
-# Ask for a chroma-key color instead; png_alpha punches it to a real alpha.
+# Flux/Qwen paint a Photoshop checkerboard if the prompt says "transparent",
+# and a fixed magenta chroma-key punches holes in any mark that uses that
+# color. Ask for a plain studio background; png_alpha floods it (or leftover
+# chroma / dark space) to alpha.
 CHROMA_HEX = "#FF00FF"
 CHROMA_TAIL = (
     "solid flat magenta (#FF00FF) background, no checkerboard, "
     "no pattern, no shadows, no floor"
+)
+CUTOUT_TAIL = (
+    "plain even studio background, fully inside the frame, "
+    "no checkerboard, no pattern, no shadows, no floor, no stars"
 )
 TRANSPARENT_RE = re.compile(r"(?is)\btransparent\b")
 TRANSPARENT_PHRASE_RE = re.compile(
@@ -198,6 +204,52 @@ REJECTED_SVG_RE = re.compile(
 )
 MAX_PLANNED_IMAGES = 12
 MIXED_PLAN_MARK = "Interpreted PNG jobs from the user request"
+IMAGE_OF_RE = re.compile(
+    r"(?is)\b(?:generated\s+)?"
+    r"(?:(?:transparent\s+)?png\s+images?|(?:transparent\s+)?pngs?|"
+    r"images?|pictures?|photos?|pics?)\s+of\s+"
+    r"(?!each\b|every\b|your\s+choice\b)"
+    r"([^.;]+)"
+)
+_SUBJECT_ARTICLES = re.compile(r"(?is)^(an?|the)\s+")
+_SUBJECT_TRAIL = re.compile(
+    r"(?is)\s+\b(?:for the|on the|to use|that will|which will|etc|"
+    r"under the|into the|inside the|put files)\b.*$"
+)
+_SKIP_SUBJECTS = frozenset(
+    {
+        "choice",
+        "your choice",
+        "it",
+        "them",
+        "those",
+        "these",
+        "this",
+        "that",
+        "logo",
+        "header",
+        "banner",
+        "icon",
+        "favicon",
+        "the logo",
+        "the header",
+        "each",
+        "every",
+        "other",
+        "some",
+        "page",
+        "site",
+        "website",
+        "planet",
+        "planets",
+        "that planet",
+        "the planet",
+        "the planets",
+        "each planet",
+        "every planet",
+        "etc",
+    }
+)
 # API URL paths that look like site/images dirs (".../openai/v1/images/generated-...").
 _API_IMAGES_DIRS = frozenset({"v1/images", "openai/v1/images", "api/images"})
 _RESERVED_SITE_FOLDERS = frozenset(
@@ -225,16 +277,34 @@ def _collapse(text: str) -> str:
     return text.strip(" ,.;:-")
 
 
+def _already_cutout(text: str) -> bool:
+    return CUTOUT_TAIL in (text or "") or CHROMA_TAIL in (text or "")
+
+
 def wants_transparent(text: str) -> bool:
-    """True when the user asked for a cutout, or the rewrite already set chroma."""
+    """True when the user asked for a cutout, or the rewrite already set one.
+
+    Full-bleed hero scenes keep their backdrop even if the user said
+    "transparent" — those prompts get SCENE_TAIL, not a studio cutout.
+    """
     raw = text or ""
-    return bool(TRANSPARENT_RE.search(raw) or CHROMA_HEX.lower() in raw.lower())
+    if SCENE_TAIL in raw and not _already_cutout(raw):
+        return False
+    if _already_cutout(raw):
+        return True
+    if CHROMA_HEX.lower() in raw.lower():
+        return True
+    return bool(TRANSPARENT_RE.search(raw))
 
 
 def _strip_transparent_words(text: str) -> str:
     cleaned = TRANSPARENT_PHRASE_RE.sub(" ", text or "")
-    # Do not eat "no checkerboard" inside CHROMA_TAIL on a second rewrite.
-    if CHROMA_HEX.lower() not in cleaned.lower():
+    # Do not eat "no checkerboard" inside a cutout/chroma tail on a rewrite.
+    if (
+        CUTOUT_TAIL not in cleaned
+        and CHROMA_TAIL not in cleaned
+        and CHROMA_HEX.lower() not in cleaned.lower()
+    ):
         cleaned = CHECKER_WORD_RE.sub(" ", cleaned)
     return _collapse(cleaned)
 
@@ -242,14 +312,14 @@ def _strip_transparent_words(text: str) -> str:
 def _logo_tail(*, chroma: bool) -> str:
     if not chroma:
         return LOGO_TAIL
-    return LOGO_TAIL.replace("simple background", CHROMA_TAIL)
+    return LOGO_TAIL.replace("simple background", CUTOUT_TAIL)
 
 
 def _with_logo_tail(cleaned: str, *, chroma: bool) -> str:
     if "isolated logo mark only" in cleaned:
         return cleaned
     tail = _logo_tail(chroma=chroma)
-    if chroma and CHROMA_TAIL in cleaned:
+    if chroma and _already_cutout(cleaned):
         tail = LOGO_TAIL.replace(", simple background", "")
     return f"{cleaned}, {tail}"
 
@@ -258,9 +328,9 @@ def _with_chroma(text: str, *, chroma: bool) -> str:
     cleaned = _strip_transparent_words(text)
     if not chroma:
         return cleaned
-    if CHROMA_TAIL in cleaned or CHROMA_HEX.lower() in cleaned.lower():
+    if _already_cutout(cleaned) or CHROMA_HEX.lower() in cleaned.lower():
         return cleaned
-    return f"{cleaned}, {CHROMA_TAIL}" if cleaned else CHROMA_TAIL
+    return f"{cleaned}, {CUTOUT_TAIL}" if cleaned else CUTOUT_TAIL
 
 
 def _strip_noise(body: str) -> str:
@@ -328,6 +398,67 @@ def named_planets(text: str) -> list[str]:
     return found
 
 
+def _subject_slug(name: str) -> str:
+    words = re.findall(r"[a-z0-9]+", (name or "").lower())
+    if not words:
+        return ""
+    return "-".join(words)[:40].strip("-")
+
+
+def _clean_subject(item: str) -> str:
+    text = _SUBJECT_TRAIL.sub("", item or "")
+    text = _collapse(_SUBJECT_ARTICLES.sub("", text))
+    text = re.sub(r"(?is)^planet\s+", "", text).strip(" ,;:-")
+    return text
+
+
+def listed_image_subjects(text: str) -> list[str]:
+    """Names the user wants as content PNGs (planets, products, anything)."""
+    raw = text or ""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    planets = named_planets(raw)
+    brand = (company_name(raw) or "").lower()
+
+    def take(name: str) -> None:
+        cleaned = _clean_subject(name)
+        if not cleaned or len(cleaned) > 48:
+            return
+        key = cleaned.lower()
+        if key in _SKIP_SUBJECTS or key in seen or key == brand:
+            return
+        slug = _subject_slug(cleaned)
+        if not slug or slug in {"logo", "header", "banner", "generated"}:
+            return
+        if slug in seen:
+            return
+        seen.add(key)
+        seen.add(slug)
+        found.append(cleaned)
+
+    if len(planets) >= 2:
+        for name in planets:
+            take(name)
+    elif EACH_PLANET_RE.search(raw):
+        for name, _scene in PLANET_SCENES:
+            take(name)
+    for match in IMAGE_OF_RE.finditer(raw):
+        chunk = match.group(1) or ""
+        parts = re.split(r"\s*(?:,|&|\band\b)\s*", chunk)
+        for part in parts:
+            take(part)
+    return found
+
+
+def _subject_prompt(name: str, *, chroma: bool) -> str:
+    key = (name or "").strip().lower()
+    if key in PLANET_NAMES:
+        return _planet_chroma(key) if chroma else _planet_scene(key)
+    body = f"photograph of {name.strip()}, isolated object"
+    return _with_chroma(body, chroma=chroma)
+
+
 def _planet_title(name: str) -> str:
     key = (name or "").strip().lower()
     for planet, _scene in PLANET_SCENES:
@@ -355,7 +486,7 @@ def _planet_chroma(name: str) -> str:
     titled = _planet_title(name)
     return (
         f"photograph of planet {titled} as an isolated sphere, "
-        f"no stars, no space backdrop, {CHROMA_TAIL}"
+        f"no stars, no space backdrop, {CUTOUT_TAIL}"
     )
 
 
@@ -369,7 +500,7 @@ def _is_page_spec(body: str) -> bool:
 def _isolated_logo_prompt(raw: str, body: str) -> str:
     """Short Qwen mark. Drop leftover HTML/SPA instructions."""
     brand = company_name(raw)
-    extra = f", {CHROMA_TAIL}" if wants_transparent(raw) else ""
+    extra = f", {CUTOUT_TAIL}" if wants_transparent(raw) else ""
     if _is_page_spec(body):
         if brand:
             return (
@@ -379,7 +510,7 @@ def _isolated_logo_prompt(raw: str, body: str) -> str:
     cleaned = _strip_transparent_words(_strip_noise(body))
     if not cleaned:
         cleaned = "elegant brand logo"
-    if extra and CHROMA_HEX.lower() not in cleaned.lower():
+    if extra and not _already_cutout(cleaned):
         cleaned = f"{cleaned}{extra}"
     return cleaned
 
@@ -390,7 +521,7 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     raw = original
     if not raw:
         return raw
-    if CHROMA_TAIL in raw and (
+    if _already_cutout(raw) and (
         "isolated logo mark only" in raw or "isolated sphere" in raw
     ):
         return raw
@@ -420,7 +551,7 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     if is_hero and not wants_text and not explicit_ui:
         cleaned = _strip_noise(HERO_SLOT.sub(" ", body))
         cleaned = re.sub(r"(?is)\b(ui|ux|gui|interface)\b", " ", cleaned)
-        cleaned = _collapse(cleaned)
+        cleaned = _strip_transparent_words(_collapse(cleaned))
         if len(cleaned) < 8:
             cleaned = "wide atmospheric photograph, rich color, cinematic lighting"
         return f"{cleaned}, {SCENE_TAIL}"
@@ -492,7 +623,7 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
 
     brand = company_name(raw)
     want_alpha = wants_transparent(raw)
-    extra = f", {CHROMA_TAIL}" if want_alpha else ""
+    extra = f", {CUTOUT_TAIL}" if want_alpha else ""
     if LOGO_SLOT.search(raw):
         if brand:
             add(
@@ -509,20 +640,9 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
             "header.png",
         )
 
-    listed = named_planets(raw)
-    if len(listed) >= 2:
-        scenes = {name: scene for name, scene in PLANET_SCENES}
-        for name in listed:
-            if want_alpha:
-                add(_planet_chroma(name), f"{name}.png")
-            else:
-                add(scenes.get(name) or f"photograph of planet {name}", f"{name}.png")
-    elif EACH_PLANET_RE.search(raw):
-        for name, scene in PLANET_SCENES:
-            if want_alpha:
-                add(_planet_chroma(name), f"{name}.png")
-            else:
-                add(scene, f"{name}.png")
+    listed = listed_image_subjects(raw)
+    for name in listed:
+        add(_subject_prompt(name, chroma=want_alpha), f"{_subject_slug(name)}.png")
 
     return items
 
@@ -567,9 +687,10 @@ def format_mixed_image_plan(
     lines = [
         f"{MIXED_PLAN_MARK} ({len(items)} PNG files). "
         "Write HTML/CSS/JS under the site folder; do not switch the project to React/Vite. "
-        "Create raster PNG files, not .svg, CSS planet art, or Pillow/PIL drawings.",
-        "Do not write generate_images.py. Do not convert SVG to PNG. "
-        "Do not overwrite a GPU PNG with a local drawing.",
+        "Create raster PNG files, not .svg, CSS art, or Pillow/PIL drawings.",
+        "Do not write generate_images.py, even if the spec asked for a Python "
+        "image script. Do not convert SVG to PNG. Do not overwrite a GPU PNG "
+        "with a local drawing. Transparency is applied on the GPU after Comfy.",
         "Do not use generate_image. The server already queued this batch.",
         "Write the page after those files exist on disk.",
     ]

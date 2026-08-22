@@ -50,7 +50,7 @@ Returns `b64_json` and `url`. Save the PNG into the project with a shell command
 
 ### Coding plus images (same chat)
 
-A line like “create a webpage and generate a header and logo” is a **coding task**. The API plans the PNG dests and **starts the Comfy job itself**. Do not turn it into React/Vite boilerplate, SVG/CSS art, or a Pillow/`generate_images.py` script unless the user asked for those.
+A line like “create a webpage and generate a header and logo” is a **coding task**. The API plans the PNG dests and **starts the Comfy job itself**. Do not turn it into React/Vite boilerplate, SVG/CSS art, or a Pillow/`generate_images.py` script. Transparent PNGs are produced on the GPU after Comfy — do not write or debug a Python drawing script even if the spec asked for PIL/Pillow.
 
 1. Keep using the wait or download tool this API requests (Shell `sleep`/`ls` first, then `curl` when the job is done). Do not invent `/v1/images/generated-*.png` URLs. Do not curl a leftover URL from another chat. A queued or backgrounded command is not success. If a curl 404s, wait for this API — do not write `generate_images.py`.
 2. After those PNG files exist on disk: save HTML/CSS/JS with your editor’s file tools. Do not dump the page in chat. Point `img src` at the planned local paths such as `images/logo.png`. Do not overwrite those PNGs with Pillow, SVG, or `generate_images.py`.

@@ -72,6 +72,46 @@ class PngAlphaTests(unittest.TestCase):
         self.assertEqual(out, raw)
         self.assertGreater(_transparent_count(_open(out)), 500)
 
+    def test_white_studio_backdrop_becomes_alpha(self):
+        im = Image.new("RGB", (64, 64), (250, 250, 250))
+        for y in range(18, 46):
+            for x in range(18, 46):
+                im.putpixel((x, y), (20, 90, 200))
+        out = apply_requested_alpha(_png(im), wanted=True)
+        result = _open(out)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        self.assertEqual(result.getpixel((63, 63))[3], 0)
+        subject = result.getpixel((32, 32))
+        self.assertGreater(subject[3], 200)
+        self.assertEqual(subject[:3], (20, 90, 200))
+
+    def test_dark_space_around_a_planet_becomes_alpha(self):
+        im = Image.new("RGB", (64, 64), (4, 4, 12))
+        for y in range(16, 48):
+            for x in range(16, 48):
+                if (x - 32) ** 2 + (y - 32) ** 2 <= 14 ** 2:
+                    im.putpixel((x, y), (200, 70, 40))
+        out = apply_requested_alpha(_png(im), wanted=True)
+        result = _open(out)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        self.assertEqual(result.getpixel((63, 0))[3], 0)
+        subject = result.getpixel((32, 32))
+        self.assertGreater(subject[3], 200)
+        self.assertGreater(subject[0], 150)
+
+    def test_subject_color_matching_old_chroma_is_kept(self):
+        """A mark the same color as the old #FF00FF key must stay opaque."""
+        im = Image.new("RGB", (64, 64), (255, 255, 255))
+        for y in range(20, 44):
+            for x in range(20, 44):
+                im.putpixel((x, y), (255, 0, 255))
+        out = apply_requested_alpha(_png(im), wanted=True)
+        result = _open(out)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        mark = result.getpixel((32, 32))
+        self.assertGreater(mark[3], 200)
+        self.assertEqual(mark[:3], (255, 0, 255))
+
 
 if __name__ == "__main__":
     unittest.main()
