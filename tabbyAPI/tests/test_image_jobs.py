@@ -239,8 +239,177 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered.status, "error")
                 self.assertIn("restarted", recovered.error.lower())
                 self.assertEqual(recovered.urls, ["https://gpu.example/v1/images/a.png"])
+                self.assertEqual(recovered.items[0].status, "done")
+                self.assertEqual(recovered.items[1].status, "error")
                 disk = json.loads((Path(raw) / "mcp_jobs.json").read_text(encoding="utf-8"))
                 self.assertEqual(disk[-1]["status"], "error")
+                self.assertEqual(disk[-1]["items"][1]["status"], "error")
+                await reset_mcp_image_jobs_for_tests()
+
+    async def test_persisted_error_job_clears_unfinished_items(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _MCP_JOBS,
+            _MCP_ORDER,
+            _persist_jobs,
+            get_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-error-leftover-items",
+                    items=[
+                        McpImageItem(
+                            prompt="hero",
+                            output_path="images/hero.png",
+                            status="done",
+                            urls=["https://gpu.example/v1/images/a.png"],
+                        ),
+                        McpImageItem(
+                            prompt="logo",
+                            output_path="images/logo.png",
+                            status="running",
+                        ),
+                    ],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="error",
+                    phase="error",
+                    error="Image job was cancelled",
+                    urls=["https://gpu.example/v1/images/a.png"],
+                )
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                _persist_jobs()
+                await reset_mcp_image_jobs_for_tests()
+                recovered = get_mcp_image_job("job-error-leftover-items")
+                self.assertEqual(recovered.status, "error")
+                self.assertEqual(recovered.items[0].status, "done")
+                self.assertEqual(recovered.items[1].status, "error")
+                await reset_mcp_image_jobs_for_tests()
+
+    async def test_abandon_inflight_jobs_clears_running_and_disk(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _MCP_JOBS,
+            _MCP_ORDER,
+            abandon_inflight_jobs,
+            active_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-abandon-now",
+                    items=[
+                        McpImageItem(
+                            prompt="scene",
+                            output_path="images/hero.png",
+                            status="running",
+                        ),
+                        McpImageItem(
+                            prompt="logo",
+                            output_path="images/logo.png",
+                            status="queued",
+                        ),
+                    ],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="running",
+                    phase="generating",
+                )
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                cleared = abandon_inflight_jobs("TabbyAPI is restarting.")
+                self.assertEqual(cleared, 1)
+                self.assertIsNone(active_mcp_image_job())
+                self.assertEqual(job.status, "error")
+                self.assertEqual(job.items[0].status, "error")
+                self.assertEqual(job.items[1].status, "error")
+                disk = json.loads((Path(raw) / "mcp_jobs.json").read_text(encoding="utf-8"))
+                self.assertEqual(disk[-1]["status"], "error")
+                self.assertEqual(disk[-1]["items"][1]["status"], "error")
+                await reset_mcp_image_jobs_for_tests()
+
+    async def test_abandon_inflight_jobs_cancels_worker(self):
+        import asyncio
+
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            abandon_inflight_jobs,
+            reset_mcp_image_jobs_for_tests,
+        )
+        import images.jobs as jobs
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-cancel-worker",
+                    items=[McpImageItem(prompt="scene", output_path="images/generated.png")],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="running",
+                    phase="generating",
+                )
+                jobs._MCP_JOBS[job.id] = job
+                jobs._MCP_ORDER.append(job.id)
+
+                async def sleeper():
+                    await asyncio.sleep(60)
+
+                task = asyncio.get_running_loop().create_task(sleeper())
+                jobs._MCP_TASK = task
+                jobs._MCP_JOB_ID = job.id
+                cleared = abandon_inflight_jobs("TabbyAPI is restarting.")
+                self.assertEqual(cleared, 1)
+                self.assertIsNone(jobs._MCP_TASK)
+                self.assertIsNone(jobs._MCP_JOB_ID)
+                await asyncio.sleep(0)
+                self.assertTrue(task.cancelled() or task.done())
+                await reset_mcp_image_jobs_for_tests()
+
+    async def test_get_job_drops_orphan_running_status(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _MCP_JOBS,
+            _MCP_ORDER,
+            get_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-orphan-get",
+                    items=[McpImageItem(prompt="scene", output_path="images/generated.png")],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="running",
+                    phase="generating",
+                )
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                recovered = get_mcp_image_job("job-orphan-get")
+                self.assertEqual(recovered.status, "error")
                 await reset_mcp_image_jobs_for_tests()
 
     async def test_running_job_with_no_worker_is_not_active(self):

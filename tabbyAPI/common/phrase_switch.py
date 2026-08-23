@@ -644,10 +644,21 @@ def restart_reply_text() -> str:
     return f"Restarting the stack. {hint}, then keep using gpt-4o."
 
 
+def _abandon_jobs_for_restart() -> None:
+    """Drop in-flight image jobs before the process is killed."""
+    try:
+        from images.jobs import abandon_inflight_jobs
+
+        abandon_inflight_jobs("TabbyAPI is restarting.")
+    except Exception as exc:
+        xlogger.warning(f"Could not clear image jobs before restart: {exc}")
+
+
 def start_restart() -> bool:
     """Detach a delayed systemd bounce so this chat reply can flush."""
     if shutil.which("systemctl") is None:
         return False
+    _abandon_jobs_for_restart()
     LOG.touch(exist_ok=True)
     LOCK.write_text("restart", encoding="utf-8")
     mode = "comfy" if gpu_is_comfy() else "llm"

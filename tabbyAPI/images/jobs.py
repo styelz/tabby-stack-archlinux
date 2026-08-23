@@ -50,10 +50,12 @@ MCP_POLL_WAIT_MAX_S = 45
 _MCP_JOBS: dict[str, "McpImageJob"] = {}
 _MCP_ORDER: list[str] = []
 _MCP_TASK: Optional[asyncio.Task] = None
+_MCP_JOB_ID: Optional[str] = None
 _GENERATE_LOCK: Optional[asyncio.Lock] = None
 _GENERATE_LOCK_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _PERSIST_LOADED = False
 JOBS_PERSIST_NAME = "mcp_jobs.json"
+RESTART_ABANDON_REASON = "TabbyAPI restarted before this job finished."
 
 
 @dataclass
@@ -296,18 +298,21 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
     if job.status not in ("done", "error"):
         # The render task that owned this job is gone; it cannot resume.
         # Keep any items that already finished so Shell can still save them.
-        job.status = "error"
-        job.phase = "error"
-        job.client_saved = False
-        if not job.error:
-            if job.done_count:
-                job.error = (
-                    "TabbyAPI restarted before this job finished. "
-                    f"{job.done_count}/{job.count} image(s) already rendered — "
-                    "those URLs are still below."
-                )
-            else:
-                job.error = "TabbyAPI restarted before this job finished."
+        if job.done_count:
+            reason = (
+                f"{RESTART_ABANDON_REASON} "
+                f"{job.done_count}/{job.count} image(s) already rendered — "
+                "those URLs are still below."
+            )
+        else:
+            reason = RESTART_ABANDON_REASON
+        _mark_job_abandoned(job, reason)
+    else:
+        for item in job.items:
+            if item.status in ("queued", "running"):
+                item.status = "error"
+                if not item.error:
+                    item.error = job.error or RESTART_ABANDON_REASON
     return job
 
 
@@ -357,21 +362,56 @@ def _worker_is_alive() -> bool:
     return _MCP_TASK is not None and not _MCP_TASK.done()
 
 
+def _mark_job_abandoned(job: McpImageJob, reason: str) -> None:
+    job.status = "error"
+    job.phase = "error"
+    job.client_saved = False
+    if not job.error:
+        job.error = reason
+    for item in job.items:
+        if item.status in ("queued", "running"):
+            item.status = "error"
+            if not item.error:
+                item.error = reason
+
+
 def _drop_dead_jobs() -> None:
     """A queued/running job with no worker is leftover from a crash or reboot."""
-    if _worker_is_alive():
-        return
+    live_id = _MCP_JOB_ID if _worker_is_alive() else None
     changed = False
     for job in _MCP_JOBS.values():
         if job.status not in ("queued", "running"):
             continue
-        job.status = "error"
-        job.phase = "error"
-        if not job.error:
-            job.error = "Image job was interrupted (process restarted)."
+        if live_id and job.id == live_id:
+            continue
+        _mark_job_abandoned(job, "Image job was interrupted (process restarted).")
         changed = True
     if changed:
         _persist_jobs()
+
+
+def abandon_inflight_jobs(reason: str = RESTART_ABANDON_REASON) -> int:
+    """Mark every queued/running job as error and cancel the render worker.
+
+    Call this on process startup and before a systemd bounce. A restart
+    cannot resume Comfy; leaving the old id as running blocks every chat.
+    """
+    global _MCP_TASK, _MCP_JOB_ID
+    _load_persisted_jobs()
+    count = 0
+    for job in _MCP_JOBS.values():
+        if job.status not in ("queued", "running"):
+            continue
+        _mark_job_abandoned(job, reason)
+        count += 1
+    task = _MCP_TASK
+    _MCP_TASK = None
+    _MCP_JOB_ID = None
+    if count:
+        _persist_jobs()
+    if task is not None and not task.done():
+        task.cancel()
+    return count
 
 
 def refresh_job_wait(job: McpImageJob) -> None:
@@ -491,6 +531,7 @@ def active_mcp_image_job() -> Optional[McpImageJob]:
 
 def get_mcp_image_job(job_id: Optional[str] = None) -> Optional[McpImageJob]:
     _load_persisted_jobs()
+    _drop_dead_jobs()
     if job_id:
         return _MCP_JOBS.get(job_id)
     if not _MCP_ORDER:
@@ -501,6 +542,7 @@ def get_mcp_image_job(job_id: Optional[str] = None) -> Optional[McpImageJob]:
 def recent_mcp_image_jobs() -> list[McpImageJob]:
     """Newest MCP/Comfy jobs first (in-process queue + persisted)."""
     _load_persisted_jobs()
+    _drop_dead_jobs()
     return [_MCP_JOBS[job_id] for job_id in reversed(_MCP_ORDER) if job_id in _MCP_JOBS]
 
 
@@ -657,8 +699,9 @@ async def start_mcp_image_job(
     refresh_job_wait(job)
     _remember_mcp_job(job)
     loop = asyncio.get_running_loop()
-    global _MCP_TASK
+    global _MCP_TASK, _MCP_JOB_ID
     _MCP_TASK = loop.create_task(_run_mcp_image_job(job, float(delay)))
+    _MCP_JOB_ID = job.id
     return job, "started"
 
 
@@ -690,6 +733,7 @@ async def wait_mcp_job_progress(job: McpImageJob, wait_s: float) -> None:
 
 
 async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
+    global _MCP_JOB_ID
     from common.gpu_mode import public_image_url
 
     try:
@@ -742,20 +786,24 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.phase = "done"
         _signal(job)
     except asyncio.CancelledError:
-        job.status = "error"
-        job.phase = "error"
-        job.error = "Image job was cancelled"
-        _signal(job)
+        if job.status not in ("done", "error"):
+            job.status = "error"
+            job.phase = "error"
+            job.error = job.error or "Image job was cancelled"
+            _signal(job)
         raise
     except Exception as exc:
         job.status = "error"
         job.phase = "error"
         job.error = str(exc)
         _signal(job)
+    finally:
+        if _MCP_JOB_ID == job.id:
+            _MCP_JOB_ID = None
 
 
 async def reset_mcp_image_jobs_for_tests() -> None:
-    global _MCP_TASK, _GENERATE_LOCK, _GENERATE_LOCK_LOOP, _PERSIST_LOADED
+    global _MCP_TASK, _MCP_JOB_ID, _GENERATE_LOCK, _GENERATE_LOCK_LOOP, _PERSIST_LOADED
     if _MCP_TASK is not None and not _MCP_TASK.done():
         _MCP_TASK.cancel()
         try:
@@ -763,6 +811,7 @@ async def reset_mcp_image_jobs_for_tests() -> None:
         except (asyncio.CancelledError, Exception):
             pass
     _MCP_TASK = None
+    _MCP_JOB_ID = None
     _MCP_JOBS.clear()
     _MCP_ORDER.clear()
     _GENERATE_LOCK = None

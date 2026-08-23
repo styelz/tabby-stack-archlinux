@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,12 +34,14 @@ class RestartStackTests(unittest.TestCase):
             with (
                 mock.patch("restart_stack.time.sleep") as sleep,
                 mock.patch("restart_stack.restart_units", return_value=0) as units,
+                mock.patch("restart_stack.abandon_persisted_jobs") as abandon,
             ):
                 self.assertEqual(
                     restart_stack.main(["--delay", "1.5", "--mode", "llm", "--lock", str(lock)]),
                     0,
                 )
             sleep.assert_called_once_with(1.5)
+            abandon.assert_called_once()
             units.assert_called_once_with("llm")
             self.assertFalse(lock.exists())
 
@@ -46,6 +49,7 @@ class RestartStackTests(unittest.TestCase):
         with (
             mock.patch("common.phrase_switch.shutil.which", return_value="/usr/bin/systemctl"),
             mock.patch("common.phrase_switch.gpu_is_comfy", return_value=False),
+            mock.patch("common.phrase_switch._abandon_jobs_for_restart") as abandon,
             mock.patch("common.phrase_switch.subprocess.Popen") as popen,
             mock.patch("common.phrase_switch.LOCK") as lock,
             mock.patch("common.phrase_switch.LOG") as log,
@@ -54,10 +58,45 @@ class RestartStackTests(unittest.TestCase):
             log.touch = mock.Mock()
             log.open = mock.mock_open()
             self.assertTrue(start_restart())
+            abandon.assert_called_once()
             popen.assert_called_once()
             args = popen.call_args.args[0]
             self.assertIn("restart_stack.py", args[1])
             self.assertIn("--mode", args)
+
+    def test_abandon_persisted_jobs_rewrites_running(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "mcp_jobs.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "running-job",
+                            "status": "running",
+                            "phase": "generating",
+                            "items": [
+                                {"status": "done", "prompt": "hero"},
+                                {"status": "queued", "prompt": "logo"},
+                            ],
+                        },
+                        {
+                            "id": "done-job",
+                            "status": "done",
+                            "phase": "done",
+                            "items": [{"status": "done", "prompt": "old"}],
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(restart_stack.abandon_persisted_jobs(path), 1)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data[0]["status"], "error")
+            self.assertEqual(data[0]["phase"], "error")
+            self.assertIn("restarted", data[0]["error"])
+            self.assertEqual(data[0]["items"][0]["status"], "done")
+            self.assertEqual(data[0]["items"][1]["status"], "error")
+            self.assertEqual(data[1]["status"], "done")
 
     def test_start_restart_missing_systemctl(self):
         with mock.patch("common.phrase_switch.shutil.which", return_value=None):

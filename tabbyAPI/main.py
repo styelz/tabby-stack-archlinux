@@ -103,10 +103,17 @@ async def entrypoint_async():
         except FileNotFoundError as e:
             logger.warning(str(e))
 
+    from images.jobs import abandon_inflight_jobs
+
+    stale = abandon_inflight_jobs()
+    if stale:
+        logger.info(f"Cleared {stale} stale image job(s) left from the previous process")
+
     await start_api(host, port)
 
     # Uvicorn has finished serving; unload any loaded models so pending
     # jobs are cancelled and the generator is closed cleanly
+    abandon_inflight_jobs("TabbyAPI is shutting down.")
     if model.container:
         await model.unload_model(skip_wait=True, shutdown=True)
 
