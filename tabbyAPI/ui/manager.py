@@ -45,6 +45,12 @@ def install_log_sink() -> None:
 
 
 def journalctl_cmd(*, follow: bool = False, lines: int = 300) -> list[str]:
+    # follow + lines=0 means "new lines only" (no history dump).
+    count = int(lines)
+    if follow and count <= 0:
+        count = 0
+    else:
+        count = max(1, min(count, 5000))
     cmd = [
         "journalctl",
         "--user",
@@ -52,7 +58,7 @@ def journalctl_cmd(*, follow: bool = False, lines: int = 300) -> list[str]:
         "-o",
         "short-iso",
         "-n",
-        str(max(1, min(int(lines), 5000))),
+        str(count),
     ]
     for unit in JOURNAL_UNITS:
         cmd.extend(["-u", unit])
@@ -86,7 +92,7 @@ async def stream_journal_lines() -> AsyncIterator[str]:
             yield line
         return
     process = await asyncio.create_subprocess_exec(
-        *journalctl_cmd(follow=True, lines=200),
+        *journalctl_cmd(follow=True, lines=0),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

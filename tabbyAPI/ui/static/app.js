@@ -18,7 +18,12 @@
       const on = id === key;
       page.el.hidden = !on;
       page.el.classList.toggle("is-active", on);
-      if (on && !handles[id]) handles[id] = page.mount(page.el);
+      if (on) {
+        if (!handles[id]) handles[id] = page.mount(page.el);
+        else if (typeof handles[id].resume === "function") handles[id].resume();
+      } else if (handles[id] && typeof handles[id].pause === "function") {
+        handles[id].pause();
+      }
     });
     document.querySelectorAll(".tab").forEach((tab) => {
       tab.classList.toggle("is-active", tab.dataset.page === key);

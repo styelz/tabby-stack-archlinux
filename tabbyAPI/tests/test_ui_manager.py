@@ -7,10 +7,12 @@ from ui import manager
 
 class UiManagerTests(unittest.TestCase):
     def test_journalctl_cmd_follows_user_units(self):
-        cmd = manager.journalctl_cmd(follow=True, lines=50)
+        cmd = manager.journalctl_cmd(follow=True, lines=0)
         self.assertEqual(cmd[0], "journalctl")
         self.assertIn("--user", cmd)
         self.assertIn("-f", cmd)
+        self.assertIn("-n", cmd)
+        self.assertIn("0", cmd)
         self.assertIn("tabbyapi", cmd)
         self.assertIn("comfyui", cmd)
 

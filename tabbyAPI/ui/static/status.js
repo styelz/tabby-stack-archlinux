@@ -93,10 +93,23 @@ function mountStatus(root) {
   refresh().catch((err) => {
     msg.textContent = err.message;
   });
-  const timer = setInterval(() => refresh().catch(() => {}), 15000);
+  let timer = setInterval(() => refresh().catch(() => {}), 15000);
   return {
+    pause() {
+      if (timer) {
+        clearInterval(timer);
+        timer = 0;
+      }
+    },
+    resume() {
+      if (!timer) {
+        refresh().catch(() => {});
+        timer = setInterval(() => refresh().catch(() => {}), 15000);
+      }
+    },
     destroy() {
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      timer = 0;
     },
   };
 }
