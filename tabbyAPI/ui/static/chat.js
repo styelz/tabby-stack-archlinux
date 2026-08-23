@@ -1,11 +1,19 @@
 function mountChat(root) {
   root.innerHTML = `
     <div class="chat-wrap">
-      <div class="chat-log" id="chat-log"></div>
+      <div class="toolbar chat-toolbar">
+        <button class="btn" type="button" id="chat-new">New chat</button>
+        <button class="btn danger" type="button" id="chat-clear">Clear history</button>
+        <span class="chat-title" id="chat-title">New chat</span>
+        <span class="spacer"></span>
+        <span class="muted" id="chat-hint">Tab previous chats · ↑↓ scroll</span>
+      </div>
+      <div class="chat-log" id="chat-log" tabindex="0"></div>
       <div class="chat-compose">
+        <ul class="slash-menu" id="history-menu" hidden></ul>
         <ul class="slash-menu" id="slash-menu" hidden></ul>
         <form class="chat-form" id="chat-form">
-          <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands."></textarea>
+          <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands. Tab loads previous chats."></textarea>
           <button class="btn primary" type="submit">Send</button>
         </form>
       </div>
@@ -15,7 +23,77 @@ function mountChat(root) {
   const form = root.querySelector("#chat-form");
   const input = root.querySelector("#chat-input");
   const menu = root.querySelector("#slash-menu");
-  const messages = [{ role: "system", content: "Console chat. No file tools." }];
+  const historyMenu = root.querySelector("#history-menu");
+  const titleEl = root.querySelector("#chat-title");
+  const SYSTEM = { role: "system", content: "Console chat. No file tools." };
+  const STORAGE_KEY = "tabby-ui-chat-store";
+  const MAX_CHATS = 50;
+
+  function newId() {
+    if (globalThis.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    return `c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function emptyChat() {
+    return {
+      id: newId(),
+      title: "New chat",
+      updatedAt: Date.now(),
+      messages: [{ ...SYSTEM }],
+    };
+  }
+
+  function cloneMessages(list) {
+    return (Array.isArray(list) ? list : []).map((item) => ({
+      role: item.role === "assistant" || item.role === "system" ? item.role : "user",
+      content: String(item.content || ""),
+    }));
+  }
+
+  function titleFromMessages(list) {
+    const first = (list || []).find((item) => item.role === "user" && String(item.content || "").trim());
+    if (!first) return "New chat";
+    return String(first.content).replace(/\s+/g, " ").trim().slice(0, 56);
+  }
+
+  function hasUserTurn(chat) {
+    return (chat.messages || []).some((item) => item.role === "user" && String(item.content || "").trim());
+  }
+
+  function normalizeStore(raw) {
+    const chats = [];
+    const seen = new Set();
+    const incoming = raw && Array.isArray(raw.chats) ? raw.chats : [];
+    incoming.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const id = String(item.id || newId());
+      if (seen.has(id)) return;
+      seen.add(id);
+      const messages = cloneMessages(item.messages);
+      if (!messages.some((msg) => msg.role === "system")) messages.unshift({ ...SYSTEM });
+      chats.push({
+        id,
+        title: String(item.title || titleFromMessages(messages) || "New chat"),
+        updatedAt: Number(item.updatedAt) || Date.now(),
+        messages,
+      });
+    });
+    if (!chats.length) chats.push(emptyChat());
+    let activeId = String((raw && raw.activeId) || "");
+    if (!chats.some((chat) => chat.id === activeId)) activeId = chats[0].id;
+    return { version: 1, activeId, chats };
+  }
+
+  function readStore() {
+    try {
+      return normalizeStore(JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"));
+    } catch {
+      return normalizeStore(null);
+    }
+  }
+
+  let store = readStore();
+  let messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
     { slash: "/list models", send: "list models", hint: "Installed profiles" },
@@ -28,6 +106,8 @@ function mountChat(root) {
   let commands = STATIC_COMMANDS.slice();
   let menuItems = [];
   let menuIndex = 0;
+  let historyItems = [];
+  let historyIndex = 0;
 
   TabbyUI.api("status")
     .then((data) => {
@@ -42,13 +122,185 @@ function mountChat(root) {
     })
     .catch(() => {});
 
-  function addBubble(role, text) {
+  function activeChat() {
+    return store.chats.find((chat) => chat.id === store.activeId);
+  }
+
+  function listedChats() {
+    const ordered = store.chats
+      .filter((chat) => chat.id === store.activeId || hasUserTurn(chat))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return ordered;
+  }
+
+  function persist() {
+    const chat = activeChat();
+    if (chat) {
+      chat.messages = cloneMessages(messages);
+      chat.title = titleFromMessages(chat.messages);
+    }
+    store.chats = store.chats.filter((item) => item.id === store.activeId || hasUserTurn(item));
+    if (store.chats.length > MAX_CHATS) {
+      const extras = store.chats
+        .filter((item) => item.id !== store.activeId)
+        .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+      const drop = new Set(extras.slice(0, store.chats.length - MAX_CHATS).map((item) => item.id));
+      store.chats = store.chats.filter((item) => !drop.has(item.id));
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    } catch {
+      /* quota — keep working in memory */
+    }
+    paintToolbar();
+  }
+
+  function touchActive() {
+    const chat = activeChat();
+    if (chat) chat.updatedAt = Date.now();
+  }
+
+  function paintToolbar() {
+    const chat = activeChat();
+    const list = listedChats();
+    const idx = Math.max(0, list.findIndex((item) => item.id === store.activeId));
+    const title = (chat && chat.title) || "New chat";
+    titleEl.textContent = list.length > 1 ? `${idx + 1}/${list.length} · ${title}` : title;
+    titleEl.title = title;
+  }
+
+  function addBubble(role, text, stick) {
     const node = document.createElement("div");
     node.className = `bubble ${role}`;
     node.innerHTML = TabbyUI.renderMarkdown(text);
     log.appendChild(node);
-    log.scrollTop = log.scrollHeight;
+    if (stick !== false) log.scrollTop = log.scrollHeight;
     return node;
+  }
+
+  function renderLog(stickToEnd) {
+    log.replaceChildren();
+    messages.forEach((item) => {
+      if (item.role === "user" || item.role === "assistant") addBubble(item.role, item.content, false);
+    });
+    if (stickToEnd !== false) log.scrollTop = log.scrollHeight;
+  }
+
+  function loadChat(id, stickToEnd) {
+    persist();
+    const chat = store.chats.find((item) => item.id === id);
+    if (!chat) return;
+    store.activeId = id;
+    messages = cloneMessages(chat.messages);
+    if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+    persist();
+    renderLog(stickToEnd !== false);
+    input.focus();
+  }
+
+  function startNewChat() {
+    persist();
+    if (!hasUserTurn({ messages })) {
+      renderLog();
+      input.focus();
+      return;
+    }
+    const chat = emptyChat();
+    store.chats.unshift(chat);
+    store.activeId = chat.id;
+    messages = cloneMessages(chat.messages);
+    persist();
+    renderLog();
+    hideHistoryMenu();
+    input.focus();
+  }
+
+  function clearHistory() {
+    if (store.chats.some(hasUserTurn) || hasUserTurn({ messages })) {
+      if (!window.confirm("Delete all saved console chats on this browser?")) return;
+    }
+    const chat = emptyChat();
+    store = { version: 1, activeId: chat.id, chats: [chat] };
+    messages = cloneMessages(chat.messages);
+    persist();
+    renderLog();
+    hideHistoryMenu();
+    input.focus();
+  }
+
+  function hideHistoryMenu() {
+    historyMenu.hidden = true;
+    historyMenu.replaceChildren();
+    historyItems = [];
+    historyIndex = 0;
+  }
+
+  function renderHistoryMenu() {
+    historyItems = listedChats();
+    if (historyItems.length < 2) {
+      hideHistoryMenu();
+      return;
+    }
+    const current = historyItems.findIndex((item) => item.id === store.activeId);
+    historyIndex = current >= 0 ? current : 0;
+    const frag = document.createDocumentFragment();
+    historyItems.forEach((item, idx) => {
+      const li = document.createElement("li");
+      li.className = idx === historyIndex ? "is-active" : "";
+      const when = timeLabel(item.updatedAt);
+      li.innerHTML = `<span class="history-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span><span class="slash-hint">${TabbyUI.escapeHtml(when)}</span>`;
+      li.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        loadChat(item.id);
+        renderHistoryMenu();
+      });
+      frag.appendChild(li);
+    });
+    historyMenu.replaceChildren(frag);
+    historyMenu.hidden = false;
+    const active = historyMenu.querySelector(".is-active");
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function timeLabel(ts) {
+    const delta = Date.now() - (Number(ts) || 0);
+    if (delta < 60_000) return "just now";
+    if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+    if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+    try {
+      return new Date(ts).toLocaleDateString();
+    } catch {
+      return "";
+    }
+  }
+
+  function cycleHistory(delta) {
+    persist();
+    const list = listedChats();
+    if (list.length < 2) return false;
+    hideMenu();
+    let idx = list.findIndex((item) => item.id === store.activeId);
+    if (idx < 0) idx = 0;
+    idx = (idx + delta + list.length) % list.length;
+    loadChat(list[idx].id);
+    renderHistoryMenu();
+    return true;
+  }
+
+  function scrollLog(dir) {
+    const amount = Math.max(80, Math.floor(log.clientHeight * 0.7));
+    log.scrollBy({ top: dir * amount, behavior: "smooth" });
+  }
+
+  function caretAtStart() {
+    return input.selectionStart === 0 && input.selectionEnd === 0;
+  }
+
+  function caretAtEnd() {
+    const n = input.value.length;
+    return input.selectionStart === n && input.selectionEnd === n;
   }
 
   function expandSlash(text) {
@@ -81,6 +333,7 @@ function mountChat(root) {
       hideMenu();
       return;
     }
+    hideHistoryMenu();
     if (menuIndex >= menuItems.length) menuIndex = 0;
     const frag = document.createDocumentFragment();
     menuItems.forEach((item, idx) => {
@@ -144,6 +397,8 @@ function mountChat(root) {
   async function send(text) {
     const outboundText = expandSlash(text);
     messages.push({ role: "user", content: outboundText });
+    touchActive();
+    persist();
     addBubble("user", outboundText);
     const bubble = addBubble("assistant", "");
     let assembled = "";
@@ -155,6 +410,7 @@ function mountChat(root) {
       body: JSON.stringify({ messages: outbound, stream: true }),
     });
     if (response.status === 401) {
+      persist();
       window.location.href = TabbyUI.path("login");
       return;
     }
@@ -184,13 +440,18 @@ function mountChat(root) {
     }
     bubble.innerHTML = TabbyUI.renderMarkdown(assembled || "(empty reply)");
     messages.push({ role: "assistant", content: assembled });
+    persist();
   }
+
+  root.querySelector("#chat-new").addEventListener("click", startNewChat);
+  root.querySelector("#chat-clear").addEventListener("click", clearHistory);
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
     }
+    hideHistoryMenu();
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
@@ -199,11 +460,17 @@ function mountChat(root) {
       await send(text);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
+      persist();
     }
   });
   input.addEventListener("input", () => {
-    if (input.value.startsWith("/")) renderMenu();
-    else hideMenu();
+    if (input.value.startsWith("/")) {
+      hideHistoryMenu();
+      renderMenu();
+    } else {
+      hideMenu();
+      if (!historyMenu.hidden && input.value) hideHistoryMenu();
+    }
   });
   input.addEventListener("keydown", (event) => {
     if (!menu.hidden && menuItems.length) {
@@ -230,12 +497,50 @@ function mountChat(root) {
         return;
       }
     }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      cycleHistory(event.shiftKey ? -1 : 1);
+      return;
+    }
+    if (!historyMenu.hidden && (event.key === "Escape" || event.key === "Enter")) {
+      event.preventDefault();
+      hideHistoryMenu();
+      return;
+    }
+    if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (!input.value || caretAtStart()) {
+        event.preventDefault();
+        scrollLog(-1);
+        return;
+      }
+    }
+    if (event.key === "ArrowDown" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (!input.value || caretAtEnd()) {
+        event.preventDefault();
+        scrollLog(1);
+        return;
+      }
+    }
+    if (event.key === "Escape") {
+      hideHistoryMenu();
+      hideMenu();
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       form.requestSubmit();
     }
   });
-  return { destroy() {} };
+
+  window.addEventListener("beforeunload", persist);
+  renderLog();
+  paintToolbar();
+  return {
+    destroy() {
+      persist();
+      window.removeEventListener("beforeunload", persist);
+    },
+  };
 }
 
 window.mountChat = mountChat;

@@ -213,11 +213,22 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 
 .chat-wrap {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   flex: 1 1 auto;
   min-height: 0;
   gap: 10px;
 }
+.chat-toolbar { margin-bottom: 0; }
+.chat-title {
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: min(420px, 40vw);
+}
+#chat-hint { white-space: nowrap; }
 .chat-log {
   min-height: 0;
   overflow: auto;
@@ -283,6 +294,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .slash-menu .slash-hint {
   color: var(--muted);
   font-size: 12px;
+}
+.slash-menu .history-title {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-form { display: flex; gap: 8px; flex: 0 0 auto; }
 .chat-form textarea { min-height: 46px; resize: vertical; }
@@ -619,6 +637,7 @@ figure.shot .open { display: block; }
 @media (max-width: 900px) {
   .app-header { flex-wrap: wrap; }
   .tabs { order: 3; flex: 1 1 100%; }
+  #chat-hint { display: none; }
 }
 @media (max-width: 640px) {
   .cards { grid-template-columns: 1fr; }

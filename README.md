@@ -88,7 +88,7 @@ Open **`http://127.0.0.1:5000/v1/ui`** (or the same `/v1/ui` path under your HTT
 | Page | Purpose |
 |---|---|
 | **Logs** | Live journal for TabbyAPI (and Comfy when it is up) |
-| **Chat** | Short console chat — no project file tools |
+| **Chat** | Console chat with saved history (New chat / Clear history; Tab loads older chats) — no project file tools |
 | **Status** | Mode, health, NVIDIA/CPU/RAM; graphs (1h–30d or custom); switch, restart, update |
 | **Gallery** | PNGs under `tabbyAPI/pasted-images/` |
 

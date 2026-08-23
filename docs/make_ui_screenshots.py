@@ -314,7 +314,13 @@ def make_gallery() -> Image.Image:
 def make_chat() -> Image.Image:
     img = Image.new("RGB", (W, H), BG)
     draw = header(img, "chat")
-    rr(draw, (18, 80, W - 18, H - 90), 14, fill=ELEV, outline=LINE)
+    rr(draw, (18, 80, 118, 112), 10, fill=ELEV2, outline=LINE)
+    draw.text((36, 88), "New chat", fill=TEXT, font=font(13))
+    rr(draw, (128, 80, 268, 112), 10, fill=(58, 24, 30), outline=(120, 50, 60))
+    draw.text((142, 88), "Clear history", fill=BAD, font=font(13))
+    draw.text((286, 88), "1/3 · What model is loaded, and is the GPU…", fill=MUTED, font=font(13))
+    draw.text((W - 280, 88), "Tab previous chats · ↑↓ scroll", fill=MUTED, font=font(12))
+    rr(draw, (18, 124, W - 18, H - 90), 14, fill=ELEV, outline=LINE)
 
     bubbles = [
         ("user", "What model is loaded, and is the GPU free for images?"),
@@ -330,7 +336,7 @@ def make_chat() -> Image.Image:
             "About 8.1 / 12.3 GiB in use at 61°C, util ~60%. Status → Host graphs has the last 24h.",
         ),
     ]
-    y = 100
+    y = 144
     for role, text in bubbles:
         if role == "user":
             box_w = 520
