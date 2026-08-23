@@ -10,9 +10,16 @@ from unittest import mock
 from endpoints.OAI.types.chat_completion import (
     ChatCompletionMessage,
     ChatCompletionRequest,
+    ChatCompletionRespChoice,
+    ChatCompletionResponse,
 )
+from endpoints.OAI.types.tools import Tool, ToolCall
 from images.chat import handle, job_id_from_history
-from images.paths import image_download_command, living_download_pairs
+from images.paths import (
+    image_download_command,
+    living_download_pairs,
+    planned_dest_fact_list,
+)
 from images.plan import (
     ImageTurnPlan,
     classify_blob,
@@ -27,6 +34,31 @@ def _user(text: str, *, stream: bool = False) -> ChatCompletionRequest:
     return ChatCompletionRequest(
         messages=[ChatCompletionMessage(role="user", content=text)],
         stream=stream,
+    )
+
+
+def _write_code_response(*, path: str = "index.html") -> ChatCompletionResponse:
+    return ChatCompletionResponse(
+        model="gpt-4o",
+        choices=[
+            ChatCompletionRespChoice(
+                finish_reason="tool_calls",
+                message=ChatCompletionMessage(
+                    role="assistant",
+                    content="writing the page",
+                    tool_calls=[
+                        ToolCall(
+                            function=Tool(
+                                name="Write",
+                                arguments=(
+                                    f'{{"path":"{path}","contents":"<html></html>"}}'
+                                ),
+                            )
+                        )
+                    ],
+                ),
+            )
+        ],
     )
 
 
@@ -186,6 +218,18 @@ class PlanTests(unittest.TestCase):
         items = fallback_item("create a website under tours")
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["output_path"].endswith("generated.png"))
+
+    def test_planned_dest_facts_ask_for_code_before_pngs(self):
+        text = planned_dest_fact_list(
+            [
+                {"output_path": "images/logo.png"},
+                {"output_path": "images/mars.png"},
+            ]
+        )
+        self.assertIn("images/logo.png", text)
+        self.assertIn("images/mars.png", text)
+        self.assertIn("Write every HTML/CSS/JS file", text)
+        self.assertIn("after you finish the page", text)
 
     def test_classify_blob_includes_history_priors_and_this_turn(self):
         data = ChatCompletionRequest(
@@ -598,6 +642,107 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
             response = await handle(data, "https://gpu.example/v1")
         self.assertIsNone(response)
         start.assert_not_called()
+
+    async def test_mixed_writes_code_before_starting_comfy(self):
+        planned = [
+            {"prompt": "logo", "output_path": "images/logo.png"},
+        ]
+        job = _job(id="job-code", status="queued")
+        order: list[str] = []
+        captured = {}
+
+        async def fake_write(data, _handler):
+            order.append("code")
+            captured["user"] = data.messages[-1].content
+            return _write_code_response()
+
+        async def fake_start(**kwargs):
+            order.append("images")
+            return job, "started"
+
+        data = _user("Create a website with a logo")
+        with (
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="generate", items=planned)
+                ),
+            ),
+            mock.patch("images.chat.active_mcp_image_job", return_value=None),
+            mock.patch("images.chat._write_site_code", side_effect=fake_write),
+            mock.patch(
+                "images.chat.start_mcp_image_job",
+                new=mock.AsyncMock(side_effect=fake_start),
+            ),
+            mock.patch("images.chat.wait_until_done", new=mock.AsyncMock()) as wait,
+        ):
+            response = await handle(data, "https://gpu.example/v1")
+        self.assertEqual(order, ["code", "images"])
+        wait.assert_not_awaited()
+        self.assertIn("images/logo.png", captured["user"])
+        self.assertIn("Write every HTML/CSS/JS file", captured["user"])
+        message = response.choices[0].message
+        self.assertEqual(message.tool_calls[0].function.name, "Write")
+        self.assertIn("index.html", message.tool_calls[0].function.arguments)
+        self.assertIn("tabby-image-job: job-code", message.content)
+        self.assertNotIn("curl ", message.tool_calls[0].function.arguments)
+
+    async def test_mixed_followup_after_code_holds_for_curl(self):
+        job = _job(
+            id="abc-123",
+            status="running",
+            items=[
+                SimpleNamespace(
+                    prompt="logo",
+                    output_path="images/logo.png",
+                    urls=[],
+                    status="running",
+                )
+            ],
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Create a website with a logo",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123\nwriting the page",
+                    tool_calls=[
+                        ToolCall(
+                            function=Tool(
+                                name="Write",
+                                arguments='{"path":"index.html","contents":"<html></html>"}',
+                            )
+                        )
+                    ],
+                ),
+                ChatCompletionMessage(
+                    role="tool",
+                    content="wrote index.html",
+                    tool_call_id="call_1",
+                ),
+            ]
+        )
+
+        async def finish(j):
+            j.status = "done"
+            j.items[0].urls = ["https://gpu.example/v1/images/generated-logo.png"]
+            j.items[0].status = "done"
+            return j
+
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+            mock.patch("images.chat.wait_until_done", side_effect=finish),
+            mock.patch("images.paths.gpu_generated_file_missing", return_value=False),
+        ):
+            response = await handle(data, "https://gpu.example/v1")
+        start.assert_not_called()
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("generated-logo.png", args)
+        self.assertIn("images/logo.png", args)
 
 
 class McpWaitTests(unittest.IsolatedAsyncioTestCase):

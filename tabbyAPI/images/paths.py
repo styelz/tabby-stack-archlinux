@@ -282,3 +282,19 @@ def dest_fact_list(pairs: Iterable[tuple[str, str]]) -> str:
         "Write HTML/CSS/JS that points at those local paths. "
         "Do not generate images. Do not write Python drawing scripts."
     )
+
+
+def planned_dest_fact_list(items: Iterable[dict[str, str]]) -> str:
+    """Dests the page should use before Comfy has written the PNGs."""
+    names = [str(row.get("output_path") or "").strip() for row in items]
+    names = [name for name in names if name]
+    if not names:
+        return ""
+    listed = ", ".join(names)
+    return (
+        f"Write every HTML/CSS/JS file for this page now. "
+        f"Point img src at these exact local paths: {listed}. "
+        "Do not generate images. Do not write Python drawing scripts. "
+        "Do not dump the page in chat; use file tools. "
+        "The GPU will save those PNG files after you finish the page."
+    )

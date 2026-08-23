@@ -565,10 +565,11 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
             "  8. Send switch to qwen when you want the coding model back.",
             "",
             "Coding plus images (same chat, any IDE):",
-            "  The API holds this chat request until every PNG exists on the GPU host, "
-            "then returns one Shell curl of those real URLs. Do not sleep/ls, "
+            "  The API writes HTML/CSS/JS first (file tools), then generates the PNGs. "
+            "Apply those file tools. The next reply holds until every PNG exists "
+            "and returns one Shell curl of those real URLs. Do not sleep/ls, "
             "do not invent generated-*.png timestamps, and do not POST /v1/mcp for that batch.",
-            "  Then use Write or StrReplace for HTML/CSS/JS. A chat dump is not a file.",
+            "  A chat dump is not a file.",
             "  Do not fake images with SVG, CSS art, Pillow/PIL, emoji, placeholder URLs, or Unsplash.",
             "  Point img src at the planned local PNG paths. Never use the browser.",
             f"  Flux draft: about {format_duration(flux) if flux else 'a few minutes'} each. "

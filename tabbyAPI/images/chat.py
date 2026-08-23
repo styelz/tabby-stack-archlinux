@@ -1,7 +1,8 @@
-"""Chat intercept: hold POST /v1/chat/completions until GPU PNGs exist."""
+"""Chat intercept: write mixed-site code first, then hold for GPU PNGs."""
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from common.logger import xlogger
@@ -21,6 +22,7 @@ from images.paths import (
     image_download_note,
     job_id_from_text,
     living_download_pairs,
+    planned_dest_fact_list,
 )
 from images.plan import classify_image_turn
 
@@ -78,10 +80,7 @@ def _shell_name(data: ChatCompletionRequest) -> str:
     return match_tool_name(names, ("shell", "bash", "run_in_terminal", "terminal")) or "Shell"
 
 
-def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
-    from common.phrase_switch import QUERY_TAG_RE
-
-    facts = dest_fact_list(living_download_pairs(job))
+def _append_user_facts(data: ChatCompletionRequest, facts: str) -> None:
     if not facts:
         return
     for message in reversed(data.messages or []):
@@ -91,12 +90,87 @@ def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
         if isinstance(content, str):
             if facts in content:
                 return
-            if QUERY_TAG_RE.search(content):
-                message.content = content.rstrip() + "\n" + facts
-            else:
-                message.content = content.rstrip() + "\n" + facts
+            message.content = content.rstrip() + "\n" + facts
             return
         return
+
+
+def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
+    _append_user_facts(data, dest_fact_list(living_download_pairs(job)))
+
+
+def _inject_planned_dests(data: ChatCompletionRequest, items: list[dict[str, str]]) -> None:
+    _append_user_facts(data, planned_dest_fact_list(items))
+
+
+def _assistant_message(response):
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return None
+    return getattr(choices[0], "message", None)
+
+
+def _tool_call_pairs(message) -> list[tuple[str, dict]]:
+    pairs: list[tuple[str, dict]] = []
+    for call in getattr(message, "tool_calls", None) or []:
+        func = getattr(call, "function", None)
+        name = getattr(func, "name", None) if func is not None else None
+        if not name:
+            continue
+        raw = getattr(func, "arguments", "") or ""
+        if isinstance(raw, dict):
+            args = raw
+        else:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {"arguments": raw}
+            args = parsed if isinstance(parsed, dict) else {"value": parsed}
+        pairs.append((str(name), args))
+    return pairs
+
+
+def _stamp_job_content(content: Optional[str], job) -> str:
+    mark = f"{JOB_MARK} {job.id}"
+    body = (content or "").strip()
+    if JOB_MARK in body:
+        return body
+    if body:
+        return f"{mark}\n{body}"
+    return mark
+
+
+async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
+    """One coding completion while the LLM is still loaded. None if it cannot run."""
+    from common import model
+    from common.assistant_text import strip_response_apologies
+    from endpoints.OAI.utils.chat_completion import (
+        apply_chat_template,
+        generate_chat_completion,
+    )
+
+    request = getattr(disconnect_handler, "request", None) if disconnect_handler else None
+    container = getattr(model, "container", None)
+    if request is None or not container or not getattr(container, "loaded", False):
+        return None
+    if getattr(container, "prompt_template", None) is None:
+        return None
+    model_path = getattr(container, "model_dir", None)
+    if model_path is None:
+        return None
+    state = getattr(request, "state", None)
+    if state is None or not getattr(state, "id", None):
+        return None
+    try:
+        sync = data.model_copy(update={"stream": False, "n": 1})
+        prompt, embeddings = await apply_chat_template(sync)
+        response = await generate_chat_completion(
+            prompt, embeddings, sync, request, model_path, disconnect_handler
+        )
+        return strip_response_apologies(response)
+    except Exception as exc:
+        xlogger.warning(f"Mixed chat code pass failed: {exc}")
+        return None
 
 
 async def _start_mixed_job(items: list[dict[str, str]], api_base: str):
@@ -130,24 +204,54 @@ async def _start_prompt_job(
     return job
 
 
-def _curl_response(data: ChatCompletionRequest, job):
+def _code_reply(data: ChatCompletionRequest, job, code_response):
+    from common.phrase_switch import text_response, tool_call_response
+
+    message = _assistant_message(code_response)
+    if message is None:
+        return text_response(data, f"{JOB_MARK} {job.id}")
+    content = _stamp_job_content(getattr(message, "content", None), job)
+    if content == f"{JOB_MARK} {job.id}":
+        content = (
+            f"{content}\nWrite the page now. Images are rendering on the GPU; "
+            "the next reply is the download curl."
+        )
+    calls = _tool_call_pairs(message)
+    if calls:
+        return tool_call_response(data, calls, content=content)
+    return text_response(data, content)
+
+
+def _curl_response(data: ChatCompletionRequest, job, code_response=None):
     from common.phrase_switch import text_response, tool_call_response
 
     pairs = living_download_pairs(job)
     mark = f"{JOB_MARK} {job.id}"
+    parts = [mark]
+    code_message = _assistant_message(code_response) if code_response else None
+    code_content = getattr(code_message, "content", None) if code_message else None
+    if isinstance(code_content, str) and code_content.strip():
+        if JOB_MARK not in code_content:
+            parts.append(code_content.strip())
+        elif code_content.strip() != mark:
+            parts = [code_content.strip()]
     if not pairs:
         err = job.error or "Image generation finished with no files on this host."
-        return text_response(data, f"{mark}\n{err}")
-    note = f"{mark}\n{image_download_note(pairs)}"
+        parts.append(err)
+        calls = _tool_call_pairs(code_message) if code_message else []
+        body = "\n".join(parts)
+        if calls:
+            return tool_call_response(data, calls, content=body)
+        return text_response(data, body)
+    parts.append(image_download_note(pairs))
     command = image_download_command(pairs)
-    if not command:
-        return text_response(data, note)
-    name = _shell_name(data)
-    return tool_call_response(
-        data,
-        [(name, {"command": command})],
-        content=note,
-    )
+    calls = _tool_call_pairs(code_message) if code_message else []
+    if command:
+        calls.append((_shell_name(data), {"command": command}))
+    body = "\n".join(parts)
+    if calls:
+        return tool_call_response(data, calls, content=body)
+    return text_response(data, body)
 
 
 def _url_response(data: ChatCompletionRequest, job, api_base: Optional[str]):
@@ -169,7 +273,14 @@ def _url_response(data: ChatCompletionRequest, job, api_base: Optional[str]):
     return response
 
 
-async def _hold_then_reply(data: ChatCompletionRequest, job, *, mixed: bool, api_base: Optional[str]):
+async def _hold_then_reply(
+    data: ChatCompletionRequest,
+    job,
+    *,
+    mixed: bool,
+    api_base: Optional[str],
+    code_response=None,
+):
     from common.phrase_switch import stream_text, stream_tool_calls
 
     sync = data.model_copy(update={"stream": False})
@@ -178,7 +289,9 @@ async def _hold_then_reply(data: ChatCompletionRequest, job, *, mixed: bool, api
         yield ServerSentEvent(comment=f"{JOB_MARK} {job.id}")
         await wait_until_done(job)
         reply = (
-            _curl_response(sync, job) if mixed else _url_response(sync, job, api_base)
+            _curl_response(sync, job, code_response)
+            if mixed
+            else _url_response(sync, job, api_base)
         )
         message = reply.choices[0].message
         if message.tool_calls:
@@ -196,7 +309,7 @@ async def _hold_then_reply(data: ChatCompletionRequest, job, *, mixed: bool, api
         )
     await wait_until_done(job)
     if mixed:
-        return _curl_response(sync, job)
+        return _curl_response(sync, job, code_response)
     return _url_response(sync, job, api_base)
 
 
@@ -209,10 +322,11 @@ async def handle(
     gpu_is_comfy: bool = False,
     disconnect_handler=None,
 ):
-    """Hold this chat turn until PNGs exist, then curl (mixed) or return URLs.
+    """Mixed generate writes the page first, then holds until PNGs exist.
 
-    Returns None so the coding model can write HTML. Always wins over the 9B
-    while this conversation's job is still running.
+    File-write tool calls go out immediately; the next turn holds for the
+    curl. Always wins over the 9B while this conversation's job is still
+    running.
     """
     from common.phrase_switch import requested_image_prompt
 
@@ -251,9 +365,17 @@ async def handle(
                     f"The GPU is already generating job {busy.id}. "
                     "Wait until that batch finishes, then ask again.",
                 )
+            _inject_planned_dests(data, plan.items)
+            code_response = await _write_site_code(data, disconnect_handler)
             started = await _start_mixed_job(plan.items, api_base or "")
+            if code_response and _tool_call_pairs(_assistant_message(code_response)):
+                return _code_reply(data, started, code_response)
             return await _hold_then_reply(
-                data, started, mixed=True, api_base=api_base
+                data,
+                started,
+                mixed=True,
+                api_base=api_base,
+                code_response=code_response,
             )
 
     explicit = requested_image_prompt(data, explicit_only=True)
