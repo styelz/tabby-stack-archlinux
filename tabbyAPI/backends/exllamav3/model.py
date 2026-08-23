@@ -32,6 +32,7 @@ from common.gen_logging import (
     log_generation_params,
     log_metrics,
     log_prompt,
+    tokenizer_bos_id,
 )
 from common.hardware import hardware_supports_exllamav3
 from common.health import HealthManager
@@ -618,7 +619,7 @@ class ExllamaV3Container:
             return
 
         # Immediately abort all jobs if asked
-        if skip_wait:
+        if skip_wait and self.active_job_ids:
             xlogger.warning(
                 "Immediately terminating all jobs. Clients will have their requests cancelled.\n"
             )
@@ -788,6 +789,13 @@ class ExllamaV3Container:
                 # Wait for other jobs to finish
                 await self.wait_for_jobs(kwargs.get("skip_wait"))
 
+            # Close first so generate_gen's finally can still read tokenizer.
+            # Mixed-chat skip_wait unload otherwise acloses leftover jobs after
+            # tokenizer is already None.
+            if self.generator is not None:
+                await self.generator.close()
+                self.generator = None
+
             # Clear the image embedding cache
             clear_image_embedding_cache()
 
@@ -806,11 +814,6 @@ class ExllamaV3Container:
             if self.use_vision:
                 self.vision_model.unload()
                 self.vision_model = None
-
-            # Cleanup the generator from any pending jobs
-            if self.generator is not None:
-                await self.generator.close()
-                self.generator = None
 
             gc.collect()
             torch.cuda.empty_cache()
@@ -1510,22 +1513,27 @@ class ExllamaV3Container:
 
             raise ex
         finally:
-            # Log generation options to console
-            # Some options are too large, so log the args instead
-            log_generation_params(
-                request_id=request_id,
-                bos_token_id=self.tokenizer.bos_token_id,
-                eos_token_id=eos_tokens,
-                prompt=prompt,
-                **params.model_dump(exclude={"prompt"}),
-                # auto_scale_penalty_range=auto_scale_penalty_range,  # TODO
-            )
+            # Logging must not raise: mixed-chat unload acloses this generator
+            # after skip_wait, sometimes with tokenizer already cleared.
+            try:
+                log_generation_params(
+                    request_id=request_id,
+                    bos_token_id=tokenizer_bos_id(self.tokenizer),
+                    eos_token_id=eos_tokens,
+                    prompt=prompt,
+                    **params.model_dump(exclude={"prompt"}),
+                    # auto_scale_penalty_range=auto_scale_penalty_range,  # TODO
+                )
 
-            # Log the metrics if present
-            if metrics_result:
-                log_metrics(
-                    request_id,
-                    metrics_result,
-                    context_len,
-                    self.max_seq_len,
+                if metrics_result:
+                    log_metrics(
+                        request_id,
+                        metrics_result,
+                        context_len,
+                        self.max_seq_len,
+                    )
+            except Exception:
+                xlogger.debug(
+                    "Skipped generation logging during generator cleanup",
+                    exc_info=True,
                 )

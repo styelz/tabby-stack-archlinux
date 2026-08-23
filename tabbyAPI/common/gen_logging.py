@@ -23,6 +23,13 @@ def broadcast_status():
         xlogger.info("Generation logging is disabled")
 
 
+def tokenizer_bos_id(tokenizer) -> Optional[int]:
+    """BOS id, or None if the LLM was already unloaded."""
+    if tokenizer is None:
+        return None
+    return getattr(tokenizer, "bos_token_id", None)
+
+
 def log_generation_params(**kwargs):
     """Logs generation parameters to console."""
     if config.logging.log_generation_params:

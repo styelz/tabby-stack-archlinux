@@ -93,7 +93,7 @@ On the GPU host, from the install root:
 bash "$HOME/tabby-stack/update.sh"
 ```
 
-At the start a dialog asks **Update git** (git pull; if API code changed you can restart `tabbyapi`) or **Update all** (pull, pip, missing OS packages, restart, wait for `GET /health` ~65s). Pass `--git` or `--all` to skip the menu. If `update.sh` itself changed in the pull, the new script is run again with that same choice. `config.yml`, `tabby.env`, weights, and the venv stay. OS packages are not upgraded (`pacman -Syu` stays your job); only Update all installs missing stack packages. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
+At the start a dialog asks **Update git** (git pull; at the end you can restart `tabbyapi`) or **Update all** (pull, pip, missing OS packages, restart, wait for `GET /health` ~65s). Pass `--git` or `--all` to skip the menu. `--restart` skips the prompt and bounces the API; `--no-restart` skips it and leaves the API running. If `update.sh` itself changed in the pull, the new script is run again with that same choice. `config.yml`, `tabby.env`, weights, and the venv stay. OS packages are not upgraded (`pacman -Syu` stays your job); only Update all installs missing stack packages. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
 
 An install that was copied without `.git` is bootstrapped from GitHub the first time you run `update.sh`. You do not need a second clone.
 

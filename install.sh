@@ -1768,7 +1768,10 @@ If something fails
 
 Update
   $DEST/update.sh              asks Update git vs Update all (dialog menu)
-  $DEST/update.sh --git        git pull only; offers an API restart if code changed
+  $DEST/update.sh --git        git pull only; offers an API restart at the end
+  $DEST/update.sh --git --restart
+                              git pull, then restart tabbyapi (no prompt)
+  $DEST/update.sh --no-restart skip the restart prompt on Update git
   $DEST/update.sh --all        pull, then apply deps and restart
   $DEST/update.sh --comfy      also pull ComfyUI and ComfyUI-GGUF
 
@@ -1776,7 +1779,7 @@ Update
   config.yml, tabby.env, models, venv, and ComfyUI weights are kept.
   If update.sh changes in the pull, it restarts itself.
   Update all reloads the API until GET /health is healthy (~65s).
-  Update git also offers that restart when pulled Python/API files need it.
+  Update git offers that restart at the end; --restart skips the prompt.
 
 Uninstall
   $DEST/uninstall.sh              stop services, then remove the install

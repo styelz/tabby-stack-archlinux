@@ -9,13 +9,15 @@ set -euo pipefail
 DEST="$(cd "$(dirname "$0")" && pwd)"
 ORIGIN="${TABBY_GIT_ORIGIN:-https://github.com/styelz/tabby-stack-archlinux.git}"
 UPDATE_COMFY=0
-# git = git pull only (optional API restart if code changed);
+# git = git pull only (optional API restart at the end);
 # all = pull then install.sh --update (pip, restart).
 UPDATE_KIND="${TABBY_UPDATE_KIND:-}"
+# empty = ask on TTY after a git pull; 1 = always restart; 0 = never.
+RESTART_API="${TABBY_UPDATE_RESTART:-}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--git|--all] [--comfy]
+Usage: $(basename "$0") [--git|--all] [--comfy] [--restart|--no-restart]
 
 Pull origin into this install. At the start a dialog asks Update git or
 Update all. If this script itself changes in that pull, it re-runs so the
@@ -23,15 +25,20 @@ new update.sh is used. config.yml, tabby.env, models, and venv stay.
 Does not run pacman -Syu or upgrade already-installed OS packages.
 
 Options
-  --git       Git pull only. No pip or missing OS packages. If pulled API
-              code needs a reload, you can restart tabbyapi.
-  --all       Pull, then apply code, Python deps, and reload tabbyapi.
-  --comfy     Also git pull ComfyUI and ComfyUI-GGUF. Update all then
-              reinstalls their Python requirements; git-only only pulls.
-  -h, --help  This text
+  --git         Git pull only. No pip or missing OS packages. After the
+                pull you can restart tabbyapi.
+  --all         Pull, then apply code, Python deps, and reload tabbyapi.
+  --comfy       Also git pull ComfyUI and ComfyUI-GGUF. Update all then
+                reinstalls their Python requirements; git-only only pulls.
+  --restart     At the end, restart tabbyapi and wait for /health (~65s).
+                Skips the yes/no prompt. Use with --git when you want a
+                bounce even if no Python files changed. Update all already
+                restarts.
+  --no-restart  Do not restart. Skips the yes/no prompt on Update git.
+  -h, --help    This text
 
 No flag and a TTY: dialog menu. No TTY: --all.
-Or set TABBY_UPDATE_KIND=git or all.
+Or set TABBY_UPDATE_KIND=git or all, and TABBY_UPDATE_RESTART=1 or 0.
 
 This folder:  $DEST
 Origin:       $ORIGIN
@@ -43,6 +50,8 @@ while (($#)); do
     --git|--files|--files-only) UPDATE_KIND=git; shift ;;
     --all|--full) UPDATE_KIND=all; shift ;;
     --comfy) UPDATE_COMFY=1; shift ;;
+    --restart) RESTART_API=1; shift ;;
+    --no-restart) RESTART_API=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown option: $1" >&2
@@ -60,6 +69,15 @@ case "$UPDATE_KIND" in
   ""|git|all) ;;
   *)
     echo "TABBY_UPDATE_KIND must be git or all (got $UPDATE_KIND)." >&2
+    exit 2
+    ;;
+esac
+case "${RESTART_API,,}" in
+  ""|0|1) ;;
+  yes|true|on) RESTART_API=1 ;;
+  no|false|off) RESTART_API=0 ;;
+  *)
+    echo "TABBY_UPDATE_RESTART must be 1 or 0 (got $RESTART_API)." >&2
     exit 2
     ;;
 esac
@@ -170,7 +188,7 @@ ui_start() {
   UPDATE_LOG="$DEST/tabby-update.log"
   {
     echo "tabby-stack update $(date -Iseconds)"
-    echo "dest=$DEST kind=$UPDATE_KIND comfy=$UPDATE_COMFY"
+    echo "dest=$DEST kind=$UPDATE_KIND comfy=$UPDATE_COMFY restart=${RESTART_API:-auto}"
     echo
   } > "$UPDATE_LOG"
   ui_gauge_only
@@ -271,7 +289,7 @@ ask_update_kind() {
   fi
   local out=""
   local title="Update tabby-stack"
-  local text="Update git pulls new code. If API code changed, you can restart tabbyapi.
+  local text="Update git pulls new code. At the end you can restart tabbyapi (or pass --restart).
 Update all also refreshes Python deps, installs missing OS packages, and restarts the API."
   if need_cmd dialog; then
     out="$(dialog --backtitle "tabby-stack" --title "$title" --stdout --menu "$text" 16 74 2 \
@@ -308,6 +326,11 @@ reexec_args() {
   fi
   if [[ "$UPDATE_COMFY" -eq 1 ]]; then
     args+=(--comfy)
+  fi
+  if [[ "$RESTART_API" == 1 ]]; then
+    args+=(--restart)
+  elif [[ "$RESTART_API" == 0 ]]; then
+    args+=(--no-restart)
   fi
   printf '%s\n' "${args[@]}"
 }
@@ -395,6 +418,7 @@ wait_for_tabby_health() {
 }
 
 restart_tabbyapi() {
+  local done_msg="${1:-Pulled the latest code and restarted tabbyapi.}"
   load_tabby_port
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   trap 'rc=$?; if [[ "$UI_STARTED" -eq 1 ]]; then progress_stop; fi; exit "$rc"' EXIT
@@ -415,7 +439,7 @@ Log: $UPDATE_LOG"
   progress 100 "API healthy"
   trap - EXIT
   progress_stop
-  ui_msg "Update git" "Pulled the latest code and restarted tabbyapi.
+  ui_msg "Update git" "$done_msg
 
 Log: $UPDATE_LOG"
 }
@@ -424,10 +448,12 @@ ask_restart_api() {
   local text
   if [[ "$TABBY_UPDATE_FROM_REV" == none ]]; then
     text="This install was checked out from git. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
-  else
+  elif ((${#RESTART_FILES[@]})); then
     text="The pull changed API code. Restart tabbyapi now so it loads (about 65 seconds)?
 
 $(format_restart_file_list)"
+  else
+    text="The pull updated this install. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
   fi
   ui_yesno "Restart API?" "$text" 1
 }
@@ -436,27 +462,46 @@ finish_git_update() {
   local new_head=""
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
   collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"
-  printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]}" >> "$UPDATE_LOG"
+  printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]} restart=${RESTART_API:-auto}" >> "$UPDATE_LOG"
 
   progress 100 "Git update finished"
   trap - EXIT
   progress_stop
 
-  local runtime=0
-  if [[ "${TABBY_UPDATE_FROM_REV:-none}" == none ]] || ((${#RESTART_FILES[@]})); then
-    runtime=1
+  local pulled=0
+  if [[ "${TABBY_UPDATE_FROM_REV:-none}" == none || "${TABBY_UPDATE_FROM_REV:-}" != "$new_head" ]]; then
+    pulled=1
   fi
 
-  if [[ "$runtime" -eq 0 ]]; then
-    if [[ "${TABBY_UPDATE_FROM_REV:-}" == "$new_head" ]]; then
+  if [[ "$RESTART_API" == 0 ]]; then
+    if [[ "$pulled" -eq 0 ]]; then
       ui_msg "Update git" "Already up to date. The API was not restarted.
 
 Log: $UPDATE_LOG"
     else
-      ui_msg "Update git" "Pulled the latest code. No API restart needed (no runtime code changes).
+      ui_msg "Update git" "Pulled the latest code. The API was not restarted.
+
+Reload later with:
+  systemctl --user restart tabbyapi
 
 Log: $UPDATE_LOG"
     fi
+    exit 0
+  fi
+
+  if [[ "$RESTART_API" == 1 ]]; then
+    if [[ "$pulled" -eq 0 ]]; then
+      restart_tabbyapi "Already up to date. Restarted tabbyapi."
+    else
+      restart_tabbyapi
+    fi
+    exit 0
+  fi
+
+  if [[ "$pulled" -eq 0 ]]; then
+    ui_msg "Update git" "Already up to date. The API was not restarted.
+
+Log: $UPDATE_LOG"
     exit 0
   fi
 
@@ -466,15 +511,19 @@ Log: $UPDATE_LOG"
 Start it with:
   systemctl --user start tabbyapi
 
+Or re-run:
+  $DEST/update.sh --git --restart
+
 Log: $UPDATE_LOG"
     exit 0
   fi
 
   if [[ ! -t 0 || ! -t 1 ]]; then
-    ui_msg "Update git" "Pulled API code changes. Not restarting (no TTY).
+    ui_msg "Update git" "Pulled the latest code. Not restarting (no TTY).
 
 Reload with:
   systemctl --user restart tabbyapi
+  $DEST/update.sh --git --restart
 
 Log: $UPDATE_LOG"
     exit 0
@@ -487,6 +536,7 @@ Log: $UPDATE_LOG"
 
 Reload later with:
   systemctl --user restart tabbyapi
+  $DEST/update.sh --git --restart
 
 Log: $UPDATE_LOG"
   fi
