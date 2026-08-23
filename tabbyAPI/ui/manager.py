@@ -57,25 +57,23 @@ def install_log_sink() -> None:
 
 
 def journalctl_cmd(*, follow: bool = False, lines: int = 300) -> list[str]:
-    # follow + lines=0 means "new lines only" (no history dump).
-    count = int(lines)
-    if follow and count <= 0:
-        count = 0
-    else:
-        count = max(1, min(count, 5000))
     cmd = [
         "journalctl",
         "--user",
         "--no-pager",
         "-o",
         "short-iso",
-        "-n",
-        str(count),
     ]
     for unit in JOURNAL_UNITS:
         cmd.extend(["-u", unit])
     if follow:
-        cmd.append("-f")
+        # `-n 0 -f` can sit open without emitting new lines on some systemd
+        # versions. `--since now` follows from this moment; the UI catches up
+        # any gap from /logs/history.
+        cmd.extend(["--since", "now", "-f"])
+        return cmd
+    count = max(1, min(int(lines), 5000))
+    cmd.extend(["-n", str(count)])
     return cmd
 
 
@@ -100,32 +98,41 @@ def journalctl_history(lines: int = 300) -> list[str]:
     return visible_log_lines(text.splitlines(), wanted)
 
 
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        process.kill()
+
+
 async def stream_journal_lines() -> AsyncIterator[str]:
     if shutil.which("journalctl") is None:
         async for line in _stream_process_logs():
             yield line
         return
-    process = await asyncio.create_subprocess_exec(
-        *journalctl_cmd(follow=True, lines=0),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        assert process.stdout is not None
-        while True:
-            raw = await process.stdout.readline()
-            if not raw:
-                break
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            if line and not is_ui_access_line(line):
-                yield line
-    finally:
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except (asyncio.TimeoutError, ProcessLookupError):
-                process.kill()
+    while True:
+        process = await asyncio.create_subprocess_exec(
+            *journalctl_cmd(follow=True),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            assert process.stdout is not None
+            while True:
+                raw = await process.stdout.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line and not is_ui_access_line(line):
+                    yield line
+        except asyncio.CancelledError:
+            await _stop_process(process)
+            raise
+        await _stop_process(process)
+        await asyncio.sleep(0.4)
 
 
 async def _stream_process_logs() -> AsyncIterator[str]:

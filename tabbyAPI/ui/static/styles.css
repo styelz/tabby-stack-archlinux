@@ -327,6 +327,14 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   animation: none;
   filter: drop-shadow(0 0 6px rgba(122, 162, 255, 0.45));
 }
+.think-icon.is-done {
+  animation: none;
+}
+.think-icon.is-done .think-spark {
+  animation: none;
+  background: conic-gradient(from 210deg, var(--ok), var(--accent), var(--accent-2), var(--ok));
+  filter: drop-shadow(0 0 5px rgba(61, 214, 140, 0.5));
+}
 .think-label {
   color: var(--muted);
 }
@@ -390,6 +398,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   .is-working .think-spark,
   .think-icon.is-processing,
   .think-icon.is-processing .think-spark,
+  .think-icon.is-done,
+  .think-icon.is-done .think-spark,
   .is-working .think-head.is-live {
     animation: none;
     opacity: 1;
@@ -416,11 +426,38 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .slash-menu li {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
+}
+.slash-menu .history-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+.slash-menu .history-delete {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bad);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.slash-menu .history-delete:hover,
+.slash-menu .history-delete:focus-visible {
+  background: rgba(255, 107, 122, 0.18);
+  color: #ff8b96;
+  outline: none;
 }
 .slash-menu li.is-active,
 .slash-menu li:hover {
@@ -441,6 +478,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 .chat-form { display: flex; gap: 8px; flex: 0 0 auto; }
 .chat-form textarea { min-height: 46px; resize: vertical; }

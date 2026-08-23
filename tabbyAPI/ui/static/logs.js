@@ -24,8 +24,6 @@ function mountLogs(root) {
   let pending = [];
   let raf = 0;
   let filterQ = "";
-  let hydrated = false;
-  let hydrateBusy = false;
   let downTimer = 0;
 
   function levelClass(line) {
@@ -114,18 +112,74 @@ function mountLogs(root) {
     appendVisible(batch);
   }
 
+  let catchUpBusy = false;
+  let retryTimer = 0;
+  let watchTimer = 0;
+  let lastLineAt = Date.now();
+  const seenCatchUp = new Set();
+
   function isUiAccess(line) {
     return /"[A-Z]+ (?:\/\w+)?(?:\/v1)?\/ui(?:[/?\s]|$)/.test(line);
+  }
+
+  function rememberLine() {
+    lastLineAt = Date.now();
+  }
+
+  function lastQueued() {
+    if (pending.length) return pending[pending.length - 1];
+    if (buffer.length) return buffer[buffer.length - 1];
+    return null;
+  }
+
+  function extrasFromHistory(lines) {
+    const last = lastQueued();
+    if (last == null) return lines.slice();
+    const idx = lines.lastIndexOf(last);
+    if (idx >= 0) return lines.slice(idx + 1);
+    const have = new Set([...buffer.slice(-400), ...pending]);
+    return lines.filter((line) => !have.has(line));
   }
 
   function queue(line) {
     if (!line && line !== "") return;
     if (isUiAccess(line)) return;
+    if (seenCatchUp.delete(line)) return;
     pending.push(line);
+    rememberLine();
     if (!raf) raf = requestAnimationFrame(flush);
   }
 
+  function stopWatch() {
+    if (watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = 0;
+    }
+  }
+
+  function startWatch() {
+    if (watchTimer) return;
+    watchTimer = setInterval(() => {
+      if (!active || paused || document.hidden) return;
+      if (Date.now() - lastLineAt < 5000) return;
+      catchUp();
+    }, 5000);
+  }
+
+  function scheduleReconnect() {
+    if (retryTimer || !active || paused || document.hidden) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = 0;
+      connect();
+    }, 800);
+  }
+
   function disconnect() {
+    stopWatch();
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = 0;
+    }
     if (downTimer) {
       clearTimeout(downTimer);
       downTimer = 0;
@@ -145,8 +199,41 @@ function mountLogs(root) {
     }
   }
 
+  async function catchUp() {
+    if (catchUpBusy) return;
+    catchUpBusy = true;
+    try {
+      const data = await TabbyUI.api("logs/history?lines=300");
+      const lines = (Array.isArray(data.lines) ? data.lines : [])
+        .filter((line) => !isUiAccess(line))
+        .slice(-MAX_LINES);
+      if (!buffer.length && !pending.length) {
+        buffer = lines;
+        if (active && !paused) renderFull();
+        return;
+      }
+      const extra = extrasFromHistory(lines);
+      if (!extra.length) return;
+      extra.forEach((line) => seenCatchUp.add(line));
+      if (seenCatchUp.size > 800) {
+        const keep = extra.slice(-400);
+        seenCatchUp.clear();
+        keep.forEach((line) => seenCatchUp.add(line));
+      }
+      pending.push(...extra);
+      rememberLine();
+      if (!raf) raf = requestAnimationFrame(flush);
+    } catch (err) {
+      if (!buffer.length) state.textContent = "waiting for API…";
+      TabbyUI.paintApiDown(err);
+    } finally {
+      catchUpBusy = false;
+    }
+  }
+
   function connect() {
     if (source || !active) return;
+    startWatch();
     state.textContent = "connecting…";
     source = new EventSource(TabbyUI.path("logs/stream"));
     source.addEventListener("log", (event) => {
@@ -162,12 +249,17 @@ function mountLogs(root) {
         downTimer = 0;
       }
       state.textContent = paused ? "paused" : "live";
-      if (!hydrated) loadHistory();
+      catchUp();
       TabbyUI.api("status").then((data) => TabbyUI.paintGpuChip(data)).catch((err) => TabbyUI.paintApiDown(err));
     };
     source.onerror = () => {
       const reconnecting = active && !paused && !document.hidden;
       state.textContent = reconnecting ? "reconnecting…" : "idle";
+      if (source && source.readyState === EventSource.CLOSED) {
+        source.close();
+        source = null;
+        if (reconnecting) scheduleReconnect();
+      }
       if (!reconnecting || downTimer) return;
       downTimer = setTimeout(() => {
         downTimer = 0;
@@ -204,6 +296,7 @@ function mountLogs(root) {
   root.querySelector("#log-clear").addEventListener("click", () => {
     buffer = [];
     pending = [];
+    seenCatchUp.clear();
     view.replaceChildren();
   });
   root.querySelector("#log-latest").addEventListener("click", () => {
@@ -211,28 +304,7 @@ function mountLogs(root) {
     view.scrollTop = view.scrollHeight;
   });
 
-  async function loadHistory() {
-    if (hydrateBusy || hydrated) return;
-    hydrateBusy = true;
-    try {
-      const data = await TabbyUI.api("logs/history?lines=300");
-      const lines = (Array.isArray(data.lines) ? data.lines : [])
-        .filter((line) => !isUiAccess(line))
-        .slice(-MAX_LINES);
-      hydrated = true;
-      if (!buffer.length) {
-        buffer = lines;
-        renderFull();
-      }
-    } catch (err) {
-      if (!buffer.length) state.textContent = "waiting for API…";
-      TabbyUI.paintApiDown(err);
-    } finally {
-      hydrateBusy = false;
-    }
-  }
-
-  loadHistory().then(() => {
+  catchUp().then(() => {
     if (active && !paused) connect();
   });
 
@@ -243,6 +315,8 @@ function mountLogs(root) {
         state.textContent = "idle";
       }
     } else if (active && !paused) {
+      renderFull();
+      catchUp();
       connect();
     }
   }
@@ -256,7 +330,11 @@ function mountLogs(root) {
     },
     resume() {
       active = true;
-      if (!paused && !document.hidden) connect();
+      if (!paused && !document.hidden) {
+        renderFull();
+        catchUp();
+        connect();
+      }
     },
     destroy() {
       active = false;

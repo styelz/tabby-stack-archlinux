@@ -8,12 +8,12 @@
   const handles = {};
 
   function currentName() {
-    const hash = (location.hash || "#logs").replace("#", "");
-    return pages[hash] ? hash : "logs";
+    const hash = (location.hash || "#chat").replace("#", "");
+    return pages[hash] ? hash : "chat";
   }
 
   function show(name) {
-    const key = pages[name] ? name : "logs";
+    const key = pages[name] ? name : "chat";
     Object.entries(pages).forEach(([id, page]) => {
       const on = id === key;
       page.el.hidden = !on;

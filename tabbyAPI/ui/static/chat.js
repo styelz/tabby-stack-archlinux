@@ -6,7 +6,7 @@ function mountChat(root) {
         <button class="btn danger" type="button" id="chat-clear">Clear history</button>
         <span class="chat-title" id="chat-title">New chat</span>
         <span class="spacer"></span>
-        <span class="muted" id="chat-hint">Tab previous chats · ↑↓ recall</span>
+        <span class="muted" id="chat-hint">Tab chats · ↑↓ recall</span>
       </div>
       <div class="chat-log" id="chat-log"></div>
       <div class="chat-compose">
@@ -278,14 +278,17 @@ function mountChat(root) {
     if (status === "done" || phase === "done" || status === "error" || phase === "error") {
       return "";
     }
-    const wait = String(job.wait_text || "").trim();
-    if (phase === "queued") return "Waiting to start Comfy.";
-    if (phase === "writing_code" || phase === "coding") return "Planning what to render.";
-    if (phase === "starting_comfy") return "Unloading the coding model.";
-    if (phase === "generating" || phase === "running") {
-      return wait || "Rendering on the GPU.";
+    if (phase === "queued") {
+      return "Waiting to start. Next: unload the coding model and hand the GPU to Comfy.";
     }
-    if (phase === "restoring_llm") return "Picture is ready. Reloading the coding model.";
+    if (phase === "writing_code" || phase === "coding") return "Figuring out what to render.";
+    if (phase === "starting_comfy") return "Unloading the coding model so Comfy can use the GPU.";
+    if (phase === "generating" || phase === "running") {
+      return "Comfy is rendering the picture on the GPU.";
+    }
+    if (phase === "restoring_llm") {
+      return "The picture is ready. Reloading the coding model onto the GPU.";
+    }
     return "";
   }
 
@@ -378,12 +381,21 @@ function mountChat(root) {
       const line = String(note || "").trim();
       if (!line || line === lastNote) return;
       lastNote = line;
-      statusNotes = [line];
+      if (!statusNotes.includes(line)) statusNotes.push(line);
       if (finished) return;
       reasoningText = line;
       paintThought();
       thought.hidden = false;
       log.scrollTop = log.scrollHeight;
+    }
+
+    function foldNotesIntoThought() {
+      if (!statusNotes.length) {
+        if (!reasoningText && lastNote) reasoningText = lastNote;
+        return;
+      }
+      const notes = statusNotes.join("\n\n");
+      if (!reasoningText || kind === "image") reasoningText = notes;
     }
 
     function stopWorking() {
@@ -402,12 +414,19 @@ function mountChat(root) {
         ticker = null;
       }
       head.hidden = false;
-      icon.hidden = true;
       chevron.hidden = false;
       head.classList.add("is-clickable");
       if (head.tagName !== "BUTTON") {
         head.setAttribute("role", "button");
         head.tabIndex = 0;
+      }
+      if (kind === "image") {
+        icon.hidden = false;
+        icon.classList.remove("is-processing");
+        icon.classList.add("is-done");
+      } else {
+        icon.hidden = true;
+        icon.classList.remove("is-done");
       }
       const doneWord = kind === "image" ? "Generated" : "Thought";
       if (seconds != null) {
@@ -480,7 +499,7 @@ function mountChat(root) {
         showAnswer(displayAnswer(text));
         if (kind === "image" && looksLikeImageReply(String(text || ""))) {
           const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
-          if (!reasoningText && lastNote) reasoningText = lastNote;
+          foldNotesIntoThought();
           finished = true;
           settleThought(seconds);
           paintThought();
@@ -502,8 +521,13 @@ function mountChat(root) {
           ticker = null;
         }
         stopWorking();
-        if (finalReasoning) reasoningText = String(finalReasoning);
-        else if (!reasoningText && lastNote) reasoningText = lastNote;
+        if (kind === "image") {
+          foldNotesIntoThought();
+        } else if (finalReasoning) {
+          reasoningText = String(finalReasoning);
+        } else {
+          foldNotesIntoThought();
+        }
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
         const answer = visibleAnswerText(finalContent);
         if (answer) {
@@ -515,6 +539,10 @@ function mountChat(root) {
           if (!alreadySettled) {
             settleThought(seconds);
             paintThought();
+          } else if (kind === "image") {
+            icon.hidden = false;
+            icon.classList.remove("is-processing");
+            icon.classList.add("is-done");
           } else {
             icon.hidden = true;
             icon.classList.remove("is-processing");
@@ -561,6 +589,26 @@ function mountChat(root) {
     input.focus();
   }
 
+  function deleteChat(id) {
+    persist();
+    store.chats = store.chats.filter((item) => item.id !== id);
+    if (!store.chats.length) {
+      const chat = emptyChat();
+      store = { version: 1, activeId: chat.id, chats: [chat] };
+      messages = cloneMessages(chat.messages);
+    } else if (store.activeId === id) {
+      const next = listedChats()[0] || store.chats[0];
+      store.activeId = next.id;
+      messages = cloneMessages(next.messages);
+      if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+    }
+    persist();
+    resetRecall();
+    renderLog();
+    renderHistoryMenu();
+    input.focus();
+  }
+
   function startNewChat() {
     persist();
     if (!hasUserTurn({ messages })) {
@@ -601,21 +649,37 @@ function mountChat(root) {
     historyIndex = 0;
   }
 
-  function renderHistoryMenu() {
+  function renderHistoryMenu(keepIndex) {
     historyItems = listedChats();
     if (!historyItems.length) {
       hideHistoryMenu();
       return;
     }
-    const current = historyItems.findIndex((item) => item.id === store.activeId);
-    historyIndex = current >= 0 ? current : 0;
+    if (!(keepIndex && historyIndex >= 0 && historyIndex < historyItems.length)) {
+      const current = historyItems.findIndex((item) => item.id === store.activeId);
+      historyIndex = current >= 0 ? current : 0;
+    }
     const frag = document.createDocumentFragment();
     historyItems.forEach((item, idx) => {
       const li = document.createElement("li");
       li.className = idx === historyIndex ? "is-active" : "";
       const when = timeLabel(item.updatedAt);
-      li.innerHTML = `<span class="history-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span><span class="slash-hint">${TabbyUI.escapeHtml(when)}</span>`;
+      const main = document.createElement("span");
+      main.className = "history-main";
+      main.innerHTML = `<span class="history-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span><span class="slash-hint">${TabbyUI.escapeHtml(when)}</span>`;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "history-delete";
+      del.setAttribute("aria-label", "Delete chat");
+      del.textContent = "×";
+      del.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteChat(item.id);
+      });
+      li.append(main, del);
       li.addEventListener("mousedown", (event) => {
+        if (event.target.closest(".history-delete")) return;
         event.preventDefault();
         loadChat(item.id);
         renderHistoryMenu();
@@ -651,13 +715,43 @@ function mountChat(root) {
     const list = listedChats();
     if (!list.length) return false;
     hideMenu();
+    if (historyMenu.hidden) {
+      renderHistoryMenu();
+      return true;
+    }
     if (list.length >= 2) {
-      let idx = list.findIndex((item) => item.id === store.activeId);
-      if (idx < 0) idx = 0;
-      idx = (idx + delta + list.length) % list.length;
-      loadChat(list[idx].id);
+      let idx = historyIndex;
+      if (idx < 0 || idx >= list.length) {
+        idx = list.findIndex((item) => item.id === store.activeId);
+        if (idx < 0) idx = 0;
+      }
+      const highlighted = list[idx];
+      if (highlighted && highlighted.id !== store.activeId) {
+        loadChat(highlighted.id);
+      } else {
+        idx = (idx + delta + list.length) % list.length;
+        loadChat(list[idx].id);
+      }
     }
     renderHistoryMenu();
+    return true;
+  }
+
+  function moveHistoryHighlight(delta) {
+    if (historyMenu.hidden || !historyItems.length) return false;
+    historyIndex = (historyIndex + delta + historyItems.length) % historyItems.length;
+    highlightMenu(historyMenu, historyIndex);
+    return true;
+  }
+
+  function applyHistorySelection() {
+    const item = historyItems[historyIndex];
+    if (!item) {
+      hideHistoryMenu();
+      return false;
+    }
+    if (item.id !== store.activeId) loadChat(item.id);
+    hideHistoryMenu();
     return true;
   }
 
@@ -838,9 +932,15 @@ function mountChat(root) {
         const data = await TabbyUI.api("status");
         if (stopped) return;
         if (kind === "image") {
-          const next = labelForJob(data && data.job);
-          const note = detailForJob(data && data.job);
+          const job = data && data.job;
+          const next = labelForJob(job);
+          const note = detailForJob(job);
           if (next) working.setActivity(next, { processing: true, note });
+          else if (note) working.addStatusNote(note);
+          const wait = job && String(job.wait_text || "").trim();
+          if (wait) working.addStatusNote(wait);
+          const prompt = job && String(job.prompt || "").trim();
+          if (prompt) working.addStatusNote(`Prompt: ${prompt}`);
           return;
         }
         if (kind === "switch" || kind === "restart") {
@@ -1010,10 +1110,27 @@ function mountChat(root) {
       cycleHistory(event.shiftKey ? -1 : 1);
       return;
     }
-    if (!historyMenu.hidden && (event.key === "Escape" || event.key === "Enter")) {
-      event.preventDefault();
-      hideHistoryMenu();
-      return;
+    if (!historyMenu.hidden) {
+      if (event.key === "ArrowDown" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        moveHistoryHighlight(1);
+        return;
+      }
+      if (event.key === "ArrowUp" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        moveHistoryHighlight(-1);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        applyHistorySelection();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hideHistoryMenu();
+        return;
+      }
     }
     if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       if (recallIndex >= 0 || !input.value || caretOnFirstLine()) {

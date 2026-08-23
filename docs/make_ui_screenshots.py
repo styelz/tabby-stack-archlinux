@@ -62,7 +62,7 @@ def header(img: Image.Image, active: str) -> ImageDraw.ImageDraw:
     titles = {"logs": "Logs", "chat": "Chat", "status": "Status", "gallery": "Gallery"}
     draw.text((72, 28), titles[active], fill=TEXT, font=font(18))
 
-    tabs = [("logs", "Logs"), ("chat", "Chat"), ("status", "Status"), ("gallery", "Gallery")]
+    tabs = [("chat", "Chat"), ("status", "Status"), ("gallery", "Gallery"), ("logs", "Logs")]
     x = 280
     for key, label in tabs:
         tw = 78

@@ -11,10 +11,17 @@ class UiManagerTests(unittest.TestCase):
         self.assertEqual(cmd[0], "journalctl")
         self.assertIn("--user", cmd)
         self.assertIn("-f", cmd)
-        self.assertIn("-n", cmd)
-        self.assertIn("0", cmd)
+        self.assertIn("--since", cmd)
+        self.assertIn("now", cmd)
+        self.assertNotIn("-n", cmd)
         self.assertIn("tabbyapi", cmd)
         self.assertIn("comfyui", cmd)
+
+    def test_journalctl_cmd_history_still_uses_line_count(self):
+        cmd = manager.journalctl_cmd(follow=False, lines=300)
+        self.assertIn("-n", cmd)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "300")
+        self.assertNotIn("-f", cmd)
 
     def test_ui_access_lines_are_detected(self):
         self.assertTrue(
