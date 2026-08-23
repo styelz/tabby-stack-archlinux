@@ -129,10 +129,20 @@ Open **`http://127.0.0.1:5000/v1/ui`** in a browser and sign in with the **Linux
 |---|---|
 | **Logs** | Live `journalctl` for TabbyAPI (and Comfy when it is up) |
 | **Chat** | Short console chat against the loaded model (no project file tools) |
-| **Status** | GPU mode, profile, health, NVIDIA stats; load an LLM, hand the GPU to Comfy, restart the stack, or run Update git / Update all |
+| **Status** | GPU mode, profile, health, NVIDIA stats, CPU/RAM/load; host graphs (1h–30d or custom); load an LLM, hand the GPU to Comfy, restart, or Update git / Update all |
 | **Gallery** | Browse PNGs under `tabbyAPI/pasted-images/` |
 
+![Status page with sample GPU and host graphs](docs/ui-status.jpg)
+
+![Live logs view with sample journal lines](docs/ui-logs.jpg)
+
+![Console chat with sample replies](docs/ui-chat.jpg)
+
+![Image gallery with sample generated PNGs](docs/ui-gallery.jpg)
+
 The UI is for managing the host. Day-to-day coding and mixed page+images still happen in your editor pointed at `/v1`.
+
+(UI screenshots are drawn locally with sample data — `python3 docs/make_ui_screenshots.py`.)
 
 ### Chat phrases (from your editor)
 

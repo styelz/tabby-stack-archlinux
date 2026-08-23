@@ -1,87 +1,99 @@
 function mountStatus(root) {
   root.innerHTML = `
-    <div class="toolbar">
+    <div class="toolbar status-toolbar">
       <button class="btn" id="status-refresh">Refresh</button>
       <span class="spacer"></span>
       <span class="muted" id="status-stamp"></span>
     </div>
-    <div class="cards" id="status-cards"></div>
-    <div class="card metrics-panel" style="margin-top:12px">
-      <div class="metrics-head">
-        <div>
-          <h2>Host graphs</h2>
-          <p class="muted">GPU util / VRAM / temp, plus CPU, load, and RAM. Samples every ~30s while TabbyAPI is up.</p>
-        </div>
-        <div class="metrics-controls">
-          <div class="range-presets" role="group" aria-label="Time range">
-            <button type="button" class="btn range-btn" data-hours="1">1h</button>
-            <button type="button" class="btn range-btn" data-hours="6">6h</button>
-            <button type="button" class="btn range-btn is-active" data-hours="24">24h</button>
-            <button type="button" class="btn range-btn" data-days="7">7d</button>
-            <button type="button" class="btn range-btn" data-days="30">30d</button>
+    <div class="status-layout">
+      <aside class="status-side">
+        <div class="status-cards" id="status-cards"></div>
+        <div class="card status-actions">
+          <h2>Actions</h2>
+          <p class="muted">Restart bounces TabbyAPI (and Comfy if it owns the GPU). Update runs update.sh from the stack root.</p>
+          <div class="actions-stack">
+            <select id="profile-select"></select>
+            <button class="btn" id="switch-llm">Load LLM</button>
+            <button class="btn" id="switch-comfy">Hand GPU to Comfy</button>
+            <button class="btn danger" id="restart-btn">Restart stack</button>
+            <button class="btn" id="update-git">Update git</button>
+            <button class="btn" id="update-all">Update all</button>
           </div>
-          <form class="range-custom" id="metrics-custom">
-            <label>Hours <input type="number" id="metrics-hours" min="0.25" max="720" step="0.25" placeholder="e.g. 12" /></label>
-            <label>Days <input type="number" id="metrics-days" min="1" max="30" step="1" placeholder="e.g. 3" /></label>
-            <button type="submit" class="btn">Apply</button>
-          </form>
-          <span class="muted" id="metrics-meta"></span>
+          <p class="muted" id="action-msg"></p>
         </div>
-      </div>
-      <div class="charts">
-        <figure class="chart-card">
-          <figcaption>
-            <strong>GPU</strong>
-            <span class="legend">
-              <span class="swatch" style="--c:#7aa2ff"></span>util %
-              <span class="swatch" style="--c:#8b5cf6"></span>VRAM %
-              <span class="swatch" style="--c:#f5c542"></span>°C
-            </span>
-          </figcaption>
-          <canvas id="chart-gpu" width="900" height="220" aria-label="GPU chart"></canvas>
-        </figure>
-        <figure class="chart-card">
-          <figcaption>
-            <strong>Host</strong>
-            <span class="legend">
-              <span class="swatch" style="--c:#3dd68c"></span>CPU %
-              <span class="swatch" style="--c:#ff6b7a"></span>RAM %
-              <span class="swatch" style="--c:#9aa3b5"></span>load×10
-            </span>
-          </figcaption>
-          <canvas id="chart-host" width="900" height="220" aria-label="Host chart"></canvas>
-        </figure>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h2>Actions</h2>
-      <p class="muted">Restart bounces TabbyAPI (and Comfy if it owns the GPU). Update runs update.sh from the stack root.</p>
-      <div class="row">
-        <select id="profile-select"></select>
-        <button class="btn" id="switch-llm">Load LLM</button>
-        <button class="btn" id="switch-comfy">Hand GPU to Comfy</button>
-        <button class="btn danger" id="restart-btn">Restart stack</button>
-        <button class="btn" id="update-git">Update git</button>
-        <button class="btn" id="update-all">Update all</button>
-      </div>
-      <p class="muted" id="action-msg"></p>
+      </aside>
+      <section class="card metrics-panel">
+        <div class="metrics-toolbar">
+          <strong class="metrics-title">Graphs</strong>
+          <div class="range-bar" role="group" aria-label="Time range">
+            <button type="button" class="range-seg" data-hours="1">1h</button>
+            <button type="button" class="range-seg" data-hours="6">6h</button>
+            <button type="button" class="range-seg is-active" data-hours="24">24h</button>
+            <button type="button" class="range-seg" data-days="7">7d</button>
+            <button type="button" class="range-seg" data-days="30">30d</button>
+          </div>
+          <form class="range-custom" id="metrics-custom" title="Custom window">
+            <input type="number" id="metrics-amount" min="0.25" max="720" step="0.25" value="24" aria-label="Custom amount" />
+            <select id="metrics-unit" aria-label="Unit">
+              <option value="hours" selected>h</option>
+              <option value="days">d</option>
+            </select>
+            <button type="submit" class="btn range-go">Go</button>
+          </form>
+          <span class="muted metrics-meta" id="metrics-meta"></span>
+        </div>
+        <div class="charts">
+          <figure class="chart-card">
+            <figcaption>
+              <strong>GPU</strong>
+              <span class="legend">
+                <span class="swatch" style="--c:#7aa2ff"></span>util %
+                <span class="swatch" style="--c:#8b5cf6"></span>VRAM %
+                <span class="swatch" style="--c:#f5c542"></span>°C
+              </span>
+            </figcaption>
+            <canvas id="chart-gpu" width="900" height="240" aria-label="GPU chart"></canvas>
+          </figure>
+          <figure class="chart-card">
+            <figcaption>
+              <strong>Host</strong>
+              <span class="legend">
+                <span class="swatch" style="--c:#3dd68c"></span>CPU %
+                <span class="swatch" style="--c:#ff6b7a"></span>RAM %
+                <span class="swatch" style="--c:#9aa3b5"></span>load×10
+              </span>
+            </figcaption>
+            <canvas id="chart-host" width="900" height="240" aria-label="Host chart"></canvas>
+          </figure>
+        </div>
+      </section>
     </div>
   `;
   const cards = root.querySelector("#status-cards");
   const select = root.querySelector("#profile-select");
   const msg = root.querySelector("#action-msg");
   const meta = root.querySelector("#metrics-meta");
-  const hoursInput = root.querySelector("#metrics-hours");
-  const daysInput = root.querySelector("#metrics-days");
+  const amountInput = root.querySelector("#metrics-amount");
+  const unitSelect = root.querySelector("#metrics-unit");
   let range = { hours: 24, days: null };
   let lastSeries = [];
 
   function card(title, value, extra = "") {
-    return `<article class="card"><h2>${TabbyUI.escapeHtml(title)}</h2><div class="stat">${value}</div><div class="muted">${extra}</div></article>`;
+    return `<article class="card status-card"><h2>${TabbyUI.escapeHtml(title)}</h2><div class="stat">${value}</div><div class="muted">${extra}</div></article>`;
+  }
+
+  function syncCustomFields() {
+    if (range.days != null) {
+      amountInput.value = String(range.days);
+      unitSelect.value = "days";
+    } else {
+      amountInput.value = String(range.hours);
+      unitSelect.value = "hours";
+    }
   }
 
   function setActivePreset() {
-    root.querySelectorAll(".range-btn").forEach((btn) => {
+    root.querySelectorAll(".range-seg").forEach((btn) => {
       const h = btn.dataset.hours ? Number(btn.dataset.hours) : null;
       const d = btn.dataset.days ? Number(btn.dataset.days) : null;
       const on =
@@ -90,6 +102,7 @@ function mountStatus(root) {
           : h != null && range.hours === h && range.days == null;
       btn.classList.toggle("is-active", on);
     });
+    syncCustomFields();
   }
 
   function metricsQuery() {
@@ -112,13 +125,13 @@ function mountStatus(root) {
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth || 900;
-    const cssH = canvas.clientHeight || 220;
+    const cssH = canvas.clientHeight || 240;
     canvas.width = Math.floor(cssW * dpr);
     canvas.height = Math.floor(cssH * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    const pad = { l: 44, r: 12, t: 14, b: 28 };
+    const pad = { l: 40, r: 10, t: 12, b: 26 };
     const w = cssW - pad.l - pad.r;
     const h = cssH - pad.t - pad.b;
     ctx.fillStyle = "rgba(255,255,255,0.02)";
@@ -128,7 +141,9 @@ function mountStatus(root) {
     for (const line of lines) {
       for (const row of series) {
         const v = row[line.key];
-        if (typeof v === "number" && Number.isFinite(v)) yMax = Math.max(yMax, v);
+        if (typeof v === "number" && Number.isFinite(v)) {
+          yMax = Math.max(yMax, line.scale ? v * line.scale : v);
+        }
       }
     }
     yMax = Math.max(1, Math.ceil(yMax / 10) * 10);
@@ -145,13 +160,13 @@ function mountStatus(root) {
       ctx.moveTo(pad.l, y);
       ctx.lineTo(pad.l + w, y);
       ctx.stroke();
-      ctx.fillText(String(val), pad.l - 8, y);
+      ctx.fillText(String(val), pad.l - 6, y);
     }
 
     if (!series.length) {
       ctx.textAlign = "center";
       ctx.fillStyle = "#9aa3b5";
-      ctx.fillText("Collecting samples… leave Status open or wait ~30s", pad.l + w / 2, pad.t + h / 2);
+      ctx.fillText("Collecting samples… wait ~30s", pad.l + w / 2, pad.t + h / 2);
       return;
     }
 
@@ -188,14 +203,14 @@ function mountStatus(root) {
     const ticks = Math.min(5, series.length);
     for (let i = 0; i < ticks; i++) {
       const row = series[Math.round((i * (series.length - 1)) / Math.max(1, ticks - 1))];
-      ctx.fillText(formatAxisTime(row.t, windowS), xAt(row.t), pad.t + h + 8);
+      ctx.fillText(formatAxisTime(row.t, windowS), xAt(row.t), pad.t + h + 6);
     }
   }
 
   function paintCharts(payload) {
     const series = payload.series || [];
     lastSeries = series;
-    const windowS = payload.window_s || range.hours * 3600;
+    const windowS = payload.window_s || (range.days != null ? range.days * 86400 : range.hours * 3600);
     drawChart(
       root.querySelector("#chart-gpu"),
       series,
@@ -218,10 +233,13 @@ function mountStatus(root) {
       100,
       windowS
     );
-    const hoursLabel = payload.hours >= 24 ? `${payload.days}d` : `${payload.hours}h`;
+    const hoursLabel =
+      payload.days >= 1 && payload.hours >= 24
+        ? `${Number(payload.days) === Math.floor(payload.days) ? Math.floor(payload.days) : payload.days}d`
+        : `${payload.hours}h`;
     meta.textContent = series.length
-      ? `${series.length} points · window ${hoursLabel} · sample ~${payload.interval_s || 30}s`
-      : `No samples in this window yet (keeps ~30 days).`;
+      ? `${series.length} pts · ${hoursLabel} · ~${payload.interval_s || 30}s`
+      : "No samples yet";
   }
 
   async function refreshMetrics() {
@@ -278,6 +296,13 @@ function mountStatus(root) {
     }
   }
 
+  function applyRange() {
+    setActivePreset();
+    refreshMetrics().catch((err) => {
+      meta.textContent = err.message;
+    });
+  }
+
   root.querySelector("#status-refresh").addEventListener("click", () => refresh().catch((err) => (msg.textContent = err.message)));
   root.querySelector("#switch-llm").addEventListener("click", () =>
     act(() => TabbyUI.api("gpu", { method: "POST", body: { mode: select.value || "llm" } }))
@@ -298,54 +323,31 @@ function mountStatus(root) {
     act(() => TabbyUI.api("update", { method: "POST", body: { full: true } }));
   });
 
-  root.querySelectorAll(".range-btn").forEach((btn) => {
+  root.querySelectorAll(".range-seg").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.dataset.days) {
         range = { hours: null, days: Number(btn.dataset.days) };
-        daysInput.value = String(range.days);
-        hoursInput.value = "";
       } else {
         range = { hours: Number(btn.dataset.hours), days: null };
-        hoursInput.value = String(range.hours);
-        daysInput.value = "";
       }
-      setActivePreset();
-      refreshMetrics().catch((err) => {
-        meta.textContent = err.message;
-      });
+      applyRange();
     });
   });
 
   root.querySelector("#metrics-custom").addEventListener("submit", (ev) => {
     ev.preventDefault();
-    const daysVal = daysInput.value.trim();
-    const hoursVal = hoursInput.value.trim();
-    if (daysVal) {
-      const days = Number(daysVal);
-      if (!Number.isFinite(days) || days <= 0) {
-        meta.textContent = "Days must be a positive number (max 30).";
-        return;
-      }
-      range = { hours: null, days: Math.min(30, days) };
-      daysInput.value = String(range.days);
-      hoursInput.value = "";
-    } else if (hoursVal) {
-      const hours = Number(hoursVal);
-      if (!Number.isFinite(hours) || hours <= 0) {
-        meta.textContent = "Hours must be a positive number (max 720).";
-        return;
-      }
-      range = { hours: Math.min(720, hours), days: null };
-      hoursInput.value = String(range.hours);
-      daysInput.value = "";
-    } else {
-      meta.textContent = "Enter hours or days.";
+    const amount = Number(amountInput.value);
+    const unit = unitSelect.value;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      meta.textContent = "Enter a positive number.";
       return;
     }
-    setActivePreset();
-    refreshMetrics().catch((err) => {
-      meta.textContent = err.message;
-    });
+    if (unit === "days") {
+      range = { hours: null, days: Math.min(30, amount) };
+    } else {
+      range = { hours: Math.min(720, amount), days: null };
+    }
+    applyRange();
   });
 
   const onResize = () => {
