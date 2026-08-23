@@ -51,14 +51,14 @@ function mountChat(root) {
     addBubble("user", text);
     const bubble = addBubble("assistant", "");
     let assembled = "";
-    const response = await fetch("/ui/chat", {
+    const response = await fetch(TabbyUI.path("chat"), {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
       body: JSON.stringify({ messages: messages.filter((m) => m.role !== "system").concat([{ role: "user", content: text }]), stream: true }),
     });
     if (response.status === 401) {
-      window.location.href = "/ui/login";
+      window.location.href = TabbyUI.path("login");
       return;
     }
     const type = response.headers.get("content-type") || "";

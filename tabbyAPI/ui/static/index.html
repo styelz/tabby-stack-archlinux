@@ -4,7 +4,20 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tabby Stack</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css" />
+  <script>
+    window.TABBY_UI_BASE = (function () {
+      var p = location.pathname || "";
+      var m = "/v1/ui";
+      var i = p.indexOf(m);
+      return i >= 0 ? p.slice(0, i + m.length) : m;
+    })();
+    ["styles.css"].forEach(function (name) {
+      var link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = TABBY_UI_BASE + "/assets/" + name;
+      document.head.appendChild(link);
+    });
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -35,11 +48,10 @@
     <section id="page-gallery" class="page" data-page="gallery" hidden></section>
   </main>
 
-  <script src="/ui/assets/utils.js"></script>
-  <script src="/ui/assets/logs.js"></script>
-  <script src="/ui/assets/chat.js"></script>
-  <script src="/ui/assets/status.js"></script>
-  <script src="/ui/assets/gallery.js"></script>
-  <script src="/ui/assets/app.js"></script>
+  <script>
+    ["utils.js", "logs.js", "chat.js", "status.js", "gallery.js", "app.js"].forEach(function (name) {
+      document.write('<script src="' + TABBY_UI_BASE + "/assets/" + name + '"><\/script>');
+    });
+  </script>
 </body>
 </html>

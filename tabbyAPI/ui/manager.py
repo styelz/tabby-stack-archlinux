@@ -1,4 +1,4 @@
-"""Helpers for the /ui management console."""
+"""Helpers for the /v1/ui management console."""
 
 from __future__ import annotations
 
@@ -265,8 +265,8 @@ def gallery_listing(page: int = 1, per_page: int = 24) -> dict[str, Any]:
                 "name": path.name,
                 "mtime": when,
                 "size": size,
-                "url": f"/ui/gallery/file/{path.name}",
-                "thumb": f"/ui/gallery/thumb/{path.name}",
+                "url": f"/v1/ui/gallery/file/{path.name}",
+                "thumb": f"/v1/ui/gallery/thumb/{path.name}",
                 "public_thumb": gallery_thumb_href(path.name),
             }
         )

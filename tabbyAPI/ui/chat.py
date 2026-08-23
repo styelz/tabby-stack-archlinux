@@ -43,7 +43,7 @@ async def run_console_chat(request: Request, body: dict[str, Any]):
         return switched
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
-    disconnect_handler = DisconnectHandler(request, "/ui/chat")
+    disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
     await disconnect_handler.poll()
     image_response = await handle_image_chat(
         data,

@@ -28,11 +28,11 @@
   }
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
-    await fetch("/ui/auth/logout", { method: "POST", credentials: "same-origin" });
-    window.location.href = "/ui/login";
+    await fetch(TabbyUI.path("auth/logout"), { method: "POST", credentials: "same-origin" });
+    window.location.href = TabbyUI.path("login");
   });
 
-  TabbyUI.api("/ui/auth/check")
+  TabbyUI.api("auth/check")
     .then((data) => {
       const chip = document.getElementById("user-chip");
       if (chip) chip.textContent = data.username || data.stack_user || "";

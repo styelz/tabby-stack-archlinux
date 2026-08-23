@@ -60,12 +60,12 @@ function mountLogs(root) {
 
   async function hydrate() {
     try {
-      const data = await TabbyUI.api("/ui/logs/history?lines=400");
+      const data = await TabbyUI.api("logs/history?lines=400");
       (data.lines || []).forEach(push);
     } catch (err) {
       push(`history: ${err.message}`);
     }
-    source = new EventSource("/ui/logs/stream");
+    source = new EventSource(TabbyUI.path("logs/stream"));
     source.addEventListener("log", (event) => {
       try {
         push(JSON.parse(event.data).line || event.data);

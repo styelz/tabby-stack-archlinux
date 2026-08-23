@@ -4,7 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tabby Stack — Sign in</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css" />
+  <script>
+    window.TABBY_UI_BASE = (function () {
+      var p = location.pathname || "";
+      var m = "/v1/ui";
+      var i = p.indexOf(m);
+      return i >= 0 ? p.slice(0, i + m.length) : m;
+    })();
+    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + '/assets/styles.css" />');
+  </script>
 </head>
 <body class="login-body">
   <main class="login-card">
@@ -29,6 +37,8 @@
       <button type="submit" class="btn primary" id="login-btn">Sign in</button>
     </form>
   </main>
-  <script src="/ui/assets/auth.js"></script>
+  <script>
+    document.write('<script src="' + TABBY_UI_BASE + '/assets/auth.js"><\/script>');
+  </script>
 </body>
 </html>

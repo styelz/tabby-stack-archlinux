@@ -29,7 +29,7 @@ function mountStatus(root) {
   }
 
   async function refresh() {
-    const data = await TabbyUI.api("/ui/status");
+    const data = await TabbyUI.api("status");
     const gpu = data.gpu || {};
     const model = data.model || {};
     const health = data.health || {};
@@ -72,22 +72,22 @@ function mountStatus(root) {
 
   root.querySelector("#status-refresh").addEventListener("click", () => refresh().catch((err) => (msg.textContent = err.message)));
   root.querySelector("#switch-llm").addEventListener("click", () =>
-    act(() => TabbyUI.api("/ui/gpu", { method: "POST", body: { mode: select.value || "llm" } }))
+    act(() => TabbyUI.api("gpu", { method: "POST", body: { mode: select.value || "llm" } }))
   );
   root.querySelector("#switch-comfy").addEventListener("click", () =>
-    act(() => TabbyUI.api("/ui/gpu", { method: "POST", body: { mode: "comfy" } }))
+    act(() => TabbyUI.api("gpu", { method: "POST", body: { mode: "comfy" } }))
   );
   root.querySelector("#restart-btn").addEventListener("click", () => {
     if (!confirm("Restart TabbyAPI now? The UI will drop for about a minute.")) return;
-    act(() => TabbyUI.api("/ui/restart", { method: "POST", body: {} }));
+    act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
   });
   root.querySelector("#update-git").addEventListener("click", () => {
     if (!confirm("Run update.sh --git --restart?")) return;
-    act(() => TabbyUI.api("/ui/update", { method: "POST", body: { full: false } }));
+    act(() => TabbyUI.api("update", { method: "POST", body: { full: false } }));
   });
   root.querySelector("#update-all").addEventListener("click", () => {
     if (!confirm("Run a full update (git + deps) and restart?")) return;
-    act(() => TabbyUI.api("/ui/update", { method: "POST", body: { full: true } }));
+    act(() => TabbyUI.api("update", { method: "POST", body: { full: true } }));
   });
 
   refresh().catch((err) => {

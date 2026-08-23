@@ -34,7 +34,7 @@ function mountGallery(root) {
 
   async function load(nextPage) {
     page = nextPage || 1;
-    const data = await TabbyUI.api(`/ui/gallery/list?page=${page}&per_page=24`);
+    const data = await TabbyUI.api(`gallery/list?page=${page}&per_page=24`);
     if (!data.items.length) {
       grid.innerHTML = "<p class='muted'>No generated images yet.</p>";
       pager.innerHTML = "";
@@ -43,16 +43,18 @@ function mountGallery(root) {
       return;
     }
     grid.innerHTML = data.items
-      .map(
-        (item, index) => `
+      .map((item, index) => {
+        const url = TabbyUI.resolveUiUrl(item.url);
+        const thumb = TabbyUI.resolveUiUrl(item.thumb);
+        return `
         <figure data-name="${TabbyUI.escapeHtml(item.name)}" data-index="${index}">
           <span class="pick"><input type="checkbox" aria-label="Select ${TabbyUI.escapeHtml(item.name)}"></span>
-          <a class="open" href="${item.url}" data-full="${item.url}">
-            <img src="${item.thumb}" alt="${TabbyUI.escapeHtml(item.name)}" loading="lazy" />
+          <a class="open" href="${url}" data-full="${url}">
+            <img src="${thumb}" alt="${TabbyUI.escapeHtml(item.name)}" loading="lazy" />
           </a>
           <figcaption>${TabbyUI.escapeHtml(item.name)}<br>${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}</figcaption>
-        </figure>`
-      )
+        </figure>`;
+      })
       .join("");
     boxes = Array.from(root.querySelectorAll(".pick input"));
     boxes.forEach((box, i) => {
@@ -95,12 +97,12 @@ function mountGallery(root) {
   delSel.addEventListener("click", async () => {
     const names = selected();
     if (!names.length || !confirm(`Delete ${names.length} image(s)?`)) return;
-    await TabbyUI.api("/ui/gallery/delete", { method: "POST", body: { names } });
+    await TabbyUI.api("gallery/delete", { method: "POST", body: { names } });
     await load(page);
   });
   root.querySelector("#del-all").addEventListener("click", async () => {
     if (!confirm("Delete ALL generated images?")) return;
-    await TabbyUI.api("/ui/gallery/delete", { method: "POST", body: { all: true } });
+    await TabbyUI.api("gallery/delete", { method: "POST", body: { all: true } });
     await load(1);
   });
 

@@ -3,12 +3,13 @@
   if (!form) return;
   const error = document.getElementById("login-error");
   const button = document.getElementById("login-btn");
+  const base = window.TABBY_UI_BASE || "/v1/ui";
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     error.hidden = true;
     button.disabled = true;
     try {
-      const response = await fetch("/ui/auth/login", {
+      const response = await fetch(`${base}/auth/login`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -21,7 +22,7 @@
       if (!response.ok) {
         throw new Error(data.detail || "Invalid username or password.");
       }
-      window.location.href = data.redirect || "/ui";
+      window.location.href = `${base}/`;
     } catch (err) {
       error.hidden = false;
       error.textContent = err.message || "Sign-in failed.";

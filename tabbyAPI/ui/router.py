@@ -1,4 +1,4 @@
-"""HTTP routes for the management UI at /ui."""
+"""HTTP routes for the management UI at /v1/ui."""
 
 from __future__ import annotations
 
@@ -33,39 +33,52 @@ from ui.manager import (
     stream_journal_lines,
 )
 
-router = APIRouter(tags=["ui"])
+# Served under /v1 so SSH forwarders that only proxy /openai/v1 and
+# /lmstudio/v1 keep the console on the same path prefix as the API.
+UI_PREFIX = "/v1/ui"
+router = APIRouter(prefix=UI_PREFIX, tags=["ui"])
+legacy_router = APIRouter(tags=["ui-legacy"])
 
 
 def _session_token(request: Request) -> str:
     return request.cookies.get(COOKIE_NAME) or ""
 
 
-@router.get("/ui/login", include_in_schema=False)
-async def ui_login_alias(request: Request):
-    return await ui_login_page(request)
+@legacy_router.get("/ui", include_in_schema=False)
+@legacy_router.get("/ui/", include_in_schema=False)
+@legacy_router.get("/ui/{rest:path}", include_in_schema=False)
+async def ui_legacy_redirect(rest: str = ""):
+    """Local /ui bookmarks → /v1/ui. Relative so /openai/ui keeps its prefix."""
+    target = f"../v1/ui/{rest}" if rest else "../v1/ui/"
+    return RedirectResponse(target, status_code=308)
 
 
-@router.get("/ui/login", include_in_schema=False)
+@router.get("/login", include_in_schema=False)
 async def ui_login_page(request: Request):
     if validate_session(_session_token(request)):
-        return RedirectResponse("/ui", status_code=303)
+        return RedirectResponse("./", status_code=303)
     return FileResponse(STATIC_DIR / "login.html", media_type="text/html; charset=utf-8")
 
 
-@router.get("/ui", include_in_schema=False)
-@router.get("/ui/", include_in_schema=False)
+@router.get("", include_in_schema=False)
+async def ui_index_noslash(request: Request):
+    # Relative "ui/" from .../v1/ui → .../v1/ui/ (keeps /openai or /lmstudio).
+    return RedirectResponse("ui/", status_code=308)
+
+
+@router.get("/", include_in_schema=False)
 async def ui_index(request: Request):
     if not validate_session(_session_token(request)):
-        return RedirectResponse("/ui/login", status_code=303)
+        return RedirectResponse("./login", status_code=303)
     return FileResponse(STATIC_DIR / "index.html", media_type="text/html; charset=utf-8")
 
 
-@router.get("/ui/assets/{name}", include_in_schema=False)
+@router.get("/assets/{name}", include_in_schema=False)
 async def ui_asset(name: str):
     return file_response(name)
 
 
-@router.post("/ui/auth/login", include_in_schema=False)
+@router.post("/auth/login", include_in_schema=False)
 async def ui_login(request: Request):
     ip = client_ip(request)
     if not login_allowed(ip):
@@ -81,14 +94,14 @@ async def ui_login(request: Request):
         raise HTTPException(401, "Invalid username or password.")
     token = create_session(username)
     response = Response(
-        content=json.dumps({"ok": True, "username": username, "redirect": "/ui"}),
+        content=json.dumps({"ok": True, "username": username, "redirect": "./"}),
         media_type="application/json",
     )
     set_session_cookie(response, token, request)
     return response
 
 
-@router.post("/ui/auth/logout", include_in_schema=False)
+@router.post("/auth/logout", include_in_schema=False)
 async def ui_logout(request: Request):
     destroy_session(_session_token(request))
     response = Response(content=json.dumps({"ok": True}), media_type="application/json")
@@ -96,7 +109,7 @@ async def ui_logout(request: Request):
     return response
 
 
-@router.get("/ui/auth/check", include_in_schema=False)
+@router.get("/auth/check", include_in_schema=False)
 async def ui_auth_check(request: Request):
     username = validate_session(_session_token(request))
     if not username:
@@ -104,18 +117,18 @@ async def ui_auth_check(request: Request):
     return {"ok": True, "username": username, "stack_user": stack_username()}
 
 
-@router.get("/ui/status", include_in_schema=False)
+@router.get("/status", include_in_schema=False)
 async def ui_status(request: Request, _user: str = Depends(require_ui_user)):
     return await stack_status(request)
 
 
-@router.get("/ui/logs/history", include_in_schema=False)
+@router.get("/logs/history", include_in_schema=False)
 async def ui_log_history(lines: int = 300, _user: str = Depends(require_ui_user)):
     install_log_sink()
     return {"lines": journalctl_history(lines)}
 
 
-@router.get("/ui/logs/stream", include_in_schema=False)
+@router.get("/logs/stream", include_in_schema=False)
 async def ui_log_stream(_user: str = Depends(require_ui_user)):
     install_log_sink()
 
@@ -126,12 +139,12 @@ async def ui_log_stream(_user: str = Depends(require_ui_user)):
     return EventSourceResponse(events(), ping=15)
 
 
-@router.post("/ui/restart", include_in_schema=False)
+@router.post("/restart", include_in_schema=False)
 async def ui_restart(_user: str = Depends(require_ui_user)):
     return start_stack_restart()
 
 
-@router.post("/ui/update", include_in_schema=False)
+@router.post("/update", include_in_schema=False)
 async def ui_update(request: Request, _user: str = Depends(require_ui_user)):
     try:
         body = await request.json()
@@ -140,7 +153,7 @@ async def ui_update(request: Request, _user: str = Depends(require_ui_user)):
     return start_stack_update(full=bool(body.get("full")))
 
 
-@router.post("/ui/gpu", include_in_schema=False)
+@router.post("/gpu", include_in_schema=False)
 async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
     from common.gpu_mode import GPU_ALIASES, comfy_up
     from endpoints.core.image_jobs import ensure_comfy, loaded_tabby_name, reload_last_llm
@@ -186,7 +199,7 @@ async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
     }
 
 
-@router.post("/ui/chat", include_in_schema=False)
+@router.post("/chat", include_in_schema=False)
 async def ui_chat(request: Request, _user: str = Depends(require_ui_user)):
     from ui.chat import run_console_chat
 
@@ -197,7 +210,7 @@ async def ui_chat(request: Request, _user: str = Depends(require_ui_user)):
     return await run_console_chat(request, body)
 
 
-@router.get("/ui/gallery/list", include_in_schema=False)
+@router.get("/gallery/list", include_in_schema=False)
 async def ui_gallery_list(
     page: int = 1,
     per_page: int = 24,
@@ -206,7 +219,7 @@ async def ui_gallery_list(
     return gallery_listing(page, per_page)
 
 
-@router.post("/ui/gallery/delete", include_in_schema=False)
+@router.post("/gallery/delete", include_in_schema=False)
 async def ui_gallery_delete(request: Request, _user: str = Depends(require_ui_user)):
     from common.gpu_mode import delete_generated_images
 
@@ -222,7 +235,7 @@ async def ui_gallery_delete(request: Request, _user: str = Depends(require_ui_us
     return {"deleted": removed, "count": len(removed)}
 
 
-@router.get("/ui/gallery/file/{name}", include_in_schema=False)
+@router.get("/gallery/file/{name}", include_in_schema=False)
 async def ui_gallery_file(name: str, _user: str = Depends(require_ui_user)):
     from common.gpu_mode import generated_image_path
 
@@ -232,7 +245,7 @@ async def ui_gallery_file(name: str, _user: str = Depends(require_ui_user)):
     return FileResponse(path, media_type="image/png", filename=name)
 
 
-@router.get("/ui/gallery/thumb/{name}", include_in_schema=False)
+@router.get("/gallery/thumb/{name}", include_in_schema=False)
 async def ui_gallery_thumb(name: str, _user: str = Depends(require_ui_user)):
     from common.gpu_mode import ensure_gallery_thumb, generated_image_path, generated_thumb_path
 

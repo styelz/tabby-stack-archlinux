@@ -66,10 +66,12 @@ def setup_app(host: Optional[str] = None, port: Optional[int] = None):
     # Include core API request paths
     app.include_router(CoreRouter)
     app.include_router(McpRouter)
+    from ui.router import legacy_router as UiLegacyRouter
     from ui.router import router as UiRouter
 
     app.include_router(UiRouter)
-    logger.info(f"Management UI: http://{host}:{port}/ui")
+    app.include_router(UiLegacyRouter)
+    logger.info(f"Management UI: http://{host}:{port}/v1/ui")
 
     return app
 
