@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from common.phrase_switch import (
+    LLM_NOT_READY_WAIT_S,
     comfy_not_running_text,
     llm_loading_text,
     llm_not_ready_text,
@@ -69,6 +70,45 @@ class SwitchTimesTests(unittest.TestCase):
                         self.assertIn("qwen35 on 12 GB", loading)
                         comfy = comfy_not_running_text()
                         self.assertIn("wait about 5 seconds", comfy)
+
+    def test_not_ready_wait_constant_is_defined(self):
+        self.assertGreaterEqual(LLM_NOT_READY_WAIT_S, 1)
+
+
+class NotReadyWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_yield_and_not_ready_sleep_the_defined_wait(self):
+        from common.phrase_switch import (
+            llm_not_ready_response,
+            yield_comfy_to_llm_response,
+        )
+        from endpoints.OAI.types.chat_completion import (
+            ChatCompletionMessage,
+            ChatCompletionRequest,
+        )
+
+        data = ChatCompletionRequest(
+            messages=[ChatCompletionMessage(role="user", content="continue")]
+        )
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        with (
+            mock.patch("common.phrase_switch.asyncio.sleep", side_effect=fake_sleep),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=True),
+        ):
+            await llm_not_ready_response(data)
+        self.assertEqual(slept, [LLM_NOT_READY_WAIT_S])
+
+        slept.clear()
+        with (
+            mock.patch("common.phrase_switch.asyncio.sleep", side_effect=fake_sleep),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=False),
+            mock.patch("common.phrase_switch.start_switch"),
+        ):
+            await yield_comfy_to_llm_response(data)
+        self.assertEqual(slept, [LLM_NOT_READY_WAIT_S])
 
 
 if __name__ == "__main__":

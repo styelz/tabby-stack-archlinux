@@ -59,6 +59,8 @@ SWITCHER = ROOT / "switch_model.py"
 RESTARTER = ROOT / "restart_stack.py"
 LOG = ROOT / "switch-model.log"
 LOCK = ROOT / "switch-model.lock"
+# Hold the HTTP request so a client cannot 1 Hz-loop while a model loads.
+LLM_NOT_READY_WAIT_S = 5
 
 SWITCH_RE = re.compile(
     r"(?is)^\s*(?:please\s+)?(?:switch(?:\s+to)?|use)\s+(\S+)(?:\s+now)?[\s!.]*$"
