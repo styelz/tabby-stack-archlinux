@@ -223,6 +223,39 @@ def _unwrap_query(text: str) -> str:
     return text.strip()
 
 
+_ATTACHMENT_BLOCK_RE = re.compile(
+    r"(?is)<attachment\b[^>]*>.*?</attachment>"
+)
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
+_CSS_OR_CODE_LINE_RE = re.compile(
+    r"(?is)^\s*("
+    r"[.#@][\w-]*\s*[,{]"
+    r"|[\w-]+\s*\{"
+    r"|[\w-]+\s*:\s*[^;\n]+;?"
+    r"|grid-template|linear-gradient|radial-gradient|"
+    r"rgba?\s*\(|var\s*\(--|repeat\s*\(|minmax\s*\("
+    r"|img\s*\[|url\s*\("
+    r")"
+)
+
+
+def _plain_user_ask(text: str) -> str:
+    """User sentence without IDE attachments or pasted CSS/JS."""
+    raw = _ATTACHMENT_BLOCK_RE.sub(" ", text or "")
+    raw = _CODE_FENCE_RE.sub(" ", raw)
+    lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.fullmatch(r"[\w./-]+\.(css|js|html|jsx|tsx|vue|py)", stripped, re.I):
+            continue
+        if _CSS_OR_CODE_LINE_RE.match(stripped):
+            continue
+        lines.append(stripped)
+    return "\n".join(lines).strip()
+
+
 def last_user_text(data: ChatCompletionRequest) -> str:
     return _unwrap_query(last_user_raw(data))
 
@@ -991,7 +1024,7 @@ def _last_ask_text(data: ChatCompletionRequest) -> str:
     text = _unwrap_query(raw) or last_user_text(data)
     if MIXED_IMAGE_HINT_MARK in text:
         text = text.split(MIXED_IMAGE_HINT_MARK, 1)[0]
-    text = (text or "").strip()
+    text = _plain_user_ask(text)
     if _is_meta_wrapper_text(text):
         return ""
     return text
@@ -1006,16 +1039,16 @@ def conversation_asked_for_page_images(data: ChatCompletionRequest) -> bool:
         if MIXED_IMAGE_HINT_MARK in raw:
             return True
         for query in _queries_in(raw):
-            if _text_is_mixed_image(query):
+            if _text_is_mixed_image(_plain_user_ask(query)):
                 return True
     return False
 
 
 def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
-    text = last_user_text(data)
+    text = _last_ask_text(data)
     if _is_meta_wrapper_text(text):
         return False
-    if _text_is_mixed_image(text) or _text_is_image_redo(_last_ask_text(data)):
+    if _text_is_mixed_image(text) or _text_is_image_redo(text):
         return True
     if not text or not conversation_asked_for_page_images(data):
         return False
@@ -1244,16 +1277,9 @@ def running_image_job_reply() -> Optional[str]:
     )
 
 
-def last_user_text(data: ChatCompletionRequest) -> str:
-    for message in reversed(data.messages or []):
-        if message.role == "user":
-            return _content_text(message.content)
-    return ""
-
-
 def user_says_images_missing(data: ChatCompletionRequest) -> bool:
     """True when the last user line says the PNGs never landed."""
-    text = last_user_text(data).lower()
+    text = _last_ask_text(data).lower()
     if not text:
         return False
     mentions = any(
@@ -2096,7 +2122,7 @@ def mixed_source_text(data: ChatCompletionRequest) -> str:
             continue
         raw = _content_text(message.content)
         for query in _queries_in(raw):
-            if _text_is_mixed_image(query):
+            if _text_is_mixed_image(_plain_user_ask(query)):
                 last_mixed = query
     if last_mixed:
         return last_mixed

@@ -339,6 +339,66 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("images/premium.png", paths)
         self.assertFalse(any("pricing" in path for path in paths))
 
+    def test_neon_accent_colors_are_not_png_subjects(self):
+        """Live Cosmos spec said 'neon accents (cyan, magenta, electric blue)'.
+        Job a7f86b12 queued those as photographs of colors."""
+        line = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The logo should be large. '
+            "Use a dark color palette with neon accents "
+            "(cyan, magenta, electric blue). Package section displaying "
+            "tours to different planets (Mars, Jupiter, Saturn, Neptune, "
+            "etc.). Each planet package should have a generated "
+            "transparent PNG image of that planet."
+        )
+        paths = [row["output_path"] for row in plan_mixed_images(line)]
+        self.assertEqual(
+            paths,
+            [
+                "images/logo.png",
+                "images/mars.png",
+                "images/jupiter.png",
+                "images/saturn.png",
+                "images/neptune.png",
+            ],
+        )
+        self.assertNotIn("images/cyan.png", paths)
+        self.assertNotIn("images/magenta.png", paths)
+        self.assertNotIn("images/electric-blue.png", paths)
+
+    def test_attached_css_is_not_a_list_of_png_subjects(self):
+        """Layout follow-up job 02940683 queued 1fr.png / auto-fit.png /
+        135deg.png from stylesheet function arguments."""
+        blob = (
+            "the panels are long, can you make the panels wider not long\n"
+            "styles.css\n"
+            ".packages { display: grid; grid-template-columns: "
+            "repeat(auto-fit, minmax(1fr, 1fr)); gap: 1.5rem; }\n"
+            ".card { background: linear-gradient(135deg, var(--cyan), "
+            "var(--magenta)); padding: 20px 40px; }\n"
+            ".tier { transform: scale(0.8); opacity: 0.3; "
+            "box-shadow: 0 0 20px rgba(0, 255, 255, 0.3); }\n"
+            'img[src="images/logo.png"] { width: 180px; }\n'
+            ".grid { grid-template-columns: repeat(2, 1fr); }\n"
+        )
+        paths = [row["output_path"] for row in plan_mixed_images(blob)]
+        junk = (
+            "images/1fr.png",
+            "images/2.png",
+            "images/20.png",
+            "images/40.png",
+            "images/0-8.png",
+            "images/0.png",
+            "images/255.png",
+            "images/0-3.png",
+            "images/135deg.png",
+            "images/var-cyan.png",
+            "images/auto-fit.png",
+        )
+        for path in junk:
+            self.assertNotIn(path, paths)
+
+
     def test_transparent_ask_never_says_transparent_to_comfy(self):
         rewritten = rewrite_comfy_prompt("transparent PNG of a coffee cup")
         self.assertNotIn("transparent", rewritten.lower())

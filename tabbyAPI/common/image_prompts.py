@@ -254,12 +254,30 @@ IMAGE_OF_RE = re.compile(
 )
 # Named things in parentheses: (Oak, Pine, Lake) or (Mars, Jupiter, Saturn).
 PAREN_NAME_LIST_RE = re.compile(r"\(([^)]{3,200})\)")
-# Skip paren lists that are tech/pricing, not picture subjects.
+# Skip paren lists that are tech/pricing/palette, not picture subjects.
 _NOT_SUBJECT_LIST = re.compile(
     r"(?is)\b("
     r"pricing|tiers?|html5?|css3?|javascript|react|vue|"
-    r"deliverables?|requirements?|technical|stack"
+    r"deliverables?|requirements?|technical|stack|"
+    r"accents?|palette|neon"
     r")\b"
+)
+# `linear-gradient(135deg, var(--cyan)` is not "(Oak, Pine)".
+_CSS_FUNC_BEFORE_PAREN = re.compile(
+    r"(?is)("
+    r"rgba?|hsla?|hwb|lab|lch|oklch|oklab|color|"
+    r"var|repeat|minmax|clamp|calc|attr|"
+    r"linear-gradient|radial-gradient|conic-gradient|"
+    r"url|translate(?:[xyz]|3d)?|scale(?:[xyz])?|rotate(?:[xyz])?|"
+    r"matrix(?:3d)?"
+    r")\s*$"
+)
+_CSS_LIKE_SUBJECT = re.compile(
+    r"(?is)^("
+    r"[\d.]+(?:px|em|rem|vh|vw|vmin|vmax|%|deg|turn|fr|s|ms|ch|ex)?"
+    r"|auto-fit|auto-fill|minmax|inherit|unset|initial|revert|none|auto"
+    r"|var\s*\(|rgba?\s*\(|hsla?\s*\("
+    r")"
 )
 _SUBJECT_ARTICLES = re.compile(r"(?is)^(an?|the)\s+")
 _SUBJECT_TRAIL = re.compile(
@@ -447,6 +465,24 @@ def _clean_subject(item: str) -> str:
     return text
 
 
+def _is_css_like_subject(name: str) -> bool:
+    """True for CSS tokens that PAREN_NAME_LIST_RE pulls out of stylesheets."""
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return True
+    if _CSS_LIKE_SUBJECT.match(cleaned):
+        return True
+    lowered = cleaned.lower()
+    if lowered.startswith("var(") or lowered.startswith("var(--"):
+        return True
+    slug = _subject_slug(cleaned)
+    if not slug:
+        return True
+    if slug.isdigit() or re.fullmatch(r"\d+(?:-\d+)+", slug):
+        return True
+    return False
+
+
 def _list_parts(blob: str) -> list[str]:
     blob = re.split(r"\s+[-–—]\s+", blob or "", maxsplit=1)[0]
     return [part.strip() for part in re.split(r"\s*(?:,|&|\band\b)\s*", blob) if part.strip()]
@@ -472,6 +508,8 @@ def listed_image_subjects(text: str) -> list[str]:
         key = cleaned.lower()
         if key in _SKIP_SUBJECTS or key in seen or key == brand:
             return ""
+        if _is_css_like_subject(cleaned):
+            return ""
         slug = _subject_slug(cleaned)
         if not slug or slug in {"logo", "header", "banner", "generated"}:
             return ""
@@ -496,6 +534,8 @@ def listed_image_subjects(text: str) -> list[str]:
     for match in PAREN_NAME_LIST_RE.finditer(raw):
         start = max(0, match.start() - 48)
         if _NOT_SUBJECT_LIST.search(raw[start : match.end()]):
+            continue
+        if _CSS_FUNC_BEFORE_PAREN.search(raw[max(0, match.start() - 32) : match.start()]):
             continue
         candidates = [accept(part) for part in _list_parts(match.group(1) or "")]
         names = [name for name in candidates if name]

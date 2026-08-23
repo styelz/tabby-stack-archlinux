@@ -56,6 +56,7 @@ from common.phrase_switch import (
     is_restart_request,
     last_role,
     mixed_image_hint,
+    mixed_source_text,
     prepare_mixed_image_turn,
     requested_image_count,
     requested_image_prompt,
@@ -1314,6 +1315,58 @@ class GpuModeTests(unittest.IsolatedAsyncioTestCase):
             is_mixed_image_request(_chat("fix the CSS padding on the header"))
         )
 
+    def test_layout_followup_with_attached_css_is_not_a_new_image_job(self):
+        """VS Code attached styles.css on 'make the panels wider'. Job
+        02940683 then rendered 12 CSS tokens (1fr, auto-fit, 135deg)."""
+        spec = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The website should be a '
+            "single-page application. The logo should be large and "
+            "prominently displayed. Package section displaying tours to "
+            "different planets (Mars, Jupiter, Saturn, Neptune, etc.). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
+        )
+        css = (
+            ".packages { display: grid; grid-template-columns: "
+            "repeat(auto-fit, minmax(1fr, 1fr)); gap: 1.5rem; }\n"
+            ".card { background: linear-gradient(135deg, var(--cyan), "
+            "var(--magenta)); padding: 20px 40px; }\n"
+            ".tier { transform: scale(0.8); opacity: 0.3; "
+            "box-shadow: 0 0 20px rgba(0, 255, 255, 0.3); }\n"
+            'img[src="images/logo.png"] { width: 180px; }\n'
+            ".grid { grid-template-columns: repeat(2, 1fr); }\n"
+        )
+        ask = (
+            "the problem was not fixed, because the panels are long, and "
+            "there are 3 on one row and 1 on the next row, it looks wrong. "
+            "can you make the panels wider not long"
+        )
+        tagged = (
+            f'<attachment id="file:///workspace/styles.css">\n{css}'
+            f"</attachment>\n<userRequest>{ask}</userRequest>"
+        )
+        dumped = f"{ask}\nstyles.css\n{css}"
+        history = [
+            ChatCompletionMessage(role="user", content=spec),
+            ChatCompletionMessage(
+                role="assistant",
+                content="Still generating job a7f86b12-a3af-4fa4-8a0d-80f6a8e8f809.",
+            ),
+        ]
+        tagged_chat = ChatCompletionRequest(
+            messages=history + [ChatCompletionMessage(role="user", content=tagged)]
+        )
+        dumped_chat = ChatCompletionRequest(
+            messages=history + [ChatCompletionMessage(role="user", content=dumped)]
+        )
+        self.assertFalse(is_mixed_image_request(tagged_chat))
+        self.assertFalse(is_mixed_image_request(dumped_chat))
+        self.assertIn("Cosmos Tours", mixed_source_text(tagged_chat))
+        self.assertNotIn("auto-fit", mixed_source_text(tagged_chat))
+        self.assertIn("Cosmos Tours", mixed_source_text(dumped_chat))
+        self.assertNotIn("auto-fit", mixed_source_text(dumped_chat))
+
     def test_ide_title_request_is_not_a_mixed_image_ask(self):
         """A title/summary meta-request that echoes the user's own logo/page
         ask must not itself be classified as that ask (see
@@ -2370,6 +2423,79 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
             )
         start.assert_awaited_once()
         self.assertIs(job, new_job)
+
+    async def test_layout_followup_does_not_queue_css_token_pngs(self):
+        """Done Cosmos job must not be replaced by 1fr.png / auto-fit.png
+        when the user only asks to widen the layout and the IDE attaches
+        styles.css (live job 02940683)."""
+        spec = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The logo should be large. '
+            "Tours to different planets (Mars, Jupiter, Saturn, Neptune). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
+        )
+        existing = mock.Mock(
+            id="a7f86b12-a3af-4fa4-8a0d-80f6a8e8f809",
+            status="done",
+            wait_text="About 17 minutes.",
+            wait_s=1114,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(output_path=path, urls=[], prompt="", status="done", error="")
+                for path in (
+                    "images/logo.png",
+                    "images/mars.png",
+                    "images/jupiter.png",
+                    "images/saturn.png",
+                    "images/neptune.png",
+                )
+            ],
+            urls=["https://git.pbptech.com/openai/v1/images/generated-x.png"],
+            client_saved=True,
+            download_attempts=4,
+            error="",
+        )
+        follow = (
+            "<attachment id=\"file:///workspace/styles.css\">\n"
+            ".packages { grid-template-columns: repeat(auto-fit, minmax(1fr, 1fr)); }\n"
+            ".card { background: linear-gradient(135deg, var(--cyan), #fff); }\n"
+            'img[src="images/logo.png"] { width: 180px; }\n'
+            "</attachment>\n"
+            "<userRequest>can you make the panels wider not long</userRequest>"
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="user", content=spec),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="Still generating job a7f86b12-a3af-4fa4-8a0d-80f6a8e8f809.",
+                ),
+                ChatCompletionMessage(role="user", content=follow),
+            ]
+        )
+        self.assertFalse(is_mixed_image_request(data))
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=existing,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=existing,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[existing],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                new=mock.AsyncMock(),
+            ) as start,
+        ):
+            job = await ensure_mixed_image_job(data)
+        start.assert_not_awaited()
+        self.assertIsNone(job)
 
     async def test_logo_only_job_does_not_block_missing_planet_dests(self):
         """Once the chat waited on a logo-only job, reuse used to skip the
