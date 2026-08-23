@@ -55,33 +55,30 @@ function mountGallery(root) {
     boxes = Array.from(grid.querySelectorAll(".pick input"));
   }
 
-  function applyPick(event, i) {
-    if (event.shiftKey) {
-      const a = Math.min(lastIndex, i);
-      const z = Math.max(lastIndex, i);
-      for (let j = a; j <= z; j += 1) {
-        if (boxes[j]) boxes[j].checked = true;
-      }
-    } else {
-      boxes[i].checked = !boxes[i].checked;
-      lastIndex = i;
+  function applyRange(from, to) {
+    const a = Math.min(from, to);
+    const z = Math.max(from, to);
+    for (let j = a; j <= z; j += 1) {
+      if (boxes[j]) boxes[j].checked = true;
     }
     paint();
   }
 
-  grid.addEventListener(
-    "click",
-    (event) => {
-      const pick = event.target.closest(".pick");
-      if (!pick || !grid.contains(pick)) return;
-      const i = Number(pick.closest("figure")?.dataset.index);
-      if (!Number.isInteger(i) || !boxes[i]) return;
+  grid.addEventListener("click", (event) => {
+    const pick = event.target.closest(".pick");
+    if (!pick || !grid.contains(pick)) return;
+    const i = Number(pick.closest("figure")?.dataset.index);
+    if (!Number.isInteger(i) || !boxes[i]) return;
+    if (event.shiftKey) {
       event.preventDefault();
-      event.stopPropagation();
-      applyPick(event, i);
-    },
-    true
-  );
+      const from = lastIndex;
+      // The browser toggles the clicked box before this handler, then
+      // undoes that toggle when click is cancelled. Re-apply after that.
+      setTimeout(() => applyRange(from, i), 0);
+      return;
+    }
+    lastIndex = i;
+  });
   grid.addEventListener("change", (event) => {
     if (event.target.matches(".pick input")) paint();
   });
