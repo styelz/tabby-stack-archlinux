@@ -1,0 +1,44 @@
+(function () {
+  const pages = {
+    logs: { el: document.getElementById("page-logs"), mount: window.mountLogs, title: "Logs" },
+    chat: { el: document.getElementById("page-chat"), mount: window.mountChat, title: "Chat" },
+    status: { el: document.getElementById("page-status"), mount: window.mountStatus, title: "Status" },
+    gallery: { el: document.getElementById("page-gallery"), mount: window.mountGallery, title: "Gallery" },
+  };
+  const handles = {};
+
+  function currentName() {
+    const hash = (location.hash || "#logs").replace("#", "");
+    return pages[hash] ? hash : "logs";
+  }
+
+  function show(name) {
+    const key = pages[name] ? name : "logs";
+    Object.entries(pages).forEach(([id, page]) => {
+      const on = id === key;
+      page.el.hidden = !on;
+      page.el.classList.toggle("is-active", on);
+      if (on && !handles[id]) handles[id] = page.mount(page.el);
+    });
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.classList.toggle("is-active", tab.dataset.page === key);
+    });
+    const title = document.getElementById("header-title");
+    if (title) title.textContent = pages[key].title;
+  }
+
+  document.getElementById("logout-btn").addEventListener("click", async () => {
+    await fetch("/ui/auth/logout", { method: "POST", credentials: "same-origin" });
+    window.location.href = "/ui/login";
+  });
+
+  TabbyUI.api("/ui/auth/check")
+    .then((data) => {
+      const chip = document.getElementById("user-chip");
+      if (chip) chip.textContent = data.username || data.stack_user || "";
+    })
+    .catch(() => {});
+
+  window.addEventListener("hashchange", () => show(currentName()));
+  show(currentName());
+})();

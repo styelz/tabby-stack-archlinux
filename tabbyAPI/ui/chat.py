@@ -1,0 +1,98 @@
+"""Console chat: LLM replies plus inline images, no file tools."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import HTTPException, Request
+from sse_starlette import EventSourceResponse
+
+from common import model
+from common.assistant_text import strip_apology_sse, strip_response_apologies
+from common.gpu_mode import public_api_base
+from common.model import check_model_container
+from common.networking import DisconnectHandler, get_sse_ping_interval
+from common.phrase_switch import gpu_is_comfy, handle_if_requested
+from common.tabby_config import config
+from endpoints.OAI.types.chat_completion import ChatCompletionRequest
+from endpoints.OAI.utils.chat_completion import (
+    apply_chat_template,
+    generate_chat_completion,
+    stream_generate_chat_completion,
+)
+from images.chat import handle as handle_image_chat
+from ui.manager import sanitize_chat_payload
+
+
+async def run_console_chat(request: Request, body: dict[str, Any]):
+    try:
+        payload = sanitize_chat_payload(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    data = ChatCompletionRequest(
+        messages=payload["messages"],
+        stream=payload["stream"],
+        tools=None,
+        temperature=payload.get("temperature"),
+        max_tokens=payload.get("max_tokens"),
+    )
+    api_base = public_api_base(request)
+    switched = handle_if_requested(data, api_base=api_base)
+    if switched is not None:
+        return switched
+
+    llm_ready = bool(model.container and getattr(model.container, "loaded", False))
+    disconnect_handler = DisconnectHandler(request, "/ui/chat")
+    await disconnect_handler.poll()
+    image_response = await handle_image_chat(
+        data,
+        api_base,
+        source_image=None,
+        llm_ready=llm_ready,
+        gpu_is_comfy=gpu_is_comfy(),
+        disconnect_handler=disconnect_handler,
+        console=True,
+    )
+    if image_response is not None:
+        return image_response
+    if not llm_ready:
+        raise HTTPException(
+            503,
+            "The coding model is not loaded. Switch to an LLM profile from Status, then try again.",
+        )
+
+    await check_model_container()
+    if not (model.container and getattr(model.container, "model_dir", None)):
+        raise HTTPException(503, "No model is loaded.")
+    if getattr(model.container, "prompt_template", None) is None:
+        raise HTTPException(422, "Chat is disabled because no prompt template is set.")
+
+    model_path = model.container.model_dir
+    prompt, mm_embeddings = await apply_chat_template(data)
+    try:
+        await disconnect_handler.poll()
+        streaming = bool(data.stream)
+        disabled = bool(getattr(config.developer, "disable_request_streaming", False))
+        if streaming and not disabled:
+            model.check_context_length(prompt, data, mm_embeddings)
+            return EventSourceResponse(
+                strip_apology_sse(
+                    stream_generate_chat_completion(
+                        prompt, mm_embeddings, data, request, model_path, disconnect_handler
+                    )
+                ),
+                ping=get_sse_ping_interval(),
+                sep="\n",
+            )
+        response = await generate_chat_completion(
+            prompt, mm_embeddings, data, request, model_path, disconnect_handler
+        )
+        return strip_response_apologies(response)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+run_console_chat = run_console_chat

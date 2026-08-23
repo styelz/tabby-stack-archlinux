@@ -66,6 +66,10 @@ def setup_app(host: Optional[str] = None, port: Optional[int] = None):
     # Include core API request paths
     app.include_router(CoreRouter)
     app.include_router(McpRouter)
+    from ui.router import router as UiRouter
+
+    app.include_router(UiRouter)
+    logger.info(f"Management UI: http://{host}:{port}/ui")
 
     return app
 

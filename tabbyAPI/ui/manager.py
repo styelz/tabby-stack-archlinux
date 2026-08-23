@@ -1,0 +1,352 @@
+"""Helpers for the /ui management console."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import subprocess
+import time
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, AsyncIterator, Optional
+
+from loguru import logger
+
+ROOT = Path(__file__).resolve().parent.parent
+STACK_ROOT = ROOT.parent
+JOURNAL_UNITS = ("tabbyapi", "comfyui")
+CONSOLE_SYSTEM = (
+    "You are chatting in the Tabby Stack web console. Answer in this conversation "
+    "only. Do not write project files, HTML, CSS, or scripts to disk. "
+    "If the user asks for an image, describe or generate it; the UI will show PNGs."
+)
+PROCESS_LOGS: deque[str] = deque(maxlen=4000)
+_SINK_ID: Optional[int] = None
+_STARTED_AT = time.time()
+
+
+def install_log_sink() -> None:
+    global _SINK_ID
+    if _SINK_ID is not None:
+        return
+
+    def _sink(message):
+        PROCESS_LOGS.append(str(message).rstrip("\n"))
+
+    _SINK_ID = logger.add(
+        _sink,
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}",
+        colorize=False,
+        enqueue=False,
+    )
+
+
+def journalctl_cmd(*, follow: bool = False, lines: int = 300) -> list[str]:
+    cmd = [
+        "journalctl",
+        "--user",
+        "--no-pager",
+        "-o",
+        "short-iso",
+        "-n",
+        str(max(1, min(int(lines), 5000))),
+    ]
+    for unit in JOURNAL_UNITS:
+        cmd.extend(["-u", unit])
+    if follow:
+        cmd.append("-f")
+    return cmd
+
+
+def journalctl_history(lines: int = 300) -> list[str]:
+    if shutil.which("journalctl") is None:
+        return list(PROCESS_LOGS)[-lines:]
+    try:
+        completed = subprocess.run(
+            journalctl_cmd(follow=False, lines=lines),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return list(PROCESS_LOGS)[-lines:]
+    text = completed.stdout or ""
+    if completed.returncode != 0 and not text.strip():
+        return list(PROCESS_LOGS)[-lines:]
+    return [line for line in text.splitlines() if line]
+
+
+async def stream_journal_lines() -> AsyncIterator[str]:
+    if shutil.which("journalctl") is None:
+        async for line in _stream_process_logs():
+            yield line
+        return
+    process = await asyncio.create_subprocess_exec(
+        *journalctl_cmd(follow=True, lines=200),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        assert process.stdout is not None
+        while True:
+            raw = await process.stdout.readline()
+            if not raw:
+                break
+            yield raw.decode("utf-8", errors="replace").rstrip("\n")
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                process.kill()
+
+
+async def _stream_process_logs() -> AsyncIterator[str]:
+    index = 0
+    for line in list(PROCESS_LOGS):
+        yield line
+        index += 1
+    while True:
+        await asyncio.sleep(0.25)
+        current = list(PROCESS_LOGS)
+        if len(current) < index:
+            index = 0
+        while index < len(current):
+            yield current[index]
+            index += 1
+
+
+def nvidia_stats() -> dict[str, Any]:
+    if shutil.which("nvidia-smi") is None:
+        return {}
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {}
+    rows = (out or "").strip().splitlines()
+    if not rows:
+        return {}
+    parts = [part.strip() for part in rows[0].split(",")]
+    if len(parts) < 5:
+        return {"name": rows[0]}
+    try:
+        used = int(float(parts[1]))
+        total = int(float(parts[2]))
+        util = int(float(parts[3]))
+        temp = int(float(parts[4]))
+    except ValueError:
+        return {"name": parts[0]}
+    return {
+        "name": parts[0],
+        "memory_used_mib": used,
+        "memory_total_mib": total,
+        "utilization_pct": util,
+        "temperature_c": temp,
+        "memory_used_mib": used,
+        "memory_total_mib": total,
+        "utilization_pct": util,
+        "temperature_c": temp,
+    }
+
+
+def unit_active(name: str) -> Optional[bool]:
+    if shutil.which("systemctl") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["systemctl", "--user", "is-active", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return completed.stdout.strip() == "active"
+
+
+def _model_card() -> dict[str, Any]:
+    from common import model
+
+    container = getattr(model, "container", None)
+    if not container or not getattr(container, "loaded", False):
+        return {}
+    try:
+        card = container.model_info()
+        payload = card.model_dump() if hasattr(card, "model_dump") else dict(card)
+    except Exception:
+        payload = {"id": getattr(getattr(container, "model_dir", None), "name", None)}
+    params = payload.get("parameters") or {}
+    return {
+        "id": payload.get("id"),
+        "max_seq_len": params.get("max_seq_len"),
+        "cache_size": params.get("cache_size"),
+        "cache_mode": params.get("cache_mode"),
+        "use_vision": params.get("use_vision"),
+    }
+
+
+async def stack_status(request=None) -> dict[str, Any]:
+    from common.gpu_mode import comfy_up, public_api_base, read_mode
+    from common.health import HealthManager
+    from common.phrase_switch import last_llm_profile_name
+    from images.jobs import active_mcp_image_job, loaded_tabby_name
+    from select_model import available_profiles, last_profile
+
+    mode = read_mode()
+    tabby = loaded_tabby_name()
+    gpu_mode = "llm" if tabby else (mode.get("mode") or "llm")
+    try:
+        healthy, issues = await HealthManager.is_service_healthy()
+        issue_text = [
+            issue.description if hasattr(issue, "description") else str(issue) for issue in issues
+        ]
+    except Exception:
+        healthy, issue_text = True, []
+    job = active_mcp_image_job()
+    job_info = None
+    if job:
+        job_info = {
+            "id": getattr(job, "id", None),
+            "status": getattr(job, "status", None),
+            "phase": getattr(job, "phase", None),
+        }
+    return {
+        "ok": True,
+        "gpu_mode": gpu_mode,
+        "comfy_up": comfy_up(),
+        "tabby_model": tabby,
+        "profile": last_llm_profile_name() or last_profile(),
+        "profiles": available_profiles(),
+        "model": _model_card(),
+        "health": {"healthy": healthy, "issues": issue_text},
+        "units": {
+            "tabbyapi": unit_active("tabbyapi"),
+            "comfyui": unit_active("comfyui"),
+        },
+        "gpu": nvidia_stats(),
+        "uptime_s": int(time.time() - _STARTED_AT),
+        "api_base": public_api_base(request),
+        "job": job_info,
+        "user": os.environ.get("USER") or "",
+        "now": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def gallery_listing(page: int = 1, per_page: int = 24) -> dict[str, Any]:
+    from common.gpu_mode import gallery_page, gallery_thumb_href, list_generated_files
+
+    files = list_generated_files()
+    shown, page, pages, per_page = gallery_page(files, page, per_page)
+    items = []
+    for path in shown:
+        try:
+            stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            when = stamp.strftime("%Y-%m-%d %H:%M UTC")
+            size = path.stat().st_size
+        except OSError:
+            when = ""
+            size = 0
+        items.append(
+            {
+                "name": path.name,
+                "mtime": when,
+                "size": size,
+                "url": f"/ui/gallery/file/{path.name}",
+                "thumb": f"/ui/gallery/thumb/{path.name}",
+                "public_thumb": gallery_thumb_href(path.name),
+            }
+        )
+    return {
+        "items": items,
+        "page": page,
+        "pages": pages,
+        "per_page": per_page,
+        "total": len(files),
+    }
+
+
+def start_stack_restart() -> dict[str, Any]:
+    from common.phrase_switch import restart_reply_text, start_restart
+
+    ok = start_restart()
+    return {
+        "ok": ok,
+        "message": restart_reply_text() if ok else "Could not start a restart (systemctl missing?).",
+    }
+
+
+def start_stack_update(*, full: bool = False) -> dict[str, Any]:
+    script = STACK_ROOT / "update.sh"
+    if not script.is_file():
+        return {"ok": False, "message": f"update.sh not found at {script}"}
+    args = ["bash", str(script), "--all" if full else "--git", "--restart"]
+    try:
+        subprocess.Popen(
+            args,
+            cwd=str(STACK_ROOT),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return {"ok": False, "message": str(exc)}
+    kind = "full (git + deps)" if full else "git"
+    return {
+        "ok": True,
+        "message": (
+            f"Started {kind} update. TabbyAPI will bounce when it finishes. "
+            "Watch Logs for progress."
+        ),
+    }
+
+
+def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages is required")
+    clean_messages = []
+    for raw in messages:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "user")
+        if role not in ("system", "user", "assistant"):
+            continue
+        content = raw.get("content")
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text") or ""))
+                elif isinstance(part, str):
+                    texts.append(part)
+            content = "\n".join(texts)
+        if content is None:
+            content = ""
+        clean_messages.append({"role": role, "content": str(content)})
+    if not any(item["role"] == "system" for item in clean_messages):
+        clean_messages.insert(0, {"role": "system", "content": CONSOLE_SYSTEM})
+    return {
+        "messages": clean_messages,
+        "stream": bool(body.get("stream", True)),
+        "temperature": body.get("temperature"),
+        "max_tokens": body.get("max_tokens"),
+    }
+
+
+journalctl_history = journalctl_history
+stream_journal_lines = stream_journal_lines
+sanitize_chat_payload = sanitize_chat_payload

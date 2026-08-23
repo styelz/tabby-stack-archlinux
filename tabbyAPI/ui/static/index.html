@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tabby Stack</title>
+  <link rel="stylesheet" href="/ui/assets/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand compact">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div>
+        <p class="eyebrow">Tabby Stack</p>
+        <strong id="header-title">Logs</strong>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="Main">
+      <a href="#logs" data-page="logs" class="tab is-active">Logs</a>
+      <a href="#chat" data-page="chat" class="tab">Chat</a>
+      <a href="#status" data-page="status" class="tab">Status</a>
+      <a href="#gallery" data-page="gallery" class="tab">Gallery</a>
+    </nav>
+    <div class="header-meta">
+      <span id="gpu-chip" class="chip">GPU …</span>
+      <span id="user-chip" class="chip quiet"></span>
+      <button type="button" id="logout-btn" class="btn ghost">Log out</button>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section id="page-logs" class="page is-active" data-page="logs"></section>
+    <section id="page-chat" class="page" data-page="chat" hidden></section>
+    <section id="page-status" class="page" data-page="status" hidden></section>
+    <section id="page-gallery" class="page" data-page="gallery" hidden></section>
+  </main>
+
+  <script src="/ui/assets/utils.js"></script>
+  <script src="/ui/assets/logs.js"></script>
+  <script src="/ui/assets/chat.js"></script>
+  <script src="/ui/assets/status.js"></script>
+  <script src="/ui/assets/gallery.js"></script>
+  <script src="/ui/assets/app.js"></script>
+</body>
+</html>

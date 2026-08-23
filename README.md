@@ -40,6 +40,7 @@ flowchart LR
 
 - Chat and code help from a model running on **your own** GPU
 - Image generation on that **same** API, no separate setup
+- A signed-in management UI at `/ui` (live logs, console chat, GPU/status, image gallery)
 - Model switching from right inside the chat (`switch to qwen`, `switch to comfy`, …)
 - An Arch installer that handles packages, Python, model weights, and a service that starts on boot
 
@@ -106,6 +107,8 @@ The installer sets things up to start on boot, so there's no login step. Just ch
 ```bash
 curl -sS http://127.0.0.1:5000/health
 ```
+
+Open `http://127.0.0.1:5000/ui` in a browser and sign in with the Linux account that runs the stack. Logs, console chat, GPU/status, and the image gallery all live there.
 
 Nothing there? Start it yourself:
 

@@ -387,12 +387,16 @@ async def handle(
     llm_ready: bool = True,
     gpu_is_comfy: bool = False,
     disconnect_handler=None,
+    console: bool = False,
 ):
     """Mixed generate writes the page first, then holds until PNGs exist.
 
     File-write tool calls go out while the LLM stays loaded. Comfy starts
     only after a coding turn has no more file tools. Always wins over the
     9B while this conversation's job is still running.
+
+    console=True (management UI) still generates images but never emits
+    Write/StrReplace tool calls.
     """
     from common.phrase_switch import requested_image_prompt, text_response
 
@@ -410,6 +414,11 @@ async def handle(
         )
 
     if job and job.status == "coding" and llm_ready:
+        if console:
+            await _launch_mixed_job(job)
+            return await _hold_then_reply(
+                data, job, mixed=False, api_base=api_base
+            )
         _inject_planned_dests(data, _job_plan_items(job))
         note_coding_progress(job)
         code_response = await _write_site_code(data, disconnect_handler)
@@ -449,6 +458,11 @@ async def handle(
                     data,
                     f"The GPU is already generating job {busy.id}. "
                     "Wait until that batch finishes, then ask again.",
+                )
+            if console:
+                started = await _start_mixed_job(plan.items, api_base or "", start=True)
+                return await _hold_then_reply(
+                    data, started, mixed=False, api_base=api_base
                 )
             _inject_planned_dests(data, plan.items)
             code_response = await _write_site_code(data, disconnect_handler)
