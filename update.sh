@@ -9,7 +9,8 @@ set -euo pipefail
 DEST="$(cd "$(dirname "$0")" && pwd)"
 ORIGIN="${TABBY_GIT_ORIGIN:-https://github.com/styelz/tabby-stack-archlinux.git}"
 UPDATE_COMFY=0
-# git = git pull only; all = pull then install.sh --update (pip, restart).
+# git = git pull only (optional API restart if code changed);
+# all = pull then install.sh --update (pip, restart).
 UPDATE_KIND="${TABBY_UPDATE_KIND:-}"
 
 usage() {
@@ -22,7 +23,8 @@ new update.sh is used. config.yml, tabby.env, models, and venv stay.
 Does not run pacman -Syu or upgrade already-installed OS packages.
 
 Options
-  --git       Git pull only. No pip, missing OS packages, or service restart.
+  --git       Git pull only. No pip or missing OS packages. If pulled API
+              code needs a reload, you can restart tabbyapi.
   --all       Pull, then apply code, Python deps, and reload tabbyapi.
   --comfy     Also git pull ComfyUI and ComfyUI-GGUF. Update all then
               reinstalls their Python requirements; git-only only pulls.
@@ -139,13 +141,8 @@ progress() {
   esac
 }
 
-ui_start() {
-  UPDATE_LOG="$DEST/tabby-update.log"
-  {
-    echo "tabby-stack update $(date -Iseconds)"
-    echo "dest=$DEST kind=$UPDATE_KIND comfy=$UPDATE_COMFY"
-    echo
-  } > "$UPDATE_LOG"
+ui_gauge_only() {
+  local title="${1:-Updating tabby-stack}"
   UI_STARTED=1
   if [[ "${TABBY_INSTALL_VERBOSE:-}" == 1 ]]; then
     GAUGE_MODE="verbose"
@@ -155,7 +152,7 @@ ui_start() {
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-update-gauge.XXXXXX")"
     GAUGE_FIFO="$GAUGE_DIR/gauge"
     mkfifo -m 600 "$GAUGE_FIFO"
-    dialog --backtitle "$BACKTITLE" --title "Updating tabby-stack" \
+    dialog --backtitle "$BACKTITLE" --title "$title" \
       --gauge "Starting..." 8 70 0 < "$GAUGE_FIFO" &
     GAUGE_PID=$!
     exec 3>"$GAUGE_FIFO"
@@ -169,6 +166,16 @@ ui_start() {
   GAUGE_MODE="log"
 }
 
+ui_start() {
+  UPDATE_LOG="$DEST/tabby-update.log"
+  {
+    echo "tabby-stack update $(date -Iseconds)"
+    echo "dest=$DEST kind=$UPDATE_KIND comfy=$UPDATE_COMFY"
+    echo
+  } > "$UPDATE_LOG"
+  ui_gauge_only
+}
+
 ui_msg() {
   local title="$1"
   local text="$2"
@@ -180,6 +187,34 @@ ui_msg() {
     echo "$text"
     echo
   fi
+}
+
+ui_yesno() {
+  local title="$1"
+  local text="$2"
+  local default_yes="${3:-1}"
+  if [[ -t 1 ]] && need_cmd dialog; then
+    local extra=()
+    [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    return $?
+  fi
+  if [[ -t 1 ]] && need_cmd whiptail; then
+    local extra=()
+    [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    return $?
+  fi
+  local yn="Y/n"
+  [[ "$default_yes" -eq 0 ]] && yn="y/N"
+  echo
+  echo "=== $title ==="
+  echo "$text"
+  echo
+  local ans=""
+  read -r -p "Restart now? [$yn]: " ans || true
+  ans="${ans:-$([[ "$default_yes" -eq 1 ]] && echo y || echo n)}"
+  [[ "$ans" =~ ^[Yy] ]]
 }
 
 ui_fail() {
@@ -236,7 +271,7 @@ ask_update_kind() {
   fi
   local out=""
   local title="Update tabby-stack"
-  local text="Update git pulls new code and leaves the API running.
+  local text="Update git pulls new code. If API code changed, you can restart tabbyapi.
 Update all also refreshes Python deps, installs missing OS packages, and restarts the API."
   if need_cmd dialog; then
     out="$(dialog --backtitle "tabby-stack" --title "$title" --stdout --menu "$text" 16 74 2 \
@@ -275,6 +310,187 @@ reexec_args() {
     args+=(--comfy)
   fi
   printf '%s\n' "${args[@]}"
+}
+
+# Python the running process already imported. Tests, docs, and install
+# wrappers do not need a bounce.
+path_needs_api_restart() {
+  case "$1" in
+    tabbyAPI/tests/*) return 1 ;;
+    tabbyAPI/*.py) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+collect_restart_files() {
+  local from="$1" to="$2"
+  local f
+  RESTART_FILES=()
+  [[ -n "$to" ]] || return 0
+  if [[ -z "$from" || "$from" == none || "$from" == "$to" ]]; then
+    return 0
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    if path_needs_api_restart "$f"; then
+      RESTART_FILES+=("$f")
+    fi
+  done < <(git -C "$DEST" diff --name-only "$from" "$to")
+}
+
+format_restart_file_list() {
+  local f i=0 max=8
+  local -a shown=()
+  for f in "${RESTART_FILES[@]}"; do
+    if ((i < max)); then
+      shown+=("  $f")
+    fi
+    i=$((i + 1))
+  done
+  printf '%s\n' "${shown[@]}"
+  if ((i > max)); then
+    printf '  ... and %s more\n' "$((i - max))"
+  fi
+}
+
+api_unit_running() {
+  need_cmd systemctl || return 1
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  systemctl --user is-active --quiet tabbyapi 2>/dev/null && return 0
+  systemctl --user is-failed --quiet tabbyapi 2>/dev/null && return 0
+  return 1
+}
+
+load_tabby_port() {
+  local f p
+  TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+  for f in "$DEST/tabbyAPI/deploy/arch/tabby.env" "$DEST/tabbyAPI/tabby.env"; do
+    [[ -f "$f" ]] || continue
+    p="$(sed -n 's/^TABBY_NETWORK_PORT=//p' "$f" | tail -n 1 | tr -d "\"' ")"
+    [[ -n "$p" ]] && TABBY_NETWORK_PORT="$p"
+  done
+}
+
+wait_for_tabby_health() {
+  local port="${TABBY_NETWORK_PORT:-5000}"
+  local url="http://127.0.0.1:${port}/health"
+  local tries="${TABBY_HEALTH_TRIES:-180}"
+  local i body=""
+  if ! need_cmd curl; then
+    echo "curl not found; not waiting on $url" >> "$UPDATE_LOG"
+    return 0
+  fi
+  for ((i = 1; i <= tries; i++)); do
+    body="$(curl -sf "$url" 2>/dev/null || true)"
+    if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
+      echo "API healthy at $url (${i}s)." >> "$UPDATE_LOG"
+      return 0
+    fi
+    progress $((5 + i * 90 / tries)) "Waiting for API health (${i}s)"
+    sleep 1
+  done
+  echo "Timed out after ${tries}s waiting for $url" >> "$UPDATE_LOG"
+  [[ -n "${body:-}" ]] && echo "Last body: $body" >> "$UPDATE_LOG"
+  return 1
+}
+
+restart_tabbyapi() {
+  load_tabby_port
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  trap 'rc=$?; if [[ "$UI_STARTED" -eq 1 ]]; then progress_stop; fi; exit "$rc"' EXIT
+  ui_gauge_only "Restarting tabbyapi"
+  progress 2 "Restarting tabbyapi"
+  echo "==> systemctl --user restart tabbyapi" >> "$UPDATE_LOG"
+  if ! systemctl --user restart tabbyapi >>"$UPDATE_LOG" 2>&1; then
+    die "Failed to restart tabbyapi.
+Check: journalctl --user -u tabbyapi -e
+Log: $UPDATE_LOG"
+  fi
+  progress 5 "Waiting for API health"
+  if ! wait_for_tabby_health; then
+    die "tabbyapi restarted but did not become healthy.
+Check: journalctl --user -u tabbyapi -e
+Log: $UPDATE_LOG"
+  fi
+  progress 100 "API healthy"
+  trap - EXIT
+  progress_stop
+  ui_msg "Update git" "Pulled the latest code and restarted tabbyapi.
+
+Log: $UPDATE_LOG"
+}
+
+ask_restart_api() {
+  local text
+  if [[ "$TABBY_UPDATE_FROM_REV" == none ]]; then
+    text="This install was checked out from git. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
+  else
+    text="The pull changed API code. Restart tabbyapi now so it loads (about 65 seconds)?
+
+$(format_restart_file_list)"
+  fi
+  ui_yesno "Restart API?" "$text" 1
+}
+
+finish_git_update() {
+  local new_head=""
+  new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
+  collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"
+  printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]}" >> "$UPDATE_LOG"
+
+  progress 100 "Git update finished"
+  trap - EXIT
+  progress_stop
+
+  local runtime=0
+  if [[ "${TABBY_UPDATE_FROM_REV:-none}" == none ]] || ((${#RESTART_FILES[@]})); then
+    runtime=1
+  fi
+
+  if [[ "$runtime" -eq 0 ]]; then
+    if [[ "${TABBY_UPDATE_FROM_REV:-}" == "$new_head" ]]; then
+      ui_msg "Update git" "Already up to date. The API was not restarted.
+
+Log: $UPDATE_LOG"
+    else
+      ui_msg "Update git" "Pulled the latest code. No API restart needed (no runtime code changes).
+
+Log: $UPDATE_LOG"
+    fi
+    exit 0
+  fi
+
+  if ! api_unit_running; then
+    ui_msg "Update git" "Pulled the latest code. tabbyapi is not running, so it was not restarted.
+
+Start it with:
+  systemctl --user start tabbyapi
+
+Log: $UPDATE_LOG"
+    exit 0
+  fi
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    ui_msg "Update git" "Pulled API code changes. Not restarting (no TTY).
+
+Reload with:
+  systemctl --user restart tabbyapi
+
+Log: $UPDATE_LOG"
+    exit 0
+  fi
+
+  if ask_restart_api; then
+    restart_tabbyapi
+  else
+    ui_msg "Update git" "Pulled the latest code. The API was not restarted.
+
+Reload later with:
+  systemctl --user restart tabbyapi
+
+Log: $UPDATE_LOG"
+  fi
+  exit 0
 }
 
 tracked_dirty() {
@@ -478,6 +694,14 @@ Commit, stash, or restore them, then re-run. Untracked runtime files
 ask_update_kind
 ui_start
 trap 'rc=$?; if [[ "$UI_STARTED" -eq 1 ]]; then progress_stop; fi; exit "$rc"' EXIT
+if [[ -z "${TABBY_UPDATE_FROM_REV:-}" ]]; then
+  if [[ -d "$DEST/.git" ]]; then
+    TABBY_UPDATE_FROM_REV="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo none)"
+  else
+    TABBY_UPDATE_FROM_REV=none
+  fi
+fi
+printf '%s\n' "==> TABBY_UPDATE_FROM_REV=$TABBY_UPDATE_FROM_REV" >> "$UPDATE_LOG"
 BEFORE_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
 
 if [[ -d "$DEST/.git" ]]; then
@@ -517,17 +741,11 @@ if [[ "$BEFORE_UPDATE_SH" != "$AFTER_UPDATE_SH" ]]; then
   trap - EXIT
   progress_stop
   mapfile -t _reexec < <(reexec_args)
-  exec bash "$DEST/update.sh" "${_reexec[@]}"
+  exec env TABBY_UPDATE_FROM_REV="$TABBY_UPDATE_FROM_REV" bash "$DEST/update.sh" "${_reexec[@]}"
 fi
 
 if [[ "$UPDATE_KIND" == git ]]; then
-  progress 100 "Git update finished"
-  trap - EXIT
-  progress_stop
-  ui_msg "Update git" "Pulled the latest code. The API was not restarted.
-
-Log: $UPDATE_LOG"
-  exit 0
+  finish_git_update
 fi
 
 progress 100 "Code pulled; applying deps and restart"

@@ -1768,7 +1768,7 @@ If something fails
 
 Update
   $DEST/update.sh              asks Update git vs Update all (dialog menu)
-  $DEST/update.sh --git        git pull only; no pip or API restart
+  $DEST/update.sh --git        git pull only; offers an API restart if code changed
   $DEST/update.sh --all        pull, then apply deps and restart
   $DEST/update.sh --comfy      also pull ComfyUI and ComfyUI-GGUF
 
@@ -1776,6 +1776,7 @@ Update
   config.yml, tabby.env, models, venv, and ComfyUI weights are kept.
   If update.sh changes in the pull, it restarts itself.
   Update all reloads the API until GET /health is healthy (~65s).
+  Update git also offers that restart when pulled Python/API files need it.
 
 Uninstall
   $DEST/uninstall.sh              stop services, then remove the install
@@ -1791,7 +1792,7 @@ Uninstall
   the NVIDIA driver, pyenv and ~/.ssh are never touched.
 
 Re-run is safe. Existing weights are not downloaded again.
-A code update uses update.sh (pip -U plus restart), not a fresh clone.
+A code update uses update.sh, not a fresh clone.
 EOF
 
 if [[ "$UPDATE_MODE" -eq 1 ]]; then
