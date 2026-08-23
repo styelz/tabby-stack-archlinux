@@ -249,6 +249,9 @@ async def stack_status(request=None) -> dict[str, Any]:
             "id": getattr(job, "id", None),
             "status": getattr(job, "status", None),
             "phase": getattr(job, "phase", None),
+            "count": getattr(job, "count", None),
+            "current_index": getattr(job, "current_index", 0),
+            "done_count": getattr(job, "done_count", 0),
         }
     return {
         "ok": True,

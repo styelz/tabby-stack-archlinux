@@ -44,10 +44,16 @@ function mountChat(root) {
   }
 
   function cloneMessages(list) {
-    return (Array.isArray(list) ? list : []).map((item) => ({
-      role: item.role === "assistant" || item.role === "system" ? item.role : "user",
-      content: String(item.content || ""),
-    }));
+    return (Array.isArray(list) ? list : []).map((item) => {
+      const out = {
+        role: item.role === "assistant" || item.role === "system" ? item.role : "user",
+        content: String(item.content || ""),
+      };
+      if (out.role === "assistant" && item.reasoning) {
+        out.reasoning = String(item.reasoning);
+      }
+      return out;
+    });
   }
 
   function titleFromMessages(list) {
@@ -169,7 +175,12 @@ function mountChat(root) {
     titleEl.title = title;
   }
 
-  function addBubble(role, text, stick) {
+  function addBubble(role, text, stick, reasoning) {
+    if (role === "assistant") {
+      const turn = addAssistantTurn({ content: text, reasoning, live: false });
+      if (stick !== false) log.scrollTop = log.scrollHeight;
+      return turn.node;
+    }
     const node = document.createElement("div");
     node.className = `bubble ${role}`;
     node.innerHTML = TabbyUI.renderMarkdown(text);
@@ -178,10 +189,244 @@ function mountChat(root) {
     return node;
   }
 
+  function activityFromPrompt(text) {
+    const raw = String(text || "").trim();
+    const lower = raw.toLowerCase();
+    if (/^restart$/i.test(lower) || lower === "/restart") {
+      return { label: "Restarting", kind: "restart", processing: true };
+    }
+    const sw = lower.match(/^switch to (\S+)/) || lower.match(/^\/(qwen\d*|gemma\d*|glm|comfy|flux|llm)\b/);
+    if (sw) {
+      const name = sw[1];
+      return { label: `Switching to ${name}`, kind: "switch", processing: true };
+    }
+    if (
+      /^(generate an image|qwen-image:)/i.test(raw) ||
+      /^\/image\b/i.test(raw) ||
+      /\b(generate|draw|paint|render)\b.+\b(image|picture|logo|poster|icon)\b/i.test(lower)
+    ) {
+      return { label: "Generating image", kind: "image", processing: true };
+    }
+    if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
+      return { label: "Working", kind: "cmd", processing: true };
+    }
+    return { label: "Thinking", kind: "chat", processing: false };
+  }
+
+  function labelForJob(job) {
+    if (!job) return "";
+    const phase = String(job.phase || job.status || "");
+    const count = Number(job.count) || 0;
+    const done = Number(job.done_count) || 0;
+    if (phase === "queued") return "Queued";
+    if (phase === "writing_code" || phase === "coding") return "Planning the image";
+    if (phase === "starting_comfy") return "Handing GPU to Comfy";
+    if (phase === "generating" || phase === "running") {
+      if (count > 1) return `Generating image ${Math.min(done + 1, count)} of ${count}`;
+      return "Generating image";
+    }
+    if (phase === "restoring_llm") return "Reloading the model";
+    if (job.status === "queued" || job.status === "running" || job.status === "coding") {
+      return "Generating image";
+    }
+    return "";
+  }
+
+  function addAssistantTurn({ content, reasoning, live, activity }) {
+    const turn = document.createElement("div");
+    turn.className = live ? "chat-turn assistant is-working" : "chat-turn assistant";
+    turn.setAttribute("aria-live", live ? "polite" : "off");
+    if (live) turn.setAttribute("aria-busy", "true");
+
+    const head = document.createElement(live ? "div" : "button");
+    if (!live) {
+      head.type = "button";
+      head.className = "think-head";
+    } else {
+      head.className = "think-head";
+    }
+    const icon = document.createElement("span");
+    icon.className = "think-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const spark = document.createElement("span");
+    spark.className = "think-spark";
+    icon.appendChild(spark);
+    const chevron = document.createElement("span");
+    chevron.className = "think-chevron";
+    chevron.hidden = true;
+    chevron.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "think-label";
+    label.textContent = (activity && activity.label) || "Thinking";
+    const timeEl = document.createElement("span");
+    timeEl.className = "think-time";
+    head.append(icon, chevron, label, timeEl);
+
+    const thought = document.createElement("div");
+    thought.className = "think-body";
+    thought.hidden = true;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble assistant";
+    if (content) bubble.innerHTML = TabbyUI.renderMarkdown(content);
+    else bubble.hidden = true;
+
+    turn.append(head, thought, bubble);
+
+    let reasoningText = reasoning ? String(reasoning) : "";
+    let finished = !live;
+    let expanded = false;
+    let processing = Boolean(activity && activity.processing);
+    const started = Date.now();
+    let ticker = null;
+
+    function setProcessing(on) {
+      processing = Boolean(on);
+      icon.classList.toggle("is-processing", processing);
+    }
+
+    function paintThought() {
+      if (!reasoningText) {
+        thought.hidden = true;
+        thought.innerHTML = "";
+        return;
+      }
+      thought.innerHTML = TabbyUI.renderMarkdown(reasoningText);
+      thought.hidden = finished ? !expanded : false;
+    }
+
+    function settleThought(seconds) {
+      head.hidden = false;
+      icon.hidden = true;
+      chevron.hidden = false;
+      head.classList.add("is-clickable");
+      if (head.tagName !== "BUTTON") {
+        head.setAttribute("role", "button");
+        head.tabIndex = 0;
+      }
+      label.textContent = seconds != null ? `Thought for ${seconds}s` : "Thought";
+      label.classList.remove("is-shimmer");
+      timeEl.textContent = "";
+      thought.hidden = true;
+      expanded = false;
+      head.classList.remove("is-open");
+    }
+
+    if (live) {
+      setProcessing(processing);
+      ticker = setInterval(() => {
+        const s = Math.round((Date.now() - started) / 1000);
+        if (s >= 2) timeEl.textContent = `${s}s`;
+      }, 250);
+    } else if (reasoningText) {
+      settleThought();
+      paintThought();
+    } else {
+      head.hidden = true;
+    }
+
+    if (content) {
+      turn.classList.add("has-answer");
+      bubble.hidden = false;
+    }
+
+    function toggleThought() {
+      if (!finished || !reasoningText) return;
+      expanded = !expanded;
+      thought.hidden = !expanded;
+      head.classList.toggle("is-open", expanded);
+      head.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    head.addEventListener("click", toggleThought);
+    head.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleThought();
+      }
+    });
+
+    log.appendChild(turn);
+
+    return {
+      node: turn,
+      setActivity(text, opts) {
+        if (finished || !text) return;
+        label.textContent = text;
+        if (opts && opts.processing != null) setProcessing(opts.processing);
+      },
+      setReasoning(text) {
+        if (!text) return;
+        reasoningText = text;
+        if (!finished) {
+          label.textContent = "Thinking";
+          setProcessing(false);
+        }
+        paintThought();
+        log.scrollTop = log.scrollHeight;
+      },
+      setAnswer(text) {
+        const value = String(text || "");
+        if (!value) return;
+        bubble.innerHTML = TabbyUI.renderMarkdown(value);
+        bubble.hidden = false;
+        turn.classList.add("has-answer");
+        if (reasoningText) {
+          thought.hidden = true;
+        } else {
+          turn.classList.remove("is-working");
+          head.hidden = true;
+        }
+        log.scrollTop = log.scrollHeight;
+      },
+      finish({ content: finalContent, reasoning: finalReasoning } = {}) {
+        if (finished && !live) return;
+        finished = true;
+        if (ticker) {
+          clearInterval(ticker);
+          ticker = null;
+        }
+        turn.classList.remove("is-working");
+        turn.removeAttribute("aria-busy");
+        turn.setAttribute("aria-live", "off");
+        if (finalReasoning) reasoningText = String(finalReasoning);
+        const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
+        const answer = String(finalContent || "");
+        if (answer) {
+          bubble.innerHTML = TabbyUI.renderMarkdown(answer);
+          bubble.hidden = false;
+          turn.classList.add("has-answer");
+        } else if (!bubble.innerHTML) {
+          bubble.innerHTML = TabbyUI.renderMarkdown("(empty reply)");
+          bubble.hidden = false;
+          turn.classList.add("has-answer");
+        }
+        if (reasoningText) {
+          settleThought(seconds);
+          paintThought();
+        } else {
+          head.hidden = true;
+          thought.hidden = true;
+        }
+        log.scrollTop = log.scrollHeight;
+      },
+      stopClock() {
+        if (ticker) {
+          clearInterval(ticker);
+          ticker = null;
+        }
+      },
+    };
+  }
+
+  function addWorkingReply(activity) {
+    return addAssistantTurn({ live: true, activity });
+  }
+
   function renderLog(stickToEnd) {
     log.replaceChildren();
     messages.forEach((item) => {
-      if (item.role === "user" || item.role === "assistant") addBubble(item.role, item.content, false);
+      if (item.role === "user") addBubble("user", item.content, false);
+      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning);
     });
     if (stickToEnd !== false) log.scrollTop = log.scrollHeight;
   }
@@ -258,10 +503,7 @@ function mountChat(root) {
     });
     historyMenu.replaceChildren(frag);
     historyMenu.hidden = false;
-    const active = historyMenu.querySelector(".is-active");
-    if (active && typeof active.scrollIntoView === "function") {
-      active.scrollIntoView({ block: "nearest" });
-    }
+    highlightMenu(historyMenu, historyIndex);
   }
 
   function timeLabel(ts) {
@@ -327,6 +569,24 @@ function mountChat(root) {
     menuIndex = 0;
   }
 
+  function scrollMenuItemIntoView(listEl, itemEl) {
+    if (!listEl || !itemEl) return;
+    const pad = 6;
+    const listBox = listEl.getBoundingClientRect();
+    const itemBox = itemEl.getBoundingClientRect();
+    if (itemBox.top < listBox.top + pad) {
+      listEl.scrollTop -= listBox.top + pad - itemBox.top;
+    } else if (itemBox.bottom > listBox.bottom - pad) {
+      listEl.scrollTop += itemBox.bottom - (listBox.bottom - pad);
+    }
+  }
+
+  function highlightMenu(listEl, index) {
+    const nodes = listEl.querySelectorAll("li");
+    nodes.forEach((li, idx) => li.classList.toggle("is-active", idx === index));
+    scrollMenuItemIntoView(listEl, nodes[index]);
+  }
+
   function renderMenu() {
     menuItems = filteredCommands();
     if (!menuItems.length) {
@@ -348,6 +608,7 @@ function mountChat(root) {
     });
     menu.replaceChildren(frag);
     menu.hidden = false;
+    highlightMenu(menu, menuIndex);
   }
 
   function applyCommand(item, submitAfter) {
@@ -364,12 +625,18 @@ function mountChat(root) {
     return true;
   }
 
-  function consumeSseBuffer(buffer, onDelta) {
+  function consumeSseBuffer(buffer, onEvent) {
     let rest = buffer;
     let idx;
     while ((idx = rest.indexOf("\n\n")) >= 0) {
       const chunk = rest.slice(0, idx);
       rest = rest.slice(idx + 2);
+      const comments = chunk
+        .split("\n")
+        .filter((line) => line.startsWith(":"))
+        .map((line) => line.slice(1).trim());
+      const comment = comments.join("\n");
+      if (comment.includes("tabby-image-job:")) onEvent({ comment });
       const dataLines = chunk
         .split("\n")
         .filter((line) => line.startsWith("data:"))
@@ -381,17 +648,44 @@ function mountChat(root) {
       try {
         json = JSON.parse(payload);
       } catch {
-        onDelta(payload);
+        onEvent({ content: payload });
         continue;
       }
       if (json.error) {
         const msg = json.error.message || json.error;
         throw new Error(typeof msg === "string" ? msg : "Chat failed");
       }
-      const delta = json.choices?.[0]?.delta?.content || json.choices?.[0]?.message?.content || json.line;
-      if (delta) onDelta(delta);
+      const choice = json.choices?.[0] || {};
+      const delta = choice.delta || {};
+      const message = choice.message || {};
+      const content = delta.content || message.content || json.line || "";
+      const reasoning = delta.reasoning_content || message.reasoning_content || "";
+      if (content || reasoning) onEvent({ content, reasoning });
     }
     return rest;
+  }
+
+  function startStatusPoll(working, kind) {
+    let stopped = false;
+    async function tick() {
+      if (stopped) return;
+      try {
+        const data = await TabbyUI.api("status");
+        if (kind !== "image") return;
+        const next = labelForJob(data && data.job);
+        if (next) working.setActivity(next, { processing: true });
+      } catch {
+        /* still waiting */
+      }
+    }
+    const id = setInterval(tick, 1500);
+    tick();
+    return {
+      stop() {
+        stopped = true;
+        clearInterval(id);
+      },
+    };
   }
 
   async function send(text) {
@@ -400,26 +694,34 @@ function mountChat(root) {
     touchActive();
     persist();
     addBubble("user", outboundText);
-    const bubble = addBubble("assistant", "");
+    const activity = activityFromPrompt(outboundText);
+    const working = addWorkingReply(activity);
+    const poll = startStatusPoll(working, activity.kind);
     let assembled = "";
+    let reasoning = "";
     const outbound = messages.filter((m) => m.role !== "system");
-    const response = await fetch(TabbyUI.path("chat"), {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
-      body: JSON.stringify({ messages: outbound, stream: true }),
-    });
-    if (response.status === 401) {
-      persist();
-      window.location.href = TabbyUI.path("login");
-      return;
-    }
-    const type = response.headers.get("content-type") || "";
     try {
+      const response = await fetch(TabbyUI.path("chat"), {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
+        body: JSON.stringify({ messages: outbound, stream: true }),
+      });
+      if (response.status === 401) {
+        poll.stop();
+        working.stopClock();
+        persist();
+        window.location.href = TabbyUI.path("login");
+        return;
+      }
+      const type = response.headers.get("content-type") || "";
       if (type.includes("application/json")) {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "Chat failed");
         assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
+        reasoning = data.choices?.[0]?.message?.reasoning_content || "";
+        if (reasoning) working.setReasoning(reasoning);
+        if (assembled) working.setAnswer(assembled);
       } else {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -428,26 +730,40 @@ function mountChat(root) {
           const { value, done } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
-          buf = consumeSseBuffer(buf, (delta) => {
-            assembled += delta;
-            bubble.innerHTML = TabbyUI.renderMarkdown(assembled);
-            log.scrollTop = log.scrollHeight;
+          buf = consumeSseBuffer(buf, (event) => {
+            if (event.comment && event.comment.includes("tabby-image-job:")) {
+              working.setActivity("Generating image", { processing: true });
+            }
+            if (event.reasoning) {
+              reasoning += event.reasoning;
+              working.setReasoning(reasoning);
+            }
+            if (event.content) {
+              assembled += event.content;
+              working.setAnswer(assembled);
+            }
           });
         }
       }
     } catch (err) {
       assembled = assembled || `Error: ${err.message}`;
+    } finally {
+      poll.stop();
+      working.finish({ content: assembled, reasoning });
     }
-    bubble.innerHTML = TabbyUI.renderMarkdown(assembled || "(empty reply)");
-    messages.push({ role: "assistant", content: assembled });
+    const item = { role: "assistant", content: assembled };
+    if (reasoning) item.reasoning = reasoning;
+    messages.push(item);
     persist();
   }
 
   root.querySelector("#chat-new").addEventListener("click", startNewChat);
   root.querySelector("#chat-clear").addEventListener("click", clearHistory);
 
+  let inFlight = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (inFlight) return;
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
     }
@@ -456,11 +772,17 @@ function mountChat(root) {
     if (!text) return;
     input.value = "";
     hideMenu();
+    inFlight = true;
+    const sendBtn = form.querySelector("button[type=submit]");
+    if (sendBtn) sendBtn.disabled = true;
     try {
       await send(text);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
+    } finally {
+      inFlight = false;
+      if (sendBtn) sendBtn.disabled = false;
     }
   });
   input.addEventListener("input", () => {
@@ -477,13 +799,13 @@ function mountChat(root) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
         menuIndex = (menuIndex + 1) % menuItems.length;
-        renderMenu();
+        highlightMenu(menu, menuIndex);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
         menuIndex = (menuIndex - 1 + menuItems.length) % menuItems.length;
-        renderMenu();
+        highlightMenu(menu, menuIndex);
         return;
       }
       if (event.key === "Tab") {
