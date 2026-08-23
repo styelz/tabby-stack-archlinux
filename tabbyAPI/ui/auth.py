@@ -1,15 +1,17 @@
 """Linux-user login for the management UI.
 
-Validates the stack account via PAM and issues an HTTP-only session cookie.
+Validates the stack account via PAM (in a subprocess) and issues an
+HTTP-only session cookie. Never call libpam inside the API process —
+a bad ctypes conversation used to abort TabbyAPI with free(): invalid size.
 """
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.util
 import getpass
 import os
 import secrets
+import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -20,6 +22,7 @@ COOKIE_NAME = "tabby_ui"
 SESSION_TTL_S = 24 * 60 * 60
 LOGIN_WINDOW_S = 60
 LOGIN_MAX_ATTEMPTS = 5
+PAM_CHECK_TIMEOUT_S = 15
 
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
@@ -39,85 +42,19 @@ def stack_username() -> str:
 
 
 def _pam_authenticate(username: str, password: str) -> bool:
+    """Ask a throwaway helper process. Crash there must not kill TabbyAPI."""
     try:
-        import pam  # type: ignore
-
-        return bool(pam.pam().authenticate(username, password))
-    except Exception:
-        pass
-
-    libname = ctypes.util.find_library("pam") or "libpam.so.0"
-    try:
-        libpam = ctypes.CDLL(libname)
-    except OSError:
+        proc = subprocess.run(
+            [sys.executable, "-m", "ui.pam_check", username],
+            input=password.encode("utf-8"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=PAM_CHECK_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return False
-
-    class PamHandle(ctypes.Structure):
-        _fields_ = [("handle", ctypes.c_void_p)]
-
-    class PamMessage(ctypes.Structure):
-        _fields_ = [("msg_style", ctypes.c_int), ("msg", ctypes.c_char_p)]
-
-    class PamResponse(ctypes.Structure):
-        _fields_ = [("resp", ctypes.c_char_p), ("resp_retcode", ctypes.c_int)]
-
-    conv_func = ctypes.CFUNCTYPE(
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.POINTER(ctypes.POINTER(PamMessage)),
-        ctypes.POINTER(ctypes.POINTER(PamResponse)),
-        ctypes.c_void_p,
-    )
-
-    class PamConv(ctypes.Structure):
-        _fields_ = [("conv", conv_func), ("appdata_ptr", ctypes.c_void_p)]
-
-    PAM_PROMPT_ECHO_OFF = 1
-    PAM_SUCCESS = 0
-    password_bytes = password.encode("utf-8")
-
-    def conv(n_msg, msg, resp, _app):
-        try:
-            libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
-            libc.strdup.restype = ctypes.c_char_p
-            array_type = PamResponse * n_msg
-            replies = array_type()
-            for index in range(n_msg):
-                style = msg[index].contents.msg_style
-                if style == PAM_PROMPT_ECHO_OFF:
-                    replies[index].resp = libc.strdup(password_bytes)
-                    replies[index].resp_retcode = 0
-                else:
-                    replies[index].resp = None
-                    replies[index].resp_retcode = 0
-            resp[0] = ctypes.cast(replies, ctypes.POINTER(PamResponse))
-            return PAM_SUCCESS
-        except Exception:
-            return 2
-
-    conversation = PamConv(conv_func(conv), None)
-    handle = PamHandle()
-    start = libpam.pam_start
-    start.restype = ctypes.c_int
-    start.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.POINTER(PamConv),
-        ctypes.POINTER(PamHandle),
-    ]
-    status = start(
-        b"login",
-        username.encode("utf-8"),
-        ctypes.byref(conversation),
-        ctypes.byref(handle),
-    )
-    if status != PAM_SUCCESS:
-        return False
-    auth = libpam.pam_authenticate
-    auth.restype = ctypes.c_int
-    ok = auth(handle, 0) == PAM_SUCCESS
-    libpam.pam_end(handle, 0)
-    return bool(ok)
+    return proc.returncode == 0
 
 
 def authenticate_user(username: str, password: str) -> bool:
