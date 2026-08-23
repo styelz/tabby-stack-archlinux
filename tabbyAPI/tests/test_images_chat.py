@@ -11,9 +11,16 @@ from endpoints.OAI.types.chat_completion import (
     ChatCompletionMessage,
     ChatCompletionRequest,
 )
-from images.chat import handle, is_mixed_image_request, job_id_from_history
+from images.chat import handle, job_id_from_history
 from images.paths import image_download_command, living_download_pairs
-from images.plan import fallback_item, parse_plan_json, plan_from_extracted
+from images.plan import (
+    ImageTurnPlan,
+    classify_blob,
+    fallback_item,
+    parse_plan_json,
+    parse_turn_plan,
+    plan_from_extracted,
+)
 
 
 def _user(text: str, *, stream: bool = False) -> ChatCompletionRequest:
@@ -119,6 +126,27 @@ class NestedGenerateHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(captured["kwargs"].get("disconnect_handler"), handler)
         self.assertEqual(items[0]["output_path"], "images/logo.png")
 
+    async def test_llm_plan_reuse_returns_no_dests(self):
+        from images.plan import llm_plan_images
+
+        async def fake_generate(*args, **kwargs):
+            return {"text": '{"action":"reuse","images":[]}'}
+
+        async def fake_template(_request):
+            return "prompt", None
+
+        container = SimpleNamespace(
+            loaded=True,
+            prompt_template=object(),
+            generate=fake_generate,
+        )
+        with mock.patch("common.model.container", container), mock.patch(
+            "endpoints.OAI.utils.chat_completion.apply_chat_template",
+            new=fake_template,
+        ):
+            items = await llm_plan_images("implement the new images into the webpage")
+        self.assertEqual(items, [])
+
 
 class PlanTests(unittest.TestCase):
     def test_json_plan_not_regex_planets(self):
@@ -133,58 +161,55 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(items[0]["prompt"].lower().startswith("qwen-image:"))
         self.assertNotIn("qwen-image:", items[1]["prompt"].lower())
 
-    def test_empty_plan_falls_back_to_one_png(self):
+    def test_empty_generate_does_not_invent_a_png(self):
+        plan = parse_turn_plan('{"action":"generate","images":[]}')
+        self.assertEqual(plan.action, "generate")
+        self.assertEqual(plan.items, [])
+        items = plan_from_extracted("create a website under tours", [])
+        self.assertEqual(items, [])
+
+    def test_reuse_and_none_have_no_dests(self):
+        reuse = parse_turn_plan('{"action":"reuse","images":[]}')
+        none = parse_turn_plan('{"action":"none","images":[]}')
+        self.assertEqual(reuse.action, "reuse")
+        self.assertEqual(reuse.items, [])
+        self.assertEqual(none.action, "none")
+        self.assertEqual(none.items, [])
+
+    def test_legacy_images_json_without_action_is_generate(self):
+        plan = parse_turn_plan(
+            '{"images":[{"filename":"logo.png","subject":"logo Cafe"}]}'
+        )
+        self.assertEqual(plan.action, "generate")
+
+    def test_fallback_item_still_names_generated_png(self):
         items = fallback_item("create a website under tours")
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["output_path"].endswith("generated.png"))
 
-    def test_pillow_wording_is_still_a_mixed_ask(self):
-        data = _user(
-            "Create a website with a logo and planet photos. "
-            "Generate the PNGs with Python Pillow."
-        )
-        self.assertTrue(is_mixed_image_request(data))
-
-    def test_menu_section_images_without_saying_website_is_mixed(self):
-        data = _user(
-            "create images each of the menu sections and use them on the menu. "
-            "Dont add words/text to the images. Dont use svg's"
-        )
-        self.assertTrue(is_mixed_image_request(data))
-
-    def test_plural_images_and_qwen_images_followup_uses_coding_history(self):
+    def test_classify_blob_includes_history_priors_and_this_turn(self):
         data = ChatCompletionRequest(
             messages=[
                 ChatCompletionMessage(
                     role="user",
-                    content="Create a pizza website with HTML and CSS.",
+                    content="Create a website with a logo",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123",
                 ),
                 ChatCompletionMessage(
                     role="user",
-                    content="the images created look like svg's. recreate them with qwen-images",
+                    content="implement the new images into the webpage",
                 ),
             ]
         )
-        self.assertTrue(is_mixed_image_request(data))
-
-    def test_create_images_using_flux_in_coding_chat_is_mixed(self):
-        data = ChatCompletionRequest(
-            messages=[
-                ChatCompletionMessage(
-                    role="user",
-                    content="Build the homepage in html.",
-                ),
-                ChatCompletionMessage(
-                    role="user",
-                    content="create the images using flux",
-                ),
-            ]
-        )
-        self.assertTrue(is_mixed_image_request(data))
-
-    def test_generate_an_image_of_a_menu_is_not_mixed(self):
-        data = _user("generate an image of a restaurant menu")
-        self.assertFalse(is_mixed_image_request(data))
+        blob = classify_blob(data, prior_facts="These PNG files exist at: images/logo.png.")
+        self.assertIn("Already generated in this chat", blob)
+        self.assertIn("images/logo.png", blob)
+        self.assertIn("tabby-image-job: abc-123", blob)
+        self.assertIn("This turn:", blob)
+        self.assertIn("implement the new images into the webpage", blob)
 
 
 class CurlFromLivingFilesTests(unittest.TestCase):
@@ -272,7 +297,12 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
             "Create a website for Cosmos Tours with a logo and a photo of Mars."
         )
         with (
-            mock.patch("images.chat.plan_mixed_dests", new=mock.AsyncMock(return_value=planned)),
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="generate", items=planned)
+                ),
+            ),
             mock.patch("images.chat.active_mcp_image_job", return_value=None),
             mock.patch(
                 "images.chat.start_mcp_image_job",
@@ -322,11 +352,12 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch(
-                "images.chat.plan_mixed_dests",
+                "images.chat.classify_image_turn",
                 new=mock.AsyncMock(
-                    return_value=[
-                        {"prompt": "logo", "output_path": "images/logo.png"},
-                    ]
+                    return_value=ImageTurnPlan(
+                        action="generate",
+                        items=[{"prompt": "logo", "output_path": "images/logo.png"}],
+                    )
                 ),
             ),
             mock.patch("images.chat.active_mcp_image_job", return_value=None),
@@ -411,8 +442,10 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             mock.patch(
-                "images.chat.plan_mixed_dests",
-                new=mock.AsyncMock(return_value=planned),
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="generate", items=planned)
+                ),
             ),
             mock.patch("images.chat.active_mcp_image_job", return_value=None),
             mock.patch(
@@ -458,11 +491,60 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="none", items=[])
+                ),
+            ),
             mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
         ):
             response = await handle(data, "https://gpu.example/v1")
         self.assertIsNone(response)
         start.assert_not_called()
+
+    async def test_implement_existing_images_is_reuse_not_a_new_job(self):
+        job = _job(
+            id="abc-123",
+            status="done",
+            item_urls=["https://gpu.example/v1/images/generated-logo.png"],
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Create a website with a logo and planet photos",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123",
+                    tool_calls=[],
+                ),
+                ChatCompletionMessage(
+                    role="user",
+                    content="implement the new images into the webpage",
+                ),
+            ]
+        )
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="reuse", items=[])
+                ),
+            ) as classify,
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+            mock.patch("images.paths.gpu_generated_file_missing", return_value=False),
+        ):
+            response = await handle(data, "https://gpu.example/v1")
+        self.assertIsNone(response)
+        start.assert_not_called()
+        classify.assert_awaited()
+        self.assertIn(
+            "These PNG files exist at:",
+            data.messages[-1].content,
+        )
 
     async def test_busy_other_job_does_not_hijack_a_fresh_chat(self):
         busy = _job(id="other", status="running")
@@ -470,6 +552,15 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch("images.chat.get_mcp_image_job", return_value=None),
             mock.patch("images.chat.active_mcp_image_job", return_value=busy),
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(
+                        action="generate",
+                        items=[{"prompt": "logo", "output_path": "images/logo.png"}],
+                    )
+                ),
+            ),
             mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
         ):
             response = await handle(data, "https://gpu.example/v1")
@@ -478,18 +569,35 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mixed_ask_while_llm_loading_does_not_start_comfy(self):
         data = _user("Create a website with a logo and photos")
-        wait = mock.AsyncMock(return_value="wait")
+        classify = mock.AsyncMock(
+            return_value=ImageTurnPlan(action="generate", items=[])
+        )
         with (
             mock.patch("images.chat.active_mcp_image_job", return_value=None),
+            mock.patch("images.chat.classify_image_turn", new=classify),
             mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
-            mock.patch("common.phrase_switch.llm_not_ready_response", wait),
         ):
             response = await handle(
                 data, "https://gpu.example/v1", llm_ready=False, gpu_is_comfy=True
             )
         start.assert_not_called()
-        wait.assert_awaited()
-        self.assertEqual(response, "wait")
+        classify.assert_not_awaited()
+        self.assertIsNone(response)
+
+    async def test_empty_generate_plan_does_not_start_a_job(self):
+        data = _user("Create a website with a logo")
+        with (
+            mock.patch(
+                "images.chat.classify_image_turn",
+                new=mock.AsyncMock(
+                    return_value=ImageTurnPlan(action="generate", items=[])
+                ),
+            ),
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+        ):
+            response = await handle(data, "https://gpu.example/v1")
+        self.assertIsNone(response)
+        start.assert_not_called()
 
 
 class McpWaitTests(unittest.IsolatedAsyncioTestCase):

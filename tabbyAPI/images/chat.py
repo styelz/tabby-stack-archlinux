@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Optional
 
 from common.logger import xlogger
@@ -24,45 +22,9 @@ from images.paths import (
     job_id_from_text,
     living_download_pairs,
 )
-from images.plan import plan_mixed_dests
+from images.plan import classify_image_turn
 
 JOB_MARK = "tabby-image-job:"
-# Plurals matter: \bimage\b does not match "images" / "qwen-images".
-IMAGE_NOUN_RE = re.compile(
-    r"(?is)\b("
-    r"images?|pictures?|photos?|pics?|posters?|mockups?|"
-    r"icons?|logos?|banners?|pngs?|qwen-images?"
-    r")\b"
-)
-CODING_TASK_RE = re.compile(
-    r"(?is)\b("
-    r"web\s*page|website|web\s*site|html|css|javascript|typescript|"
-    r"homepage|landing\s*page|component|implement|source\s*code|"
-    r"react|vue|jsx|tsx"
-    r")\b"
-)
-_IMAGE_NOUN_ALT = (
-    r"images?|pictures?|photos?|pics?|logos?|headers?|banners?|pngs?|qwen-images?"
-)
-NEW_IMAGE_ASK_RE = re.compile(
-    r"(?is)\b("
-    r"generat\w*|creat\w*|draw|render|redo|re-?do|replac\w*|improv\w*"
-    r")\b.{0,80}\b("
-    + _IMAGE_NOUN_ALT
-    + r")\b"
-    r"|\b("
-    + _IMAGE_NOUN_ALT
-    + r")\b.{0,80}\b("
-    r"generat\w*|creat\w*|draw|render|redo|replac\w*"
-    r")\b"
-    r"|\b(?:using|with)\s+(?:flux|qwen-images?|comfy)\b"
-)
-# Place PNGs on an existing page without saying "website" / "html".
-USE_IN_UI_RE = re.compile(
-    r"(?is)\buse\s+(?:them|it|these|those)\s+(?:on|in|for)\b"
-    r"|\b(?:on|in)\s+the\s+(?:menu|page|site|website|header|hero|card)s?\b"
-    r"|\bmenu\s+sections?\b"
-)
 
 
 def _content_text(content) -> str:
@@ -99,36 +61,9 @@ def job_id_from_history(data: ChatCompletionRequest) -> str:
     return job_id_from_text(_history_blob(data))
 
 
-def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
-    from common.phrase_switch import last_user_text
-
-    if last_role(data) in ("tool", "function"):
-        return False
-    text = last_user_text(data)
-    if not text or not IMAGE_NOUN_RE.search(text):
-        return False
-    if CODING_TASK_RE.search(text):
-        return True
-    if not NEW_IMAGE_ASK_RE.search(text):
-        return False
-    if USE_IN_UI_RE.search(text):
-        return True
-    # Follow-up in a coding chat: "recreate them with qwen-images" / "using flux".
-    prior = _history_blob(data)
-    if text in prior:
-        prior = prior.replace(text, "", 1)
-    return bool(CODING_TASK_RE.search(prior))
-
-
-def _wants_new_images(data: ChatCompletionRequest) -> bool:
-    from common.phrase_switch import last_user_text
-
-    if last_role(data) in ("tool", "function"):
-        return False
-    text = last_user_text(data)
-    if is_mixed_image_request(data):
-        return True
-    return bool(NEW_IMAGE_ASK_RE.search(text or ""))
+def _job_uses_curl(job) -> bool:
+    dests = [getattr(item, "output_path", "") for item in (getattr(job, "items", None) or [])]
+    return any(dest and dest != "images/generated.png" for dest in dests)
 
 
 def _shell_name(data: ChatCompletionRequest) -> str:
@@ -164,13 +99,7 @@ def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
         return
 
 
-async def _start_mixed_job(
-    data: ChatCompletionRequest, api_base: str, disconnect_handler=None
-):
-    from common.phrase_switch import last_user_text
-
-    text = last_user_text(data)
-    items = await plan_mixed_dests(text, disconnect_handler=disconnect_handler)
+async def _start_mixed_job(items: list[dict[str, str]], api_base: str):
     job, kind = await start_mcp_image_job(
         items=items,
         seed=None,
@@ -292,40 +221,40 @@ async def handle(
     role = last_role(data)
 
     if job and job.status in ("queued", "running"):
-        mixed = is_mixed_image_request(data) or bool(getattr(job, "items", None))
-        # If dests were planned, treat as mixed (curl). Single generated.png is URL.
-        dests = [getattr(item, "output_path", "") for item in (job.items or [])]
-        mixed = mixed or any(
-            dest and dest != "images/generated.png" for dest in dests
+        return await _hold_then_reply(
+            data, job, mixed=_job_uses_curl(job), api_base=api_base
         )
-        return await _hold_then_reply(data, job, mixed=mixed, api_base=api_base)
 
-    if job and job.status in ("done", "error"):
-        if role in ("tool", "function"):
+    if role in ("tool", "function"):
+        if job and job.status in ("done", "error"):
             _inject_dest_facts(data, job)
-            return None
-        if not _wants_new_images(data):
-            return None
+        return None
 
-    mixed = is_mixed_image_request(data)
-    if mixed:
-        busy = active_mcp_image_job()
-        if busy and not job_id:
-            from common.phrase_switch import text_response
-
-            return text_response(
-                data,
-                f"The GPU is already generating job {busy.id}. "
-                "Wait until that batch finishes, then ask again.",
-            )
-        if not llm_ready:
-            from common.phrase_switch import llm_not_ready_response
-
-            return await llm_not_ready_response(data)
-        started = await _start_mixed_job(
-            data, api_base or "", disconnect_handler=disconnect_handler
+    if llm_ready:
+        prior = ""
+        if job and job.status in ("done", "error"):
+            prior = dest_fact_list(living_download_pairs(job))
+        plan = await classify_image_turn(
+            data, disconnect_handler=disconnect_handler, prior_facts=prior
         )
-        return await _hold_then_reply(data, started, mixed=True, api_base=api_base)
+        if plan.action == "reuse":
+            if job:
+                _inject_dest_facts(data, job)
+            return None
+        if plan.action == "generate" and plan.items:
+            busy = active_mcp_image_job()
+            if busy and not job_id:
+                from common.phrase_switch import text_response
+
+                return text_response(
+                    data,
+                    f"The GPU is already generating job {busy.id}. "
+                    "Wait until that batch finishes, then ask again.",
+                )
+            started = await _start_mixed_job(plan.items, api_base or "")
+            return await _hold_then_reply(
+                data, started, mixed=True, api_base=api_base
+            )
 
     explicit = requested_image_prompt(data, explicit_only=True)
     if llm_ready and explicit:
@@ -335,8 +264,6 @@ async def handle(
         return await _hold_then_reply(data, started, mixed=False, api_base=api_base)
 
     if not llm_ready and gpu_is_comfy:
-        if role in ("tool", "function"):
-            return None
         prompt = requested_image_prompt(data)
         if not prompt and source_image is not None:
             from common.phrase_switch import last_user_text

@@ -926,6 +926,11 @@ CODING_TASK_RE = re.compile(
     r"react|vue|jsx|tsx"
     r")\b"
 )
+USE_IN_UI_RE = re.compile(
+    r"(?is)\buse\s+(?:them|it|these|those)\s+(?:on|in|for)\b"
+    r"|\b(?:on|in)\s+the\s+(?:menu|page|site|website|header|hero|card)s?\b"
+    r"|\bmenu\s+sections?\b"
+)
 MIXED_IMAGE_HINT_MARK = "This turn is a coding task that also needs images."
 
 
@@ -933,10 +938,14 @@ def is_coding_task(text: str) -> bool:
     return bool(CODING_TASK_RE.search(text or ""))
 
 
-def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
-    from images.chat import is_mixed_image_request as _mixed
+def is_page_layout_ask(text: str) -> bool:
+    """True when this line is page/HTML work, not a standalone image prompt.
 
-    return _mixed(data)
+    Used only when the coding model is not loaded (Comfy owns the GPU). The
+    mixed-chat gate is LLM classify, not this helper.
+    """
+    raw = text or ""
+    return bool(CODING_TASK_RE.search(raw) or USE_IN_UI_RE.search(raw))
 
 
 def image_job_wait_text(
@@ -1029,8 +1038,6 @@ def requested_image_prompt(
     """
     if last_role(data) in ("tool", "function"):
         return None
-    if is_mixed_image_request(data):
-        return None
     if already_made_image(data) and not has_new_user_after_image(data):
         return None
     raw = last_user_raw(data)
@@ -1042,6 +1049,8 @@ def requested_image_prompt(
     if len(text) > MAX_IMAGE_PROMPT_CHARS or META_IMAGE_RE.search(text):
         return None
     if _is_meta_wrapper_text(text):
+        return None
+    if is_page_layout_ask(text):
         return None
     if explicit_only and is_coding_task(text):
         return None
@@ -1060,7 +1069,7 @@ def should_yield_comfy_to_llm(data: ChatCompletionRequest) -> bool:
     """True when Comfy owns the GPU but this turn needs the coding model."""
     if last_role(data) in ("tool", "function"):
         return True
-    return is_mixed_image_request(data)
+    return requested_image_prompt(data) is None
 
 
 def last_llm_profile_name() -> str:
