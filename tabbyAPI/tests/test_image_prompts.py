@@ -273,8 +273,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
 
     def test_cosmos_tours_production_spec_queues_named_planets(self):
         """The live VS Code prompt says 'The logo should be large' and lists
-        Mars/Jupiter/Saturn/Neptune. plan_mixed_images must still queue all
-        five dests — the redo classifier is tested in test_gpu_mode."""
+        Mars/Jupiter/Saturn/Neptune. These regex planner tests are not the
+        mixed control plane (see images.plan / test_images_chat)."""
         line = (
             'Create a complete, production-ready website for a solar system '
             'tour company called "Cosmos Tours." The website should be a '

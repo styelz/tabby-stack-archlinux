@@ -10,20 +10,12 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_restores_llm_after_handoff(self):
         png = Path("/tmp/generated-1.png")
         with (
-            mock.patch("endpoints.core.image_jobs.loaded_tabby_name", return_value="qwen"),
-            mock.patch("endpoints.core.image_jobs.last_profile", return_value="qwen"),
-            mock.patch(
-                "endpoints.core.image_jobs.ensure_comfy", new=mock.AsyncMock()
-            ) as ensure,
-            mock.patch(
-                "endpoints.core.image_jobs.reload_last_llm", new=mock.AsyncMock()
-            ) as reload,
-            mock.patch(
-                "endpoints.core.image_jobs.generate_image", return_value=b"\x89PNG"
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.save_generated_image", return_value=png
-            ),
+            mock.patch("images.jobs.loaded_tabby_name", return_value="qwen"),
+            mock.patch("images.jobs.last_profile", return_value="qwen"),
+            mock.patch("images.jobs.ensure_comfy", new=mock.AsyncMock()) as ensure,
+            mock.patch("images.jobs.reload_last_llm", new=mock.AsyncMock()) as reload,
+            mock.patch("images.jobs.generate_image", return_value=b"\x89PNG"),
+            mock.patch("images.jobs.save_generated_image", return_value=png),
         ):
             saved = await generate_images_job("a red cube", restore=True)
         self.assertEqual(saved, [png])
@@ -33,20 +25,12 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_stays_on_comfy_when_not_restoring(self):
         png = Path("/tmp/generated-2.png")
         with (
-            mock.patch("endpoints.core.image_jobs.loaded_tabby_name", return_value=None),
-            mock.patch("endpoints.core.image_jobs.last_profile", return_value="qwen"),
-            mock.patch(
-                "endpoints.core.image_jobs.ensure_comfy", new=mock.AsyncMock()
-            ) as ensure,
-            mock.patch(
-                "endpoints.core.image_jobs.reload_last_llm", new=mock.AsyncMock()
-            ) as reload,
-            mock.patch(
-                "endpoints.core.image_jobs.generate_image", return_value=b"\x89PNG"
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.save_generated_image", return_value=png
-            ),
+            mock.patch("images.jobs.loaded_tabby_name", return_value=None),
+            mock.patch("images.jobs.last_profile", return_value="qwen"),
+            mock.patch("images.jobs.ensure_comfy", new=mock.AsyncMock()) as ensure,
+            mock.patch("images.jobs.reload_last_llm", new=mock.AsyncMock()) as reload,
+            mock.patch("images.jobs.generate_image", return_value=b"\x89PNG"),
+            mock.patch("images.jobs.save_generated_image", return_value=png),
         ):
             saved = await generate_images_job("a red cube", restore=False)
         self.assertEqual(saved, [png])
@@ -56,20 +40,12 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_items_restore_once(self):
         png = Path("/tmp/generated-3.png")
         with (
-            mock.patch("endpoints.core.image_jobs.loaded_tabby_name", return_value="qwen"),
-            mock.patch("endpoints.core.image_jobs.last_profile", return_value="qwen"),
-            mock.patch(
-                "endpoints.core.image_jobs.ensure_comfy", new=mock.AsyncMock()
-            ) as ensure,
-            mock.patch(
-                "endpoints.core.image_jobs.reload_last_llm", new=mock.AsyncMock()
-            ) as reload,
-            mock.patch(
-                "endpoints.core.image_jobs.generate_image", return_value=b"\x89PNG"
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.save_generated_image", return_value=png
-            ),
+            mock.patch("images.jobs.loaded_tabby_name", return_value="qwen"),
+            mock.patch("images.jobs.last_profile", return_value="qwen"),
+            mock.patch("images.jobs.ensure_comfy", new=mock.AsyncMock()) as ensure,
+            mock.patch("images.jobs.reload_last_llm", new=mock.AsyncMock()) as reload,
+            mock.patch("images.jobs.generate_image", return_value=b"\x89PNG"),
+            mock.patch("images.jobs.save_generated_image", return_value=png),
         ):
             saved = await generate_images_job(
                 items=[
@@ -84,7 +60,7 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
         reload.assert_awaited_once_with("qwen")
 
     def test_loaded_name_requires_a_ready_container(self):
-        with mock.patch("endpoints.core.image_jobs.model") as model_mod:
+        with mock.patch("images.jobs.model") as model_mod:
             model_mod.container = None
             self.assertIsNone(loaded_tabby_name())
 
@@ -264,13 +240,13 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered.urls, ["https://gpu.example/v1/images/a.png"])
                 await reset_mcp_image_jobs_for_tests()
 
-    def test_new_items_guess_and_uniquify_paths(self):
+    def test_new_items_uniquify_paths(self):
         from endpoints.core.image_jobs import _new_items
 
         items = _new_items(
             items=[
-                {"prompt": "qwen-image: cafe logo"},
-                {"prompt": "hero banner"},
+                {"prompt": "qwen-image: cafe logo", "output_path": "images/logo.png"},
+                {"prompt": "hero banner", "output_path": "images/header.png"},
                 {"prompt": "a red cube"},
                 {"prompt": "a blue cube"},
             ]
@@ -281,49 +257,11 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[3].output_path, "images/generated-2.png")
         self.assertTrue(items[0].prompt.lower().startswith("qwen-image:"))
         self.assertFalse(items[1].prompt.lower().startswith("qwen-image:"))
-        self.assertIn("no website", items[1].prompt)
 
-    async def test_mixed_chat_starts_mcp_job_with_planned_dests(self):
-        from common.phrase_switch import ensure_mixed_image_job
-        from endpoints.OAI.types.chat_completion import (
-            ChatCompletionMessage,
-            ChatCompletionRequest,
-        )
+    async def test_mixed_chat_removed_from_phrase_switch(self):
+        import common.phrase_switch as ps
 
-        job = mock.Mock(id="job-plan", status="queued")
-        data = ChatCompletionRequest(
-            messages=[
-                ChatCompletionMessage(
-                    role="user",
-                    content=(
-                        "create a webpage under the folder new3 and generate "
-                        "a header image and a logo"
-                    ),
-                )
-            ]
-        )
-        with (
-            mock.patch(
-                "endpoints.core.image_jobs.active_mcp_image_job", return_value=None
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.get_mcp_image_job", return_value=None
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.start_mcp_image_job",
-                new=mock.AsyncMock(return_value=(job, "started")),
-            ) as start,
-        ):
-            result = await ensure_mixed_image_job(
-                data, api_base="https://gpu.example/v1"
-            )
-        self.assertIs(result, job)
-        kwargs = start.await_args.kwargs
-        dests = [row["output_path"] for row in kwargs["items"]]
-        self.assertTrue(kwargs["restore"])
-        self.assertEqual(kwargs["api_base"], "https://gpu.example/v1")
-        self.assertTrue(any(path.endswith("logo.png") for path in dests))
-        self.assertTrue(any(path.endswith("header.png") for path in dests))
+        self.assertFalse(hasattr(ps, "ensure_mixed_image_job"))
 
 
 if __name__ == "__main__":

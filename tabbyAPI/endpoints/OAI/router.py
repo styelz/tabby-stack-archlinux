@@ -30,22 +30,15 @@ from common.assistant_text import strip_apology_sse, strip_response_apologies
 from common.gpu_mode import public_api_base
 from common.pasted_images import materialize_pasted_images
 from common.phrase_switch import (
-    MAX_IMAGE_PROMPT_CHARS,
     comfy_idle_response,
     gpu_is_comfy,
     handle_if_requested,
-    image_ready_response,
     inject_clipboard_save_hint,
-    inject_mixed_image_hint,
-    last_user_text,
     llm_not_ready_response,
-    prepare_mixed_image_turn,
-    requested_image_count,
-    requested_image_prompt,
     should_yield_comfy_to_llm,
-    text_response,
     yield_comfy_to_llm_response,
 )
+from images.chat import handle as handle_image_chat
 from endpoints.OAI.utils.common_ import load_inline_model
 from endpoints.OAI.utils.chat_completion import (
     apply_chat_template,
@@ -68,40 +61,10 @@ urls = {
 
 # Block when model is still loading while second inline load request comes in
 load_lock: asyncio.Lock = asyncio.Lock()
-# One Flux batch at a time; Cursor retries must not stack extra jobs
-image_gen_lock: asyncio.Lock = asyncio.Lock()
 
 
 def setup():
     return router
-
-
-async def _chat_generate_images(data, image_prompt, source_image, api_base, *, restore: bool):
-    """Generate from chat. restore=True hands the GPU back to the last LLM."""
-    from common.gpu_mode import begin_image_turn, turn_images_ready
-    from endpoints.core.image_jobs import generate_images_job
-
-    count, flux_prompt = requested_image_count(image_prompt)
-    try:
-        async with image_gen_lock:
-            begin_image_turn(image_prompt, force_new=False)
-            have = turn_images_ready(image_prompt, count)
-            if len(have) >= count:
-                return image_ready_response(
-                    data, have[-1].name, api_base=api_base, restore=restore, count=count
-                )
-            extra = await generate_images_job(
-                flux_prompt,
-                count=count - len(have),
-                source_image=source_image if not have else None,
-                restore=restore,
-            )
-            dest = extra[-1] if extra else (have[-1] if have else None)
-        return image_ready_response(
-            data, dest.name if dest else "", api_base=api_base, restore=restore, count=count
-        )
-    except Exception as exc:
-        return text_response(data, f"Image generation failed: {exc}")
 
 
 # Completions endpoint
@@ -185,34 +148,22 @@ async def chat_completion_request(
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     source_image = saved_images[-1] if saved_images else None
-    explicit_prompt = requested_image_prompt(data, explicit_only=True)
-    busy = await prepare_mixed_image_turn(data, api_base)
-    # After Comfy restores the LLM this must still win. Otherwise the model
-    # invents "wait 5 minutes, the PNG will download automatically" and stops.
-    # Mixed coding+images also start the job here so the 9B never submits it.
-    if busy:
-        return busy
-    if llm_ready and explicit_prompt:
-        return await _chat_generate_images(
-            data, explicit_prompt, source_image, api_base, restore=True
-        )
+    image_response = await handle_image_chat(
+        data,
+        api_base,
+        source_image=source_image,
+        llm_ready=llm_ready,
+        gpu_is_comfy=gpu_is_comfy(),
+    )
+    if image_response is not None:
+        return image_response
     if not llm_ready:
         if not gpu_is_comfy():
             return await llm_not_ready_response(data)
         if should_yield_comfy_to_llm(data):
             return await yield_comfy_to_llm_response(data)
-        image_prompt = requested_image_prompt(data)
-        if not image_prompt and source_image:
-            image_prompt = last_user_text(data).strip() or "cartoon style"
-            if len(image_prompt) > MAX_IMAGE_PROMPT_CHARS:
-                image_prompt = "cartoon style"
-        if image_prompt:
-            return await _chat_generate_images(
-                data, image_prompt, source_image, api_base, restore=False
-            )
         return await comfy_idle_response(data, api_base=api_base)
 
-    inject_mixed_image_hint(data, api_base=api_base)
     async with load_lock:
         if data.model:
             await load_inline_model(data.model, request)

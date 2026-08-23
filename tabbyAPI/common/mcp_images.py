@@ -4,12 +4,9 @@ Remote IDEs look for a generate_image tool. TabbyAPI already has
 POST /v1/images/generations; this module is the JSON-RPC surface those
 clients actually search for. Same GPU job, no browser, no extra package.
 
-Cursor's MCP HTTP client often times out around 60 seconds (error -32001)
-if we wait for Comfy. generate_image therefore queues the GPU job and
-returns a job id immediately. get_image_job (or generate_image with that
-job_id) is the poll. It waits up to 20 seconds for a progress tick so
-the agent does not need a 5-minute sleep. A client timeout does not stop
-the GPU.
+generate_image waits until the PNG files exist on the GPU host, then
+returns their URLs. get_image_job is optional (debug / resume), not the
+VS Code no-mcp mixed-chat path.
 """
 
 from __future__ import annotations
@@ -32,31 +29,22 @@ SERVER_VERSION = "1.3.0"
 TOOL_NAME = "generate_image"
 GET_JOB_NAME = "get_image_job"
 TOOL_DESCRIPTION = (
-    "Queue PNG(s) on this TabbyAPI/Comfy GPU (Flux Schnell draft, or "
+    "Generate PNG(s) on this TabbyAPI/Comfy GPU (Flux Schnell draft, or "
     "Qwen-Image when the prompt starts with qwen-image: or qwen_image is true). "
-    "Returns a job_id immediately — do not expect the PNG in this same call. "
-    "If you need several assets (logo, header, page photos), pass them ALL in "
-    "one call via the images array, or call generate_image again before the "
-    "batch finishes — they share one Comfy session and the coding model "
-    "reloads once at the end. Cursor MCP times out (~60s) if the tool waits "
-    "for Comfy. After this returns, keep calling tools until the PNGs exist "
-    "at output_path. The API will request get_image_job (it waits up to 20s "
-    "for a progress tick) and then Shell to write the files. Do not stop. "
-    "Do not tell the user to download. Do not Shell-sleep the full estimate. "
-    "A -32001 timeout means the client hung up, not that the GPU stopped. "
-    "Do not use the browser. Do not use Cursor's built-in "
-    "GenerateImage tool. Prefix qwen-image: only for readable text "
-    "(logo, poster, button). Hero/header photos: describe a scene, "
-    "not a website or UI."
+    "This call waits until the files exist on the GPU host, then returns their "
+    "URLs. If you need several assets (logo, header, page photos), pass them "
+    "ALL in one call via the images array so they share one Comfy session and "
+    "the coding model reloads once at the end. After this returns, Shell-curl "
+    "only the URLs listed. Do not invent /v1/images/generated-*.png timestamps. "
+    "Do not use the browser. Do not use Cursor's built-in GenerateImage tool. "
+    "Prefix qwen-image: only for readable text (logo, poster, button). "
+    "Hero/header photos: describe a scene, not a website or UI."
 )
 GET_JOB_DESCRIPTION = (
-    "Poll a TabbyAPI image job started by generate_image. Pass job_id from "
-    "that call (or omit it to use the latest job). Waits up to wait_s seconds "
-    "(default 20) for a progress tick, then returns. Repeat until status is "
-    "done. Shows which image is rendering, elapsed time, and ETA. When done, "
-    "the next chat turn writes each URL into output_path via Shell — do not "
-    "ask the user to download. If you saw MCP error -32001, call this instead "
-    "of starting another generate_image."
+    "Optional debug poll for a TabbyAPI image job. generate_image already "
+    "waits until files exist; use this only if you need status mid-render. "
+    "Pass job_id from that call (or omit it to use the latest job). Waits up "
+    "to wait_s seconds (default 20) for a progress tick, then returns."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -456,13 +444,13 @@ async def run_get_job_tool(
 async def run_generate_tool(
     arguments: Optional[dict[str, Any]], request=None
 ) -> dict[str, Any]:
-    """Queue the same GPU job as POST /v1/images/generations. Return immediately."""
+    """Same GPU job as POST /v1/images/generations. Wait until files exist."""
     from common.gpu_mode import public_api_base
-    from endpoints.core.image_jobs import (
+    from images.jobs import (
         get_mcp_image_job,
         loaded_tabby_name,
         start_mcp_image_job,
-        wait_mcp_job_progress,
+        wait_until_done,
     )
 
     args = arguments or {}
@@ -472,15 +460,7 @@ async def run_generate_tool(
     if job_id or (not prompt and not items):
         job = get_mcp_image_job(job_id or None)
         if job:
-            wait_s = args.get("wait_s")
-            if wait_s is None:
-                wait_s = 0 if job_id or prompt or items else 0
-            try:
-                wait_s = int(wait_s or 0)
-            except (TypeError, ValueError):
-                wait_s = 0
-            if wait_s:
-                await wait_mcp_job_progress(job, wait_s)
+            await wait_until_done(job)
             return tool_text(format_mcp_job_text(job), is_error=job.status == "error")
         if not prompt and not items:
             return tool_text("prompt is required", is_error=True)
@@ -510,15 +490,18 @@ async def run_generate_tool(
         restore=bool(restore),
         api_base=api_base,
         items=items or None,
+        delay=0.0,
     )
+    if kind == "busy":
+        return tool_text(format_mcp_job_text(job, busy_other=True), is_error=False)
+    await wait_until_done(job)
     return tool_text(
         format_mcp_job_text(
             job,
             started=kind == "started",
             appended=kind == "appended",
-            busy_other=kind == "busy",
         ),
-        is_error=False,
+        is_error=job.status == "error",
     )
 
 

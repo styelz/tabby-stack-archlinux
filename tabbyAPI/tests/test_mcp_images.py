@@ -38,9 +38,7 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
         names = [tool["name"] for tool in list_tools_result()["tools"]]
         self.assertEqual(names, [TOOL_NAME, GET_JOB_NAME])
         self.assertIn("qwen-image", initialize_result()["instructions"])
-        self.assertIn("job_id", initialize_result()["instructions"])
         self.assertIn("images array", initialize_result()["instructions"])
-        self.assertIn("20s", initialize_result()["instructions"])
 
     def test_qwen_prefix(self):
         self.assertEqual(
@@ -208,15 +206,11 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
             return [png]
 
         patches = (
-            mock.patch("endpoints.core.image_jobs.MCP_HANDOFF_DELAY_S", 0),
-            mock.patch("endpoints.core.image_jobs._render_specs", new=slow_render),
-            mock.patch(
-                "endpoints.core.image_jobs.ensure_comfy", new=mock.AsyncMock()
-            ),
-            mock.patch(
-                "endpoints.core.image_jobs.reload_last_llm", new=mock.AsyncMock()
-            ),
-            mock.patch("endpoints.core.image_jobs.loaded_tabby_name", return_value="qwen"),
+            mock.patch("images.jobs.MCP_HANDOFF_DELAY_S", 0),
+            mock.patch("images.jobs._render_specs", new=slow_render),
+            mock.patch("images.jobs.ensure_comfy", new=mock.AsyncMock()),
+            mock.patch("images.jobs.reload_last_llm", new=mock.AsyncMock()),
+            mock.patch("images.jobs.loaded_tabby_name", return_value="qwen"),
             mock.patch(
                 "common.gpu_mode.public_api_base",
                 return_value="https://gpu.example/v1",
@@ -231,12 +225,11 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
         return gate
 
-    async def _run_generate(self, **arguments):
-        gate = self._patch_slow_job()
-        started = await dispatch(
+    async def _call_generate(self, rpc_id=5, **arguments):
+        return await dispatch(
             {
                 "jsonrpc": "2.0",
-                "id": 5,
+                "id": rpc_id,
                 "method": "tools/call",
                 "params": {
                     "name": "generate_image",
@@ -248,7 +241,6 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
         )
-        return started, gate
 
     async def _poll(self, rpc_id=6, **arguments):
         args = {"wait_s": 0, **arguments}
@@ -261,86 +253,69 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-    async def test_generate_returns_job_id_before_gpu_finishes(self):
-        started, gate = await self._run_generate(
+    async def test_generate_waits_until_gpu_finishes(self):
+        gate = self._patch_slow_job()
+
+        async def open_gate():
+            await asyncio.sleep(0.05)
+            gate.set()
+
+        opener = asyncio.create_task(open_gate())
+        started = await self._call_generate(
             prompt="qwen-image: Cafe logo",
             output_path="images/logo.png",
         )
+        await opener
         text = started["result"]["content"][0]["text"]
-        self.assertIn("Queued", text)
-        self.assertIn("one Comfy session", text)
+        self.assertIn("generated-logo.png", text)
         self.assertIn("images/logo.png", text)
-        self.assertIn("get_image_job", text)
-        self.assertNotIn("b64_json", text)
         self.assertFalse(started["result"]["isError"])
-        self.assertNotIn("https://gpu.example/v1/images/generated-logo.png", text)
-
-        poll = await self._poll()
-        poll_text = poll["result"]["content"][0]["text"]
-        self.assertTrue("queued" in poll_text.lower() or "running" in poll_text.lower())
-        self.assertIn("Progress:", poll_text)
-
-        gate.set()
-        from endpoints.core.image_jobs import _MCP_TASK
-
-        self.assertIsNotNone(_MCP_TASK)
-        await asyncio.wait_for(_MCP_TASK, timeout=2)
-
-        done = await self._poll(7)
-        done_text = done["result"]["content"][0]["text"]
-        self.assertIn("generated-logo.png", done_text)
-        self.assertIn("images/logo.png", done_text)
-        self.assertIn("Do not ask the user to download", done_text)
+        self.assertNotIn("b64_json", text)
 
     async def test_second_generate_appends_to_the_same_batch(self):
-        started, gate = await self._run_generate(prompt="qwen-image: Cafe logo")
-        first = started["result"]["content"][0]["text"]
-        job_line = [line for line in first.splitlines() if line.startswith("Job ")][0]
-        again = await dispatch(
-            {
-                "jsonrpc": "2.0",
-                "id": 8,
-                "method": "tools/call",
-                "params": {
-                    "name": "generate_image",
-                    "arguments": {
-                        "prompt": "a cafe interior",
-                        "output_path": "images/hero.png",
-                    },
-                },
-            }
+        gate = self._patch_slow_job()
+        first_task = asyncio.create_task(
+            self._call_generate(prompt="qwen-image: Cafe logo")
         )
-        again_text = again["result"]["content"][0]["text"]
-        self.assertIn("Added to the same GPU batch", again_text)
-        self.assertIn(job_line.split(":")[0], again_text)
-        self.assertIn("2 image", again_text)
+        await asyncio.sleep(0.05)
+        again_task = asyncio.create_task(
+            self._call_generate(
+                rpc_id=8,
+                prompt="a cafe interior",
+                output_path="images/hero.png",
+            )
+        )
+        await asyncio.sleep(0.05)
         gate.set()
-        from endpoints.core.image_jobs import _MCP_TASK
-
-        await asyncio.wait_for(_MCP_TASK, timeout=2)
-        done = await self._poll(9)
-        done_text = done["result"]["content"][0]["text"]
-        self.assertIn("2 image", done_text)
+        first = await first_task
+        again = await again_task
+        again_text = again["result"]["content"][0]["text"]
+        first_text = first["result"]["content"][0]["text"]
+        self.assertTrue(
+            "Added to the same GPU batch" in again_text or "2 image" in again_text
+        )
+        self.assertIn("2 image", first_text + again_text)
 
     async def test_images_array_is_one_job(self):
-        started, gate = await self._run_generate(
+        gate = self._patch_slow_job()
+
+        async def open_gate():
+            await asyncio.sleep(0.05)
+            gate.set()
+
+        opener = asyncio.create_task(open_gate())
+        started = await self._call_generate(
             images=[
                 {"prompt": "qwen-image: Cafe logo", "output_path": "images/logo.png"},
                 {"prompt": "header banner", "output_path": "images/header.png"},
                 {"prompt": "latte art", "output_path": "images/latte.png"},
             ]
         )
+        await opener
         text = started["result"]["content"][0]["text"]
-        self.assertIn("Queued 3 image", text)
         self.assertIn("images/logo.png", text)
         self.assertIn("images/header.png", text)
-        self.assertIn("one Comfy session", text)
-        gate.set()
-        from endpoints.core.image_jobs import _MCP_TASK
-
-        await asyncio.wait_for(_MCP_TASK, timeout=2)
-        done = await self._poll()
-        self.assertIn("3 image", done["result"]["content"][0]["text"])
+        self.assertIn("3 image", text)
 
     async def test_missing_prompt(self):
         reply = await dispatch(
