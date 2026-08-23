@@ -186,7 +186,7 @@ A dialog asks **Update git** vs **Update all** (or `--git` / `--all`). Update gi
 
 - First run on an older rsync-only dest bootstraps `.git` from `https://github.com/styelz/tabby-stack-archlinux.git`.
 - `--comfy` also pulls ComfyUI and ComfyUI-GGUF. Leave that off unless you want image-gen to move with upstream.
-- Tracked local edits abort the pull; untracked `venv/`, `models/`, and `ComfyUI/` are ignored.
+- Tracked copy-to-live files are moved aside under `.tabby-update-backup/` and origin wins. Untracked `venv/`, `models/`, and `ComfyUI/` are ignored.
 
 A leftover `tabby-stack-archlinux` clone next to the install is optional after this.
 

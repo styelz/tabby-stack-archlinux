@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -33,3 +36,78 @@ class UpdateShRestartOptionTests(unittest.TestCase):
         self.assertIn("Keeping origin/", src)
         self.assertIn("Restored local $wrap (unchanged on origin/", src)
         self.assertNotIn("Restored local install/update scripts", src)
+
+    def test_divergent_tracked_files_do_not_abort(self):
+        src = UPDATE_SH.read_text()
+        self.assertIn("backup_divergent_tracked", src)
+        self.assertIn(".tabby-update-backup/", src)
+        self.assertNotIn("has local edits that are not on origin", src)
+        self.assertNotIn("has local edits in tracked files (not just line endings)", src)
+        self.assertNotIn("Commit, stash, or restore them, then re-run", src)
+
+
+class UpdateShFfPullTests(unittest.TestCase):
+    def test_pull_backs_up_divergent_tracked_source_and_fast_forwards(self):
+        script = UPDATE_SH.read_text()
+        git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@test",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@test",
+            "GIT_TERMINAL_PROMPT": "0",
+            "TABBY_INSTALL_VERBOSE": "1",
+        }
+
+        def git(cwd, *args):
+            subprocess.check_call(["git", "-c", "init.defaultBranch=main", *args], cwd=cwd, env=git_env)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            origin = tmp / "origin.git"
+            live = tmp / "live"
+            origin.mkdir()
+            git(origin, "init", "--bare")
+
+            seed = tmp / "seed"
+            seed.mkdir()
+            git(seed, "init")
+            git(seed, "config", "user.email", "test@test")
+            git(seed, "config", "user.name", "test")
+            (seed / "install.sh").write_text("#!/bin/bash\necho install\n")
+            (seed / "tabbyAPI").mkdir()
+            (seed / "tabbyAPI" / "main.py").write_text("print('ok')\n")
+            (seed / "tabbyAPI" / "phrase.py").write_text("v1\n")
+            (seed / "update.sh").write_text(script)
+            git(seed, "add", "install.sh", "update.sh", "tabbyAPI/main.py", "tabbyAPI/phrase.py")
+            git(seed, "commit", "-m", "seed")
+            git(seed, "remote", "add", "origin", str(origin))
+            git(seed, "push", "-u", "origin", "HEAD:main")
+
+            git(tmp, "clone", str(origin), str(live))
+            git(live, "config", "user.email", "test@test")
+            git(live, "config", "user.name", "test")
+            os.chmod(live / "update.sh", 0o755)
+
+            (seed / "tabbyAPI" / "phrase.py").write_text("origin-v2\n")
+            git(seed, "add", "tabbyAPI/phrase.py")
+            git(seed, "commit", "-m", "origin newer")
+            git(seed, "push", "origin", "HEAD:main")
+
+            (live / "tabbyAPI" / "phrase.py").write_text("frankenstein-not-on-origin\n")
+            proc = subprocess.run(
+                ["bash", str(live / "update.sh"), "--git", "--no-restart"],
+                cwd=live,
+                env=git_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=60,
+            )
+            log = (live / "tabby-update.log").read_text() if (live / "tabby-update.log").exists() else proc.stdout
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertEqual((live / "tabbyAPI" / "phrase.py").read_text(), "origin-v2\n")
+            backups = list((live / ".tabby-update-backup").glob("*/tabbyAPI/phrase.py"))
+            self.assertTrue(backups, log)
+            self.assertEqual(backups[0].read_text(), "frankenstein-not-on-origin\n")
+            self.assertIn("Moving tracked copies that are not on origin/main aside", log)

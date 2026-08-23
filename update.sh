@@ -639,12 +639,31 @@ restore_head_file() {
     || git -C "$dir" restore --worktree --source=HEAD -- "$file"
 }
 
-# Copy-to-live of files already on origin must not block a fast-forward.
-# Real edits (content that is not on origin) still abort. Dirty
-# install/update/uninstall wrappers are held aside so the merge can proceed.
-# After a successful pull, origin wins only if that wrapper changed in the
-# pull. Always putting the local wrappers back hid the new update.sh (and
-# its restart prompt) on live installs.
+# Live is a deploy checkout. Copy-to-live and leftover patches must not
+# abort a fast-forward: origin wins for tracked source. Divergent copies
+# are moved aside first. Dirty install/update/uninstall wrappers are held
+# separately; origin wins only if that wrapper changed in the pull.
+# Always putting the local wrappers back hid the new update.sh on live.
+backup_divergent_tracked() {
+  local dir="$1" spec="$2"
+  shift 2
+  local stamp bak f
+  (($#)) || return 0
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  bak="$dir/.tabby-update-backup/$stamp"
+  mkdir -p "$bak"
+  printf '%s\n' "==> Moving tracked copies that are not on $spec aside to $bak" >> "${UPDATE_LOG:-/dev/null}"
+  for f in "$@"; do
+    [[ -n "$f" ]] || continue
+    printf '    %s\n' "$f" >> "${UPDATE_LOG:-/dev/null}"
+    if [[ -e "$dir/$f" ]]; then
+      mkdir -p "$bak/$(dirname "$f")"
+      cp -a "$dir/$f" "$bak/$f"
+    fi
+    restore_head_file "$dir" "$f"
+  done
+}
+
 take_origin_copies() {
   local dir="$1" spec="$2"
   local f
@@ -701,23 +720,19 @@ ff_pull() {
     done
   fi
   if ((${#REAL_EDITS[@]})); then
-    if [[ -n "$wrappers_tmp" ]]; then
-      cp -a "$wrappers_tmp/." "$dir/"
-      rm -rf "$wrappers_tmp"
-    fi
-    die "$label has local edits that are not on origin/$branch:
-$(printf '  %s\n' "${REAL_EDITS[@]}")
-Commit, stash, or restore them, then re-run. Copies that already match
-GitHub are fine. Untracked venv, models, ComfyUI, and config.yml are fine."
+    backup_divergent_tracked "$dir" "origin/$branch" "${REAL_EDITS[@]}"
   fi
   if real_tracked_diff "$dir"; then
-    if [[ -n "$wrappers_tmp" ]]; then
-      cp -a "$wrappers_tmp/." "$dir/"
-      rm -rf "$wrappers_tmp"
+    mapfile -t _leftover < <(dirty_tracked_names "$dir")
+    if ((${#_leftover[@]})); then
+      backup_divergent_tracked "$dir" "origin/$branch" "${_leftover[@]}"
     fi
-    die "$label has local edits in tracked files (not just line endings).
-Commit, stash, or restore them, then re-run. Untracked runtime files
-(venv, models, ComfyUI, config.yml) are fine."
+  fi
+  if tracked_dirty "$dir"; then
+    printf '%s\n' "==> Resetting tracked files in $label to HEAD for the pull" >> "$UPDATE_LOG"
+    git -C "$dir" restore --source=HEAD --staged --worktree -- . >>"$UPDATE_LOG" 2>&1 \
+      || git -C "$dir" reset --hard HEAD >>"$UPDATE_LOG" 2>&1 \
+      || true
   fi
   if tracked_dirty "$dir"; then
     printf '%s\n' "==> Ignoring CRLF-only line-ending drift in $label" >> "$UPDATE_LOG"

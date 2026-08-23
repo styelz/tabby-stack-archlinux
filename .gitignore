@@ -10,6 +10,9 @@ AppData/
 /HANDOFF.md
 /REPEATED-ISSUES.md
 
+# update.sh moves copy-to-live tracked files here so origin can fast-forward
+.tabby-update-backup/
+
 # Editor and OS junk
 .DS_Store
 Thumbs.db
