@@ -28,29 +28,8 @@ BLOB_MAX_FRAC = 0.12
 
 
 def apply_requested_alpha(raw: bytes, *, wanted: bool) -> bytes:
-    """Return PNG bytes. Unchanged when transparency was not requested."""
-    if not wanted or not raw:
-        return raw
-    try:
-        im = Image.open(io.BytesIO(raw))
-        im.load()
-    except OSError:
-        return raw
-    try:
-        rgba = im.convert("RGBA")
-        holes = _alpha_hole_fraction(rgba)
-        if holes >= HOLE_FRACTION and holes < 0.45:
-            return raw if im.mode in {"RGBA", "LA"} else _png_bytes(rgba)
-        if holes >= 0.45:
-            _grow_transparency(rgba, 32 * 32)
-            _remove_small_border_blobs(rgba)
-        else:
-            _cut_studio_background(rgba)
-        if _alpha_hole_fraction(rgba) >= MIN_PUNCH_FRACTION:
-            _soften_cutout_edge(rgba)
-        return _png_bytes(rgba)
-    finally:
-        im.close()
+    """Return PNG bytes unchanged. Alpha punch is disabled."""
+    return raw
 
 
 def _cut_studio_background(rgba: Image.Image) -> None:

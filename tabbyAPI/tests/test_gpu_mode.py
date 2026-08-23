@@ -1403,7 +1403,7 @@ class GpuModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<userRequest>", body)
         self.assertIn("Interpreted PNG jobs from the user request", body)
         self.assertIn("pbptours/images/logo.png", body)
-        self.assertIn("pbptours/images/saturn.png", body)
+        self.assertNotIn("pbptours/images/saturn.png", body)
         self.assertIn("Planet By Planet Tours", body)
         self.assertIn("Do not apologize", body)
         self.assertIn("not switch the project to React/Vite", body)
@@ -1798,6 +1798,78 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "curl ", response.choices[0].message.tool_calls[0].function.arguments
         )
+
+    async def test_llm_plan_queues_dests_regex_cannot_see(self):
+        """The live path asks the loaded model for dests. Regex-only would
+        miss 'pictures for the Oak cabin' (no 'images of', no parentheses)."""
+        from common.image_prompts import _PLAN_CACHE, plan_mixed_images
+
+        _PLAN_CACHE.clear()
+        spec = (
+            'create a website for a lodge called "Pine Lodge" with a logo. '
+            "Generate pictures for the Oak cabin, the Pine cabin, and the "
+            "Lake cabin. Put files under pinelodge."
+        )
+        fallback = [row["output_path"] for row in plan_mixed_images(spec)]
+        self.assertIn("pinelodge/images/logo.png", fallback)
+        self.assertNotIn("pinelodge/images/oak.png", fallback)
+
+        llm_items = [
+            {
+                "prompt": "logo that says Pine Lodge",
+                "output_path": "pinelodge/images/logo.png",
+            },
+            {"prompt": "oak cabin", "output_path": "pinelodge/images/oak.png"},
+            {"prompt": "pine cabin", "output_path": "pinelodge/images/pine.png"},
+            {"prompt": "lake cabin", "output_path": "pinelodge/images/lake.png"},
+        ]
+
+        async def fake_llm(text):
+            self.assertIn("Oak cabin", text)
+            return llm_items
+
+        job = self._running_job()
+
+        async def fake_start(**kwargs):
+            paths = [row.get("output_path") for row in (kwargs.get("items") or [])]
+            self.assertEqual(
+                paths,
+                [
+                    "pinelodge/images/logo.png",
+                    "pinelodge/images/oak.png",
+                    "pinelodge/images/pine.png",
+                    "pinelodge/images/lake.png",
+                ],
+            )
+            return job, "started"
+
+        with (
+            mock.patch(
+                "common.image_prompts.llm_plan_mixed_images",
+                side_effect=fake_llm,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                side_effect=fake_start,
+            ) as start,
+        ):
+            queued = await ensure_mixed_image_job(
+                _chat(spec), api_base="https://gpu.example/v1"
+            )
+        start.assert_awaited_once()
+        self.assertIs(queued, job)
 
     async def test_ide_title_request_does_not_start_a_bogus_job(self):
         """GitHub Copilot/Cursor send a separate 'write a title' completion
@@ -2351,8 +2423,9 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         spec = (
             'Create a complete, production-ready website for a solar system '
             'tour company called "Cosmos Tours." The logo should be large. '
-            "Tours to Mars, Jupiter, Saturn, Neptune. Each planet package "
-            "should have a generated transparent PNG image of that planet."
+            "Tours to different planets (Mars, Jupiter, Saturn, Neptune). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
         )
         data = _with_job_wait(_chat(spec), leftover.id)
         with (

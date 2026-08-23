@@ -10,8 +10,12 @@ so VS Code/Cursor cannot substitute SVG or CSS art unless the user asked.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import re
+import uuid
+from collections import OrderedDict
 
 QWEN_PREFIX = re.compile(r"(?is)^\s*qwen-image\s*:\s*(.*)$")
 FLUX_PREFIX = re.compile(r"(?is)^\s*flux\s*:\s*(.*)$")
@@ -70,10 +74,8 @@ LOGO_TAIL = (
     "isolated logo mark only, centered, simple background, "
     "emblem, no browser chrome, no navigation bar, no page layout"
 )
-# Flux/Qwen paint a Photoshop checkerboard if the prompt says "transparent",
-# and a fixed magenta chroma-key punches holes in any mark that uses that
-# color. Ask for a plain studio background; png_alpha floods it (or leftover
-# chroma / dark space) to alpha.
+# Flux/Qwen paint a Photoshop checkerboard if the prompt says "transparent".
+# Strip that word. Do not punch alpha; PNGs stay opaque.
 CHROMA_HEX = "#FF00FF"
 CHROMA_TAIL = (
     "solid even white background, even lighting, no floor, no wall"
@@ -152,15 +154,6 @@ HERO_IMAGE_ASK = re.compile(
     r"(?:image|picture|photo|pic).{0,24}(?:hero|header|banner|masthead)"
     r")\b"
 )
-EACH_PLANET_RE = re.compile(
-    r"(?is)("
-    r"\b(?:each|every|the)\s+planets?\b|"
-    r"\bplanets?\b.{0,80}\b(?:image|picture|photo|pic)s?\b|"
-    r"\b(?:image|picture|photo|pic)s?\b.{0,80}\b(?:each|every|the)\s+planets?\b|"
-    r"\bvisit\s+other\s+plantes?\b|"
-    r"\bsolar\s+syst\w*.{0,120}\b(?:planets?|plantes?)\b"
-    r")"
-)
 FOLDER_RE = re.compile(
     r"(?is)\b(?:under|in|into|inside)\s+(?:the\s+)?"
     r"(?:folder|directory|dir)\s+[\"`'“”]?([A-Za-z][A-Za-z0-9._-]*)"
@@ -203,6 +196,37 @@ REJECTED_SVG_RE = re.compile(
 )
 MAX_PLANNED_IMAGES = 12
 MIXED_PLAN_MARK = "Interpreted PNG jobs from the user request"
+LLM_PLAN_TIMEOUT_S = 25
+MIXED_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "images": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string"},
+                    "subject": {"type": "string"},
+                },
+                "required": ["filename", "subject"],
+            },
+        }
+    },
+    "required": ["images"],
+}
+EXTRACT_PLAN_SYSTEM = (
+    "List every raster PNG the webpage needs. JSON only, no markdown. "
+    "Include a logo if they asked for a logo. Include a header if they asked "
+    "for a hero/header/banner image. Include one file per named picture "
+    "subject (products, places, people, planets, cabins, food, anything they "
+    "named). Do not invent a whole category — 'each planet' with no names is "
+    "not eight planets. Skip CSS, HTML, JavaScript, React, Vue, pricing "
+    "tiers, and etc. filename is a basename like logo.png or oak.png. "
+    "subject is a short photo or logo prompt with no website mockup."
+)
+_PLAN_CACHE: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
+_PLAN_CACHE_MAX = 24
 # Specs often say "create them using Python with PIL/Pillow". The 9B obeys
 # that line and never waits for Comfy. Replace it before the coding model sees
 # the user query.
@@ -225,8 +249,17 @@ IMAGE_OF_RE = re.compile(
     r"(?is)\b(?:generated\s+)?"
     r"(?:(?:transparent\s+)?png\s+images?|(?:transparent\s+)?pngs?|"
     r"images?|pictures?|photos?|pics?)\s+of\s+"
-    r"(?!each\b|every\b|your\s+choice\b|that\s+planet\b)"
-    r"([^\n.;]{1,80})"
+    r"(?!each\b|every\b|your\s+choice\b|that\s+\w+\b)"
+    r"([^\n.;(]{1,80})"
+)
+# Named things in parentheses: (Oak, Pine, Lake) or (Mars, Jupiter, Saturn).
+PAREN_NAME_LIST_RE = re.compile(r"\(([^)]{3,200})\)")
+# Skip paren lists that are tech/pricing, not picture subjects.
+_NOT_SUBJECT_LIST = re.compile(
+    r"(?is)\b("
+    r"pricing|tiers?|html5?|css3?|javascript|react|vue|"
+    r"deliverables?|requirements?|technical|stack"
+    r")\b"
 )
 _SUBJECT_ARTICLES = re.compile(r"(?is)^(an?|the)\s+")
 _SUBJECT_TRAIL = re.compile(
@@ -260,38 +293,12 @@ _SKIP_SUBJECTS = frozenset(
         "website",
         "planet",
         "planets",
-        "that planet",
-        "the planet",
-        "the planets",
-        "each planet",
-        "every planet",
         "etc",
-        "css",
-        "css3",
-        "html",
-        "html5",
-        "javascript",
-        "python",
-        "react",
-        "vue",
-        "premium",
-        "basic",
-        "luxury",
         "png",
         "pngs",
         "file",
         "files",
-        "application",
-        "deliverables",
-        "requirements",
     }
-)
-_JUNK_SUBJECT_RE = re.compile(
-    r"(?is)("
-    r"[*`]|html5|css3|\breact\b|\bvue\b|javascript|"
-    r"pricing\s+tiers?|deliverables?|technical|"
-    r"floating|twinkling|animations?"
-    r")"
 )
 # API URL paths that look like site/images dirs (".../openai/v1/images/generated-...").
 _API_IMAGES_DIRS = frozenset({"v1/images", "openai/v1/images", "api/images"})
@@ -325,19 +332,8 @@ def _already_cutout(text: str) -> bool:
 
 
 def wants_transparent(text: str) -> bool:
-    """True when the user asked for a cutout, or the rewrite already set one.
-
-    Full-bleed hero scenes keep their backdrop even if the user said
-    "transparent" — those prompts get SCENE_TAIL, not a studio cutout.
-    """
-    raw = text or ""
-    if SCENE_TAIL in raw and not _already_cutout(raw):
-        return False
-    if _already_cutout(raw):
-        return True
-    if CHROMA_HEX.lower() in raw.lower():
-        return True
-    return bool(TRANSPARENT_RE.search(raw))
+    """Always false. Cutouts looked bad; PNGs stay opaque RGB from Comfy."""
+    return False
 
 
 def _strip_transparent_words(text: str) -> str:
@@ -437,18 +433,6 @@ def company_name(text: str) -> str:
     return _quoted_or_group(match).rstrip(".,;:")
 
 
-def named_planets(text: str) -> list[str]:
-    """Planet names the user listed, in the order they appear."""
-    found: list[str] = []
-    seen: set[str] = set()
-    for match in PLANET_NAME_RE.finditer(text or ""):
-        name = (match.group(1) or "").strip().lower()
-        if name and name not in seen:
-            seen.add(name)
-            found.append(name)
-    return found
-
-
 def _subject_slug(name: str) -> str:
     words = re.findall(r"[a-z0-9]+", (name or "").lower())
     if not words:
@@ -463,45 +447,62 @@ def _clean_subject(item: str) -> str:
     return text
 
 
+def _list_parts(blob: str) -> list[str]:
+    blob = re.split(r"\s+[-–—]\s+", blob or "", maxsplit=1)[0]
+    return [part.strip() for part in re.split(r"\s*(?:,|&|\band\b)\s*", blob) if part.strip()]
+
+
 def listed_image_subjects(text: str) -> list[str]:
-    """Names the user wants as content PNGs (planets, products, anything)."""
+    """Names the user wrote as picture subjects — any domain, no category tables.
+
+    Two sources only:
+    - "images of A, B, and C"
+    - a parenthetical name list with 2+ items, unless that list sits next to
+      pricing/tech wording
+    """
     raw = text or ""
     found: list[str] = []
     seen: set[str] = set()
-
-    planets = named_planets(raw)
     brand = (company_name(raw) or "").lower()
 
-    def take(name: str) -> None:
+    def accept(name: str) -> str:
         cleaned = _clean_subject(name)
         if not cleaned or len(cleaned) > 48:
-            return
+            return ""
         key = cleaned.lower()
         if key in _SKIP_SUBJECTS or key in seen or key == brand:
-            return
-        if _JUNK_SUBJECT_RE.search(cleaned):
-            return
+            return ""
         slug = _subject_slug(cleaned)
         if not slug or slug in {"logo", "header", "banner", "generated"}:
-            return
+            return ""
         if slug in seen:
+            return ""
+        return cleaned
+
+    def take(name: str) -> None:
+        cleaned = accept(name)
+        if not cleaned:
             return
-        seen.add(key)
-        seen.add(slug)
+        seen.add(cleaned.lower())
+        seen.add(_subject_slug(cleaned))
         found.append(cleaned)
 
-    if len(planets) >= 2:
-        for name in planets:
-            take(name)
-    elif EACH_PLANET_RE.search(raw):
-        for name, _scene in PLANET_SCENES:
-            take(name)
     for match in IMAGE_OF_RE.finditer(raw):
-        chunk = match.group(1) or ""
-        chunk = re.split(r"\s+[-–—]\s+", chunk, maxsplit=1)[0]
-        parts = re.split(r"\s*(?:,|&|\band\b)\s*", chunk)
-        for part in parts:
+        # "photos of the cabins (Oak, Pine, Lake)" — names are in the parens.
+        if (raw[match.end() : match.end() + 1] or "").startswith("("):
+            continue
+        for part in _list_parts(match.group(1) or ""):
             take(part)
+    for match in PAREN_NAME_LIST_RE.finditer(raw):
+        start = max(0, match.start() - 48)
+        if _NOT_SUBJECT_LIST.search(raw[start : match.end()]):
+            continue
+        candidates = [accept(part) for part in _list_parts(match.group(1) or "")]
+        names = [name for name in candidates if name]
+        if len(names) < 2:
+            continue
+        for name in names:
+            take(name)
     return found
 
 
@@ -553,18 +554,13 @@ def _is_page_spec(body: str) -> bool:
 def _isolated_logo_prompt(raw: str, body: str) -> str:
     """Short Qwen mark. Drop leftover HTML/SPA instructions."""
     brand = company_name(raw)
-    extra = f", {CUTOUT_TAIL}" if wants_transparent(raw) else ""
     if _is_page_spec(body):
         if brand:
-            return (
-                f"logo that says {brand}, clean brand mark, readable letters{extra}"
-            )
-        return f"elegant brand logo, clean readable letters{extra}"
+            return f"logo that says {brand}, clean brand mark, readable letters"
+        return "elegant brand logo, clean readable letters"
     cleaned = _strip_transparent_words(_strip_noise(body))
     if not cleaned:
         cleaned = "elegant brand logo"
-    if extra and not _already_cutout(cleaned):
-        cleaned = f"{cleaned}{extra}"
     return cleaned
 
 
@@ -655,6 +651,140 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     return _with_chroma(original, chroma=chroma)
 
 
+def _spec_key(text: str) -> str:
+    return hashlib.sha256((text or "").strip().encode()).hexdigest()
+
+
+def remember_mixed_plan(text: str, items: list[dict[str, str]]) -> None:
+    key = _spec_key(text)
+    if key in _PLAN_CACHE:
+        _PLAN_CACHE.move_to_end(key)
+    _PLAN_CACHE[key] = [dict(row) for row in items]
+    while len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
+        _PLAN_CACHE.popitem(last=False)
+
+
+def recalled_mixed_plan(text: str) -> list[dict[str, str]]:
+    key = _spec_key(text)
+    items = _PLAN_CACHE.get(key)
+    if not items:
+        return []
+    _PLAN_CACHE.move_to_end(key)
+    return [dict(row) for row in items]
+
+
+def parse_mixed_plan_json(raw: str) -> list[dict[str, str]]:
+    """Pull {filename, subject} rows from a model JSON reply."""
+    text = re.sub(r"(?is)<think>.*?</think>", " ", raw or "")
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    blob = fenced.group(1) if fenced else ""
+    if not blob:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            blob = text[start : end + 1]
+    if not blob:
+        return []
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return []
+    rows = data.get("images") if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        return []
+    found: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        filename = str(row.get("filename") or row.get("output_path") or "").strip()
+        subject = str(row.get("subject") or row.get("prompt") or "").strip()
+        if filename or subject:
+            found.append({"filename": filename, "subject": subject})
+    return found
+
+
+def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Turn extracted filename/subject rows into Comfy dests for this spec."""
+    raw = text or ""
+    dest_dir = images_folder(raw, site_folder(raw))
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if len(items) >= MAX_PLANNED_IMAGES:
+            break
+        filename = str(row.get("filename") or "").replace("\\", "/")
+        filename = filename.split("/")[-1].strip()
+        slug = _subject_slug(filename.rsplit(".", 1)[0] if filename else "")
+        if not slug:
+            slug = _subject_slug(str(row.get("subject") or ""))
+        if not slug or slug in seen:
+            continue
+        if slug in {"etc", "css", "css3", "html", "html5"}:
+            continue
+        name = "logo.png" if slug == "logo" else f"{slug}.png"
+        if slug == "header" or slug == "banner":
+            name = "header.png"
+        subject = str(row.get("subject") or slug).strip() or slug
+        seen.add(slug)
+        items.append(
+            {
+                "prompt": rewrite_comfy_prompt(subject),
+                "output_path": f"{dest_dir}/{name}".replace("//", "/"),
+            }
+        )
+    return items
+
+
+async def llm_plan_mixed_images(text: str) -> list[dict[str, str]]:
+    """Ask the loaded coding model for dests. Empty if it cannot run."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    try:
+        from common import model as model_mod
+        from endpoints.OAI.types.chat_completion import (
+            ChatCompletionMessage,
+            ChatCompletionRequest,
+        )
+        from endpoints.OAI.utils.chat_completion import apply_chat_template
+    except Exception:
+        return []
+    container = getattr(model_mod, "container", None)
+    if not container or not getattr(container, "loaded", False):
+        return []
+    if getattr(container, "prompt_template", None) is None:
+        return []
+    request = ChatCompletionRequest(
+        messages=[
+            ChatCompletionMessage(role="system", content=EXTRACT_PLAN_SYSTEM),
+            ChatCompletionMessage(role="user", content=raw[:6000]),
+        ],
+        max_tokens=500,
+        temperature=0.1,
+        json_schema=MIXED_PLAN_SCHEMA,
+    )
+    try:
+        prompt, embeddings = await apply_chat_template(request)
+        result = await asyncio.wait_for(
+            container.generate(
+                f"mixed-plan-{uuid.uuid4().hex[:12]}",
+                prompt,
+                request,
+                mm_embeddings=embeddings,
+            ),
+            timeout=LLM_PLAN_TIMEOUT_S,
+        )
+    except Exception as exc:
+        from common.logger import xlogger
+
+        xlogger.warning(f"Mixed dest extract failed: {exc}")
+        return []
+    blob = ""
+    if isinstance(result, dict):
+        blob = str(result.get("text") or result.get("content") or "")
+    return plan_from_extracted(raw, parse_mixed_plan_json(blob))
+
+
 def plan_mixed_images(text: str) -> list[dict[str, str]]:
     """Turn a page+images ask into concrete PNG dests and Comfy prompts."""
     raw = text or ""
@@ -677,16 +807,14 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
         )
 
     brand = company_name(raw)
-    want_alpha = wants_transparent(raw)
-    extra = f", {CUTOUT_TAIL}" if want_alpha else ""
     if LOGO_SLOT.search(raw):
         if brand:
             add(
-                f"logo that says {brand}, clean brand mark, readable letters{extra}",
+                f"logo that says {brand}, clean brand mark, readable letters",
                 "logo.png",
             )
         else:
-            add(f"elegant brand logo, clean readable letters{extra}", "logo.png")
+            add("elegant brand logo, clean readable letters", "logo.png")
 
     if HERO_IMAGE_ASK.search(raw):
         place = brand or "a vast landscape"
@@ -697,7 +825,7 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
 
     listed = listed_image_subjects(raw)
     for name in listed:
-        add(_subject_prompt(name, chroma=want_alpha), f"{_subject_slug(name)}.png")
+        add(_subject_prompt(name, chroma=False), f"{_subject_slug(name)}.png")
 
     return items
 
@@ -745,9 +873,10 @@ def format_mixed_image_plan(
         "Create raster PNG files, not .svg, CSS art, or Pillow/PIL drawings.",
         "Do not write generate_images.py, even if the spec asked for a Python "
         "image script. Do not convert SVG to PNG. Do not overwrite a GPU PNG "
-        "with a local drawing. Transparency is applied on the GPU after Comfy.",
+        "with a local drawing. Images are opaque PNGs from Comfy, not cutouts.",
         "Do not use generate_image. The server already queued this batch.",
-        "Write the page after those files exist on disk.",
+        "Write the page after those files exist on disk. Use only these dests; "
+        "do not invent extra PNG filenames or generated-*.png URLs.",
     ]
     if not asked_for_svg:
         paths = ", ".join(row["output_path"] for row in items)
@@ -761,7 +890,7 @@ def format_mixed_image_plan(
 def mixed_image_plan_text(
     text: str, *, has_generate_image: bool = False
 ) -> str:
-    items = plan_mixed_images(text)
+    items = recalled_mixed_plan(text) or plan_mixed_images(text)
     if not items:
         return ""
     return format_mixed_image_plan(

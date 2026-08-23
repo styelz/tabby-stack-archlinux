@@ -910,7 +910,7 @@ PILLOW_DEBUG_RE = re.compile(
 FAKE_PNG_NOTE = (
     "Those PNG files must come from the GPU job, not from Pillow, SVG, "
     "or a Python drawing script. Do not write, run, or debug "
-    "generate_images.py. Transparency is applied on the GPU after Comfy. "
+    "generate_images.py. Images are opaque PNGs from Comfy, not cutouts. "
     "Do not overwrite the planned .png paths with local drawings. "
     "Downloading the real GPU PNGs again. After they land, write HTML/CSS/JS only."
 )
@@ -1608,10 +1608,13 @@ def _should_reuse_mixed_job(data: ChatCompletionRequest, job) -> bool:
     return True
 
 
-def _planned_mixed_items(data: ChatCompletionRequest) -> list[dict[str, str]]:
+async def _planned_mixed_items(data: ChatCompletionRequest) -> list[dict[str, str]]:
     from common.image_prompts import (
         images_folder,
+        llm_plan_mixed_images,
         plan_mixed_images,
+        recalled_mixed_plan,
+        remember_mixed_plan,
         rewrite_comfy_prompt,
         site_folder,
     )
@@ -1625,7 +1628,20 @@ def _planned_mixed_items(data: ChatCompletionRequest) -> list[dict[str, str]]:
         if items:
             return items
     text = mixed_source_text(data)
-    items = plan_mixed_images(text)
+    items = recalled_mixed_plan(text)
+    if not items:
+        try:
+            items = await llm_plan_mixed_images(text)
+        except Exception:
+            items = []
+        if items:
+            xlogger.info(f"Mixed chat planned {len(items)} dests via LLM")
+        else:
+            items = plan_mixed_images(text)
+            if items:
+                xlogger.info(f"Mixed chat planned {len(items)} dests via fallback")
+        if items:
+            remember_mixed_plan(text, items)
     if items:
         return items
     dest_dir = images_folder(text, site_folder(text))
@@ -1651,7 +1667,7 @@ async def ensure_mixed_image_job(
     from common.mixed_image import missing_planned_items
 
     existing = _matching_mixed_job(data)
-    planned = _planned_mixed_items(data)
+    planned = await _planned_mixed_items(data)
     if not planned:
         return existing
     running = bool(existing) and getattr(existing, "status", "") in (
@@ -2049,7 +2065,7 @@ def mixed_image_hint(
         "placeholder URLs, or Unsplash. "
         "Do not write generate_images.py or any Python drawing script, even "
         "if the spec asked for PIL/Pillow or transparent PNGs. "
-        "Transparency is applied on the GPU after Comfy. "
+        "Images are opaque PNGs from Comfy, not cutouts. "
         "Do not convert SVG to PNG. If a curl 404s, wait — do not invent "
         "substitute images. "
         "Unless the user explicitly asked for SVG, every image is a generated PNG. "
@@ -2087,6 +2103,21 @@ def mixed_source_text(data: ChatCompletionRequest) -> str:
     return _unwrap_query(last_user_raw(data))
 
 
+def _items_from_job(job) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in getattr(job, "items", None) or []:
+        path = str(getattr(item, "output_path", "") or "")
+        if not path:
+            continue
+        rows.append(
+            {
+                "prompt": str(getattr(item, "prompt", "") or ""),
+                "output_path": path,
+            }
+        )
+    return rows
+
+
 def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str:
     from common.image_prompts import (
         MIXED_PLAN_MARK,
@@ -2099,6 +2130,7 @@ def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str
 
     has_tool = _chat_has_generate_image(data)
     pngs_ready = False
+    job = None
     try:
         job = _matching_mixed_job(data)
         pngs_ready = bool(job and _job_flag(job, "client_saved"))
@@ -2116,9 +2148,17 @@ def _hint_with_plan(api_base: Optional[str], data: ChatCompletionRequest) -> str
             has_generate_image=has_tool,
         )
     else:
-        plan = mixed_image_plan_text(
-            mixed_source_text(data), has_generate_image=has_tool
-        )
+        job_items = _items_from_job(job) if job is not None else []
+        if job_items:
+            plan = format_mixed_image_plan(
+                job_items,
+                asked_for_svg=user_asked_for_svg(mixed_source_text(data)),
+                has_generate_image=has_tool,
+            )
+        else:
+            plan = mixed_image_plan_text(
+                mixed_source_text(data), has_generate_image=has_tool
+            )
     if plan and MIXED_PLAN_MARK not in hint:
         hint = f"{hint}\n{plan}"
     return hint

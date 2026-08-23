@@ -82,7 +82,7 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertLess(len(rewritten), 360)
         self.assertNotIn("transparent", rewritten.lower())
         self.assertNotIn(CHROMA_HEX, rewritten)
-        self.assertIn(CUTOUT_TAIL.split(",")[0], rewritten)
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], rewritten)
         items = plan_mixed_images(line)
         self.assertEqual(items[0]["output_path"], "images/logo.png")
         self.assertEqual(items[0]["prompt"], rewritten)
@@ -128,7 +128,9 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertIn("Saturn", rewritten)
         self.assertFalse(wants_qwen_image(rewritten))
 
-    def test_planet_tours_prompt_plans_logo_and_eight_pngs(self):
+    def test_unnamed_each_item_does_not_invent_a_category(self):
+        """'image of each planet' with no names is logo-only. Do not invent
+        Mercury–Neptune (that only works for this one site)."""
         line = (
             "create a one page website , the site is a solar systme tours "
             "booking page where people can visit other plantes. I want a nice "
@@ -142,29 +144,14 @@ class ImagePromptRewriteTests(unittest.TestCase):
         items = plan_mixed_images(line)
         paths = [row["output_path"] for row in items]
         self.assertEqual(site_folder(line), "pbptours")
-        self.assertEqual(paths[0], "pbptours/images/logo.png")
+        self.assertEqual(paths, ["pbptours/images/logo.png"])
         self.assertTrue(items[0]["prompt"].lower().startswith("qwen-image:"))
         self.assertIn("Planet By Planet Tours", items[0]["prompt"])
-        self.assertEqual(
-            paths[1:],
-            [
-                "pbptours/images/mercury.png",
-                "pbptours/images/venus.png",
-                "pbptours/images/earth.png",
-                "pbptours/images/mars.png",
-                "pbptours/images/jupiter.png",
-                "pbptours/images/saturn.png",
-                "pbptours/images/uranus.png",
-                "pbptours/images/neptune.png",
-            ],
-        )
-        for row in items[1:]:
-            self.assertNotIn("qwen-image:", row["prompt"].lower())
-            self.assertNotIn("svg", row["prompt"].lower())
         brief = mixed_image_plan_text(line)
         payload = json.loads(brief.splitlines()[-1])
-        self.assertEqual(len(payload["images"]), 9)
+        self.assertEqual(len(payload["images"]), 1)
         self.assertIn("pbptours/images/logo.png", brief)
+        self.assertNotIn("saturn.png", brief)
         self.assertNotIn('says "Planet By Planet Tours"', items[0]["prompt"])
         self.assertIn("Do not use generate_image", brief)
         self.assertNotIn("Call generate_image", brief)
@@ -240,7 +227,7 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("qwen-image:", items[0]["prompt"].lower())
         self.assertNotIn("transparent", items[0]["prompt"].lower())
         self.assertNotIn(CHROMA_HEX, items[0]["prompt"])
-        self.assertIn(CUTOUT_TAIL, items[0]["prompt"])
+        self.assertNotIn(CUTOUT_TAIL, items[0]["prompt"])
         self.assertFalse(wants_qwen_image(items[0]["prompt"]))
         qwen = plan_image_redo(
             "improve the logo, generate a better png image", "pbptours"
@@ -272,7 +259,7 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertIn("cosmos tours", logo)
         self.assertNotIn("transparent", logo)
         self.assertNotIn(CHROMA_HEX.lower(), logo)
-        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], logo)
         self.assertIn("isolated logo mark", logo)
         self.assertNotIn("website", logo)
         self.assertNotIn("space-tourism", logo)
@@ -280,8 +267,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
             self.assertNotIn("qwen-image:", row["prompt"].lower())
             self.assertNotIn("transparent", row["prompt"].lower())
             self.assertNotIn(CHROMA_HEX, row["prompt"])
-            self.assertIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
-            self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
+            self.assertIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
     def test_cosmos_tours_production_spec_queues_named_planets(self):
@@ -313,12 +300,12 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertTrue(logo.startswith("qwen-image:"))
         self.assertNotIn("transparent", logo)
         self.assertNotIn(CHROMA_HEX.lower(), logo)
-        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], logo)
         for row in items[1:]:
             self.assertNotIn("transparent", row["prompt"].lower())
             self.assertNotIn(CHROMA_HEX, row["prompt"])
-            self.assertIn(CUTOUT_TAIL, row["prompt"])
-            self.assertNotIn(SCENE_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn(CUTOUT_TAIL, row["prompt"])
+            self.assertIn(SCENE_TAIL.split(",")[0], row["prompt"])
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
     def test_cosmos_spec_does_not_queue_css3_or_pricing_junk(self):
@@ -356,8 +343,8 @@ class ImagePromptRewriteTests(unittest.TestCase):
         rewritten = rewrite_comfy_prompt("transparent PNG of a coffee cup")
         self.assertNotIn("transparent", rewritten.lower())
         self.assertNotIn(CHROMA_HEX, rewritten)
-        self.assertIn(CUTOUT_TAIL.split(",")[0], rewritten)
-        self.assertTrue(wants_transparent(rewritten))
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], rewritten)
+        self.assertFalse(wants_transparent(rewritten))
         self.assertEqual(rewrite_comfy_prompt(rewritten), rewritten)
         hero = rewrite_comfy_prompt(
             "transparent website hero banner, purple dusk over dunes"
@@ -367,6 +354,28 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn(CUTOUT_TAIL.split(",")[0], hero)
         self.assertNotIn("transparent", hero.lower())
         self.assertFalse(wants_transparent(hero))
+
+    def test_paren_name_list_queues_any_named_subjects(self):
+        """Cabins, products, planets — same rule: names in parentheses."""
+        line = (
+            'create a website for a lodge called "Pine Lodge" with a logo '
+            "and photos of the cabins (Oak, Pine, and Lake). Put files "
+            "under pinelodge."
+        )
+        items = plan_mixed_images(line)
+        paths = [row["output_path"] for row in items]
+        self.assertEqual(
+            paths,
+            [
+                "pinelodge/images/logo.png",
+                "pinelodge/images/oak.png",
+                "pinelodge/images/pine.png",
+                "pinelodge/images/lake.png",
+            ],
+        )
+        for row in items[1:]:
+            self.assertNotIn("qwen-image:", row["prompt"].lower())
+            self.assertIn("isolated object", row["prompt"].lower())
 
     def test_any_listed_subjects_queue_pngs_not_just_planets(self):
         line = (
@@ -389,11 +398,11 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertTrue(logo.startswith("qwen-image:"))
         self.assertIn("sweet crust", logo)
         self.assertNotIn("transparent", logo)
-        self.assertIn(CUTOUT_TAIL.split(",")[0], logo)
+        self.assertNotIn(CUTOUT_TAIL.split(",")[0], logo)
         for row in items[1:]:
             self.assertNotIn("qwen-image:", row["prompt"].lower())
             self.assertNotIn("transparent", row["prompt"].lower())
-            self.assertIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
+            self.assertNotIn(CUTOUT_TAIL.split(",")[0], row["prompt"])
             self.assertIn("isolated object", row["prompt"].lower())
             self.assertFalse(wants_qwen_image(row["prompt"]))
 
@@ -420,6 +429,35 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("Python script to generate", cleaned)
         self.assertIn(GPU_PNG_NOTE, cleaned)
         self.assertEqual(neutralize_local_image_script("plain site spec"), "plain site spec")
+
+    def test_parse_mixed_plan_json_reads_fenced_dests(self):
+        from common.image_prompts import parse_mixed_plan_json, plan_from_extracted
+
+        blob = (
+            "```json\n"
+            '{"images":[{"filename":"logo.png","subject":"logo that says Pine Lodge"},'
+            '{"filename":"oak.png","subject":"photograph of an oak cabin"}]}\n'
+            "```"
+        )
+        rows = parse_mixed_plan_json(blob)
+        self.assertEqual([row["filename"] for row in rows], ["logo.png", "oak.png"])
+        spec = (
+            'create a website for a lodge called "Pine Lodge" with a logo. '
+            "Put files under pinelodge."
+        )
+        paths = [
+            row["output_path"] for row in plan_from_extracted(spec, rows)
+        ]
+        self.assertEqual(
+            paths,
+            ["pinelodge/images/logo.png", "pinelodge/images/oak.png"],
+        )
+        cut = plan_from_extracted(
+            spec + " All images must be transparent PNG files.",
+            [{"filename": "logo.png", "subject": "logo that says Pine Lodge"}],
+        )
+        self.assertNotIn(CUTOUT_TAIL, cut[0]["prompt"])
+        self.assertNotIn("transparent", cut[0]["prompt"].lower())
 
 
 if __name__ == "__main__":
