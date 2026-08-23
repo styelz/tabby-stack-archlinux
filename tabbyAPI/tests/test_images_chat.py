@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -44,6 +45,79 @@ def _job(**kwargs):
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
+
+
+class NestedGenerateHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handler_works_without_http_request(self):
+        from common.networking import DisconnectHandler
+
+        handler = DisconnectHandler(description="mixed dest extract")
+        cancelled = []
+
+        async def cancel():
+            cancelled.append(True)
+
+        await handler.add_cleanup_task("job", cancel, ())
+        await handler.poll()
+        await handler.finish("job")
+        self.assertEqual(cancelled, [])
+
+    async def test_abort_event_cancels_nested_job(self):
+        from common.networking import DisconnectHandler
+
+        abort = asyncio.Event()
+        abort.set()
+        handler = DisconnectHandler(description="nested", abort_event=abort)
+        cancelled = []
+
+        async def cancel():
+            cancelled.append(True)
+
+        await handler.add_cleanup_task("job", cancel, ())
+        with self.assertRaises(asyncio.CancelledError):
+            await handler.poll()
+        self.assertEqual(cancelled, [True])
+
+    def test_generate_passes_handler_not_abort_event(self):
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1].joinpath(
+            "backends/exllamav3/model.py"
+        ).read_text()
+        self.assertIn("params,\n            handler,\n            mm_embeddings", src)
+        self.assertNotIn(
+            "params,\n            abort_event,\n            mm_embeddings", src
+        )
+
+    async def test_llm_plan_forwards_disconnect_handler(self):
+        from images.plan import llm_plan_images
+
+        captured = {}
+
+        async def fake_generate(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            return {
+                "text": '{"images":[{"filename":"logo.png","subject":"logo Cafe"}]}'
+            }
+
+        async def fake_template(_request):
+            return "prompt", None
+
+        handler = object()
+        container = SimpleNamespace(
+            loaded=True,
+            prompt_template=object(),
+            generate=fake_generate,
+        )
+        with mock.patch("common.model.container", container), mock.patch(
+            "endpoints.OAI.utils.chat_completion.apply_chat_template",
+            new=fake_template,
+        ):
+            items = await llm_plan_images(
+                "create a website with a logo", disconnect_handler=handler
+            )
+        self.assertIs(captured["kwargs"].get("disconnect_handler"), handler)
+        self.assertEqual(items[0]["output_path"], "images/logo.png")
 
 
 class PlanTests(unittest.TestCase):

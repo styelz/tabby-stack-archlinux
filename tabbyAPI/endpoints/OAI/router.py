@@ -148,12 +148,15 @@ async def chat_completion_request(
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     source_image = saved_images[-1] if saved_images else None
+    disconnect_handler = DisconnectHandler(request, "/v1/chat/completions")
+    await disconnect_handler.poll()
     image_response = await handle_image_chat(
         data,
         api_base,
         source_image=source_image,
         llm_ready=llm_ready,
         gpu_is_comfy=gpu_is_comfy(),
+        disconnect_handler=disconnect_handler,
     )
     if image_response is not None:
         return image_response
@@ -196,7 +199,6 @@ async def chat_completion_request(
         data.json_schema = data.response_format.json_schema
 
     try:
-        disconnect_handler = DisconnectHandler(request, "/v1/chat/completions")
         await disconnect_handler.poll()
 
         if data.stream and not config.developer.disable_request_streaming:

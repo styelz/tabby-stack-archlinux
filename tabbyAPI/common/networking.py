@@ -81,11 +81,12 @@ def handle_request_disconnect(message: str):
 class DisconnectHandler:
     def __init__(
         self,
-        request: Request,
-        description: str,
+        request: Optional[Request] = None,
+        description: str = "",
+        abort_event: Optional[asyncio.Event] = None,
     ):
         self.request = request
-        self.abort_event = asyncio.Event()
+        self.abort_event = abort_event if abort_event is not None else asyncio.Event()
         self.last_poll = time.time() - 10
         self.disconnected = False
         self.cleanup_tasks = {}
@@ -97,6 +98,9 @@ class DisconnectHandler:
         runs scheduled cleanup tasks and raises asyncio.CancelledError. Caller is responsible for
         forwarding the error back to the endpoint function. The endpoint fn should call poll() at
         least once before returning a non-canceled response
+
+        Nested generate() (mixed dest extract) has no Starlette Request. Then
+        poll only cancels if abort_event is set.
         """
 
         now = time.time()
@@ -104,16 +108,16 @@ class DisconnectHandler:
             return
         self.last_poll = now
 
-        # Check if request has disconnected
-        if await self.request.is_disconnected():
-            # Set abort signal
+        http_gone = False
+        if self.request is not None:
+            http_gone = await self.request.is_disconnected()
+
+        if http_gone or self.abort_event.is_set():
             if self.abort_event is not None:
                 self.abort_event.set()
 
-            # Trigger any cleanup tasks
             await self.cleanup()
 
-            # Log and raise
             if not self.disconnected:
                 xlogger.error(f"Request disconnected: {self.description}")
                 self.disconnected = True

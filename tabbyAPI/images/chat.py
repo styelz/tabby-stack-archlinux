@@ -140,11 +140,13 @@ def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
         return
 
 
-async def _start_mixed_job(data: ChatCompletionRequest, api_base: str):
+async def _start_mixed_job(
+    data: ChatCompletionRequest, api_base: str, disconnect_handler=None
+):
     from common.phrase_switch import last_user_text
 
     text = last_user_text(data)
-    items = await plan_mixed_dests(text)
+    items = await plan_mixed_dests(text, disconnect_handler=disconnect_handler)
     job, kind = await start_mcp_image_job(
         items=items,
         seed=None,
@@ -252,6 +254,7 @@ async def handle(
     source_image=None,
     llm_ready: bool = True,
     gpu_is_comfy: bool = False,
+    disconnect_handler=None,
 ):
     """Hold this chat turn until PNGs exist, then curl (mixed) or return URLs.
 
@@ -295,7 +298,9 @@ async def handle(
             from common.phrase_switch import llm_not_ready_response
 
             return await llm_not_ready_response(data)
-        started = await _start_mixed_job(data, api_base or "")
+        started = await _start_mixed_job(
+            data, api_base or "", disconnect_handler=disconnect_handler
+        )
         return await _hold_then_reply(data, started, mixed=True, api_base=api_base)
 
     explicit = requested_image_prompt(data, explicit_only=True)

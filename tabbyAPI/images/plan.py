@@ -170,7 +170,7 @@ def fallback_item(text: str = "") -> list[dict[str, str]]:
     ]
 
 
-async def llm_plan_images(text: str) -> list[dict[str, str]]:
+async def llm_plan_images(text: str, disconnect_handler=None) -> list[dict[str, str]]:
     """Ask the loaded coding model for dests. Empty if it cannot run."""
     raw = (text or "").strip()
     if not raw:
@@ -206,6 +206,7 @@ async def llm_plan_images(text: str) -> list[dict[str, str]]:
                 prompt,
                 request,
                 mm_embeddings=embeddings,
+                disconnect_handler=disconnect_handler,
             ),
             timeout=LLM_PLAN_TIMEOUT_S,
         )
@@ -220,14 +221,14 @@ async def llm_plan_images(text: str) -> list[dict[str, str]]:
     return plan_from_extracted(raw, parse_plan_json(blob))
 
 
-async def plan_mixed_dests(text: str) -> list[dict[str, str]]:
+async def plan_mixed_dests(text: str, disconnect_handler=None) -> list[dict[str, str]]:
     """JSON extract while the LLM is loaded. One generated.png if that fails."""
     raw = text or ""
     items = recalled_plan(raw)
     if items:
         return items
     try:
-        items = await llm_plan_images(raw)
+        items = await llm_plan_images(raw, disconnect_handler=disconnect_handler)
     except Exception:
         items = []
     if not items:

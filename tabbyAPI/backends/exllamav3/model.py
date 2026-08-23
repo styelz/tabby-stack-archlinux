@@ -921,6 +921,7 @@ class ExllamaV3Container:
         params: BaseSamplerRequest,
         abort_event: Optional[asyncio.Event] = None,
         mm_embeddings: Optional[MultimodalEmbeddingWrapper] = None,
+        disconnect_handler: DisconnectHandler = None,
     ) -> Dict[str, Any]:
         """
         Generates a complete response for a given prompt and parameters.
@@ -931,17 +932,23 @@ class ExllamaV3Container:
             params: Sampling and generation parameters.
             abort_event: An asyncio Event to signal cancellation.
             mm_embeddings: Optional multimodal embeddings.
+            disconnect_handler: Optional HTTP disconnect context. Nested
+                calls (mixed dest extract) must not pass abort_event as this.
 
         Returns:
             A dictionary containing the generation info
         """
 
+        handler = disconnect_handler or DisconnectHandler(
+            description=f"generate {request_id}",
+            abort_event=abort_event,
+        )
         generations = []
         async for generation in self.stream_generate(
             request_id,
             prompt,
             params,
-            abort_event,
+            handler,
             mm_embeddings,
         ):
             if generation is None:
@@ -1391,6 +1398,10 @@ class ExllamaV3Container:
             filters=grammar_handler.filters,
         )
         self.active_job_ids[request_id] = job
+        if disconnect_handler is None:
+            disconnect_handler = DisconnectHandler(
+                description=f"generate {request_id}",
+            )
         await disconnect_handler.add_cleanup_task(id(job), job.cancel, ())
 
         generated_tokens = 0
