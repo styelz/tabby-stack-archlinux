@@ -603,7 +603,7 @@ function mountChat(root) {
 
   function renderHistoryMenu() {
     historyItems = listedChats();
-    if (historyItems.length < 2) {
+    if (!historyItems.length) {
       hideHistoryMenu();
       return;
     }
@@ -627,6 +627,13 @@ function mountChat(root) {
     highlightMenu(historyMenu, historyIndex);
   }
 
+  function onPointerDownAway(event) {
+    if (historyMenu.hidden) return;
+    const target = event.target;
+    if (target instanceof Node && historyMenu.contains(target)) return;
+    hideHistoryMenu();
+  }
+
   function timeLabel(ts) {
     const delta = Date.now() - (Number(ts) || 0);
     if (delta < 60_000) return "just now";
@@ -642,12 +649,14 @@ function mountChat(root) {
   function cycleHistory(delta) {
     persist();
     const list = listedChats();
-    if (list.length < 2) return false;
+    if (!list.length) return false;
     hideMenu();
-    let idx = list.findIndex((item) => item.id === store.activeId);
-    if (idx < 0) idx = 0;
-    idx = (idx + delta + list.length) % list.length;
-    loadChat(list[idx].id);
+    if (list.length >= 2) {
+      let idx = list.findIndex((item) => item.id === store.activeId);
+      if (idx < 0) idx = 0;
+      idx = (idx + delta + list.length) % list.length;
+      loadChat(list[idx].id);
+    }
     renderHistoryMenu();
     return true;
   }
@@ -1042,11 +1051,17 @@ function mountChat(root) {
   });
 
   window.addEventListener("beforeunload", persist);
+  document.addEventListener("pointerdown", onPointerDownAway);
   renderLog();
   paintToolbar();
   return {
+    pause() {
+      hideHistoryMenu();
+    },
     destroy() {
       persist();
+      hideHistoryMenu();
+      document.removeEventListener("pointerdown", onPointerDownAway);
       window.removeEventListener("beforeunload", persist);
     },
   };
