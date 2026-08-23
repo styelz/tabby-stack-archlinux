@@ -214,13 +214,15 @@ ui_yesno() {
   if [[ -t 1 ]] && need_cmd dialog; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" \
+      --yes-label "Restart" --no-label "Skip" --yesno "$text" 16 74
     return $?
   fi
   if [[ -t 1 ]] && need_cmd whiptail; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" \
+      --yes-button "Restart" --no-button "Skip" --yesno "$text" 16 74
     return $?
   fi
   local yn="Y/n"
@@ -446,12 +448,18 @@ Log: $UPDATE_LOG"
 
 ask_restart_api() {
   local text
-  if [[ "$TABBY_UPDATE_FROM_REV" == none ]]; then
+  local new_head=""
+  new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
+  if ! api_unit_running; then
+    text="tabbyapi is not running. Start it now so it loads the current files (about 65 seconds)?"
+  elif [[ "${TABBY_UPDATE_FROM_REV:-none}" == none ]]; then
     text="This install was checked out from git. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
   elif ((${#RESTART_FILES[@]})); then
     text="The pull changed API code. Restart tabbyapi now so it loads (about 65 seconds)?
 
 $(format_restart_file_list)"
+  elif [[ "${TABBY_UPDATE_FROM_REV:-}" == "$new_head" ]]; then
+    text="Already up to date. Restart tabbyapi anyway (about 65 seconds)?"
   else
     text="The pull updated this install. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
   fi
@@ -473,19 +481,16 @@ finish_git_update() {
     pulled=1
   fi
 
-  if [[ "$RESTART_API" == 0 ]]; then
-    if [[ "$pulled" -eq 0 ]]; then
-      ui_msg "Update git" "Already up to date. The API was not restarted.
+  local done_ok="Pulled the latest code."
+  [[ "$pulled" -eq 0 ]] && done_ok="Already up to date."
 
-Log: $UPDATE_LOG"
-    else
-      ui_msg "Update git" "Pulled the latest code. The API was not restarted.
+  if [[ "$RESTART_API" == 0 ]]; then
+    ui_msg "Update git" "$done_ok The API was not restarted.
 
 Reload later with:
   systemctl --user restart tabbyapi
 
 Log: $UPDATE_LOG"
-    fi
     exit 0
   fi
 
@@ -498,28 +503,8 @@ Log: $UPDATE_LOG"
     exit 0
   fi
 
-  if [[ "$pulled" -eq 0 ]]; then
-    ui_msg "Update git" "Already up to date. The API was not restarted.
-
-Log: $UPDATE_LOG"
-    exit 0
-  fi
-
-  if ! api_unit_running; then
-    ui_msg "Update git" "Pulled the latest code. tabbyapi is not running, so it was not restarted.
-
-Start it with:
-  systemctl --user start tabbyapi
-
-Or re-run:
-  $DEST/update.sh --git --restart
-
-Log: $UPDATE_LOG"
-    exit 0
-  fi
-
-  if [[ ! -t 0 || ! -t 1 ]]; then
-    ui_msg "Update git" "Pulled the latest code. Not restarting (no TTY).
+  if [[ ! -t 1 && ! -c /dev/tty ]]; then
+    ui_msg "Update git" "$done_ok Not restarting (no TTY).
 
 Reload with:
   systemctl --user restart tabbyapi
@@ -530,9 +515,13 @@ Log: $UPDATE_LOG"
   fi
 
   if ask_restart_api; then
-    restart_tabbyapi
+    if [[ "$pulled" -eq 0 ]]; then
+      restart_tabbyapi "Already up to date. Restarted tabbyapi."
+    else
+      restart_tabbyapi
+    fi
   else
-    ui_msg "Update git" "Pulled the latest code. The API was not restarted.
+    ui_msg "Update git" "$done_ok The API was not restarted.
 
 Reload later with:
   systemctl --user restart tabbyapi
@@ -651,8 +640,11 @@ restore_head_file() {
 }
 
 # Copy-to-live of files already on origin must not block a fast-forward.
-# Real edits (content that is not on origin) still abort, except install/update
-# wrappers which are held aside and put back after the merge.
+# Real edits (content that is not on origin) still abort. Dirty
+# install/update/uninstall wrappers are held aside so the merge can proceed.
+# After a successful pull, origin wins only if that wrapper changed in the
+# pull. Always putting the local wrappers back hid the new update.sh (and
+# its restart prompt) on live installs.
 take_origin_copies() {
   local dir="$1" spec="$2"
   local f
@@ -703,7 +695,7 @@ ff_pull() {
   if ((${#AHEAD_WRAPPERS[@]})); then
     wrappers_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-wrappers.XXXXXX")"
     for wrap in "${AHEAD_WRAPPERS[@]}"; do
-      printf '%s\n' "==> Holding local $wrap (newer than origin/$branch)" >> "$UPDATE_LOG"
+      printf '%s\n' "==> Holding local $wrap (differs from origin/$branch)" >> "$UPDATE_LOG"
       cp "$dir/$wrap" "$wrappers_tmp/$wrap"
       restore_head_file "$dir" "$wrap"
     done
@@ -735,9 +727,26 @@ Commit, stash, or restore them, then re-run. Untracked runtime files
   progress "$pct_merge" "Fast-forward $label to origin/$branch"
   run_git git -C "$dir" merge --ff-only "origin/$branch"
   if [[ -n "$wrappers_tmp" ]]; then
-    cp -a "$wrappers_tmp/." "$dir/"
+    local keep_origin wrap_old wrap_new
+    for wrap in "${AHEAD_WRAPPERS[@]}"; do
+      keep_origin=0
+      if [[ -z "${TABBY_UPDATE_FROM_REV:-}" || "${TABBY_UPDATE_FROM_REV}" == none ]]; then
+        keep_origin=1
+      elif ! git -C "$dir" cat-file -e "${TABBY_UPDATE_FROM_REV}:$wrap" 2>/dev/null; then
+        keep_origin=1
+      else
+        wrap_old="$(git -C "$dir" cat-file -p "${TABBY_UPDATE_FROM_REV}:$wrap" | hash_ignore_cr)"
+        wrap_new="$(git -C "$dir" cat-file -p "HEAD:$wrap" | hash_ignore_cr)"
+        [[ "$wrap_old" != "$wrap_new" ]] && keep_origin=1
+      fi
+      if [[ "$keep_origin" -eq 1 ]]; then
+        printf '%s\n' "==> Keeping origin/$branch $wrap" >> "$UPDATE_LOG"
+      else
+        cp "$wrappers_tmp/$wrap" "$dir/$wrap"
+        printf '%s\n' "==> Restored local $wrap (unchanged on origin/$branch)" >> "$UPDATE_LOG"
+      fi
+    done
     rm -rf "$wrappers_tmp"
-    printf '%s\n' "==> Restored local install/update scripts" >> "$UPDATE_LOG"
   fi
 }
 
