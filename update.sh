@@ -68,6 +68,68 @@ tracked_dirty() {
   [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]]
 }
 
+# Content change, not CRLF vs LF. Copy-to-live on Linux often strips CRs that
+# Windows committed; that is not a local edit.
+real_tracked_diff() {
+  local dir="$1"
+  [[ -n "$(git -C "$dir" diff --ignore-cr-at-eol 2>/dev/null)" ]] && return 0
+  [[ -n "$(git -C "$dir" diff --cached --ignore-cr-at-eol 2>/dev/null)" ]] && return 0
+  return 1
+}
+
+restore_crlf_only() {
+  local dir="$1"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    git -C "$dir" restore --worktree --source=HEAD -- "$f"
+  done < <(git -C "$dir" diff --name-only)
+}
+
+hash_ignore_cr() {
+  tr -d '\r' | git hash-object --stdin
+}
+
+matches_origin_blob() {
+  local dir="$1" spec="$2" file="$3"
+  local want have
+  want="$(git -C "$dir" cat-file -p "$spec:$file" | hash_ignore_cr)"
+  have="$(hash_ignore_cr <"$dir/$file")"
+  [[ "$want" == "$have" ]]
+}
+
+# Copy-deploy leaves new repo files untracked. git merge will not overwrite them
+# even when they already match origin. Older copies are moved aside; origin wins.
+clear_matching_untracked() {
+  local dir="$1" spec="$2"
+  local f bak=""
+  local -a conflicts=() matches=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    git -C "$dir" cat-file -e "$spec:$f" 2>/dev/null || continue
+    if matches_origin_blob "$dir" "$spec" "$f"; then
+      matches+=("$f")
+    else
+      conflicts+=("$f")
+    fi
+  done < <(git -C "$dir" ls-files --others --exclude-standard)
+  if ((${#matches[@]})); then
+    echo "==> Removing untracked copies that already match $spec"
+    for f in "${matches[@]}"; do
+      rm -f "$dir/$f"
+    done
+  fi
+  if ((${#conflicts[@]})); then
+    bak="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-update-untracked.XXXXXX")"
+    echo "==> Untracked files differ from $spec; moving aside to $bak"
+    for f in "${conflicts[@]}"; do
+      mkdir -p "$bak/$(dirname "$f")"
+      mv "$dir/$f" "$bak/$f"
+      echo "    $f"
+    done
+  fi
+}
+
 origin_branch() {
   local dir="$1"
   local branch=""
@@ -93,13 +155,7 @@ ff_pull() {
   local dir="$1"
   local label="$2"
   local branch=""
-  if tracked_dirty "$dir"; then
-    die "$label has local changes in tracked files.
-Commit, stash, or restore them, then re-run. Untracked runtime files
-(venv, models, ComfyUI, config.yml) are fine.
-
-  git -C $dir status"
-  fi
+  local wrappers_tmp=""
   echo "==> Fetching $label"
   git -C "$dir" fetch origin
   branch="$(origin_branch "$dir")"
@@ -107,8 +163,43 @@ Commit, stash, or restore them, then re-run. Untracked runtime files
     branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
   fi
   [[ -n "$branch" && "$branch" != "HEAD" ]] || die "Could not determine the branch for $label."
+  # Newer install/update scripts copied onto the install must not block the pull.
+  local wrap
+  for wrap in install.sh uninstall.sh update.sh; do
+    [[ -f "$dir/$wrap" ]] || continue
+    [[ -n "$(git -C "$dir" diff --ignore-cr-at-eol -- "$wrap" 2>/dev/null)" ]] || continue
+    if [[ -z "$wrappers_tmp" ]]; then
+      wrappers_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-wrappers.XXXXXX")"
+      echo "==> Holding local $wrap (not on origin yet)"
+    else
+      echo "==> Holding local $wrap (not on origin yet)"
+    fi
+    cp "$dir/$wrap" "$wrappers_tmp/$wrap"
+    git -C "$dir" restore --worktree --source=HEAD -- "$wrap"
+  done
+  if real_tracked_diff "$dir"; then
+    if [[ -n "$wrappers_tmp" ]]; then
+      cp -a "$wrappers_tmp/." "$dir/"
+      rm -rf "$wrappers_tmp"
+    fi
+    die "$label has local edits in tracked files (not just line endings).
+Commit, stash, or restore them, then re-run. Untracked runtime files
+(venv, models, ComfyUI, config.yml) are fine.
+
+  git -C $dir status"
+  fi
+  if tracked_dirty "$dir"; then
+    echo "==> Ignoring CRLF-only line-ending drift in $label"
+    restore_crlf_only "$dir"
+  fi
+  clear_matching_untracked "$dir" "origin/$branch"
   echo "==> Fast-forward $label to origin/$branch"
   git -C "$dir" merge --ff-only "origin/$branch"
+  if [[ -n "$wrappers_tmp" ]]; then
+    cp -a "$wrappers_tmp/." "$dir/"
+    rm -rf "$wrappers_tmp"
+    echo "==> Restored local install/update scripts"
+  fi
 }
 
 if [[ -d "$DEST/.git" ]]; then

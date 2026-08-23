@@ -1563,14 +1563,23 @@ fi
 run_quiet "$DEST_TABBY/venv/bin/python" "$DEST_FETCH" "${FETCH_ARGS[@]}"
 
 progress 94 "Writing config and enabling service"
+install_unless_same() {
+  local mode="$1" src="$2" dest="$3"
+  if [[ "$src" -ef "$dest" ]]; then
+    chmod "$mode" "$dest" || true
+    return 0
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
 if [[ -f "$SCRIPT_DIR/start.sh" ]]; then
-  run_quiet install -m 755 "$SCRIPT_DIR/start.sh" "$DEST/start.sh"
+  run_quiet install_unless_same 755 "$SCRIPT_DIR/start.sh" "$DEST/start.sh"
 else
   echo "Missing $SCRIPT_DIR/start.sh" >> "$INSTALL_LOG"
   progress_fail 1
 fi
 if [[ -f "$STACK_ROOT/AGENTS.md" ]]; then
-  run_quiet install -m 644 "$STACK_ROOT/AGENTS.md" "$DEST/AGENTS.md"
+  run_quiet install_unless_same 644 "$STACK_ROOT/AGENTS.md" "$DEST/AGENTS.md"
 else
   echo "Missing $STACK_ROOT/AGENTS.md" >> "$INSTALL_LOG"
   progress_fail 1
