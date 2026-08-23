@@ -6,14 +6,14 @@ function mountChat(root) {
         <button class="btn danger" type="button" id="chat-clear">Clear history</button>
         <span class="chat-title" id="chat-title">New chat</span>
         <span class="spacer"></span>
-        <span class="muted" id="chat-hint">Tab previous chats · ↑↓ scroll</span>
+        <span class="muted" id="chat-hint">Tab previous chats · ↑↓ recall</span>
       </div>
-      <div class="chat-log" id="chat-log" tabindex="0"></div>
+      <div class="chat-log" id="chat-log"></div>
       <div class="chat-compose">
         <ul class="slash-menu" id="history-menu" hidden></ul>
         <ul class="slash-menu" id="slash-menu" hidden></ul>
         <form class="chat-form" id="chat-form">
-          <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands. Tab loads previous chats."></textarea>
+          <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
           <button class="btn primary" type="submit">Send</button>
         </form>
       </div>
@@ -114,6 +114,8 @@ function mountChat(root) {
   let menuIndex = 0;
   let historyItems = [];
   let historyIndex = 0;
+  let recallIndex = -1;
+  let recallDraft = "";
 
   TabbyUI.api("status")
     .then((data) => {
@@ -439,6 +441,7 @@ function mountChat(root) {
     messages = cloneMessages(chat.messages);
     if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
     persist();
+    resetRecall();
     renderLog(stickToEnd !== false);
     input.focus();
   }
@@ -446,6 +449,7 @@ function mountChat(root) {
   function startNewChat() {
     persist();
     if (!hasUserTurn({ messages })) {
+      resetRecall();
       renderLog();
       input.focus();
       return;
@@ -455,6 +459,7 @@ function mountChat(root) {
     store.activeId = chat.id;
     messages = cloneMessages(chat.messages);
     persist();
+    resetRecall();
     renderLog();
     hideHistoryMenu();
     input.focus();
@@ -468,6 +473,7 @@ function mountChat(root) {
     store = { version: 1, activeId: chat.id, chats: [chat] };
     messages = cloneMessages(chat.messages);
     persist();
+    resetRecall();
     renderLog();
     hideHistoryMenu();
     input.focus();
@@ -531,18 +537,48 @@ function mountChat(root) {
     return true;
   }
 
-  function scrollLog(dir) {
-    const amount = Math.max(80, Math.floor(log.clientHeight * 0.7));
-    log.scrollBy({ top: dir * amount, behavior: "smooth" });
+  function userSentTexts() {
+    return messages.filter((item) => item.role === "user").map((item) => item.content);
   }
 
-  function caretAtStart() {
-    return input.selectionStart === 0 && input.selectionEnd === 0;
+  function resetRecall() {
+    recallIndex = -1;
+    recallDraft = "";
   }
 
-  function caretAtEnd() {
+  function setCompose(text) {
+    input.value = String(text || "");
     const n = input.value.length;
-    return input.selectionStart === n && input.selectionEnd === n;
+    input.setSelectionRange(n, n);
+  }
+
+  function caretOnFirstLine() {
+    const start = input.selectionStart;
+    return start === input.selectionEnd && !input.value.slice(0, start).includes("\n");
+  }
+
+  function caretOnLastLine() {
+    const end = input.selectionEnd;
+    return input.selectionStart === end && !input.value.slice(end).includes("\n");
+  }
+
+  function stepRecall(dir) {
+    const list = userSentTexts();
+    if (recallIndex < 0) {
+      if (dir > 0 || !list.length) return false;
+      recallDraft = input.value;
+      recallIndex = list.length;
+    }
+    const next = recallIndex + dir;
+    if (next < 0) return true;
+    if (next >= list.length) {
+      recallIndex = -1;
+      setCompose(recallDraft);
+      return true;
+    }
+    recallIndex = next;
+    setCompose(list[recallIndex]);
+    return true;
   }
 
   function expandSlash(text) {
@@ -770,6 +806,7 @@ function mountChat(root) {
     hideHistoryMenu();
     const text = input.value.trim();
     if (!text) return;
+    resetRecall();
     input.value = "";
     hideMenu();
     inFlight = true;
@@ -830,17 +867,21 @@ function mountChat(root) {
       return;
     }
     if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-      if (!input.value || caretAtStart()) {
-        event.preventDefault();
-        scrollLog(-1);
-        return;
+      if (recallIndex >= 0 || !input.value || caretOnFirstLine()) {
+        if (stepRecall(-1)) {
+          event.preventDefault();
+          hideHistoryMenu();
+          return;
+        }
       }
     }
     if (event.key === "ArrowDown" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-      if (!input.value || caretAtEnd()) {
-        event.preventDefault();
-        scrollLog(1);
-        return;
+      if (recallIndex >= 0 || !input.value || caretOnLastLine()) {
+        if (stepRecall(1)) {
+          event.preventDefault();
+          hideHistoryMenu();
+          return;
+        }
       }
     }
     if (event.key === "Escape") {
@@ -852,6 +893,12 @@ function mountChat(root) {
       event.preventDefault();
       form.requestSubmit();
     }
+  });
+
+  log.addEventListener("mouseup", () => {
+    const sel = window.getSelection();
+    if (sel && String(sel).trim()) return;
+    input.focus();
   });
 
   window.addEventListener("beforeunload", persist);

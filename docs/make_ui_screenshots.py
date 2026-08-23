@@ -319,7 +319,7 @@ def make_chat() -> Image.Image:
     rr(draw, (128, 80, 268, 112), 10, fill=(58, 24, 30), outline=(120, 50, 60))
     draw.text((142, 88), "Clear history", fill=BAD, font=font(13))
     draw.text((286, 88), "1/3 · What model is loaded, and is the GPU…", fill=MUTED, font=font(13))
-    draw.text((W - 280, 88), "Tab previous chats · ↑↓ scroll", fill=MUTED, font=font(12))
+    draw.text((W - 280, 88), "Tab previous chats · ↑↓ recall", fill=MUTED, font=font(12))
     rr(draw, (18, 124, W - 18, H - 90), 14, fill=ELEV, outline=LINE)
 
     bubbles = [
