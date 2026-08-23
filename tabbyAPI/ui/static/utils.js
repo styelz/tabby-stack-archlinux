@@ -33,6 +33,45 @@
     return uiPath(value);
   }
 
+  function compactText(value, max = 180) {
+    return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  }
+
+  function looksLikeHtml(value) {
+    return /<\s*(?:html|body|head|h[1-6]|!doctype)\b/i.test(String(value || ""));
+  }
+
+  /** Proxy 502/503/504 pages are HTML; never dump that markup into the UI. */
+  function httpErrorMessage(response, data) {
+    const status = response && response.status;
+    const unavailable = status === 502 || status === 503 || status === 504;
+    if (unavailable) {
+      return `API unavailable (${status}) — service may be restarting`;
+    }
+    if (data && typeof data === "object") {
+      const detail = data.detail;
+      if (Array.isArray(detail) && detail.length) {
+        const first = detail[0];
+        const msg = (first && (first.msg || first.message)) || first;
+        if (msg) return compactText(msg);
+      } else if (typeof detail === "string" && detail.trim()) {
+        return compactText(detail);
+      }
+      if (typeof data.message === "string" && data.message.trim()) {
+        return compactText(data.message);
+      }
+    }
+    if (typeof data === "string" && data.trim()) {
+      if (looksLikeHtml(data)) {
+        const heading = data.match(/<\s*h[1-6][^>]*>([\s\S]*?)<\s*\/\s*h[1-6]>/i);
+        const stripped = (heading ? heading[1] : data).replace(/<[^>]+>/g, " ");
+        return compactText(stripped) || `Request failed (${status})`;
+      }
+      return compactText(data);
+    }
+    return status ? `Request failed (${status})` : "Request failed";
+  }
+
   async function api(path, options = {}) {
     const headers = Object.assign({ Accept: "application/json" }, options.headers || {});
     if (options.body && typeof options.body !== "string" && !(options.body instanceof FormData)) {
@@ -40,7 +79,13 @@
       options.body = JSON.stringify(options.body);
     }
     const url = apiUrl(path);
-    const response = await fetch(url, Object.assign({ credentials: "same-origin" }, options, { headers }));
+    let response;
+    try {
+      response = await fetch(url, Object.assign({ credentials: "same-origin" }, options, { headers }));
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      throw new Error("API unreachable — service may be restarting");
+    }
     if (response.status === 401 && !String(url).includes("/auth/login")) {
       window.location.href = uiPath("login");
       throw new Error("Not authenticated");
@@ -48,8 +93,7 @@
     const type = response.headers.get("content-type") || "";
     const data = type.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
-      const message = (data && data.detail) || (typeof data === "string" ? data : "Request failed");
-      throw new Error(Array.isArray(message) ? message[0]?.msg || "Request failed" : message);
+      throw new Error(httpErrorMessage(response, data));
     }
     return data;
   }

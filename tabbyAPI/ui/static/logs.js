@@ -24,6 +24,8 @@ function mountLogs(root) {
   let pending = [];
   let raf = 0;
   let filterQ = "";
+  let hydrated = false;
+  let hydrateBusy = false;
 
   function levelClass(line) {
     if (/\b(ERROR|CRITICAL)\b/i.test(line)) return "lvl-error";
@@ -146,6 +148,7 @@ function mountLogs(root) {
     });
     source.onopen = () => {
       state.textContent = paused ? "paused" : "live";
+      if (!hydrated) loadHistory();
     };
     source.onerror = () => {
       state.textContent = active ? "reconnecting…" : "idle";
@@ -187,19 +190,27 @@ function mountLogs(root) {
     view.scrollTop = view.scrollHeight;
   });
 
-  async function hydrate() {
+  async function loadHistory() {
+    if (hydrateBusy || hydrated) return;
+    hydrateBusy = true;
     try {
       const data = await TabbyUI.api("logs/history?lines=300");
-      buffer = Array.isArray(data.lines) ? data.lines.slice(-MAX_LINES) : [];
-      renderFull();
-    } catch (err) {
-      buffer = [`history: ${err.message}`];
-      renderFull();
+      const lines = Array.isArray(data.lines) ? data.lines.slice(-MAX_LINES) : [];
+      hydrated = true;
+      if (!buffer.length) {
+        buffer = lines;
+        renderFull();
+      }
+    } catch {
+      if (!buffer.length) state.textContent = "waiting for API…";
+    } finally {
+      hydrateBusy = false;
     }
-    if (active && !paused) connect();
   }
 
-  hydrate();
+  loadHistory().then(() => {
+    if (active && !paused) connect();
+  });
 
   function onVisibility() {
     if (document.hidden) {
