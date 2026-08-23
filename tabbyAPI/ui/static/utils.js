@@ -127,12 +127,13 @@
   }
 
   function formatDuration(seconds) {
-    const s = Math.max(0, Number(seconds) || 0);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    if (h) return `${h}h ${m}m`;
-    if (m) return `${m}m ${sec}s`;
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    if (h) return `${h}h ${pad(m)}m ${pad(sec)}s`;
+    if (m) return `${m}m ${pad(sec)}s`;
     return `${sec}s`;
   }
 

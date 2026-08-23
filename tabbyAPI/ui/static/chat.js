@@ -180,8 +180,7 @@ function mountChat(root) {
   function addBubble(role, text, stick, reasoning) {
     if (role === "assistant") {
       const cleaned = TabbyUI.formatAssistantContent ? TabbyUI.formatAssistantContent(text) : text;
-      const isImage =
-        /here's the picture|here are the \d+ pictures|\/v1\/images\/generated-/i.test(cleaned || "");
+      const isImage = looksLikeImageReply(cleaned);
       const turn = addAssistantTurn({
         content: text,
         reasoning,
@@ -220,7 +219,7 @@ function mountChat(root) {
         label: "Starting the picture",
         kind: "image",
         processing: true,
-        note: "The GPU will switch to Comfy, render the picture, then reload the coding model. Flux drafts take about 3 minutes; then about 65 seconds to bring the model back.",
+        note: "Preparing the GPU.",
       };
     }
     if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
@@ -243,9 +242,19 @@ function mountChat(root) {
     return TabbyUI.renderMarkdown(cleaned);
   }
 
+  function looksLikeImageReply(text) {
+    const cleaned = TabbyUI.formatAssistantContent
+      ? TabbyUI.formatAssistantContent(text)
+      : String(text || "");
+    return /here's the picture|here are the \d+ pictures|\/v1\/images\/generated-/i.test(cleaned);
+  }
+
   function labelForJob(job) {
     if (!job) return "";
     const phase = String(job.phase || job.status || "");
+    const status = String(job.status || "");
+    if (status === "done" || phase === "done") return "";
+    if (status === "error" || phase === "error") return "";
     const count = Number(job.count) || 0;
     const index = (Number(job.current_index) || 0) + 1;
     if (phase === "queued") return "Queued";
@@ -256,7 +265,7 @@ function mountChat(root) {
       return "Rendering in Comfy";
     }
     if (phase === "restoring_llm") return "Reloading the coding model";
-    if (job.status === "queued" || job.status === "running" || job.status === "coding") {
+    if (status === "queued" || status === "running" || status === "coding") {
       return "Working on the picture";
     }
     return "";
@@ -265,23 +274,19 @@ function mountChat(root) {
   function detailForJob(job) {
     if (!job) return "";
     const phase = String(job.phase || job.status || "");
-    const wait = String(job.wait_text || "").trim();
-    const prompt = String(job.prompt || "").trim();
-    const lines = [];
-    if (phase === "queued") {
-      lines.push("Waiting to start. Next: unload the coding model and hand the GPU to Comfy.");
-    } else if (phase === "writing_code" || phase === "coding") {
-      lines.push("Figuring out what to render.");
-    } else if (phase === "starting_comfy") {
-      lines.push("Unloading the coding model so Comfy can use the GPU.");
-    } else if (phase === "generating" || phase === "running") {
-      lines.push("Comfy is rendering the picture on the GPU.");
-    } else if (phase === "restoring_llm") {
-      lines.push("The picture is ready. Reloading the coding model onto the GPU.");
+    const status = String(job.status || "");
+    if (status === "done" || phase === "done" || status === "error" || phase === "error") {
+      return "";
     }
-    if (wait) lines.push(wait);
-    if (prompt) lines.push(`Prompt: ${prompt}`);
-    return lines.join("\n");
+    const wait = String(job.wait_text || "").trim();
+    if (phase === "queued") return "Waiting to start Comfy.";
+    if (phase === "writing_code" || phase === "coding") return "Planning what to render.";
+    if (phase === "starting_comfy") return "Unloading the coding model.";
+    if (phase === "generating" || phase === "running") {
+      return wait || "Rendering on the GPU.";
+    }
+    if (phase === "restoring_llm") return "Picture is ready. Reloading the coding model.";
+    return "";
   }
 
   function addAssistantTurn({ content, reasoning, live, activity }) {
@@ -373,17 +378,30 @@ function mountChat(root) {
       const line = String(note || "").trim();
       if (!line || line === lastNote) return;
       lastNote = line;
-      statusNotes.push(line);
+      statusNotes = [line];
       if (finished) return;
-      reasoningText = statusNotes.join("\n\n");
+      reasoningText = line;
       paintThought();
       thought.hidden = false;
       log.scrollTop = log.scrollHeight;
     }
 
-    function settleThought(seconds) {
-      head.hidden = false;
+    function stopWorking() {
+      setProcessing(false);
+      icon.classList.remove("is-processing");
+      turn.classList.remove("is-working");
       head.classList.remove("is-live");
+      turn.removeAttribute("aria-busy");
+      turn.setAttribute("aria-live", "off");
+    }
+
+    function settleThought(seconds) {
+      stopWorking();
+      if (ticker) {
+        clearInterval(ticker);
+        ticker = null;
+      }
+      head.hidden = false;
       icon.hidden = true;
       chevron.hidden = false;
       head.classList.add("is-clickable");
@@ -393,7 +411,8 @@ function mountChat(root) {
       }
       const doneWord = kind === "image" ? "Generated" : "Thought";
       if (seconds != null) {
-        label.textContent = kind === "image" ? `Generated in ${seconds}s` : `Thought for ${seconds}s`;
+        const elapsed = TabbyUI.formatDuration(seconds);
+        label.textContent = kind === "image" ? `Generated in ${elapsed}` : `Thought for ${elapsed}`;
       } else {
         label.textContent = doneWord;
       }
@@ -407,8 +426,8 @@ function mountChat(root) {
       setProcessing(processing);
       if (activity && activity.note) addStatusNote(activity.note);
       ticker = setInterval(() => {
-        const s = Math.round((Date.now() - started) / 1000);
-        if (s >= 2) timeEl.textContent = `${s}s`;
+        const s = Math.floor((Date.now() - started) / 1000);
+        if (s >= 1) timeEl.textContent = TabbyUI.formatDuration(s);
       }, 250);
     } else if (reasoningText) {
       settleThought();
@@ -459,30 +478,32 @@ function mountChat(root) {
         const value = visibleAnswerText(text);
         if (!value) return;
         showAnswer(displayAnswer(text));
-        if (reasoningText || statusNotes.length) {
-          thought.hidden = kind === "image" ? false : true;
+        if (kind === "image" && looksLikeImageReply(String(text || ""))) {
+          const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
+          if (!reasoningText && lastNote) reasoningText = lastNote;
+          finished = true;
+          settleThought(seconds);
+          paintThought();
+        } else if (reasoningText || statusNotes.length) {
+          thought.hidden = true;
         } else {
           // Real answer tokens replace the working status line.
-          turn.classList.remove("is-working");
+          stopWorking();
           head.hidden = true;
         }
         log.scrollTop = log.scrollHeight;
       },
       finish({ content: finalContent, reasoning: finalReasoning } = {}) {
         if (finished && !live) return { reasoning: reasoningText };
+        const alreadySettled = finished;
         finished = true;
         if (ticker) {
           clearInterval(ticker);
           ticker = null;
         }
-        turn.classList.remove("is-working");
-        head.classList.remove("is-live");
-        turn.removeAttribute("aria-busy");
-        turn.setAttribute("aria-live", "off");
+        stopWorking();
         if (finalReasoning) reasoningText = String(finalReasoning);
-        else if (!reasoningText && statusNotes.length) {
-          reasoningText = statusNotes.join("\n\n");
-        }
+        else if (!reasoningText && lastNote) reasoningText = lastNote;
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
         const answer = visibleAnswerText(finalContent);
         if (answer) {
@@ -490,9 +511,14 @@ function mountChat(root) {
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
           showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
-        if (reasoningText) {
-          settleThought(seconds);
-          paintThought();
+        if (kind === "image" || reasoningText) {
+          if (!alreadySettled) {
+            settleThought(seconds);
+            paintThought();
+          } else {
+            icon.hidden = true;
+            icon.classList.remove("is-processing");
+          }
         } else {
           head.hidden = true;
           thought.hidden = true;
@@ -801,6 +827,7 @@ function mountChat(root) {
       if (stopped) return;
       try {
         const data = await TabbyUI.api("status");
+        if (stopped) return;
         if (kind === "image") {
           const next = labelForJob(data && data.job);
           const note = detailForJob(data && data.job);
