@@ -66,9 +66,149 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+BACKTITLE="tabby-stack"
+UPDATE_LOG=""
+UI_STARTED=0
+GAUGE_PID=""
+GAUGE_FIFO=""
+GAUGE_DIR=""
+GAUGE_MODE=""
+
 die() {
+  if [[ "$UI_STARTED" -eq 1 ]]; then
+    ui_fail "$*"
+  fi
   echo "$*" >&2
   exit 1
+}
+
+restore_tty() {
+  [[ -t 1 || -c /dev/tty ]] || return 0
+  {
+    command -v tput >/dev/null 2>&1 && {
+      tput rmcup || true
+      tput rmkx || true
+      tput cnorm || true
+      tput sgr0 || true
+    }
+    printf '\033[?1049l\033[?25h\033[m'
+    stty sane
+  } >/dev/tty 2>/dev/null || true
+}
+
+progress_stop() {
+  case "${GAUGE_MODE:-}" in
+    dialog)
+      exec 3>&- || true
+      wait "$GAUGE_PID" 2>/dev/null || true
+      if [[ -n "$GAUGE_DIR" ]]; then
+        rm -rf "$GAUGE_DIR"
+      fi
+      restore_tty
+      ;;
+    text)
+      printf '\n' >/dev/tty 2>/dev/null || printf '\n'
+      ;;
+  esac
+  GAUGE_MODE=""
+  GAUGE_PID=""
+  GAUGE_FIFO=""
+  GAUGE_DIR=""
+  UI_STARTED=0
+}
+
+progress() {
+  local pct="$1" msg="$2"
+  if [[ -n "$UPDATE_LOG" ]]; then
+    printf '%s\n' "==> [$pct%] $msg" >> "$UPDATE_LOG"
+  fi
+  case "${GAUGE_MODE:-}" in
+    dialog)
+      printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg" >&3 || true
+      ;;
+    text)
+      local fill=$((pct / 2))
+      printf '\r\033[K[%s%s] %3d%%  %s' \
+        "$(printf '%*s' "$fill" '' | tr ' ' '#')" \
+        "$(printf '%*s' $((50 - fill)) '')" \
+        "$pct" "$msg" >/dev/tty
+      ;;
+    verbose)
+      echo "==> $msg"
+      ;;
+  esac
+}
+
+ui_start() {
+  UPDATE_LOG="$DEST/tabby-update.log"
+  {
+    echo "tabby-stack update $(date -Iseconds)"
+    echo "dest=$DEST kind=$UPDATE_KIND comfy=$UPDATE_COMFY"
+    echo
+  } > "$UPDATE_LOG"
+  UI_STARTED=1
+  if [[ "${TABBY_INSTALL_VERBOSE:-}" == 1 ]]; then
+    GAUGE_MODE="verbose"
+    return 0
+  fi
+  if [[ -t 1 ]] && need_cmd dialog; then
+    GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-update-gauge.XXXXXX")"
+    GAUGE_FIFO="$GAUGE_DIR/gauge"
+    mkfifo -m 600 "$GAUGE_FIFO"
+    dialog --backtitle "$BACKTITLE" --title "Updating tabby-stack" \
+      --gauge "Starting..." 8 70 0 < "$GAUGE_FIFO" &
+    GAUGE_PID=$!
+    exec 3>"$GAUGE_FIFO"
+    GAUGE_MODE="dialog"
+    return 0
+  fi
+  if [[ -t 1 ]]; then
+    GAUGE_MODE="text"
+    return 0
+  fi
+  GAUGE_MODE="log"
+}
+
+ui_msg() {
+  local title="$1"
+  local text="$2"
+  if [[ -t 1 ]] && need_cmd dialog; then
+    dialog --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" 12 74 || true
+  else
+    echo
+    echo "=== $title ==="
+    echo "$text"
+    echo
+  fi
+}
+
+ui_fail() {
+  local msg="$1"
+  local extra=""
+  progress_stop
+  if [[ -n "$UPDATE_LOG" && -f "$UPDATE_LOG" ]]; then
+    extra="$(tail -n 16 "$UPDATE_LOG")"
+    msg="$msg
+
+$extra
+
+Full log: $UPDATE_LOG"
+  fi
+  if [[ -t 1 ]] && need_cmd dialog; then
+    dialog --backtitle "$BACKTITLE" --title "Update failed" --msgbox "$msg" 20 74 || true
+  else
+    echo "$msg" >&2
+  fi
+  exit 1
+}
+
+run_git() {
+  printf '+ %s\n' "$*" >> "$UPDATE_LOG"
+  if ! GIT_TERMINAL_PROMPT=0 "$@" >>"$UPDATE_LOG" 2>&1; then
+    local rc=$?
+    echo "command failed ($rc)" >> "$UPDATE_LOG"
+    die "Git command failed ($rc)."
+  fi
 }
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -188,18 +328,18 @@ clear_matching_untracked() {
     fi
   done < <(git -C "$dir" ls-files --others --exclude-standard)
   if ((${#matches[@]})); then
-    echo "==> Removing untracked copies that already match $spec"
+    printf '%s\n' "==> Removing untracked copies that already match $spec" >> "${UPDATE_LOG:-/dev/null}"
     for f in "${matches[@]}"; do
       rm -f "$dir/$f"
     done
   fi
   if ((${#conflicts[@]})); then
     bak="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-update-untracked.XXXXXX")"
-    echo "==> Untracked files differ from $spec; moving aside to $bak"
+    printf '%s\n' "==> Untracked files differ from $spec; moving aside to $bak" >> "${UPDATE_LOG:-/dev/null}"
     for f in "${conflicts[@]}"; do
       mkdir -p "$bak/$(dirname "$f")"
       mv "$dir/$f" "$bak/$f"
-      echo "    $f"
+      printf '    %s\n' "$f" >> "${UPDATE_LOG:-/dev/null}"
     done
   fi
 }
@@ -221,7 +361,7 @@ origin_branch() {
 
 ensure_stack_origin() {
   if ! git -C "$DEST" remote get-url origin >/dev/null 2>&1; then
-    git -C "$DEST" remote add origin "$ORIGIN"
+    run_git git -C "$DEST" remote add origin "$ORIGIN"
   fi
 }
 
@@ -281,8 +421,10 @@ ff_pull() {
   local branch=""
   local wrappers_tmp=""
   local wrap f
-  echo "==> Fetching $label"
-  git -C "$dir" fetch origin
+  local pct_fetch="${3:-15}"
+  local pct_merge="${4:-75}"
+  progress "$pct_fetch" "Fetching $label"
+  run_git git -C "$dir" fetch origin
   branch="$(origin_branch "$dir")"
   if [[ -z "$branch" ]]; then
     branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
@@ -290,12 +432,12 @@ ff_pull() {
   [[ -n "$branch" && "$branch" != "HEAD" ]] || die "Could not determine the branch for $label."
   take_origin_copies "$dir" "origin/$branch"
   if ((${#MATCHED_ORIGIN[@]})); then
-    echo "==> Local copies already match origin/$branch; taking the pull"
+    printf '%s\n' "==> Local copies already match origin/$branch" >> "$UPDATE_LOG"
   fi
   if ((${#AHEAD_WRAPPERS[@]})); then
     wrappers_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-wrappers.XXXXXX")"
     for wrap in "${AHEAD_WRAPPERS[@]}"; do
-      echo "==> Holding local $wrap (newer than origin/$branch)"
+      printf '%s\n' "==> Holding local $wrap (newer than origin/$branch)" >> "$UPDATE_LOG"
       cp "$dir/$wrap" "$wrappers_tmp/$wrap"
       restore_head_file "$dir" "$wrap"
     done
@@ -308,9 +450,7 @@ ff_pull() {
     die "$label has local edits that are not on origin/$branch:
 $(printf '  %s\n' "${REAL_EDITS[@]}")
 Commit, stash, or restore them, then re-run. Copies that already match
-GitHub are fine. Untracked venv, models, ComfyUI, and config.yml are fine.
-
-  git -C $dir status"
+GitHub are fine. Untracked venv, models, ComfyUI, and config.yml are fine."
   fi
   if real_tracked_diff "$dir"; then
     if [[ -n "$wrappers_tmp" ]]; then
@@ -319,69 +459,78 @@ GitHub are fine. Untracked venv, models, ComfyUI, and config.yml are fine.
     fi
     die "$label has local edits in tracked files (not just line endings).
 Commit, stash, or restore them, then re-run. Untracked runtime files
-(venv, models, ComfyUI, config.yml) are fine.
-
-  git -C $dir status"
+(venv, models, ComfyUI, config.yml) are fine."
   fi
   if tracked_dirty "$dir"; then
-    echo "==> Ignoring CRLF-only line-ending drift in $label"
+    printf '%s\n' "==> Ignoring CRLF-only line-ending drift in $label" >> "$UPDATE_LOG"
     restore_crlf_only "$dir"
   fi
   clear_matching_untracked "$dir" "origin/$branch"
-  echo "==> Fast-forward $label to origin/$branch"
-  git -C "$dir" merge --ff-only "origin/$branch"
+  progress "$pct_merge" "Fast-forward $label to origin/$branch"
+  run_git git -C "$dir" merge --ff-only "origin/$branch"
   if [[ -n "$wrappers_tmp" ]]; then
     cp -a "$wrappers_tmp/." "$dir/"
     rm -rf "$wrappers_tmp"
-    echo "==> Restored local install/update scripts"
+    printf '%s\n' "==> Restored local install/update scripts" >> "$UPDATE_LOG"
   fi
 }
 
 ask_update_kind
+ui_start
+trap 'rc=$?; if [[ "$UI_STARTED" -eq 1 ]]; then progress_stop; fi; exit "$rc"' EXIT
 BEFORE_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
 
 if [[ -d "$DEST/.git" ]]; then
   ensure_stack_origin
-  ff_pull "$DEST" "tabby-stack"
+  ff_pull "$DEST" "tabby-stack" 20 70
 else
-  echo "==> No .git here — bootstrapping from $ORIGIN"
-  git -C "$DEST" init
+  progress 15 "Bootstrapping git from origin"
+  run_git git -C "$DEST" init
   ensure_stack_origin
-  git -C "$DEST" fetch origin
+  run_git git -C "$DEST" fetch origin
   branch="$(origin_branch "$DEST")"
   [[ -n "$branch" ]] || die "Could not find origin/main or origin/master at $ORIGIN."
-  echo "==> Checking out origin/$branch (tracked files only; venv/models/ComfyUI stay)"
-  if ! git -C "$DEST" checkout -f -B "$branch" "origin/$branch"; then
-    echo "==> Existing files blocked checkout; resetting tracked paths to origin/$branch"
-    git -C "$DEST" reset --hard "origin/$branch"
+  progress 55 "Checking out origin/$branch"
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$DEST" checkout -f -B "$branch" "origin/$branch" >>"$UPDATE_LOG" 2>&1; then
+    progress 70 "Resetting tracked paths to origin/$branch"
+    run_git git -C "$DEST" reset --hard "origin/$branch"
   fi
 fi
 
 if [[ "$UPDATE_COMFY" -eq 1 ]]; then
   export TABBY_UPDATE_COMFY=1
   if [[ -d "$DEST/ComfyUI/.git" ]]; then
-    ff_pull "$DEST/ComfyUI" "ComfyUI"
+    ff_pull "$DEST/ComfyUI" "ComfyUI" 80 88
   else
-    echo "WARNING: $DEST/ComfyUI is not a git checkout; skipping ComfyUI pull." >&2
+    printf '%s\n' "WARNING: $DEST/ComfyUI is not a git checkout; skipping ComfyUI pull." >> "$UPDATE_LOG"
   fi
   if [[ -d "$DEST/ComfyUI/custom_nodes/ComfyUI-GGUF/.git" ]]; then
-    ff_pull "$DEST/ComfyUI/custom_nodes/ComfyUI-GGUF" "ComfyUI-GGUF"
+    ff_pull "$DEST/ComfyUI/custom_nodes/ComfyUI-GGUF" "ComfyUI-GGUF" 90 95
   else
-    echo "WARNING: ComfyUI-GGUF is not a git checkout; skipping its pull." >&2
+    printf '%s\n' "WARNING: ComfyUI-GGUF is not a git checkout; skipping its pull." >> "$UPDATE_LOG"
   fi
 fi
 
 AFTER_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
 if [[ "$BEFORE_UPDATE_SH" != "$AFTER_UPDATE_SH" ]]; then
-  echo "==> update.sh changed on disk; restarting with the new script"
+  progress 98 "Restarting with the new update.sh"
+  trap - EXIT
+  progress_stop
   mapfile -t _reexec < <(reexec_args)
   exec bash "$DEST/update.sh" "${_reexec[@]}"
 fi
 
 if [[ "$UPDATE_KIND" == git ]]; then
-  echo "==> Update git finished (no pip / API restart)."
+  progress 100 "Git update finished"
+  trap - EXIT
+  progress_stop
+  ui_msg "Update git" "Pulled the latest code. The API was not restarted.
+
+Log: $UPDATE_LOG"
   exit 0
 fi
 
-echo "==> Applying update (pip, models skip-existing, restart)"
+progress 100 "Code pulled; applying deps and restart"
+trap - EXIT
+progress_stop
 exec bash "$DEST/install.sh" --update
