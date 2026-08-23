@@ -270,16 +270,15 @@ progress_start() {
     GAUGE_MODE="verbose"
     return 0
   fi
-  # dialog --gauge uses ncurses. update.sh is noninteractive (USE_TUI=0) but
-  # stdout is still a tty, so the old check launched a gauge and left the
-  # shell needing `reset` (echo off / alt screen).
-  if [[ "$USE_TUI" -eq 1 && -t 1 ]] && need_cmd dialog; then
+  if [[ -t 1 ]] && need_cmd dialog; then
     # mktemp -d, not a file we delete and re-create: /tmp is world-writable and
     # the gap between rm and mkfifo is a symlink race.
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"
     GAUGE_FIFO="$GAUGE_DIR/gauge"
     mkfifo -m 600 "$GAUGE_FIFO"
-    dialog --backtitle "$BACKTITLE" --title "Installing tabby-stack" \
+    local gauge_title="Installing tabby-stack"
+    [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
+    dialog --backtitle "$BACKTITLE" --title "$gauge_title" \
       --gauge "Starting..." 8 70 0 < "$GAUGE_FIFO" &
     GAUGE_PID=$!
     exec 3>"$GAUGE_FIFO"
@@ -1768,15 +1767,15 @@ If something fails
   no LLM loaded          wait for startup, or send switch to qwen in chat
 
 Update
-  $DEST/update.sh              asks files-only (git pull) vs full (deps + restart)
-  $DEST/update.sh --files      git pull only; no pip or API restart
-  $DEST/update.sh --full       pull, then apply deps and restart
+  $DEST/update.sh              asks Update git vs Update all (dialog menu)
+  $DEST/update.sh --git        git pull only; no pip or API restart
+  $DEST/update.sh --all        pull, then apply deps and restart
   $DEST/update.sh --comfy      also pull ComfyUI and ComfyUI-GGUF
 
   This folder is the git checkout. You do not need a second clone.
   config.yml, tabby.env, models, venv, and ComfyUI weights are kept.
   If update.sh changes in the pull, it restarts itself.
-  A full update reloads the API until GET /health is healthy (~65s).
+  Update all reloads the API until GET /health is healthy (~65s).
 
 Uninstall
   $DEST/uninstall.sh              stop services, then remove the install

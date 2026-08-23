@@ -182,7 +182,7 @@ The install root is the git checkout. On the GPU host:
 bash "$HOME/tabby-stack/update.sh"
 ```
 
-It asks files-only vs full update (or `--files` / `--full`). Files-only is a git pull. Full update then runs `install.sh --update` (pip -U, skip existing weights, rewrite systemd units), restarts `tabbyapi`, and waits until `GET /health` is healthy (~65s). If `update.sh` changed in the pull, that new script is executed again with the same choice. It does not overwrite `config.yml` or `tabby.env`, and it does not run `pacman -Syu` (keep the OS updated yourself). Missing stack packages are installed only on a full update; already-installed ones are left alone.
+A dialog asks **Update git** vs **Update all** (or `--git` / `--all`). Update git is a pull only. Update all then runs `install.sh --update` (pip -U, skip existing weights, rewrite systemd units), shows the same progress gauge as install, restarts `tabbyapi`, and waits until `GET /health` is healthy (~65s). If `update.sh` changed in the pull, that new script is executed again with the same choice. It does not overwrite `config.yml` or `tabby.env`, and it does not run `pacman -Syu` (keep the OS updated yourself). Missing stack packages are installed only on Update all; already-installed ones are left alone.
 
 - First run on an older rsync-only dest bootstraps `.git` from `https://github.com/styelz/tabby-stack-archlinux.git`.
 - `--comfy` also pulls ComfyUI and ComfyUI-GGUF. Leave that off unless you want image-gen to move with upstream.

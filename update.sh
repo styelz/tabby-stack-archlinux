@@ -9,28 +9,27 @@ set -euo pipefail
 DEST="$(cd "$(dirname "$0")" && pwd)"
 ORIGIN="${TABBY_GIT_ORIGIN:-https://github.com/styelz/tabby-stack-archlinux.git}"
 UPDATE_COMFY=0
-# files = git pull only; full = pull then install.sh --update (pip, restart).
+# git = git pull only; all = pull then install.sh --update (pip, restart).
 UPDATE_KIND="${TABBY_UPDATE_KIND:-}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--files|--full] [--comfy]
+Usage: $(basename "$0") [--git|--all] [--comfy]
 
-Pull origin into this install. At the start you are asked whether to only
-update files or run a full update (deps + API restart). If this script
-itself changes in that pull, it re-runs so the new update.sh is used.
-config.yml, tabby.env, models, and venv are left in place.
+Pull origin into this install. At the start a dialog asks Update git or
+Update all. If this script itself changes in that pull, it re-runs so the
+new update.sh is used. config.yml, tabby.env, models, and venv stay.
 Does not run pacman -Syu or upgrade already-installed OS packages.
 
 Options
-  --files     Git pull only. No pip, missing OS packages, or service restart.
-  --full      Pull, then apply code, Python deps, and reload tabbyapi.
-  --comfy     Also git pull ComfyUI and ComfyUI-GGUF. Full update then
-              reinstalls their Python requirements; files-only only pulls.
+  --git       Git pull only. No pip, missing OS packages, or service restart.
+  --all       Pull, then apply code, Python deps, and reload tabbyapi.
+  --comfy     Also git pull ComfyUI and ComfyUI-GGUF. Update all then
+              reinstalls their Python requirements; git-only only pulls.
   -h, --help  This text
 
-No flag and a TTY: prompt. No TTY: --full (same as older update.sh).
-Or set TABBY_UPDATE_KIND=files or full.
+No flag and a TTY: dialog menu. No TTY: --all.
+Or set TABBY_UPDATE_KIND=git or all.
 
 This folder:  $DEST
 Origin:       $ORIGIN
@@ -39,8 +38,8 @@ EOF
 
 while (($#)); do
   case "$1" in
-    --files|--files-only) UPDATE_KIND=files; shift ;;
-    --full) UPDATE_KIND=full; shift ;;
+    --git|--files|--files-only) UPDATE_KIND=git; shift ;;
+    --all|--full) UPDATE_KIND=all; shift ;;
     --comfy) UPDATE_COMFY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -52,9 +51,13 @@ while (($#)); do
 done
 
 case "$UPDATE_KIND" in
-  ""|files|full) ;;
+  files) UPDATE_KIND=git ;;
+  full) UPDATE_KIND=all ;;
+esac
+case "$UPDATE_KIND" in
+  ""|git|all) ;;
   *)
-    echo "TABBY_UPDATE_KIND must be files or full (got $UPDATE_KIND)." >&2
+    echo "TABBY_UPDATE_KIND must be git or all (got $UPDATE_KIND)." >&2
     exit 2
     ;;
 esac
@@ -86,34 +89,47 @@ ask_update_kind() {
   if [[ -n "$UPDATE_KIND" ]]; then
     return
   fi
-  if [[ ! -t 0 ]]; then
-    UPDATE_KIND=full
-    echo "==> No TTY; full update (deps + restart). Pass --files for git pull only."
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    UPDATE_KIND=all
+    echo "==> No TTY; update all (deps + restart). Pass --git for git pull only."
     return
   fi
-  echo
-  echo "How do you want to update $DEST?"
-  echo "  1) Files only  — git pull; leave the venv and API running"
-  echo "  2) Full update — pull, refresh Python deps, install missing OS"
-  echo "                   packages, restart tabbyapi, wait for /health"
-  echo
-  local ans
-  while true; do
+  local out=""
+  local title="Update tabby-stack"
+  local text="Update git pulls new code and leaves the API running.
+Update all also refreshes Python deps, installs missing OS packages, and restarts the API."
+  if need_cmd dialog; then
+    out="$(dialog --backtitle "tabby-stack" --title "$title" --stdout --menu "$text" 16 74 2 \
+      git "Update git" \
+      all "Update all")" || die "Update cancelled."
+  elif need_cmd whiptail; then
+    out="$(whiptail --backtitle "tabby-stack" --title "$title" --menu "$text" 16 74 2 \
+      git "Update git" \
+      all "Update all" 3>&1 1>&2 2>&3)" || die "Update cancelled."
+  else
+    echo
+    echo "$title"
+    echo "$text"
+    echo "  1) Update git"
+    echo "  2) Update all"
+    echo
+    local ans
     read -r -p "Choice [1/2] (default 2): " ans || die "No choice given."
-    case "${ans,,}" in
-      ""|2|full) UPDATE_KIND=full; break ;;
-      1|files) UPDATE_KIND=files; break ;;
-      *) echo "Enter 1 (files) or 2 (full)." ;;
-    esac
-  done
+    out="$ans"
+  fi
+  case "${out,,}" in
+    git|1) UPDATE_KIND=git ;;
+    all|2|"") UPDATE_KIND=all ;;
+    *) die "Unknown update choice: $out" ;;
+  esac
 }
 
 reexec_args() {
   local -a args=()
-  if [[ "$UPDATE_KIND" == files ]]; then
-    args+=(--files)
+  if [[ "$UPDATE_KIND" == git ]]; then
+    args+=(--git)
   else
-    args+=(--full)
+    args+=(--all)
   fi
   if [[ "$UPDATE_COMFY" -eq 1 ]]; then
     args+=(--comfy)
@@ -301,8 +317,8 @@ if [[ "$BEFORE_UPDATE_SH" != "$AFTER_UPDATE_SH" ]]; then
   exec bash "$DEST/update.sh" "${_reexec[@]}"
 fi
 
-if [[ "$UPDATE_KIND" == files ]]; then
-  echo "==> Files-only update finished (no pip / API restart)."
+if [[ "$UPDATE_KIND" == git ]]; then
+  echo "==> Update git finished (no pip / API restart)."
   exit 0
 fi
 
