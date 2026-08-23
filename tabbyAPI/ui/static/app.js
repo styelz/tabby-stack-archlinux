@@ -44,17 +44,23 @@
     })
     .catch(() => {});
 
+  let headerTimer = 0;
+  let headerFailing = false;
+
   async function refreshHeaderStatus() {
     try {
       const data = await TabbyUI.api("status");
+      headerFailing = false;
       TabbyUI.paintGpuChip(data);
-    } catch {
-      const chip = document.getElementById("gpu-chip");
-      if (chip) chip.textContent = "GPU …";
+    } catch (err) {
+      headerFailing = true;
+      TabbyUI.paintApiDown(err);
+    } finally {
+      if (headerTimer) clearTimeout(headerTimer);
+      headerTimer = setTimeout(refreshHeaderStatus, headerFailing ? 3000 : 15000);
     }
   }
   refreshHeaderStatus();
-  setInterval(refreshHeaderStatus, 15000);
 
   window.addEventListener("hashchange", () => show(currentName()));
   show(currentName());

@@ -167,11 +167,29 @@
     renderMarkdown,
     paintGpuChip(data) {
       const chip = document.getElementById("gpu-chip");
-      if (!chip || !data) return;
+      if (!chip) return;
+      if (!data) {
+        this.paintApiDown();
+        return;
+      }
       const mode = data.gpu_mode || "gpu";
       const label = data.profile || data.tabby_model || "idle";
       chip.textContent = `${String(mode).toUpperCase()} · ${label}`;
       chip.className = "chip" + (mode === "llm" ? " ok" : " warn");
+      chip.title = "";
+    },
+    paintApiDown(err) {
+      const chip = document.getElementById("gpu-chip");
+      if (!chip) return;
+      const raw = (err && err.message) || "";
+      let detail = "reconnecting";
+      const status = raw.match(/\((\d{3})\)/);
+      if (status) detail = status[1];
+      else if (/unreachable/i.test(raw)) detail = "unreachable";
+      else if (/restart/i.test(raw)) detail = "restarting";
+      chip.textContent = `DOWN · ${detail}`;
+      chip.className = "chip bad";
+      chip.title = raw || "API unavailable";
     },
   };
 })();

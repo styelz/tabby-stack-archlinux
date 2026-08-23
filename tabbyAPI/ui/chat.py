@@ -24,19 +24,26 @@ from images.chat import handle as handle_image_chat
 from ui.manager import sanitize_chat_payload
 
 
+def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
+    fields: dict[str, Any] = {
+        "messages": payload["messages"],
+        "stream": payload.get("stream", True),
+        "tools": None,
+    }
+    if payload.get("temperature") is not None:
+        fields["temperature"] = payload["temperature"]
+    if payload.get("max_tokens") is not None:
+        fields["max_tokens"] = payload["max_tokens"]
+    return ChatCompletionRequest(**fields)
+
+
 async def run_console_chat(request: Request, body: dict[str, Any]):
     try:
         payload = sanitize_chat_payload(body)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    data = ChatCompletionRequest(
-        messages=payload["messages"],
-        stream=payload["stream"],
-        tools=None,
-        temperature=payload.get("temperature"),
-        max_tokens=payload.get("max_tokens"),
-    )
+    data = completion_request_from_payload(payload)
     api_base = public_api_base(request)
     switched = handle_if_requested(data, api_base=api_base)
     if switched is not None:

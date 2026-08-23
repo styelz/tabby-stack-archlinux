@@ -63,15 +63,17 @@ LOCK = ROOT / "switch-model.lock"
 LLM_NOT_READY_WAIT_S = 5
 
 SWITCH_RE = re.compile(
-    r"(?is)^\s*(?:please\s+)?(?:switch(?:\s+to)?|use)\s+(\S+)(?:\s+now)?[\s!.]*$"
+    r"(?is)^\s*/?(?:please\s+)?(?:switch(?:\s+to)?|use)\s+(\S+)(?:\s+now)?[\s!.]*$"
 )
-LIST_RE = re.compile(r"(?is)^\s*(?:please\s+)?(?:list|show|available)\s+models?[\s!.]*$")
-HELP_RE = re.compile(r"(?is)^\s*(?:please\s+)?help(?:\s+please)?[\s!.?]*$")
+LIST_RE = re.compile(r"(?is)^\s*/?(?:please\s+)?(?:list|show|available)\s+models?[\s!.]*$")
+HELP_RE = re.compile(r"(?is)^\s*/?(?:please\s+)?help(?:\s+please)?[\s!.?]*$")
 RESTART_RE = re.compile(
-    r"(?is)^\s*(?:please\s+)?"
+    r"(?is)^\s*/?(?:please\s+)?"
     r"restart(?:\s+(?:the\s+)?(?:stack|api|tabby(?:api)?|server|service))?"
     r"(?:\s+now)?[\s!.]*$"
 )
+SLASH_PROFILE_RE = re.compile(r"(?is)^\s*/(?P<name>[A-Za-z][\w.-]*)\s*$")
+_SLASH_RESERVED = frozenset({"help", "restart", "list", "models", "image", "generate"})
 IMAGE_GEN_RE = re.compile(
     r"(?is)^\s*(?:please\s+)?(?:can you\s+|could you\s+)?"
     r"(?:generate|draw|imagine|create|make|render)"
@@ -411,11 +413,24 @@ def resolve_switch_target(token: str) -> Optional[str]:
     return None
 
 
-def requested_profile(data: ChatCompletionRequest) -> Optional[str]:
+def switch_token(data: ChatCompletionRequest) -> Optional[str]:
     match = _match_any(SWITCH_RE, data)
-    if not match:
+    if match:
+        return match.group(1)
+    match = _match_any(SLASH_PROFILE_RE, data)
+    if match:
+        name = match.group("name")
+        if name.lower() in _SLASH_RESERVED:
+            return None
+        return name
+    return None
+
+
+def requested_profile(data: ChatCompletionRequest) -> Optional[str]:
+    token = switch_token(data)
+    if not token:
         return None
-    return resolve_switch_target(match.group(1))
+    return resolve_switch_target(token)
 
 
 def is_list_request(data: ChatCompletionRequest) -> bool:
@@ -1263,12 +1278,11 @@ def handle_if_requested(data: ChatCompletionRequest, api_base: Optional[str] = N
 
     name = requested_profile(data)
     if not name:
-        token = _match_any(SWITCH_RE, data)
+        token = switch_token(data)
         if token:
-            unknown = token.group(1)
             return text_response(
                 data,
-                f"Unknown model {unknown!r}. Send 'list models' or 'help'.",
+                f"Unknown model {token!r}. Send 'list models' or 'help'.",
             )
         return None
     start_switch(name)

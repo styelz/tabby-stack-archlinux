@@ -298,6 +298,7 @@ function mountStatus(root) {
       await refresh();
     } catch (err) {
       msg.textContent = err.message;
+      TabbyUI.paintApiDown(err);
     }
   }
 
@@ -308,7 +309,10 @@ function mountStatus(root) {
     });
   }
 
-  root.querySelector("#status-refresh").addEventListener("click", () => refresh().catch((err) => (msg.textContent = err.message)));
+  root.querySelector("#status-refresh").addEventListener("click", () => refresh().catch((err) => {
+    msg.textContent = err.message;
+    TabbyUI.paintApiDown(err);
+  }));
   root.querySelector("#switch-llm").addEventListener("click", () =>
     act(() => TabbyUI.api("gpu", { method: "POST", body: { mode: select.value || "llm" } }))
   );
@@ -370,8 +374,9 @@ function mountStatus(root) {
   setActivePreset();
   refresh().catch((err) => {
     msg.textContent = err.message;
+    TabbyUI.paintApiDown(err);
   });
-  let timer = setInterval(() => refresh().catch(() => {}), 15000);
+  let timer = setInterval(() => refresh().catch((err) => TabbyUI.paintApiDown(err)), 15000);
   return {
     pause() {
       if (timer) {
@@ -381,8 +386,8 @@ function mountStatus(root) {
     },
     resume() {
       if (!timer) {
-        refresh().catch(() => {});
-        timer = setInterval(() => refresh().catch(() => {}), 15000);
+        refresh().catch((err) => TabbyUI.paintApiDown(err));
+        timer = setInterval(() => refresh().catch((err) => TabbyUI.paintApiDown(err)), 15000);
       }
     },
     destroy() {

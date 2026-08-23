@@ -26,6 +26,7 @@ function mountLogs(root) {
   let filterQ = "";
   let hydrated = false;
   let hydrateBusy = false;
+  let downTimer = 0;
 
   function levelClass(line) {
     if (/\b(ERROR|CRITICAL)\b/i.test(line)) return "lvl-error";
@@ -113,13 +114,22 @@ function mountLogs(root) {
     appendVisible(batch);
   }
 
+  function isUiAccess(line) {
+    return /"[A-Z]+ (?:\/v1)?\/ui(?:[/?\s]|$)/.test(line);
+  }
+
   function queue(line) {
     if (!line && line !== "") return;
+    if (isUiAccess(line)) return;
     pending.push(line);
     if (!raf) raf = requestAnimationFrame(flush);
   }
 
   function disconnect() {
+    if (downTimer) {
+      clearTimeout(downTimer);
+      downTimer = 0;
+    }
     if (source) {
       source.close();
       source = null;
@@ -147,11 +157,22 @@ function mountLogs(root) {
       }
     });
     source.onopen = () => {
+      if (downTimer) {
+        clearTimeout(downTimer);
+        downTimer = 0;
+      }
       state.textContent = paused ? "paused" : "live";
       if (!hydrated) loadHistory();
+      TabbyUI.api("status").then((data) => TabbyUI.paintGpuChip(data)).catch((err) => TabbyUI.paintApiDown(err));
     };
     source.onerror = () => {
-      state.textContent = active ? "reconnecting…" : "idle";
+      const reconnecting = active && !paused && !document.hidden;
+      state.textContent = reconnecting ? "reconnecting…" : "idle";
+      if (!reconnecting || downTimer) return;
+      downTimer = setTimeout(() => {
+        downTimer = 0;
+        TabbyUI.paintApiDown();
+      }, 400);
     };
   }
 
@@ -195,14 +216,17 @@ function mountLogs(root) {
     hydrateBusy = true;
     try {
       const data = await TabbyUI.api("logs/history?lines=300");
-      const lines = Array.isArray(data.lines) ? data.lines.slice(-MAX_LINES) : [];
+      const lines = (Array.isArray(data.lines) ? data.lines : [])
+        .filter((line) => !isUiAccess(line))
+        .slice(-MAX_LINES);
       hydrated = true;
       if (!buffer.length) {
         buffer = lines;
         renderFull();
       }
-    } catch {
+    } catch (err) {
       if (!buffer.length) state.textContent = "waiting for API…";
+      TabbyUI.paintApiDown(err);
     } finally {
       hydrateBusy = false;
     }

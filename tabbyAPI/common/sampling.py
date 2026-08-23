@@ -308,6 +308,14 @@ class BaseSamplerRequest(BaseModel):
 
         return None
 
+    @field_validator("temperature", mode="before")
+    def default_null_temperature(cls, v):
+        """Clients that send temperature: null must not override the default."""
+
+        if v is None:
+            return get_default_sampler_value("temperature", 1.0)
+        return v
+
     @field_validator("top_k", mode="before")
     def convert_top_k(cls, v):
         """Fixes instance if Top-K is -1."""

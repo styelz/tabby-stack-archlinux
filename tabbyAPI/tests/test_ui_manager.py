@@ -16,6 +16,49 @@ class UiManagerTests(unittest.TestCase):
         self.assertIn("tabbyapi", cmd)
         self.assertIn("comfyui", cmd)
 
+    def test_ui_access_lines_are_detected(self):
+        self.assertTrue(
+            manager.is_ui_access_line(
+                "2026-08-24T04:50:18+10:00 archy.local python[106135]: "
+                "2026-08-24 04:50:18.835 INFO:     36.255.114.172:0 - "
+                '"GET /v1/ui/assets/status.js HTTP/1.1" 200'
+            )
+        )
+        self.assertTrue(manager.is_ui_access_line('"POST /v1/ui/restart HTTP/1.1" 200'))
+        self.assertTrue(manager.is_ui_access_line('"GET /v1/ui/logs/history?lines=300 HTTP/1.1" 200'))
+        self.assertTrue(manager.is_ui_access_line('"GET /ui/status HTTP/1.1" 200'))
+        self.assertFalse(manager.is_ui_access_line('"GET /v1/chat/completions HTTP/1.1" 200'))
+        self.assertFalse(manager.is_ui_access_line('"GET /health HTTP/1.1" 200'))
+        self.assertFalse(manager.is_ui_access_line("Model loaded: qwen"))
+
+    def test_journalctl_history_drops_ui_access(self):
+        previous = list(manager.PROCESS_LOGS)
+        mixed = [
+            "keep me",
+            '"GET /v1/ui/status HTTP/1.1" 200',
+            "also keep",
+        ]
+        try:
+            with mock.patch.object(manager.shutil, "which", return_value=None):
+                manager.PROCESS_LOGS.clear()
+                manager.PROCESS_LOGS.extend(mixed)
+                lines = manager.journalctl_history(10)
+            self.assertEqual(lines, ["keep me", "also keep"])
+        finally:
+            manager.PROCESS_LOGS.clear()
+            manager.PROCESS_LOGS.extend(previous)
+
+    def test_journalctl_history_overfetches_then_filters(self):
+        ui = '"GET /v1/ui/status HTTP/1.1" 200'
+        stdout = "\n".join([ui, "real log", ui, "another"])
+        completed = mock.Mock(returncode=0, stdout=stdout)
+        with mock.patch.object(manager.shutil, "which", return_value="/usr/bin/journalctl"):
+            with mock.patch.object(manager.subprocess, "run", return_value=completed) as run:
+                lines = manager.journalctl_history(2)
+        self.assertEqual(lines, ["real log", "another"])
+        cmd = run.call_args[0][0]
+        self.assertGreater(int(cmd[cmd.index("-n") + 1]), 2)
+
     def test_sanitize_chat_strips_tools_and_injects_system(self):
         payload = manager.sanitize_chat_payload(
             {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -25,6 +26,19 @@ CONSOLE_SYSTEM = (
 PROCESS_LOGS: deque[str] = deque(maxlen=4000)
 _SINK_ID: Optional[int] = None
 _STARTED_AT = time.time()
+# uvicorn access lines for the management UI itself (assets, status poll, logs stream).
+_UI_ACCESS_RE = re.compile(r'"[A-Z]+ (?:/v1)?/ui(?:[/?\s]|$)')
+
+
+def is_ui_access_line(line: str) -> bool:
+    return bool(_UI_ACCESS_RE.search(line or ""))
+
+
+def visible_log_lines(lines, limit: Optional[int] = None) -> list[str]:
+    out = [line for line in lines if line and not is_ui_access_line(line)]
+    if limit is None:
+        return out
+    return out[-max(1, int(limit)) :]
 
 
 def install_log_sink() -> None:
@@ -33,7 +47,10 @@ def install_log_sink() -> None:
         return
 
     def _sink(message):
-        PROCESS_LOGS.append(str(message).rstrip("\n"))
+        text = str(message).rstrip("\n")
+        if not text or is_ui_access_line(text):
+            return
+        PROCESS_LOGS.append(text)
 
     _SINK_ID = logger.add(
         _sink,
@@ -68,22 +85,24 @@ def journalctl_cmd(*, follow: bool = False, lines: int = 300) -> list[str]:
 
 
 def journalctl_history(lines: int = 300) -> list[str]:
+    wanted = max(1, min(int(lines), 5000))
+    fetch = min(5000, max(wanted * 6, 800))
     if shutil.which("journalctl") is None:
-        return list(PROCESS_LOGS)[-lines:]
+        return visible_log_lines(PROCESS_LOGS, wanted)
     try:
         completed = subprocess.run(
-            journalctl_cmd(follow=False, lines=lines),
+            journalctl_cmd(follow=False, lines=fetch),
             check=False,
             capture_output=True,
             text=True,
             timeout=8,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return list(PROCESS_LOGS)[-lines:]
+        return visible_log_lines(PROCESS_LOGS, wanted)
     text = completed.stdout or ""
     if completed.returncode != 0 and not text.strip():
-        return list(PROCESS_LOGS)[-lines:]
-    return [line for line in text.splitlines() if line]
+        return visible_log_lines(PROCESS_LOGS, wanted)
+    return visible_log_lines(text.splitlines(), wanted)
 
 
 async def stream_journal_lines() -> AsyncIterator[str]:
@@ -102,7 +121,9 @@ async def stream_journal_lines() -> AsyncIterator[str]:
             raw = await process.stdout.readline()
             if not raw:
                 break
-            yield raw.decode("utf-8", errors="replace").rstrip("\n")
+            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            if line and not is_ui_access_line(line):
+                yield line
     finally:
         if process.returncode is None:
             process.terminate()
@@ -115,16 +136,19 @@ async def stream_journal_lines() -> AsyncIterator[str]:
 async def _stream_process_logs() -> AsyncIterator[str]:
     index = 0
     for line in list(PROCESS_LOGS):
-        yield line
         index += 1
+        if line and not is_ui_access_line(line):
+            yield line
     while True:
         await asyncio.sleep(0.25)
         current = list(PROCESS_LOGS)
         if len(current) < index:
             index = 0
         while index < len(current):
-            yield current[index]
+            line = current[index]
             index += 1
+            if line and not is_ui_access_line(line):
+                yield line
 
 
 def nvidia_stats() -> dict[str, Any]:
@@ -365,12 +389,15 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
         clean_messages.append({"role": role, "content": str(content)})
     if not any(item["role"] == "system" for item in clean_messages):
         clean_messages.insert(0, {"role": "system", "content": CONSOLE_SYSTEM})
-    return {
+    payload = {
         "messages": clean_messages,
         "stream": bool(body.get("stream", True)),
-        "temperature": body.get("temperature"),
-        "max_tokens": body.get("max_tokens"),
     }
+    if body.get("temperature") is not None:
+        payload["temperature"] = body["temperature"]
+    if body.get("max_tokens") is not None:
+        payload["max_tokens"] = body["max_tokens"]
+    return payload
 
 
 journalctl_history = journalctl_history
