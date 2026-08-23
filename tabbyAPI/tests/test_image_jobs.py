@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -238,6 +239,37 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered.status, "error")
                 self.assertIn("restarted", recovered.error.lower())
                 self.assertEqual(recovered.urls, ["https://gpu.example/v1/images/a.png"])
+                disk = json.loads((Path(raw) / "mcp_jobs.json").read_text(encoding="utf-8"))
+                self.assertEqual(disk[-1]["status"], "error")
+                await reset_mcp_image_jobs_for_tests()
+
+    async def test_running_job_with_no_worker_is_not_active(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _MCP_JOBS,
+            _MCP_ORDER,
+            active_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-orphan",
+                    items=[McpImageItem(prompt="scene", output_path="images/generated.png")],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="running",
+                    phase="generating",
+                )
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                self.assertIsNone(active_mcp_image_job())
+                self.assertEqual(job.status, "error")
                 await reset_mcp_image_jobs_for_tests()
 
     def test_new_items_uniquify_paths(self):

@@ -308,6 +308,21 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_called()
         self.assertIn("already generating", response.choices[0].message.content)
 
+    async def test_mixed_ask_while_llm_loading_does_not_start_comfy(self):
+        data = _user("Create a website with a logo and photos")
+        wait = mock.AsyncMock(return_value="wait")
+        with (
+            mock.patch("images.chat.active_mcp_image_job", return_value=None),
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+            mock.patch("common.phrase_switch.llm_not_ready_response", wait),
+        ):
+            response = await handle(
+                data, "https://gpu.example/v1", llm_ready=False, gpu_is_comfy=True
+            )
+        start.assert_not_called()
+        wait.assert_awaited()
+        self.assertEqual(response, "wait")
+
 
 class McpWaitTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_tool_waits_until_job_is_done(self):

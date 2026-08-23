@@ -291,6 +291,10 @@ async def handle(
                 f"The GPU is already generating job {busy.id}. "
                 "Wait until that batch finishes, then ask again.",
             )
+        if not llm_ready:
+            from common.phrase_switch import llm_not_ready_response
+
+            return await llm_not_ready_response(data)
         started = await _start_mixed_job(data, api_base or "")
         return await _hold_then_reply(data, started, mixed=True, api_base=api_base)
 

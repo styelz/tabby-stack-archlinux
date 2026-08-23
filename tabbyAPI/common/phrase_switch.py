@@ -168,10 +168,16 @@ def comfy_not_running_text() -> str:
         "ComfyUI is not running. Send switch to comfy, "
         f"{wait_hint('comfy').lower()}, then try again."
     )
-# Cursor uses <user_query>; VS Code Copilot/custom-endpoint uses <userRequest>.
+# Cursor uses <user_query>; VS Code custom-endpoint uses <userRequest>.
 QUERY_TAG_RE = re.compile(
     r"<(user_query|userRequest|UserRequest|userPrompt|user_prompt)>\s*(.*?)\s*</\1>",
     re.S | re.I,
+)
+_PASTE_STUB_RE = re.compile(
+    r"(?is)^\s*#?\s*attachment:\s*pasted text(?:\s*#\s*\d+)?\s*$"
+)
+_ATTACHMENT_INNER_RE = re.compile(
+    r"(?is)<attachment\b[^>]*>(.*?)</attachment>"
 )
 SAVE_IMAGE_RE = re.compile(
     r"(?is)\b(save|write|export|download)\b.*\b(image|screenshot|png|jpe?g|photo|picture)\b"
@@ -256,7 +262,50 @@ def _plain_user_ask(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _is_paste_stub(text: str) -> bool:
+    return bool(_PASTE_STUB_RE.match((text or "").strip()))
+
+
+def user_task_text(data: ChatCompletionRequest) -> str:
+    """Website/image spec from the last user turn, including VS Code pastes.
+
+    The editor often wraps a paste as ``#attachment:Pasted text #1``. Mixed
+    chat must read the real spec from the same message, not that stub.
+    """
+    raw = last_user_raw(data)
+    unwrapped = _unwrap_query(raw)
+    inners = [
+        inner.strip()
+        for inner in _ATTACHMENT_INNER_RE.findall(raw)
+        if inner and inner.strip()
+    ]
+    if not _is_paste_stub(unwrapped):
+        # A short layout follow-up often has styles.css attached. That CSS
+        # is not a new website+images spec — do not merge it in.
+        return unwrapped
+    leftover_lines = [
+        line.strip()
+        for line in unwrapped.splitlines()
+        if line.strip() and not _is_paste_stub(line)
+    ]
+    leftover = "\n".join(leftover_lines).strip()
+    parts = [part for part in [*inners, leftover] if part]
+    if parts:
+        return "\n".join(parts)
+    stripped = QUERY_TAG_RE.sub(" ", raw)
+    stripped = "\n".join(
+        line.strip()
+        for line in stripped.splitlines()
+        if line.strip() and not _is_paste_stub(line)
+    )
+    return stripped.strip()
+
+
 def last_user_text(data: ChatCompletionRequest) -> str:
+    task = user_task_text(data)
+    plain = _plain_user_ask(task) if task else ""
+    if plain:
+        return plain
     return _unwrap_query(last_user_raw(data))
 
 
@@ -982,8 +1031,8 @@ def requested_image_prompt(
     if already_made_image(data) and not has_new_user_after_image(data):
         return None
     raw = last_user_raw(data)
-    text = _unwrap_query(raw)
-    if not text:
+    text = user_task_text(data) or _unwrap_query(raw)
+    if not text or _is_paste_stub(text):
         return None
     if any(marker.lower() in text.lower() for marker in AGENT_MARKERS):
         return None
@@ -1121,11 +1170,15 @@ def image_ready_response(
     *,
     restore: bool = False,
     count: int = 1,
+    filenames: Optional[list[str]] = None,
 ):
     this = image_job_wait_text(last_user_text(data), restore=restore, count=count)
     another = image_job_wait_text("", restore=restore)
+    names = [name for name in (filenames or []) if name]
+    if not names:
+        names = [filename] if filename else []
     text = (
-        _image_url_block(turn_image_names(filename), api_base=api_base)
+        _image_url_block(names, api_base=api_base)
         + f"\n\nThis picture: {this}"
         + "\nSend another short description for a different picture, or switch to qwen."
         + f"\nAnother picture: {another}"

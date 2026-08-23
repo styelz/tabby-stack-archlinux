@@ -49,6 +49,14 @@ _SKIP_SLUGS = frozenset(
     {"etc", "css", "css3", "html", "html5", "js", "javascript", "react", "vue"}
 )
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+_CSS_SLUG_RE = re.compile(
+    r"(?is)^("
+    r"[\d.-]+(?:px|em|rem|vh|vw|vmin|vmax|pct|deg|turn|fr|s|ms|ch|ex)?"
+    r"|auto-fit|auto-fill|minmax|inherit|unset|initial|revert|none|auto"
+    r"|linear-gradient|radial-gradient|repeat|rgba?|hsla?"
+    r"|var-.+"
+    r")$"
+)
 _SITE_FOLDER_RE = re.compile(
     r"(?is)\b(?:under|in|into|inside)\s+(?:the\s+)?"
     r"(?:folder|directory|dir)\s+[\"`'“”]?([A-Za-z][A-Za-z0-9._-]*)"
@@ -131,7 +139,12 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
         slug = _subject_slug(filename.rsplit(".", 1)[0] if filename else "")
         if not slug:
             slug = _subject_slug(str(row.get("subject") or ""))
-        if not slug or slug in seen or slug in _SKIP_SLUGS:
+        if (
+            not slug
+            or slug in seen
+            or slug in _SKIP_SLUGS
+            or _CSS_SLUG_RE.match(slug)
+        ):
             continue
         name = "logo.png" if slug == "logo" else f"{slug}.png"
         if slug in {"header", "banner", "hero"}:

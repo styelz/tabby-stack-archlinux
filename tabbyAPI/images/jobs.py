@@ -349,6 +349,29 @@ def _load_persisted_jobs() -> None:
         if job and job.id not in _MCP_JOBS:
             _MCP_JOBS[job.id] = job
             _MCP_ORDER.append(job.id)
+    _drop_dead_jobs()
+    _persist_jobs()
+
+
+def _worker_is_alive() -> bool:
+    return _MCP_TASK is not None and not _MCP_TASK.done()
+
+
+def _drop_dead_jobs() -> None:
+    """A queued/running job with no worker is leftover from a crash or reboot."""
+    if _worker_is_alive():
+        return
+    changed = False
+    for job in _MCP_JOBS.values():
+        if job.status not in ("queued", "running"):
+            continue
+        job.status = "error"
+        job.phase = "error"
+        if not job.error:
+            job.error = "Image job was interrupted (process restarted)."
+        changed = True
+    if changed:
+        _persist_jobs()
 
 
 def refresh_job_wait(job: McpImageJob) -> None:
@@ -458,6 +481,7 @@ async def generate_images_job(
 
 def active_mcp_image_job() -> Optional[McpImageJob]:
     _load_persisted_jobs()
+    _drop_dead_jobs()
     for job_id in reversed(_MCP_ORDER):
         job = _MCP_JOBS.get(job_id)
         if job and job.status in ("queued", "running"):
