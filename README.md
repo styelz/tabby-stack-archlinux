@@ -2,7 +2,7 @@
 
 Got an Arch Linux box with an NVIDIA GPU sitting around? Put this on it and it turns into your own private coding assistant and image generator. You keep working in Cursor, VS Code, Continue, Cline, or whatever you already use on your everyday machine — you just point it at this box instead of OpenAI.
 
-There's no separate chat window to open on the GPU machine. Your editor is the whole interface.
+Your editor is still how you write code. The GPU host also serves a signed-in **management UI** at `/v1/ui` for logs, a quick console chat, GPU status, and the image gallery.
 
 ![The editor, a finished site in the preview, and the chat that wrote the page and generated the images](docs/ide-preview.jpg)
 
@@ -17,11 +17,13 @@ flowchart LR
     end
 
     subgraph host ["GPU host"]
+        Browser["Browser → /v1/ui"]
         API["TabbyAPI /v1"]
         subgraph gpu ["One NVIDIA GPU — chat or images, never both"]
             LLM["Language model"]
             Comfy["Image generation"]
         end
+        Browser --> API
         API --> LLM
         API --> Comfy
     end
@@ -33,6 +35,7 @@ flowchart LR
 1. Your editor talks to TabbyAPI, same shape as OpenAI (`/v1`, model name `gpt-4o` — that's only a label). On a LAN that can be plain HTTP. Some editors will only take `https://`, so traffic goes through a reverse SSH tunnel from an HTTPS host — still the same API.
 2. TabbyAPI runs a local model on the GPU, or hands that card to image generation. It cannot do both at once.
 3. Replies and PNG URLs come back to the editor. The assistant writes code and saves pictures into your project.
+4. On the GPU box (or through the same HTTPS tunnel), open `/v1/ui` when you want live logs, status, gallery, or a short console chat without the IDE.
 
 ![A short walkthrough in your editor or IDE: help, list models, switch, then a page plus generated images](docs/ide-chat.gif)
 
@@ -40,8 +43,8 @@ flowchart LR
 
 - Chat and code help from a model running on **your own** GPU
 - Image generation on that **same** API, no separate setup
-- A signed-in management UI at `/v1/ui` (live logs, console chat, GPU/status, image gallery)
-- Model switching from right inside the chat (`switch to qwen`, `switch to comfy`, …)
+- A signed-in management UI at `/v1/ui` (live logs, console chat, GPU/status with host graphs, image gallery, restart/update)
+- Model switching from chat phrases (`switch to qwen`, `switch to comfy`, …) or from the Status page in the UI
 - An Arch installer that handles packages, Python, model weights, and a service that starts on boot
 
 It's built around a 12 GB NVIDIA card (RTX 4070-class), and everything stays on your own network unless you set up the HTTPS reverse tunnel below (some editors require that).
@@ -52,7 +55,7 @@ Under the hood it's just this git repo plus some downloaded model weights (eithe
 
 | Machine | What it does |
 |---|---|
-| **GPU host** (Arch Linux) | Runs the API, the language model, and image generation |
+| **GPU host** (Arch Linux) | Runs the API, the language model, image generation, and `/v1/ui` |
 | **Your computer** | Runs your editor or IDE. You open your project here. |
 
 Once it's installed, the API listens on the GPU host. Point your editor at it:
@@ -98,17 +101,17 @@ bash "$HOME/tabby-stack/update.sh"
 
 At the start a dialog asks **Update git** (git pull; at the end you can restart `tabbyapi`) or **Update all** (pull, pip, missing OS packages, restart, wait for `GET /health` ~65s). Pass `--git` or `--all` to skip the menu. `--restart` skips the prompt and bounces the API; `--no-restart` skips it and leaves the API running. If `update.sh` itself changed in the pull, the new script is run again with that same choice. `config.yml`, `tabby.env`, weights, and the venv stay. OS packages are not upgraded (`pacman -Syu` stays your job); only Update all installs missing stack packages. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
 
+You can also run **Update git** / **Update all** from the Status page in `/v1/ui`.
+
 An install that was copied without `.git` is bootstrapped from GitHub the first time you run `update.sh`. You do not need a second clone.
 
 ## First use
 
-The installer sets things up to start on boot, so there's no login step. Just check it's actually running:
+The installer sets things up to start on boot, so there's no login step for the API itself. Just check it's actually running:
 
 ```bash
 curl -sS http://127.0.0.1:5000/health
 ```
-
-Open `http://127.0.0.1:5000/v1/ui` in a browser and sign in with the Linux account that runs the stack. Logs, console chat, GPU/status, and the image gallery all live there. Through an SSH forwarder use the same path under your API prefix (for example `https://git.pbptech.com/openai/v1/ui`).
 
 Nothing there? Start it yourself:
 
@@ -116,7 +119,22 @@ Nothing there? Start it yourself:
 systemctl --user enable --now tabbyapi
 ```
 
-Want to watch the logs? `journalctl --user -u tabbyapi -f`
+Want to watch the logs from a terminal? `journalctl --user -u tabbyapi -f`
+
+### Management UI
+
+Open **`http://127.0.0.1:5000/v1/ui`** in a browser and sign in with the **Linux account that runs the stack** (same user as the `tabbyapi` service). Through an SSH forwarder use the same path under your API prefix (for example `https://git.pbptech.com/openai/v1/ui`). Old `/ui` bookmarks redirect to `/v1/ui`.
+
+| Page | What it does |
+|---|---|
+| **Logs** | Live `journalctl` for TabbyAPI (and Comfy when it is up) |
+| **Chat** | Short console chat against the loaded model (no project file tools) |
+| **Status** | GPU mode, profile, health, NVIDIA stats; load an LLM, hand the GPU to Comfy, restart the stack, or run Update git / Update all |
+| **Gallery** | Browse PNGs under `tabbyAPI/pasted-images/` |
+
+The UI is for managing the host. Day-to-day coding and mixed page+images still happen in your editor pointed at `/v1`.
+
+### Chat phrases (from your editor)
 
 From your editor's chat, type one of these as the whole message — just `switch to qwen`, not "please switch to qwen":
 
@@ -145,7 +163,7 @@ For day-to-day work, just stay on `qwen`. If you want the full rundown for any e
 - For photos and scenes (headers, backgrounds), describe the **scene** itself, not a mockup of a website.
 - For logos, posters, buttons, or anything that needs **readable text**, start the prompt with `qwen-image:` — e.g. `qwen-image: a logo that says Harbor Cafe`.
 
-You can also just say `switch to comfy`, wait for it to come up, and describe pictures one after another. `switch to qwen` (or `switch to llm`) whenever you're ready to code again.
+You can also just say `switch to comfy`, wait for it to come up, and describe pictures one after another. `switch to qwen` (or `switch to llm`) whenever you're ready to code again. Generated files also show up in the UI **Gallery**.
 
 **Building a page and want images to go with it?** Something like "create a landing page and generate a header and logo" is really a coding task — the assistant writes the HTML/CSS to files, generates the PNGs, and wires the page up to point at those files, rather than dropping in a screenshot of a finished site.
 

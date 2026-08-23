@@ -161,10 +161,6 @@ def nvidia_stats() -> dict[str, Any]:
         "memory_total_mib": total,
         "utilization_pct": util,
         "temperature_c": temp,
-        "memory_used_mib": used,
-        "memory_total_mib": total,
-        "utilization_pct": util,
-        "temperature_c": temp,
     }
 
 
@@ -244,11 +240,35 @@ async def stack_status(request=None) -> dict[str, Any]:
             "comfyui": unit_active("comfyui"),
         },
         "gpu": nvidia_stats(),
+        "host": _host_live(),
         "uptime_s": int(time.time() - _STARTED_AT),
         "api_base": public_api_base(request),
         "job": job_info,
         "user": os.environ.get("USER") or "",
         "now": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _host_live() -> dict[str, Any]:
+    """One-shot CPU / RAM / load for the status cards (not the chart history)."""
+    cpu = None
+    ram = None
+    load1 = None
+    try:
+        import psutil
+
+        cpu = float(psutil.cpu_percent(interval=None))
+        ram = float(psutil.virtual_memory().percent)
+    except Exception:
+        pass
+    try:
+        load1 = float(os.getloadavg()[0])
+    except (OSError, AttributeError):
+        pass
+    return {
+        "cpu_pct": None if cpu is None else round(cpu, 1),
+        "ram_pct": None if ram is None else round(ram, 1),
+        "load1": None if load1 is None else round(load1, 2),
     }
 
 

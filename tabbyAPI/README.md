@@ -10,7 +10,7 @@ cd "$HOME/tabby-stack"
 bash install.sh
 ```
 
-Stack overview, Windows/USB cache, chat phrases, and what is not in the repo: **[../README.md](../README.md)**.
+Stack overview, chat phrases, management UI (`/v1/ui`), and what is not in the repo: **[../README.md](../README.md)**.
 
 Arch steps and troubleshooting: [deploy/arch/README.md](deploy/arch/README.md). Hugging Face catalog: [deploy/arch/models.json](deploy/arch/models.json).
 

@@ -119,7 +119,30 @@ async def ui_auth_check(request: Request):
 
 @router.get("/status", include_in_schema=False)
 async def ui_status(request: Request, _user: str = Depends(require_ui_user)):
+    from ui.metrics import ensure_metrics_sampler
+
+    ensure_metrics_sampler()
     return await stack_status(request)
+
+
+@router.get("/metrics", include_in_schema=False)
+async def ui_metrics(
+    hours: float | None = None,
+    days: float | None = None,
+    max_points: int = 720,
+    _user: str = Depends(require_ui_user),
+):
+    from ui.metrics import ensure_metrics_sampler, metrics_history
+
+    ensure_metrics_sampler()
+    if days is not None and hours is not None:
+        # Prefer the more specific unit the client sent last in query order:
+        # if both are present, days wins (explicit multi-day view).
+        hours = None
+    try:
+        return metrics_history(hours=hours, days=days, max_points=max_points)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/logs/history", include_in_schema=False)

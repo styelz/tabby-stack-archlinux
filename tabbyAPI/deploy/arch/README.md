@@ -107,6 +107,7 @@ systemctl --user status tabbyapi
 
 - API: `http://127.0.0.1:5000`
 - Health: `GET /health` on that origin
+- Management UI: `http://127.0.0.1:5000/v1/ui` — sign in with the Linux account that runs the stack. Logs, console chat, GPU/status, image gallery, restart, and Update git / Update all. Through an SSH forwarder use the same `/v1/ui` path under your API prefix.
 - OpenAI-compatible base URL for remote IDEs: `http://<gpu-host>:5000/v1` (model name **`gpt-4o`** — leave it)
 - Agent / IDE notes: `$HOME/tabby-stack/AGENTS.md` (copied by the installer)
 - A public reverse tunnel is optional. Set `TABBY_PUBLIC_BASE` and `TABBY_SSH_REMOTE` in `deploy/arch/tabby.env` if you have one. Every env key is listed in [`tabby.env.example`](tabby.env.example).
@@ -137,7 +138,8 @@ Same notes are in `$HOME/tabby-stack/AGENTS.md` (any editor, not Cursor-only).
 
 - OpenAI-compatible base URL for remote IDEs: `http://<gpu-host>:5000/v1`
 - Model name: **`gpt-4o`** (leave it — see the top of this file)
-- After `switch to …`, wait for the GPU (warm RTX 4070 Ti 12 GB: qwen / gemma ~65s, qwen36 ~85s, gemma26 ~2 min, qwen35 ~3 min, glm ~15s). After `switch to comfy`, wait about **35 seconds** (first Flux ~3 min, first Qwen-Image ~4 min). GLM is thinking-only on RTX 4070 Ti 12 GB (vision off).
+- Host console: `http://<gpu-host>:5000/v1/ui` (or the same path under your HTTPS `/v1` prefix). Use it for logs and status; keep coding in the editor.
+- After `switch to …`, wait for the GPU (warm RTX 4070 Ti 12 GB: qwen / gemma ~65s, qwen36 ~85s, gemma26 ~2 min, qwen35 ~3 min, glm ~15s). After `switch to comfy`, wait about **35 seconds** (first Flux ~3 min, first Qwen-Image ~4 min). GLM is thinking-only on RTX 4070 Ti 12 GB (vision off). You can also load an LLM or hand the GPU to Comfy from the Status page in `/v1/ui`.
 
 Chat phrases (send as the whole message):
 
@@ -182,7 +184,7 @@ The install root is the git checkout. On the GPU host:
 bash "$HOME/tabby-stack/update.sh"
 ```
 
-A dialog asks **Update git** vs **Update all** (or `--git` / `--all`). Update git is a pull only; at the end a **Restart** / **Skip** dialog can bounce the unit and wait until `GET /health` is healthy (~65s), including when the tree was already up to date. Pass `--restart` to skip that prompt and bounce the API, or `--no-restart` to leave it running. Update all then runs `install.sh --update` (pip -U, skip existing weights, rewrite systemd units), shows the same progress gauge as install, restarts `tabbyapi`, and waits for health. If `update.sh` changed in the pull, that new script is executed again with the same choice. It does not overwrite `config.yml` or `tabby.env`, and it does not run `pacman -Syu` (keep the OS updated yourself). Missing stack packages are installed only on Update all; already-installed ones are left alone.
+A dialog asks **Update git** vs **Update all** (or `--git` / `--all`). Update git is a pull only; at the end a **Restart** / **Skip** dialog can bounce the unit and wait until `GET /health` is healthy (~65s), including when the tree was already up to date. Pass `--restart` to skip that prompt and bounce the API, or `--no-restart` to leave it running. Update all then runs `install.sh --update` (pip -U, skip existing weights, rewrite systemd units), shows the same progress gauge as install, restarts `tabbyapi`, and waits for health. If `update.sh` changed in the pull, that new script is executed again with the same choice. It does not overwrite `config.yml` or `tabby.env`, and it does not run `pacman -Syu` (keep the OS updated yourself). Missing stack packages are installed only on Update all; already-installed ones are left alone. The Status page in `/v1/ui` can trigger the same Update git / Update all actions.
 
 - First run on an older rsync-only dest bootstraps `.git` from `https://github.com/styelz/tabby-stack-archlinux.git`.
 - `--comfy` also pulls ComfyUI and ComfyUI-GGUF. Leave that off unless you want image-gen to move with upstream.

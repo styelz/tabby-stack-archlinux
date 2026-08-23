@@ -486,6 +486,13 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         ]
         embed = "POST /v1/embeddings"
 
+    if origin:
+        ui_url = f"{origin}/v1/ui"
+    elif base:
+        ui_origin = base[:-3] if base.endswith("/v1") else base
+        ui_url = f"{ui_origin}/v1/ui"
+    else:
+        ui_url = "/v1/ui"
     lines = [
         "Use gpt-4o as the model name in your editor, and leave it. "
         "That is not ChatGPT — it is only a name. Many editors sandbox or block tools "
@@ -494,6 +501,8 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         "This is a TabbyAPI + ComfyUI stack on one NVIDIA GPU.",
         "The coding workspace is a different computer from the GPU server.",
         *api_lines,
+        f"Management UI (logs, console chat, GPU/status, gallery): {ui_url}",
+        "Sign in with the Linux account that runs the stack. Coding stays in your editor.",
         "",
         "The GPU is exclusive: LLM or Comfy, never both.",
         f"Qwen3-Embedding-0.6B stays on CPU ({embed}). No switch needed for search.",

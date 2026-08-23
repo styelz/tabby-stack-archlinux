@@ -92,6 +92,10 @@ async def start_api(host: str, port: int):
     # Setup app
     app = setup_app(host, port)
 
+    from ui.metrics import ensure_metrics_sampler
+
+    ensure_metrics_sampler()
+
     # Get the current event loop
     loop = asyncio.get_running_loop()
 

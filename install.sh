@@ -531,7 +531,6 @@ RSYNC_EXCLUDES=(
   --exclude 'HOW-TO-ARCH.txt'
   --exclude 'CURSOR.md'
   --exclude 'HANDOFF.md'
-  --exclude 'REPEATED-ISSUES.md'
   --exclude '.cursor/'
   --exclude 'api_tokens.yml'
 )
@@ -1698,10 +1697,19 @@ Start / stop
 
   API:     $API_URL
   Health:  GET $API_URL/health
+  UI:      $API_URL/v1/ui   (sign in with this Linux account)
   Manual:  $DEST/start.sh
 
   Do not run start.bat.
   If you used a USB cache you can unmount it.
+
+Management UI ($API_URL/v1/ui)
+  Sign in with the Linux user that runs tabbyapi.
+  Logs     live journalctl for TabbyAPI (and Comfy when up)
+  Chat     short console chat (no project file tools)
+  Status   GPU mode, profile, health; load LLM / Comfy; restart; Update git / Update all
+  Gallery  PNGs under tabbyAPI/pasted-images/
+  Day-to-day coding still happens in your editor pointed at /v1.
 
 Your editor or IDE
   Full notes (any editor):  $DEST/AGENTS.md
@@ -1709,6 +1717,7 @@ Your editor or IDE
   Model:     gpt-4o   (leave it — not ChatGPT; else your editor or IDE may sandbox / block tools)
   Public base: ${TABBY_PUBLIC_BASE:- (none — local only)}
   SSH tunnel:  ${TABBY_SSH_REMOTE:- (none)}
+  UI via tunnel: same /v1/ui path under your public /v1 prefix
 
 Switch models (warm 12 GB: qwen ~65s; qwen35 ~3 min; comfy ~35s)
   In your editor or IDE chat, send only:

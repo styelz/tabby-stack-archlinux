@@ -8,7 +8,6 @@ AppData/
 # Local agent notes (this machine only — not for GitHub)
 /CURSOR.md
 /HANDOFF.md
-/REPEATED-ISSUES.md
 
 # update.sh moves copy-to-live tracked files here so origin can fast-forward
 .tabby-update-backup/
