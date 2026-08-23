@@ -4,6 +4,8 @@ Got an Arch Linux box with an NVIDIA GPU sitting around? Put this on it and it t
 
 There's no separate chat window to open on the GPU machine. Your editor is the whole interface.
 
+![The editor, a finished site in the preview, and the chat that wrote the page and generated the images](docs/ide-preview.jpg)
+
 ```mermaid
 flowchart LR
     subgraph client ["Your computer"]
