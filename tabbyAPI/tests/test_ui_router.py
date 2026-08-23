@@ -25,6 +25,18 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/ui/", paths)
         self.assertIn("/ui/{rest:path}", paths)
 
+    def _dep_names(self, path):
+        for route in router.routes:
+            if route.path == path:
+                return [dep.call.__name__ for dep in route.dependant.dependencies if dep.call]
+        self.fail(f"missing route {path}")
+
+    def test_restart_and_update_require_admin(self):
+        self.assertIn("require_ui_admin", self._dep_names("/v1/ui/restart"))
+        self.assertIn("require_ui_admin", self._dep_names("/v1/ui/update"))
+        self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/gpu"))
+        self.assertIn("require_ui_user", self._dep_names("/v1/ui/gpu"))
+
 
 if __name__ == "__main__":
     unittest.main()

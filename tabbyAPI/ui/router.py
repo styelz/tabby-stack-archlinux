@@ -170,12 +170,12 @@ async def ui_log_stream(_user: str = Depends(require_ui_user)):
 
 
 @router.post("/restart", include_in_schema=False)
-async def ui_restart(_user: str = Depends(require_ui_user)):
+async def ui_restart(_admin: str = Depends(require_ui_admin)):
     return start_stack_restart()
 
 
 @router.post("/update", include_in_schema=False)
-async def ui_update(request: Request, _user: str = Depends(require_ui_user)):
+async def ui_update(request: Request, _admin: str = Depends(require_ui_admin)):
     try:
         body = await request.json()
     except Exception:

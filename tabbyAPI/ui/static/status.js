@@ -14,9 +14,9 @@ function mountStatus(root) {
             <select id="profile-select" aria-label="Profile"></select>
             <button class="btn" id="switch-llm">Load LLM</button>
             <button class="btn" id="switch-comfy">To Comfy</button>
-            <button class="btn danger" id="restart-btn">Restart</button>
-            <button class="btn" id="update-git">Update git</button>
-            <button class="btn" id="update-all">Update all</button>
+            <button class="btn danger" id="restart-btn" hidden>Restart</button>
+            <button class="btn" id="update-git" hidden>Update git</button>
+            <button class="btn" id="update-all" hidden>Update all</button>
           </div>
           <p class="muted" id="action-msg"></p>
         </div>
@@ -319,6 +319,16 @@ function mountStatus(root) {
   root.querySelector("#switch-comfy").addEventListener("click", () =>
     act(() => TabbyUI.api("gpu", { method: "POST", body: { mode: "comfy" } }))
   );
+  const adminActionIds = ["restart-btn", "update-git", "update-all"];
+  TabbyUI.api("auth/check")
+    .then((data) => {
+      if (!data.is_admin) return;
+      adminActionIds.forEach((id) => {
+        const el = root.querySelector(`#${id}`);
+        if (el) el.hidden = false;
+      });
+    })
+    .catch(() => {});
   root.querySelector("#restart-btn").addEventListener("click", () => {
     if (!confirm("Restart TabbyAPI now? The UI will drop for about a minute.")) return;
     act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
