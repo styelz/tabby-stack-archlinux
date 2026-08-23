@@ -92,6 +92,7 @@ class McpImageJob:
     is_requeue: bool = False
     download_stopped: bool = False
     code_turns: int = 0
+    owner: str = ""
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     progress: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -267,6 +268,7 @@ def _job_to_persist(job: McpImageJob) -> dict:
         "current_index": job.current_index,
         "client_saved": bool(job.client_saved),
         "code_turns": int(job.code_turns or 0),
+        "owner": str(job.owner or ""),
     }
 
 
@@ -297,6 +299,7 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         current_index=int(data.get("current_index") or 0),
         client_saved=bool(data.get("client_saved")),
         code_turns=int(data.get("code_turns") or 0),
+        owner=str(data.get("owner") or ""),
     )
     if job.status == "coding":
         job.phase = "writing_code"
@@ -470,6 +473,7 @@ async def _render_specs(
     specs: list[dict],
     *,
     timeout: float = 300,
+    owner: str | None = None,
 ) -> list[Path]:
     saved: list[Path] = []
     for spec in specs:
@@ -486,7 +490,7 @@ async def _render_specs(
                 timeout,
                 spec_source if index == 0 else None,
             )
-            saved.append(save_generated_image(raw))
+            saved.append(save_generated_image(raw, owner=owner))
     return saved
 
 
@@ -656,6 +660,7 @@ async def start_mcp_image_job(
     delay: Optional[float] = None,
     items: Optional[list[dict]] = None,
     start: bool = True,
+    owner: Optional[str] = None,
 ) -> tuple[McpImageJob, str]:
     """Queue a Comfy job that survives the MCP HTTP client disconnecting.
 
@@ -677,8 +682,11 @@ async def start_mcp_image_job(
     if not new_items:
         raise ValueError("prompt is required")
 
+    owner_name = str(owner or "").strip()
     busy = active_mcp_image_job()
     if busy:
+        if str(busy.owner or "").strip() != owner_name:
+            return busy, "busy"
         async with busy.lock:
             if busy.accepting and busy.count + sum(
                 max(1, item.count) for item in new_items
@@ -705,6 +713,7 @@ async def start_mcp_image_job(
         wait_text=wait_text,
         wait_s=wait_s,
         started_at=time.time(),
+        owner=owner_name,
     )
     refresh_job_wait(job)
     _remember_mcp_job(job)
@@ -808,7 +817,8 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                             "seed": item.seed,
                             "count": item.count,
                         }
-                    ]
+                    ],
+                    owner=job.owner or None,
                 )
                 item.urls = [
                     public_image_url(path.name, api_base=job.api_base, bust=False)

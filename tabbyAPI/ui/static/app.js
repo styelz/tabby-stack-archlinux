@@ -4,11 +4,14 @@
     chat: { el: document.getElementById("page-chat"), mount: window.mountChat, title: "Chat" },
     status: { el: document.getElementById("page-status"), mount: window.mountStatus, title: "Status" },
     gallery: { el: document.getElementById("page-gallery"), mount: window.mountGallery, title: "Gallery" },
+    users: { el: document.getElementById("page-users"), mount: window.mountUsers, title: "Users" },
   };
+  let isAdmin = false;
   const handles = {};
 
   function currentName() {
     const hash = (location.hash || "#chat").replace("#", "");
+    if (hash === "users" && !isAdmin) return "chat";
     return pages[hash] ? hash : "chat";
   }
 
@@ -41,6 +44,12 @@
     .then((data) => {
       const chip = document.getElementById("user-chip");
       if (chip) chip.textContent = data.username || data.stack_user || "";
+      isAdmin = Boolean(data.is_admin);
+      const tab = document.getElementById("tab-users");
+      if (tab) tab.hidden = !isAdmin;
+      if (!isAdmin && (location.hash || "").replace("#", "") === "users") {
+        location.hash = "#chat";
+      }
     })
     .catch(() => {});
 

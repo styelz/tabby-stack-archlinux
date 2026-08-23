@@ -83,14 +83,15 @@ Some editors only accept `https://`. TabbyAPI itself speaks HTTP on the GPU host
 
 ## Management UI
 
-Open **`http://127.0.0.1:5000/v1/ui`** (or the same `/v1/ui` path under your HTTPS prefix). Sign in with the **Linux account that runs the stack**.
+Open **`http://127.0.0.1:5000/v1/ui`** (or the same `/v1/ui` path under your HTTPS prefix). Sign in with the **Linux account that runs the stack** (admin). That admin can create extra Tabby-only accounts on the Users page — not Linux users. Extra users get Chat, Status, Gallery, and Logs, but cannot create users. Chat history is per account. Gallery shows each user’s images; the admin sees all.
 
 | Page | Purpose |
 |---|---|
 | **Logs** | Live journal for TabbyAPI (and Comfy when it is up) |
 | **Chat** | Console chat with saved history (New chat / Clear history; Tab loads older chats) — no project file tools |
 | **Status** | Mode, health, NVIDIA/CPU/RAM; graphs (1h–30d or custom); switch, restart, update |
-| **Gallery** | PNGs under `tabbyAPI/pasted-images/` |
+| **Gallery** | PNGs under `tabbyAPI/pasted-images/` (your images; admin sees everyone’s) |
+| **Users** | Admin only: create, reset, and delete Tabby-only extra accounts |
 
 Day-to-day coding and “build a page + images” still happen in your **editor**, not this console.
 

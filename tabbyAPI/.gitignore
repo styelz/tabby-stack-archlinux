@@ -178,6 +178,7 @@ pyrightconfig.json
 # User configuration
 config.yml
 api_tokens.yml
+ui_users.json
 
 # Models folder (never commit downloaded weights)
 models/*

@@ -12,7 +12,7 @@
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260824-chat-del";
+    window.TABBY_UI_ASSET_V = "20260824-ui-users";
     ["styles.css"].forEach(function (name) {
       var link = document.createElement("link");
       link.rel = "stylesheet";
@@ -35,6 +35,7 @@
       <a href="#status" data-page="status" class="tab">Status</a>
       <a href="#gallery" data-page="gallery" class="tab">Gallery</a>
       <a href="#logs" data-page="logs" class="tab">Logs</a>
+      <a href="#users" data-page="users" class="tab" id="tab-users" hidden>Users</a>
     </nav>
     <div class="header-meta">
       <span id="gpu-chip" class="chip">GPU …</span>
@@ -48,10 +49,11 @@
     <section id="page-status" class="page" data-page="status" hidden></section>
     <section id="page-gallery" class="page" data-page="gallery" hidden></section>
     <section id="page-logs" class="page" data-page="logs" hidden></section>
+    <section id="page-users" class="page" data-page="users" hidden></section>
   </main>
 
   <script>
-    ["utils.js", "logs.js", "chat.js", "status.js", "gallery.js", "app.js"].forEach(function (name) {
+    ["utils.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
       document.write('<script src="' + TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V + '"><\/script>');
     });
   </script>

@@ -305,10 +305,17 @@ def _host_live() -> dict[str, Any]:
     }
 
 
-def gallery_listing(page: int = 1, per_page: int = 24) -> dict[str, Any]:
+def gallery_listing(
+    page: int = 1,
+    per_page: int = 24,
+    *,
+    username: str = "",
+    is_admin: bool = False,
+) -> dict[str, Any]:
+    from common.gallery_owners import filter_files, owner_of
     from common.gpu_mode import gallery_page, gallery_thumb_href, list_generated_files
 
-    files = list_generated_files()
+    files = filter_files(list_generated_files(), username, is_admin)
     shown, page, pages, per_page = gallery_page(files, page, per_page)
     items = []
     for path in shown:
@@ -327,6 +334,7 @@ def gallery_listing(page: int = 1, per_page: int = 24) -> dict[str, Any]:
                 "url": f"/v1/ui/gallery/file/{path.name}",
                 "thumb": f"/v1/ui/gallery/thumb/{path.name}",
                 "public_thumb": gallery_thumb_href(path.name),
+                "owner": owner_of(path.name) or "",
             }
         )
     return {

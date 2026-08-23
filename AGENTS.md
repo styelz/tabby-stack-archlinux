@@ -9,7 +9,7 @@ This file is for **any** editor that talks to the TabbyAPI server (Cursor, VS Co
 - Base URL: the `/v1` URL you configured in your editor or IDE (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
-- Management UI: `/v1/ui` on that same origin (sign in with the Linux account that runs the stack). Logs, console chat, GPU/status, image gallery, restart, and update live there. Coding and mixed page+images still go through this editor chat, not the UI console.
+- Management UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created. Logs, console chat, GPU/status, image gallery, restart, and update live there. Only the admin can create extra UI users. Coding and mixed page+images still go through this editor chat, not the UI console.
 
 Do not SSH into the GPU host just to change models. Send a chat phrase instead, use the Status page in `/v1/ui`, or send `restart` to bounce the API.
 

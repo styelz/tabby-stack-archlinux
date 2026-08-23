@@ -37,7 +37,7 @@ def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRe
     return ChatCompletionRequest(**fields)
 
 
-async def run_console_chat(request: Request, body: dict[str, Any]):
+async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
     try:
         payload = sanitize_chat_payload(body)
     except ValueError as exc:
@@ -60,6 +60,7 @@ async def run_console_chat(request: Request, body: dict[str, Any]):
         gpu_is_comfy=gpu_is_comfy(),
         disconnect_handler=disconnect_handler,
         console=True,
+        owner=username or None,
     )
     if image_response is not None:
         return image_response

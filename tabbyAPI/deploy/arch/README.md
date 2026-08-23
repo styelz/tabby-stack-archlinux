@@ -107,7 +107,7 @@ systemctl --user status tabbyapi
 
 - API: `http://127.0.0.1:5000`
 - Health: `GET /health` on that origin
-- Management UI: `http://127.0.0.1:5000/v1/ui` — sign in with the Linux account that runs the stack. Logs, console chat, GPU/status, image gallery, restart, and Update git / Update all. Through an SSH forwarder use the same `/v1/ui` path under your API prefix.
+- Management UI: `http://127.0.0.1:5000/v1/ui` — sign in with the Linux account that runs the stack (admin), or a Tabby-only account created on the Users page. Logs, console chat, GPU/status, image gallery, restart, and Update git / Update all. Extra users cannot create accounts. Through an SSH forwarder use the same `/v1/ui` path under your API prefix.
 - OpenAI-compatible base URL for remote IDEs: `http://<gpu-host>:5000/v1` (model name **`gpt-4o`** — leave it)
 - Agent / IDE notes: `$HOME/tabby-stack/AGENTS.md` (copied by the installer)
 - A public reverse tunnel is optional. Set `TABBY_PUBLIC_BASE` and `TABBY_SSH_REMOTE` in `deploy/arch/tabby.env` if you have one. Every env key is listed in [`tabby.env.example`](tabby.env.example).

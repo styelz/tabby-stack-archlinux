@@ -57,15 +57,22 @@ def _pam_authenticate(username: str, password: str) -> bool:
     return proc.returncode == 0
 
 
-def authenticate_user(username: str, password: str) -> bool:
-    if _AUTHENTICATE is not None:
-        return bool(_AUTHENTICATE(username, password))
+def is_admin_username(username: str) -> bool:
     expected = stack_username()
-    if not expected or username != expected:
+    return bool(expected) and username == expected
+
+
+def authenticate_user(username: str, password: str) -> bool:
+    if not username or not password:
         return False
-    if not password:
-        return False
-    return _pam_authenticate(username, password)
+    expected = stack_username()
+    if expected and username == expected:
+        if _AUTHENTICATE is not None:
+            return bool(_AUTHENTICATE(username, password))
+        return _pam_authenticate(username, password)
+    from ui.users import verify_extra_user
+
+    return verify_extra_user(username, password)
 
 
 def set_authenticator(fn) -> None:
@@ -79,6 +86,7 @@ def create_session(username: str) -> str:
     with _sessions_lock:
         _sessions[token] = {
             "username": username,
+            "is_admin": is_admin_username(username),
             "created_at": now,
             "last_activity": now,
         }
@@ -103,6 +111,15 @@ def validate_session(token: str, max_age: int = SESSION_TTL_S) -> Optional[str]:
 def destroy_session(token: str) -> None:
     with _sessions_lock:
         _sessions.pop(token, None)
+
+
+def destroy_sessions_for_user(username: str) -> None:
+    if not username:
+        return
+    with _sessions_lock:
+        dead = [token for token, session in _sessions.items() if session.get("username") == username]
+        for token in dead:
+            _sessions.pop(token, None)
 
 
 def clear_sessions() -> None:
@@ -163,3 +180,13 @@ async def require_ui_user(
     if username:
         return username
     raise HTTPException(401, "Not authenticated")
+
+
+async def require_ui_admin(
+    request: Request,
+    tabby_ui: Optional[str] = Cookie(None, alias=COOKIE_NAME),
+) -> str:
+    username = await require_ui_user(request, tabby_ui)
+    if not is_admin_username(username):
+        raise HTTPException(403, "Admin only.")
+    return username

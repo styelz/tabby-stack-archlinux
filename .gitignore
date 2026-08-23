@@ -35,6 +35,7 @@ Thumbs.db
 **/*.log
 **/config.yml
 **/api_tokens.yml
+ui_users.json
 **/tabby.env
 **/HOW-TO-ARCH.txt
 **/switch-model.log

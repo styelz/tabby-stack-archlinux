@@ -18,6 +18,8 @@ from ui.auth import (
     destroy_session,
     login_allowed,
     record_login_attempt,
+    is_admin_username,
+    require_ui_admin,
     require_ui_user,
     set_session_cookie,
     stack_username,
@@ -114,7 +116,12 @@ async def ui_auth_check(request: Request):
     username = validate_session(_session_token(request))
     if not username:
         raise HTTPException(401, "Not authenticated")
-    return {"ok": True, "username": username, "stack_user": stack_username()}
+    return {
+        "ok": True,
+        "username": username,
+        "stack_user": stack_username(),
+        "is_admin": is_admin_username(username),
+    }
 
 
 @router.get("/status", include_in_schema=False)
@@ -230,8 +237,86 @@ async def ui_chat(request: Request, _user: str = Depends(require_ui_user)):
         body = await request.json()
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
-    return await run_console_chat(request, body)
+    return await run_console_chat(request, body, username=_user)
 
+
+
+
+@router.get("/users", include_in_schema=False)
+async def ui_users_list(_admin: str = Depends(require_ui_admin)):
+    from ui.users import list_users
+
+    return {"users": list_users()}
+
+
+@router.post("/users", include_in_schema=False)
+async def ui_users_create(request: Request, _admin: str = Depends(require_ui_admin)):
+    from ui.users import create_user
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    username = str(body.get("username") or "")
+    password = str(body.get("password") or "")
+    try:
+        user = create_user(username, password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "user": user}
+
+
+@router.post("/users/{name}/password", include_in_schema=False)
+async def ui_users_password(name: str, request: Request, _admin: str = Depends(require_ui_admin)):
+    from ui.users import set_password
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    password = str(body.get("password") or "")
+    try:
+        set_password(name, password)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@router.delete("/users/{name}", include_in_schema=False)
+async def ui_users_delete(name: str, _admin: str = Depends(require_ui_admin)):
+    from ui.auth import destroy_sessions_for_user
+    from ui.chats import delete_store
+    from ui.users import delete_user
+
+    try:
+        delete_user(name)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    destroy_sessions_for_user(name)
+    delete_store(name)
+    return {"ok": True}
+
+
+@router.get("/chats", include_in_schema=False)
+async def ui_chats_get(_user: str = Depends(require_ui_user)):
+    from ui.chats import load_store
+
+    return load_store(_user)
+
+
+@router.put("/chats", include_in_schema=False)
+async def ui_chats_put(request: Request, _user: str = Depends(require_ui_user)):
+    from ui.chats import save_store
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    return save_store(_user, body)
 
 @router.get("/gallery/list", include_in_schema=False)
 async def ui_gallery_list(
@@ -239,12 +324,18 @@ async def ui_gallery_list(
     per_page: int = 24,
     _user: str = Depends(require_ui_user),
 ):
-    return gallery_listing(page, per_page)
+    return gallery_listing(
+        page,
+        per_page,
+        username=_user,
+        is_admin=is_admin_username(_user),
+    )
 
 
 @router.post("/gallery/delete", include_in_schema=False)
 async def ui_gallery_delete(request: Request, _user: str = Depends(require_ui_user)):
-    from common.gpu_mode import delete_generated_images
+    from common.gallery_owners import can_access, owner_of
+    from common.gpu_mode import delete_generated_images, list_generated_files
 
     try:
         body = await request.json()
@@ -252,26 +343,45 @@ async def ui_gallery_delete(request: Request, _user: str = Depends(require_ui_us
         body = {}
     wipe_all = bool(body.get("all"))
     names = body.get("names") if isinstance(body.get("names"), list) else []
-    if not wipe_all and not names:
+    admin = is_admin_username(_user)
+    if wipe_all:
+        if admin:
+            removed = delete_generated_images([], delete_all=True)
+        else:
+            own = [path.name for path in list_generated_files() if owner_of(path.name) == _user]
+            removed = delete_generated_images(own, delete_all=False)
+        return {"deleted": removed, "count": len(removed)}
+    if not names:
         raise HTTPException(400, "Provide names or all=true")
-    removed = delete_generated_images(names, delete_all=wipe_all)
+    allowed = []
+    for raw in names:
+        name = str(raw)
+        if can_access(name, _user, admin):
+            allowed.append(name)
+    if not allowed:
+        raise HTTPException(404, "Image not found.")
+    removed = delete_generated_images(allowed, delete_all=False)
     return {"deleted": removed, "count": len(removed)}
 
 
 @router.get("/gallery/file/{name}", include_in_schema=False)
 async def ui_gallery_file(name: str, _user: str = Depends(require_ui_user)):
+    from common.gallery_owners import can_access
     from common.gpu_mode import generated_image_path
 
     path = generated_image_path(name)
-    if not path:
+    if not path or not can_access(name, _user, is_admin_username(_user)):
         raise HTTPException(404, "Image not found.")
     return FileResponse(path, media_type="image/png", filename=name)
 
 
 @router.get("/gallery/thumb/{name}", include_in_schema=False)
 async def ui_gallery_thumb(name: str, _user: str = Depends(require_ui_user)):
+    from common.gallery_owners import can_access
     from common.gpu_mode import ensure_gallery_thumb, generated_image_path, generated_thumb_path
 
+    if not can_access(name, _user, is_admin_username(_user)):
+        raise HTTPException(404, "Image not found.")
     thumb = generated_thumb_path(name)
     if thumb:
         return FileResponse(thumb, media_type="image/jpeg", filename=thumb.name)

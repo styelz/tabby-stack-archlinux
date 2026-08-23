@@ -581,7 +581,7 @@ def generate_image(
     raise TimeoutError(f"ComfyUI job {prompt_id} timed out after {timeout:.0f}s")
 
 
-def save_generated_image(raw: bytes) -> Path:
+def save_generated_image(raw: bytes, owner: str | None = None) -> Path:
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dest = GENERATED_DIR / f"generated-{stamp}-{os.getpid()}.png"
@@ -594,6 +594,10 @@ def save_generated_image(raw: bytes) -> Path:
     latest = GENERATED_DIR / "generated-latest.png"
     latest.write_bytes(raw)
     ensure_gallery_thumb(dest)
+    if owner:
+        from common.gallery_owners import record_owner
+
+        record_owner(dest.name, owner)
     return dest
 
 
@@ -722,6 +726,10 @@ def delete_generated_images(
                 thumb.unlink()
         except OSError:
             pass
+    if removed:
+        from common.gallery_owners import forget_owners
+
+        forget_owners(removed)
     return removed
 
 

@@ -112,7 +112,7 @@ function mountGallery(root) {
           <a class="open" href="${url}" data-full="${url}">
             <img src="${thumb}" alt="${name}" loading="lazy" />
           </a>
-          <figcaption>${name}<br>${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}</figcaption>
+          <figcaption>${name}${item.owner ? " · " + TabbyUI.escapeHtml(item.owner) : ""}<br>${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}</figcaption>
         </figure>`;
       })
       .join("");

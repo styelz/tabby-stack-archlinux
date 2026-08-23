@@ -98,7 +98,8 @@ function mountChat(root) {
     }
   }
 
-  let store = readStore();
+  let persistReady = false;
+  let store = normalizeStore(null);
   let messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
@@ -155,12 +156,9 @@ function mountChat(root) {
       const drop = new Set(extras.slice(0, store.chats.length - MAX_CHATS).map((item) => item.id));
       store.chats = store.chats.filter((item) => !drop.has(item.id));
     }
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-    } catch {
-      /* quota — keep working in memory */
-    }
     paintToolbar();
+    if (!persistReady) return;
+    TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
   }
 
   function touchActive() {
@@ -630,7 +628,7 @@ function mountChat(root) {
 
   function clearHistory() {
     if (store.chats.some(hasUserTurn) || hasUserTurn({ messages })) {
-      if (!window.confirm("Delete all saved console chats on this browser?")) return;
+      if (!window.confirm("Delete all saved console chats for this account?")) return;
     }
     const chat = emptyChat();
     store = { version: 1, activeId: chat.id, chats: [chat] };
@@ -1169,8 +1167,31 @@ function mountChat(root) {
 
   window.addEventListener("beforeunload", persist);
   document.addEventListener("pointerdown", onPointerDownAway);
-  renderLog();
-  paintToolbar();
+  async function loadStore() {
+    let incoming = null;
+    try {
+      incoming = await TabbyUI.api("chats");
+    } catch {
+      incoming = null;
+    }
+    const serverEmpty = !incoming || !Array.isArray(incoming.chats) || !incoming.chats.some(hasUserTurn);
+    if (serverEmpty) {
+      const legacy = readStore();
+      if (legacy.chats.some(hasUserTurn)) incoming = legacy;
+    }
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    store = normalizeStore(incoming);
+    messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
+    persistReady = true;
+    persist();
+    renderLog();
+    paintToolbar();
+  }
+  loadStore();
   return {
     pause() {
       hideHistoryMenu();

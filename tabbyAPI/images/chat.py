@@ -232,7 +232,7 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
 
 
 async def _start_mixed_job(
-    items: list[dict[str, str]], api_base: str, *, start: bool = True
+    items: list[dict[str, str]], api_base: str, *, start: bool = True, owner: str | None = None
 ):
     job, kind = await start_mcp_image_job(
         items=items,
@@ -241,6 +241,7 @@ async def _start_mixed_job(
         api_base=api_base or "",
         delay=0.0,
         start=start,
+        owner=owner,
     )
     xlogger.info(f"Mixed chat queued image job {job.id} ({kind}, {len(items)} dests)")
     return job
@@ -258,6 +259,7 @@ async def _start_prompt_job(
     *,
     restore: bool,
     source_image=None,
+    owner: str | None = None,
 ):
     items = [{"prompt": prompt, "output_path": "images/generated.png"}]
     job, kind = await start_mcp_image_job(
@@ -266,6 +268,7 @@ async def _start_prompt_job(
         restore=restore,
         api_base=api_base or "",
         delay=0.0,
+        owner=owner,
     )
     xlogger.info(f"Chat image job {job.id} ({kind})")
     return job
@@ -461,6 +464,7 @@ async def handle(
     gpu_is_comfy: bool = False,
     disconnect_handler=None,
     console: bool = False,
+    owner: str | None = None,
 ):
     """Mixed generate writes the page first, then holds until PNGs exist.
 
@@ -538,7 +542,7 @@ async def handle(
                     "Wait until that batch finishes, then ask again.",
                 )
             if console:
-                started = await _start_mixed_job(plan.items, api_base or "", start=True)
+                started = await _start_mixed_job(plan.items, api_base or "", start=True, owner=owner)
                 return await _hold_then_reply(
                     data, started, mixed=False, api_base=api_base, console=True
                 )
@@ -549,7 +553,7 @@ async def handle(
                 and _file_write_pairs(_assistant_message(code_response))
             )
             started = await _start_mixed_job(
-                plan.items, api_base or "", start=not keep
+                plan.items, api_base or "", start=not keep, owner=owner
             )
             if keep:
                 return _code_reply(data, started, code_response)
@@ -565,7 +569,7 @@ async def handle(
     explicit = requested_image_prompt(data, explicit_only=True)
     if llm_ready and explicit:
         started = await _start_prompt_job(
-            explicit, api_base or "", restore=True, source_image=source_image
+            explicit, api_base or "", restore=True, source_image=source_image, owner=owner
         )
         return await _hold_then_reply(
             data, started, mixed=False, api_base=api_base, console=console
@@ -579,7 +583,7 @@ async def handle(
             prompt = last_user_text(data).strip() or "cartoon style"
         if prompt:
             started = await _start_prompt_job(
-                prompt, api_base or "", restore=False, source_image=source_image
+                prompt, api_base or "", restore=False, source_image=source_image, owner=owner
             )
             return await _hold_then_reply(
                 data, started, mixed=False, api_base=api_base, console=console
