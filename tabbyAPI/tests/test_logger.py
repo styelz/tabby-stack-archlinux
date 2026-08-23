@@ -1,6 +1,8 @@
+import logging
 import unittest
+from unittest import mock
 
-from common.logger import console_width
+from common.logger import UvicornLoggingHandler, console_width, is_ui_access_line
 
 
 class LoggerWidthTests(unittest.TestCase):
@@ -16,3 +18,44 @@ class LoggerWidthTests(unittest.TestCase):
         self.assertIsNone(console_width(None, isatty=True))
         self.assertIsNone(console_width("0", isatty=True))
         self.assertEqual(console_width("0", isatty=False), 256)
+
+
+class UiAccessLogTests(unittest.TestCase):
+    def test_status_poll_is_ui_access(self):
+        line = (
+            "Aug 24 06:08:12 archy.local python[122943]: "
+            "2026-08-24 06:08:12.392 INFO:     36.255.114.172:0 - "
+            '"GET /v1/ui/status HTTP/1.1" 200'
+        )
+        self.assertTrue(is_ui_access_line(line))
+        self.assertFalse(is_ui_access_line('"GET /v1/chat/completions HTTP/1.1" 200'))
+
+    def test_handler_drops_ui_status_access(self):
+        handler = UvicornLoggingHandler()
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='36.255.114.172:0 - "GET /v1/ui/status HTTP/1.1" 200',
+            args=(),
+            exc_info=None,
+        )
+        with mock.patch("common.logger.logger") as log:
+            handler.emit(record)
+        log.opt.assert_not_called()
+
+    def test_handler_keeps_other_access(self):
+        handler = UvicornLoggingHandler()
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='36.255.114.172:0 - "POST /v1/chat/completions HTTP/1.1" 200',
+            args=(),
+            exc_info=None,
+        )
+        with mock.patch("common.logger.logger") as log:
+            handler.emit(record)
+        log.opt.assert_called_once()

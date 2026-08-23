@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -14,6 +13,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
+
+from common.logger import is_ui_access_line
 
 ROOT = Path(__file__).resolve().parent.parent
 STACK_ROOT = ROOT.parent
@@ -26,12 +27,6 @@ CONSOLE_SYSTEM = (
 PROCESS_LOGS: deque[str] = deque(maxlen=4000)
 _SINK_ID: Optional[int] = None
 _STARTED_AT = time.time()
-# uvicorn access lines for the management UI itself (assets, status poll, logs stream).
-_UI_ACCESS_RE = re.compile(r'"[A-Z]+ (?:/v1)?/ui(?:[/?\s]|$)')
-
-
-def is_ui_access_line(line: str) -> bool:
-    return bool(_UI_ACCESS_RE.search(line or ""))
 
 
 def visible_log_lines(lines, limit: Optional[int] = None) -> list[str]:
@@ -121,7 +116,7 @@ async def stream_journal_lines() -> AsyncIterator[str]:
             raw = await process.stdout.readline()
             if not raw:
                 break
-            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if line and not is_ui_access_line(line):
                 yield line
     finally:

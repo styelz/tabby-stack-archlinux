@@ -100,11 +100,25 @@ def _log_formatter(record: dict):
     return fmt
 
 
+# uvicorn access lines for the management UI itself (status poll, assets, logs stream).
+# Optional first segment covers reverse-proxy prefixes such as /openai/v1/ui.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_UI_ACCESS_RE = re.compile(r'"[A-Z]+ (?:/\w+)?(?:/v1)?/ui(?:[/?\s]|$)')
+
+
+def is_ui_access_line(line: str) -> bool:
+    text = _ANSI_RE.sub("", line or "")
+    return bool(_UI_ACCESS_RE.search(text))
+
+
 # Uvicorn log handler
 # Uvicorn log portions inspired from https://github.com/encode/uvicorn/discussions/2027#discussioncomment-6432362
 class UvicornLoggingHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
-        logger.opt(exception=record.exc_info).log(record.levelname, self.format(record).rstrip())
+        message = self.format(record).rstrip()
+        if is_ui_access_line(message):
+            return
+        logger.opt(exception=record.exc_info).log(record.levelname, message)
 
 
 # Uvicorn config for logging. Passed into run when creating all loggers in server

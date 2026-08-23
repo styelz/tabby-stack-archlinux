@@ -115,7 +115,7 @@ function mountLogs(root) {
   }
 
   function isUiAccess(line) {
-    return /"[A-Z]+ (?:\/v1)?\/ui(?:[/?\s]|$)/.test(line);
+    return /"[A-Z]+ (?:\/\w+)?(?:\/v1)?\/ui(?:[/?\s]|$)/.test(line);
   }
 
   function queue(line) {

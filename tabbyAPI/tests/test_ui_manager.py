@@ -24,12 +24,23 @@ class UiManagerTests(unittest.TestCase):
                 '"GET /v1/ui/assets/status.js HTTP/1.1" 200'
             )
         )
+        self.assertTrue(
+            manager.is_ui_access_line(
+                "Aug 24 06:08:12 archy.local python[122943]: "
+                "2026-08-24 06:08:12.392 INFO:     36.255.114.172:0 - "
+                '"GET /v1/ui/status HTTP/1.1" 200'
+            )
+        )
         self.assertTrue(manager.is_ui_access_line('"POST /v1/ui/restart HTTP/1.1" 200'))
         self.assertTrue(manager.is_ui_access_line('"GET /v1/ui/logs/history?lines=300 HTTP/1.1" 200'))
         self.assertTrue(manager.is_ui_access_line('"GET /ui/status HTTP/1.1" 200'))
+        self.assertTrue(manager.is_ui_access_line('"GET /openai/v1/ui/status HTTP/1.1" 200'))
         self.assertFalse(manager.is_ui_access_line('"GET /v1/chat/completions HTTP/1.1" 200'))
         self.assertFalse(manager.is_ui_access_line('"GET /health HTTP/1.1" 200'))
         self.assertFalse(manager.is_ui_access_line("Model loaded: qwen"))
+        self.assertFalse(
+            manager.is_ui_access_line("Management UI: http://127.0.0.1:5000/v1/ui")
+        )
 
     def test_journalctl_history_drops_ui_access(self):
         previous = list(manager.PROCESS_LOGS)
