@@ -71,3 +71,20 @@ class Qwen3CoderParseTests(unittest.TestCase):
         self.assertEqual(starts, ("<tool_call>", "<function="))
         self.assertEqual(ends, ("</tool_call>", "</function>"))
         self.assertEqual(get_toolcall_tags("qwen3_6"), get_toolcall_tags("qwen3_5"))
+
+    def test_unclosed_strreplace_params_stay_separate(self):
+        text = (
+            "<function=StrReplace>\n"
+            "<parameter=path>\n"
+            "style.css\n"
+            "<parameter=old_string>\n"
+            ".hero { color: red; }\n"
+            "<parameter=new_string>\n"
+            ".hero { color: blue; }\n"
+        )
+        calls = parse_toolcalls(text)
+        self.assertEqual(len(calls), 1)
+        args = json.loads(calls[0].function.arguments)
+        self.assertEqual(args["path"], "style.css")
+        self.assertEqual(args["old_string"], ".hero { color: red; }")
+        self.assertEqual(args["new_string"], ".hero { color: blue; }")

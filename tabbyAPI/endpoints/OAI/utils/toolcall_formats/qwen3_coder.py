@@ -34,16 +34,32 @@ TOOLCALL_STARTS = ("<tool_call>", "<function=")
 TOOLCALL_ENDS = ("</tool_call>", "</function>")
 
 _FUNC_OPEN = re.compile(r"<function=([^>\s]+)[^>]*>")
-_PARAM = re.compile(r"<parameter=([^>\s]+)[^>]*>(.*?)(?:</parameter>|$)", re.DOTALL)
-_TRAILING_CLOSE = re.compile(r"</function>|</tool_call>", re.DOTALL)
+_PARAM_OPEN = re.compile(r"<parameter=([^>\s]+)[^>]*>")
+_STOP_IN_VALUE = re.compile(r"</function>|</tool_call>|<function=")
 
 
 def _parse_params(body: str) -> dict:
+    """Parse <parameter=name> values.
+
+    Closing </parameter> tags are optional (2bpw often skips them). A
+    parameter still ends at the next <parameter=...> so StrReplace
+    old_string/new_string stay separate instead of the first key eating
+    the rest of the call.
+    """
     args: dict[str, any] = {}
-    for pm in _PARAM.finditer(body):
+    opens = list(_PARAM_OPEN.finditer(body))
+    for i, pm in enumerate(opens):
         key = pm.group(1).strip()
-        val = _TRAILING_CLOSE.split(pm.group(2), maxsplit=1)[0]
-        args[key] = coerce_param_value(val)
+        start = pm.end()
+        end = opens[i + 1].start() if i + 1 < len(opens) else len(body)
+        chunk = body[start:end]
+        stop = _STOP_IN_VALUE.search(chunk)
+        if stop:
+            chunk = chunk[: stop.start()]
+        close_at = chunk.find("</parameter>")
+        if close_at != -1:
+            chunk = chunk[:close_at]
+        args[key] = coerce_param_value(chunk)
     return args
 
 

@@ -1,6 +1,10 @@
 import unittest
 
-from common.agent_loop import inject_loop_break, looks_like_tool_loop
+from common.agent_loop import (
+    inject_loop_break,
+    inject_zero_change_hint,
+    looks_like_tool_loop,
+)
 from endpoints.OAI.types.chat_completion import ChatCompletionMessage, ChatCompletionRequest
 from endpoints.OAI.types.tools import Tool, ToolCall
 
@@ -146,6 +150,18 @@ class AgentLoopTests(unittest.TestCase):
         messages.append(msg("assistant", name="Write", args='{"path":"a.py"}'))
         messages.append(msg("tool", "ok"))
         self.assertFalse(looks_like_tool_loop(ChatCompletionRequest(messages=messages)))
+
+    def test_zero_change_tool_result_injects_hint(self):
+        data = ChatCompletionRequest(
+            messages=[
+                msg("user", "fix the css"),
+                msg("assistant", name="StrReplace"),
+                msg("tool", "Applied edit to style.css (0 changes)."),
+            ]
+        )
+        self.assertTrue(inject_zero_change_hint(data))
+        self.assertIn("[Anti-noop]", data.messages[-1].content)
+        self.assertFalse(inject_zero_change_hint(data))
 
 
 if __name__ == "__main__":

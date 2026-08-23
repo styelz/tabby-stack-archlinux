@@ -43,6 +43,7 @@ from endpoints.OAI.utils.tools import (
     parse_toolcalls,
 )
 from endpoints.OAI.utils.common_ import aggregate_usage_stats, get_usage_stats
+from common.noop_edits import MAX_RETRIES, NOOP_EDIT_HINT, split_noop_tool_dumps
 
 
 def _start_in_reasoning_mode(prompt: str, user_suffix_len: int = 0) -> bool:
@@ -537,27 +538,44 @@ def _parse_tool_calls(
     text: str,
     tool_format: str,
     request_id: str,
-) -> list:
+) -> tuple[list, int]:
     """
     Parse collected tool calls and convert to OAI format.
 
     Insert tool indices as well. (These are not choice indices; OAI enumerates the tool
     calls within each individual choice for the sake of streaming incomplete tool arg
     deltas, which we don't do here.)
+
+    Drops StrReplace/ApplyPatch calls that would apply 0 changes (identical
+    old/new or a patch with no +/− lines). Returns (kept dumps, dropped_count).
     """
 
     parsed = parse_toolcalls(text, tool_format)
     for tc_idx, p in enumerate(parsed):
         p.index = tc_idx
     dumped = [p.model_dump(mode="json") for p in parsed]
+    kept, dropped = split_noop_tool_dumps(dumped)
+    for tc_idx, item in enumerate(kept):
+        if isinstance(item, dict):
+            item["index"] = tc_idx
 
     if len(parsed):
         xlogger.info(
             f"Parsed {len(parsed)} tool calls in chat completion request {request_id}",
-            {"tool_format": tool_format, "parsed": parsed, "dumped": dumped},
+            {
+                "tool_format": tool_format,
+                "parsed": parsed,
+                "dumped": dumped,
+                "kept": kept,
+                "dropped_noop_edits": dropped,
+            },
             details=f"(format={tool_format})",
         )
-    return dumped
+    if dropped:
+        xlogger.info(
+            f"Dropped {dropped} no-op edit tool call(s) in request {request_id}"
+        )
+    return kept, dropped
 
 
 def _resolve_reasoning_budget(data: ChatCompletionRequest, mc) -> tuple[Optional[int], str]:
@@ -630,148 +648,164 @@ async def _chat_stream_collector(
     mc = model.container
     full_reasoning = ""
     full_content = ""
-    full_tool = ""
+    current_prompt = prompt
+    in_reasoning = start_in_reasoning_mode
 
-    if mc.harmony:
-        # Harmony messages carry their own channel structure, superseding the
-        # reasoning and tool format settings
-        tool_format = "harmony"
-        use_think = False
-        parser = HarmonyStreamParser()
-    elif mc.muse_glimmer:
-        # Same for Muse Glimmer, with recipients in place of channels
-        tool_format = "muse_glimmer"
-        use_think = False
-        parser = GlimmerStreamParser()
-    else:
+    def _phase_parser(in_reasoning_now: bool):
+        if mc.harmony:
+            return "harmony", False, HarmonyStreamParser()
+        if mc.muse_glimmer:
+            return "muse_glimmer", False, GlimmerStreamParser()
         tool_format = mc.tool_format
         t_tool_start, t_tool_end = get_toolcall_tags(tool_format)
         use_tool = params.tool_choice != "none" and bool(t_tool_start)
-
-        # Always split think tags when they are configured, even if reasoning
-        # is off. Otherwise </think> leaks into content for clients like VS Code.
         use_think = bool(mc.reasoning_start_token)
-
         parser = TagStreamParser(
             reasoning_start=mc.reasoning_start_token if use_think else None,
             reasoning_end=mc.reasoning_end_token if use_think else None,
             tool_start=t_tool_start if use_tool else None,
             tool_end=t_tool_end if use_tool else None,
-            start_in_reasoning=start_in_reasoning_mode,
+            start_in_reasoning=in_reasoning_now,
             tool_calls_in_reasoning=mc.tool_calls_in_reasoning,
         )
+        return tool_format, use_think, parser
 
     # Reasoning budget: when the reasoning phase exceeds the budget, force
     # end-of-reasoning tokens into the output stream so the model answers
     # with what it has. The injected text arrives as regular output, so the
     # parser transitions out of reasoning on its own.
     budget, budget_message = _resolve_reasoning_budget(params, mc)
-    budget_injection = None
-    if budget is not None:
-        budget_injection = _reasoning_budget_injection(mc, budget_message)
-        if budget_injection is None:
-            xlogger.debug(
-                "A reasoning budget was requested but the model has no reasoning format; ignoring."
-            )
-        elif params.json_schema or params.regex_pattern or params.grammar_string:
-            # Injection permanently disables a job's filters
-            xlogger.warning(
-                "The reasoning budget is ignored because the request uses "
-                "constrained generation (json_schema, regex_pattern or "
-                "grammar_string)."
-            )
-            budget_injection = None
-    reasoning_tokens = 0
-
-    # Collect logprobs
-    collected_logprobs = []
 
     try:
-        new_generation = mc.stream_generate(
-            request_id,
-            prompt,
-            params,
-            disconnect_handler,
-            mm_embeddings,
-            filter_trigger=(
-                mc.reasoning_end_token if use_think and start_in_reasoning_mode else None
-            ),
-        )
         generation = {"index": task_idx}
-        async for generation in new_generation:
-            generation["index"] = task_idx
-            text = generation.get("text", "")
-            finish_reason = generation.get("finish_reason")
-
-            events = parser.feed(text) if text else []
-            if finish_reason:
-                events += parser.finish()
-
-            delta_reasoning = ""
-            delta_content = ""
-            for channel, sub in events:
-                if channel == REASONING:
-                    delta_reasoning += sub
-                    full_reasoning += sub
-                elif channel == CONTENT:
-                    delta_content += sub
-                    full_content += sub
-                else:
-                    full_tool += sub
-
-            # Count reasoning tokens and force the end of the reasoning phase
-            # when the budget is exhausted. Attribution is approximate: a
-            # chunk counts as reasoning if the parser is still in reasoning
-            # after consuming it, and the injection lands a few tokens late
-            # (tokens sampled ahead of this consumer precede it).
-            if budget_injection is not None and parser.in_reasoning and not parser.in_tool:
-                reasoning_tokens += len(generation.get("token_ids") or [])
-                if reasoning_tokens >= budget:
-                    if mc.constrain_generation_output(request_id, budget_injection):
-                        xlogger.debug(
-                            f"Reasoning budget of {budget} tokens exhausted; "
-                            "forcing the end of the reasoning phase.",
-                            {"injection": budget_injection},
-                        )
-                    budget_injection = None
-
-            # Collect logprobs in content span only, skipping chunks that
-            # contain a phase transition
-            if "logprobs_content" in generation and not parser.saw_tag and parser.in_content:
-                collected_logprobs += generation["logprobs_content"]
-
-            # Add the output and emit
-            if streaming_mode:
-                if delta_content:
-                    if len(collected_logprobs):
-                        generation["logprob_response"] = ChatCompletionLogprobs(
-                            content=collected_logprobs
-                        )
-                        collected_logprobs = []
-                generation["delta_reasoning_content"] = delta_reasoning if mc.reasoning else ""
-                generation["delta_content"] = delta_content
-                generation["delta_tool_calls"] = ""
-                if finish_reason and full_tool:
-                    generation["delta_tool_calls"] = _parse_tool_calls(
-                        full_tool, tool_format, request_id
+        parsed_tools: list = []
+        full_tool = ""
+        for attempt in range(MAX_RETRIES + 1):
+            tool_format, use_think, parser = _phase_parser(in_reasoning)
+            full_tool = ""
+            raw_out = ""
+            parsed_tools = []
+            dropped_noops = 0
+            budget_injection = None
+            if budget is not None:
+                budget_injection = _reasoning_budget_injection(mc, budget_message)
+                if budget_injection is None:
+                    xlogger.debug(
+                        "A reasoning budget was requested but the model has no "
+                        "reasoning format; ignoring."
                     )
-                    generation["finish_reason"] = "tool_calls"
-                await gen_queue.put(generation)
+                elif params.json_schema or params.regex_pattern or params.grammar_string:
+                    xlogger.warning(
+                        "The reasoning budget is ignored because the request uses "
+                        "constrained generation (json_schema, regex_pattern or "
+                        "grammar_string)."
+                    )
+                    budget_injection = None
+            reasoning_tokens = 0
+            collected_logprobs = []
+            job_id = request_id if attempt == 0 else f"{request_id}-noop{attempt}"
+            new_generation = mc.stream_generate(
+                job_id,
+                current_prompt,
+                params,
+                disconnect_handler,
+                mm_embeddings,
+                filter_trigger=(
+                    mc.reasoning_end_token if use_think and in_reasoning else None
+                ),
+            )
+            async for generation in new_generation:
+                generation["index"] = task_idx
+                text = generation.get("text", "")
+                raw_out += text or ""
+                finish_reason = generation.get("finish_reason")
 
-            # End
-            if finish_reason:
-                break
+                events = parser.feed(text) if text else []
+                if finish_reason:
+                    events += parser.finish()
 
-        # In non-streaming mode, return everything as a single result
+                delta_reasoning = ""
+                delta_content = ""
+                for channel, sub in events:
+                    if channel == REASONING:
+                        delta_reasoning += sub
+                        full_reasoning += sub
+                    elif channel == CONTENT:
+                        delta_content += sub
+                        full_content += sub
+                    else:
+                        full_tool += sub
+
+                if budget_injection is not None and parser.in_reasoning and not parser.in_tool:
+                    reasoning_tokens += len(generation.get("token_ids") or [])
+                    if reasoning_tokens >= budget:
+                        if mc.constrain_generation_output(job_id, budget_injection):
+                            xlogger.debug(
+                                f"Reasoning budget of {budget} tokens exhausted; "
+                                "forcing the end of the reasoning phase.",
+                                {"injection": budget_injection},
+                            )
+                        budget_injection = None
+
+                if "logprobs_content" in generation and not parser.saw_tag and parser.in_content:
+                    collected_logprobs += generation["logprobs_content"]
+
+                retry_noop = False
+                if finish_reason and full_tool:
+                    parsed_tools, dropped_noops = _parse_tool_calls(
+                        full_tool, tool_format, job_id
+                    )
+                    retry_noop = (
+                        dropped_noops > 0
+                        and not parsed_tools
+                        and attempt < MAX_RETRIES
+                    )
+
+                if streaming_mode:
+                    if delta_content:
+                        if len(collected_logprobs):
+                            generation["logprob_response"] = ChatCompletionLogprobs(
+                                content=collected_logprobs
+                            )
+                            collected_logprobs = []
+                    generation["delta_reasoning_content"] = (
+                        delta_reasoning if mc.reasoning else ""
+                    )
+                    generation["delta_content"] = delta_content
+                    generation["delta_tool_calls"] = ""
+                    if finish_reason and retry_noop:
+                        generation["finish_reason"] = None
+                    elif finish_reason and full_tool:
+                        generation["delta_tool_calls"] = parsed_tools
+                        generation["finish_reason"] = "tool_calls"
+                    await gen_queue.put(generation)
+
+                if finish_reason:
+                    break
+
+            if dropped_noops and not parsed_tools and attempt < MAX_RETRIES:
+                xlogger.info(
+                    f"No-op file edit in request {request_id}; regenerating "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+                current_prompt = current_prompt + raw_out + NOOP_EDIT_HINT
+                in_reasoning = False
+                continue
+            break
+
         if not streaming_mode:
             has_content = bool(full_content.strip())
             if has_content and len(collected_logprobs):
-                generation["logprob_response"] = ChatCompletionLogprobs(content=collected_logprobs)
+                generation["logprob_response"] = ChatCompletionLogprobs(
+                    content=collected_logprobs
+                )
             generation["reasoning_content"] = full_reasoning if mc.reasoning else ""
             generation["content"] = full_content if has_content else None
-            generation["tool_calls"] = _parse_tool_calls(full_tool, tool_format, request_id)
-            if full_tool:
+            generation["tool_calls"] = parsed_tools
+            if full_tool and parsed_tools:
                 generation["finish_reason"] = "tool_calls"
+            elif full_tool and not parsed_tools:
+                generation["finish_reason"] = generation.get("finish_reason") or "stop"
             return generation
 
     except Exception as e:

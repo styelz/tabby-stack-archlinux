@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from common.logger import xlogger
+from common.noop_edits import HINT_MARK as NOOP_HINT_MARK, NOOP_EDIT_HINT, tool_result_is_zero_change
 from endpoints.OAI.types.chat_completion import ChatCompletionMessage, ChatCompletionRequest
 
 LOOP_HINT = (
@@ -176,8 +177,25 @@ def looks_like_tool_loop(data: ChatCompletionRequest) -> bool:
 
 def already_has_hint(data: ChatCompletionRequest) -> bool:
     for message in reversed(data.messages or []):
-        if HINT_MARK in _content_text(message.content):
+        text = _content_text(message.content)
+        if HINT_MARK in text or NOOP_HINT_MARK in text:
             return True
+    return False
+
+
+def inject_zero_change_hint(data: ChatCompletionRequest) -> bool:
+    """If the last tool result was a 0-change apply, force another real edit."""
+    if already_has_hint(data):
+        return False
+    for message in reversed(data.messages or []):
+        if message.role == "tool" and tool_result_is_zero_change(message.content):
+            data.messages.append(
+                ChatCompletionMessage(role="user", content=NOOP_EDIT_HINT.strip())
+            )
+            xlogger.info("Injected anti-noop hint into chat completion request")
+            return True
+        if message.role in ("assistant", "user"):
+            break
     return False
 
 

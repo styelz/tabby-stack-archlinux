@@ -25,7 +25,7 @@ from endpoints.OAI.types.chat_completion import (
     ChatCompletionResponse,
 )
 from endpoints.OAI.types.embedding import EmbeddingsRequest, EmbeddingsResponse
-from common.agent_loop import inject_loop_break
+from common.agent_loop import inject_loop_break, inject_zero_change_hint
 from common.assistant_text import strip_apology_sse, strip_response_apologies
 from common.gpu_mode import public_api_base
 from common.pasted_images import materialize_pasted_images
@@ -144,6 +144,7 @@ async def chat_completion_request(
     if switch_response is not None:
         return switch_response
     inject_clipboard_save_hint(data, api_base=api_base)
+    inject_zero_change_hint(data)
     inject_loop_break(data)
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
