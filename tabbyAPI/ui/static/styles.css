@@ -239,67 +239,109 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 
 #page-status.is-active {
   overflow: hidden;
+  padding: 10px 14px 12px;
 }
-.status-toolbar { margin-bottom: 10px; }
+.status-toolbar { margin-bottom: 8px; flex: 0 0 auto; }
 .status-layout {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  gap: 10px;
   align-items: stretch;
 }
 .status-side {
   min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-right: 2px;
-}
-.status-cards {
+  max-height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.status-card {
-  padding: 10px 12px;
+.status-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  padding: 7px;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
+  overflow: hidden;
 }
-.status-card h2 {
-  margin: 0 0 4px;
-  font-size: 12px;
-  letter-spacing: 0.02em;
-}
-.status-card .stat {
-  font-size: 17px;
-  line-height: 1.25;
-}
-.status-card .muted {
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 1.35;
-}
-.status-actions {
-  padding: 12px;
-}
-.status-actions h2 { margin-bottom: 6px; font-size: 13px; }
-.status-actions > .muted { margin: 0 0 10px; font-size: 12px; line-height: 1.4; }
-.actions-stack {
+.status-fact {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
 }
-.actions-stack select,
-.actions-stack .btn {
+.status-fact.is-wide { grid-column: 1 / -1; }
+.fact-k {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  line-height: 1.15;
+}
+.fact-v {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  word-break: break-word;
+}
+.fact-x {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-fact.is-wide .fact-x { white-space: normal; }
+.fact-pill {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+.fact-pill.ok {
+  color: var(--ok);
+  background: rgba(61, 214, 140, 0.12);
+}
+.fact-pill.bad {
+  color: var(--bad);
+  background: rgba(255, 107, 122, 0.12);
+}
+.status-actions {
+  padding: 8px;
+  flex: 0 0 auto;
+}
+.status-actions h2 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.actions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.actions-grid select {
+  grid-column: 1 / -1;
   width: 100%;
-}
-.actions-stack select {
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
 }
-#action-msg { margin: 8px 0 0; font-size: 12px; min-height: 1.2em; }
+.actions-grid .btn {
+  width: 100%;
+  padding: 6px 7px;
+  font-size: 12px;
+}
+#action-msg { margin: 5px 0 0; font-size: 11px; min-height: 1.1em; }
 
 .metrics-panel {
   min-height: 0;

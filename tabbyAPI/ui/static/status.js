@@ -7,15 +7,14 @@ function mountStatus(root) {
     </div>
     <div class="status-layout">
       <aside class="status-side">
-        <div class="status-cards" id="status-cards"></div>
+        <div class="card status-facts" id="status-cards"></div>
         <div class="card status-actions">
           <h2>Actions</h2>
-          <p class="muted">Restart bounces TabbyAPI (and Comfy if it owns the GPU). Update runs update.sh from the stack root.</p>
-          <div class="actions-stack">
-            <select id="profile-select"></select>
+          <div class="actions-grid">
+            <select id="profile-select" aria-label="Profile"></select>
             <button class="btn" id="switch-llm">Load LLM</button>
-            <button class="btn" id="switch-comfy">Hand GPU to Comfy</button>
-            <button class="btn danger" id="restart-btn">Restart stack</button>
+            <button class="btn" id="switch-comfy">To Comfy</button>
+            <button class="btn danger" id="restart-btn">Restart</button>
             <button class="btn" id="update-git">Update git</button>
             <button class="btn" id="update-all">Update all</button>
           </div>
@@ -78,8 +77,10 @@ function mountStatus(root) {
   let range = { hours: 24, days: null };
   let lastSeries = [];
 
-  function card(title, value, extra = "") {
-    return `<article class="card status-card"><h2>${TabbyUI.escapeHtml(title)}</h2><div class="stat">${value}</div><div class="muted">${extra}</div></article>`;
+  function fact(title, value, extra = "", wide = false) {
+    const cls = wide ? "status-fact is-wide" : "status-fact";
+    const sub = extra ? `<span class="fact-x">${TabbyUI.escapeHtml(extra)}</span>` : "";
+    return `<div class="${cls}"><span class="fact-k">${TabbyUI.escapeHtml(title)}</span><span class="fact-v">${value}</span>${sub}</div>`;
   }
 
   function syncCustomFields() {
@@ -254,25 +255,28 @@ function mountStatus(root) {
     const host = data.host || {};
     const model = data.model || {};
     const health = data.health || {};
+    const healthLabel = health.healthy ? "healthy" : "unhealthy";
+    const healthClass = health.healthy ? "ok" : "bad";
     cards.innerHTML = [
-      card("GPU mode", data.gpu_mode || "unknown", data.comfy_up ? "Comfy is up" : "Comfy idle"),
-      card("Profile", data.profile || "—", data.tabby_model || "LLM unloaded"),
-      card("Context", model.max_seq_len || "—", model.cache_mode ? `cache ${model.cache_mode}` : ""),
-      card("Health", health.healthy ? "healthy" : "unhealthy", (health.issues || []).join("; ") || "no issues"),
-      card("Uptime", TabbyUI.formatDuration(data.uptime_s), data.api_base || ""),
-      card(
+      fact("GPU", TabbyUI.escapeHtml(data.gpu_mode || "unknown"), data.comfy_up ? "Comfy up" : "Comfy idle"),
+      fact("Profile", TabbyUI.escapeHtml(data.profile || "—"), data.tabby_model || "LLM unloaded"),
+      fact("Context", TabbyUI.escapeHtml(String(model.max_seq_len || "—")), model.cache_mode ? `cache ${model.cache_mode}` : ""),
+      fact(
+        "Health",
+        `<span class="fact-pill ${healthClass}">${healthLabel}</span>`,
+        (health.issues || []).join("; ") || "no issues"
+      ),
+      fact("Uptime", TabbyUI.escapeHtml(TabbyUI.formatDuration(data.uptime_s)), ""),
+      fact("CPU", host.cpu_pct != null ? `${host.cpu_pct}%` : "—", host.load1 != null ? `load ${host.load1}` : ""),
+      fact("RAM", host.ram_pct != null ? `${host.ram_pct}%` : "—", ""),
+      fact(
         "NVIDIA",
-        gpu.name || "n/a",
+        TabbyUI.escapeHtml(gpu.name || "n/a"),
         gpu.memory_total_mib
           ? `${gpu.memory_used_mib} / ${gpu.memory_total_mib} MiB · ${gpu.utilization_pct}% · ${gpu.temperature_c}°C`
-          : ""
+          : "",
+        true
       ),
-      card(
-        "CPU / load",
-        host.cpu_pct != null ? `${host.cpu_pct}%` : "—",
-        host.load1 != null ? `load ${host.load1}` : ""
-      ),
-      card("RAM", host.ram_pct != null ? `${host.ram_pct}%` : "—", ""),
     ].join("");
     const profiles = data.profiles || [];
     select.innerHTML = profiles.map((name) => `<option value="${TabbyUI.escapeHtml(name)}">${TabbyUI.escapeHtml(name)}</option>`).join("");
