@@ -9,19 +9,28 @@ set -euo pipefail
 DEST="$(cd "$(dirname "$0")" && pwd)"
 ORIGIN="${TABBY_GIT_ORIGIN:-https://github.com/styelz/tabby-stack-archlinux.git}"
 UPDATE_COMFY=0
+# files = git pull only; full = pull then install.sh --update (pip, restart).
+UPDATE_KIND="${TABBY_UPDATE_KIND:-}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--comfy]
+Usage: $(basename "$0") [--files|--full] [--comfy]
 
-Pull origin into this install and apply code, Python deps, and a service
-reload. config.yml, tabby.env, models, and venv are left in place.
+Pull origin into this install. At the start you are asked whether to only
+update files or run a full update (deps + API restart). If this script
+itself changes in that pull, it re-runs so the new update.sh is used.
+config.yml, tabby.env, models, and venv are left in place.
+Does not run pacman -Syu or upgrade already-installed OS packages.
 
 Options
-  --comfy     Also git pull ComfyUI and ComfyUI-GGUF, then reinstall their
-              Python requirements. Default is to leave image-gen at the
-              commit the installer cloned.
+  --files     Git pull only. No pip, missing OS packages, or service restart.
+  --full      Pull, then apply code, Python deps, and reload tabbyapi.
+  --comfy     Also git pull ComfyUI and ComfyUI-GGUF. Full update then
+              reinstalls their Python requirements; files-only only pulls.
   -h, --help  This text
+
+No flag and a TTY: prompt. No TTY: --full (same as older update.sh).
+Or set TABBY_UPDATE_KIND=files or full.
 
 This folder:  $DEST
 Origin:       $ORIGIN
@@ -30,6 +39,8 @@ EOF
 
 while (($#)); do
   case "$1" in
+    --files|--files-only) UPDATE_KIND=files; shift ;;
+    --full) UPDATE_KIND=full; shift ;;
     --comfy) UPDATE_COMFY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -39,6 +50,14 @@ while (($#)); do
       ;;
   esac
 done
+
+case "$UPDATE_KIND" in
+  ""|files|full) ;;
+  *)
+    echo "TABBY_UPDATE_KIND must be files or full (got $UPDATE_KIND)." >&2
+    exit 2
+    ;;
+esac
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -62,6 +81,45 @@ fi
 if ! need_cmd git; then
   die "git is not installed. On Arch: sudo pacman -S git"
 fi
+
+ask_update_kind() {
+  if [[ -n "$UPDATE_KIND" ]]; then
+    return
+  fi
+  if [[ ! -t 0 ]]; then
+    UPDATE_KIND=full
+    echo "==> No TTY; full update (deps + restart). Pass --files for git pull only."
+    return
+  fi
+  echo
+  echo "How do you want to update $DEST?"
+  echo "  1) Files only  — git pull; leave the venv and API running"
+  echo "  2) Full update — pull, refresh Python deps, install missing OS"
+  echo "                   packages, restart tabbyapi, wait for /health"
+  echo
+  local ans
+  while true; do
+    read -r -p "Choice [1/2] (default 2): " ans || die "No choice given."
+    case "${ans,,}" in
+      ""|2|full) UPDATE_KIND=full; break ;;
+      1|files) UPDATE_KIND=files; break ;;
+      *) echo "Enter 1 (files) or 2 (full)." ;;
+    esac
+  done
+}
+
+reexec_args() {
+  local -a args=()
+  if [[ "$UPDATE_KIND" == files ]]; then
+    args+=(--files)
+  else
+    args+=(--full)
+  fi
+  if [[ "$UPDATE_COMFY" -eq 1 ]]; then
+    args+=(--comfy)
+  fi
+  printf '%s\n' "${args[@]}"
+}
 
 tracked_dirty() {
   local dir="$1"
@@ -202,6 +260,9 @@ Commit, stash, or restore them, then re-run. Untracked runtime files
   fi
 }
 
+ask_update_kind
+BEFORE_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
+
 if [[ -d "$DEST/.git" ]]; then
   ensure_stack_origin
   ff_pull "$DEST" "tabby-stack"
@@ -231,6 +292,18 @@ if [[ "$UPDATE_COMFY" -eq 1 ]]; then
   else
     echo "WARNING: ComfyUI-GGUF is not a git checkout; skipping its pull." >&2
   fi
+fi
+
+AFTER_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
+if [[ "$BEFORE_UPDATE_SH" != "$AFTER_UPDATE_SH" ]]; then
+  echo "==> update.sh changed on disk; restarting with the new script"
+  mapfile -t _reexec < <(reexec_args)
+  exec bash "$DEST/update.sh" "${_reexec[@]}"
+fi
+
+if [[ "$UPDATE_KIND" == files ]]; then
+  echo "==> Files-only update finished (no pip / API restart)."
+  exit 0
 fi
 
 echo "==> Applying update (pip, models skip-existing, restart)"

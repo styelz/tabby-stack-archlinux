@@ -28,6 +28,7 @@ Usage: $(basename "$0") [--update]
   (no args)   Interactive or env-driven install / re-run
   --update    Apply code and deps after git pull. Prefer: bash update.sh
               Reuses tabby.env; does not overwrite config.yml or tabby.env.
+              Does not pacman -Syu; only installs missing OS packages.
   -h, --help  This text
 EOF
 }
@@ -269,7 +270,10 @@ progress_start() {
     GAUGE_MODE="verbose"
     return 0
   fi
-  if [[ -t 1 ]] && need_cmd dialog; then
+  # dialog --gauge uses ncurses. update.sh is noninteractive (USE_TUI=0) but
+  # stdout is still a tty, so the old check launched a gauge and left the
+  # shell needing `reset` (echo off / alt screen).
+  if [[ "$USE_TUI" -eq 1 && -t 1 ]] && need_cmd dialog; then
     # mktemp -d, not a file we delete and re-create: /tmp is world-writable and
     # the gap between rm and mkfifo is a symlink race.
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"
@@ -311,6 +315,20 @@ progress() {
   esac
 }
 
+restore_tty() {
+  [[ -t 1 || -c /dev/tty ]] || return 0
+  {
+    command -v tput >/dev/null 2>&1 && {
+      tput rmcup || true
+      tput rmkx || true
+      tput cnorm || true
+      tput sgr0 || true
+    }
+    printf '\033[?1049l\033[?25h\033[m'
+    stty sane
+  } >/dev/tty 2>/dev/null || true
+}
+
 progress_stop() {
   if [[ -n "${SUDO_KEEPALIVE_PID:-}" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -324,6 +342,7 @@ progress_stop() {
       if [[ -n "$GAUGE_DIR" ]]; then
         rm -rf "$GAUGE_DIR"
       fi
+      restore_tty
       ;;
     text)
       printf '\n'
@@ -1290,9 +1309,6 @@ fi
 progress_start
 trap 'rc=$?; if [[ "$INSTALL_FAILED" -eq 0 && "$rc" -ne 0 ]]; then progress_fail "$rc"; else progress_stop; fi' EXIT
 
-progress 4 "Syncing packages"
-run_quiet sudo -n pacman -Sy --noconfirm
-
 NVIDIA_DRIVER_INSTALLED_NOW=0
 if nvidia_smi_ok; then
   :
@@ -1311,8 +1327,24 @@ else
   fi
 fi
 
-progress 10 "Installing packages"
-run_quiet sudo -n pacman -S --needed --noconfirm "${PACKAGES[@]}"
+if [[ "$UPDATE_MODE" -eq 1 ]]; then
+  # Do not pacman -Sy / upgrade installed pkgs. That is pacman -Syu.
+  # Only install names the stack needs that are not on the system yet.
+  progress 10 "Checking packages"
+  missing=()
+  for p in "${PACKAGES[@]}"; do
+    pacman -Q "$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+  if ((${#missing[@]})); then
+    echo "Installing missing packages: ${missing[*]}" >> "$INSTALL_LOG"
+    run_quiet sudo -n pacman -S --needed --noconfirm "${missing[@]}"
+  fi
+else
+  progress 4 "Syncing packages"
+  run_quiet sudo -n pacman -Sy --noconfirm
+  progress 10 "Installing packages"
+  run_quiet sudo -n pacman -S --needed --noconfirm "${PACKAGES[@]}"
+fi
 
 if ! need_cmd nvidia-smi; then
   echo "nvidia-smi not found after package install." >> "$INSTALL_LOG"
@@ -1635,6 +1667,7 @@ fi
 progress 100 "Finished"
 progress_stop
 trap - EXIT
+restore_tty
 clear_install_resume
 
 HOWTO="$DEST_TABBY/HOW-TO-ARCH.txt"
@@ -1735,12 +1768,15 @@ If something fails
   no LLM loaded          wait for startup, or send switch to qwen in chat
 
 Update
-  $DEST/update.sh              git pull this install, then apply deps and restart
+  $DEST/update.sh              asks files-only (git pull) vs full (deps + restart)
+  $DEST/update.sh --files      git pull only; no pip or API restart
+  $DEST/update.sh --full       pull, then apply deps and restart
   $DEST/update.sh --comfy      also pull ComfyUI and ComfyUI-GGUF
 
   This folder is the git checkout. You do not need a second clone.
   config.yml, tabby.env, models, venv, and ComfyUI weights are kept.
-  The API reloads until GET /health is healthy (~65s).
+  If update.sh changes in the pull, it restarts itself.
+  A full update reloads the API until GET /health is healthy (~65s).
 
 Uninstall
   $DEST/uninstall.sh              stop services, then remove the install

@@ -145,6 +145,47 @@ class PlanTests(unittest.TestCase):
         )
         self.assertTrue(is_mixed_image_request(data))
 
+    def test_menu_section_images_without_saying_website_is_mixed(self):
+        data = _user(
+            "create images each of the menu sections and use them on the menu. "
+            "Dont add words/text to the images. Dont use svg's"
+        )
+        self.assertTrue(is_mixed_image_request(data))
+
+    def test_plural_images_and_qwen_images_followup_uses_coding_history(self):
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Create a pizza website with HTML and CSS.",
+                ),
+                ChatCompletionMessage(
+                    role="user",
+                    content="the images created look like svg's. recreate them with qwen-images",
+                ),
+            ]
+        )
+        self.assertTrue(is_mixed_image_request(data))
+
+    def test_create_images_using_flux_in_coding_chat_is_mixed(self):
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Build the homepage in html.",
+                ),
+                ChatCompletionMessage(
+                    role="user",
+                    content="create the images using flux",
+                ),
+            ]
+        )
+        self.assertTrue(is_mixed_image_request(data))
+
+    def test_generate_an_image_of_a_menu_is_not_mixed(self):
+        data = _user("generate an image of a restaurant menu")
+        self.assertFalse(is_mixed_image_request(data))
+
 
 class CurlFromLivingFilesTests(unittest.TestCase):
     def test_curl_lists_only_files_that_exist(self):
@@ -342,6 +383,59 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_called()
         args = response.choices[0].message.tool_calls[0].function.arguments
         self.assertIn("generated-logo.png", args)
+
+    async def test_menu_section_ask_starts_mixed_job_not_pillow(self):
+        planned = [
+            {"prompt": "pizza", "output_path": "images/classic-pizzas.png"},
+            {"prompt": "sides", "output_path": "images/sides-appetizers.png"},
+            {"prompt": "dessert", "output_path": "images/desserts.png"},
+        ]
+        job = _job(status="queued")
+
+        async def finish(j):
+            j.status = "done"
+            j.items = [
+                SimpleNamespace(
+                    prompt=row["prompt"],
+                    output_path=row["output_path"],
+                    urls=[f"https://gpu.example/v1/images/generated-{i}.png"],
+                    status="done",
+                )
+                for i, row in enumerate(planned)
+            ]
+            return j
+
+        data = _user(
+            "create images each of the menu sections and use them on the menu. "
+            "Dont add words/text to the images. Dont use svg's"
+        )
+        with (
+            mock.patch(
+                "images.chat.plan_mixed_dests",
+                new=mock.AsyncMock(return_value=planned),
+            ),
+            mock.patch("images.chat.active_mcp_image_job", return_value=None),
+            mock.patch(
+                "images.chat.start_mcp_image_job",
+                new=mock.AsyncMock(return_value=(job, "started")),
+            ) as start,
+            mock.patch("images.chat.wait_until_done", side_effect=finish),
+            mock.patch("images.paths.gpu_generated_file_missing", return_value=False),
+        ):
+            response = await handle(data, "https://gpu.example/v1")
+        start.assert_awaited()
+        dests = [row["output_path"] for row in start.await_args.kwargs["items"]]
+        self.assertEqual(
+            dests,
+            [
+                "images/classic-pizzas.png",
+                "images/sides-appetizers.png",
+                "images/desserts.png",
+            ],
+        )
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("generated-0.png", args)
+        self.assertNotIn("Pillow", args)
 
     async def test_layout_followup_after_curl_does_not_start_a_job(self):
         job = _job(id="abc-123", status="done")

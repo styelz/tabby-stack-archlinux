@@ -27,8 +27,12 @@ from images.paths import (
 from images.plan import plan_mixed_dests
 
 JOB_MARK = "tabby-image-job:"
+# Plurals matter: \bimage\b does not match "images" / "qwen-images".
 IMAGE_NOUN_RE = re.compile(
-    r"(?is)\b(image|picture|photo|pic|poster|mockup|icon|logo|banner|qwen-image)\b"
+    r"(?is)\b("
+    r"images?|pictures?|photos?|pics?|posters?|mockups?|"
+    r"icons?|logos?|banners?|pngs?|qwen-images?"
+    r")\b"
 )
 CODING_TASK_RE = re.compile(
     r"(?is)\b("
@@ -37,17 +41,27 @@ CODING_TASK_RE = re.compile(
     r"react|vue|jsx|tsx"
     r")\b"
 )
+_IMAGE_NOUN_ALT = (
+    r"images?|pictures?|photos?|pics?|logos?|headers?|banners?|pngs?|qwen-images?"
+)
 NEW_IMAGE_ASK_RE = re.compile(
     r"(?is)\b("
     r"generat\w*|creat\w*|draw|render|redo|re-?do|replac\w*|improv\w*"
     r")\b.{0,80}\b("
-    r"image|picture|photo|pic|logo|header|banner|png"
-    r")\b"
+    + _IMAGE_NOUN_ALT
+    + r")\b"
     r"|\b("
-    r"image|picture|photo|pic|logo|header|banner|png"
-    r")\b.{0,80}\b("
+    + _IMAGE_NOUN_ALT
+    + r")\b.{0,80}\b("
     r"generat\w*|creat\w*|draw|render|redo|replac\w*"
     r")\b"
+    r"|\b(?:using|with)\s+(?:flux|qwen-images?|comfy)\b"
+)
+# Place PNGs on an existing page without saying "website" / "html".
+USE_IN_UI_RE = re.compile(
+    r"(?is)\buse\s+(?:them|it|these|those)\s+(?:on|in|for)\b"
+    r"|\b(?:on|in)\s+the\s+(?:menu|page|site|website|header|hero|card)s?\b"
+    r"|\bmenu\s+sections?\b"
 )
 
 
@@ -88,12 +102,22 @@ def job_id_from_history(data: ChatCompletionRequest) -> str:
 def is_mixed_image_request(data: ChatCompletionRequest) -> bool:
     from common.phrase_switch import last_user_text
 
-    text = last_user_text(data)
     if last_role(data) in ("tool", "function"):
         return False
-    return bool(text) and bool(CODING_TASK_RE.search(text)) and bool(
-        IMAGE_NOUN_RE.search(text)
-    )
+    text = last_user_text(data)
+    if not text or not IMAGE_NOUN_RE.search(text):
+        return False
+    if CODING_TASK_RE.search(text):
+        return True
+    if not NEW_IMAGE_ASK_RE.search(text):
+        return False
+    if USE_IN_UI_RE.search(text):
+        return True
+    # Follow-up in a coding chat: "recreate them with qwen-images" / "using flux".
+    prior = _history_blob(data)
+    if text in prior:
+        prior = prior.replace(text, "", 1)
+    return bool(CODING_TASK_RE.search(prior))
 
 
 def _wants_new_images(data: ChatCompletionRequest) -> bool:

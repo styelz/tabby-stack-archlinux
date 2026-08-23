@@ -93,7 +93,7 @@ On the GPU host, from the install root:
 bash "$HOME/tabby-stack/update.sh"
 ```
 
-That fast-forwards this checkout, reinstalls Python packages if they changed, skips model files that already exist, restarts TabbyAPI, and waits until `GET /health` is healthy (~65s). `config.yml`, `tabby.env`, weights, and the venv stay. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
+At the start it asks whether to **update files only** (git pull; API stays up) or a **full update** (pull, pip, missing OS packages, restart, wait for `GET /health` ~65s). Pass `--files` or `--full` to skip the prompt. If `update.sh` itself changed in the pull, the new script is run again with that same choice. `config.yml`, `tabby.env`, weights, and the venv stay. OS packages are not upgraded (`pacman -Syu` stays your job); only a full update installs missing stack packages. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
 
 An install that was copied without `.git` is bootstrapped from GitHub the first time you run `update.sh`. You do not need a second clone.
 

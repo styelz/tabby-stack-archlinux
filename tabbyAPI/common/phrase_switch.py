@@ -914,7 +914,10 @@ def has_new_user_after_image(data: ChatCompletionRequest) -> bool:
 
 
 IMAGE_NOUN_RE = re.compile(
-    r"(?is)\b(image|picture|photo|pic|poster|mockup|icon|logo|banner|qwen-image)\b"
+    r"(?is)\b("
+    r"images?|pictures?|photos?|pics?|posters?|mockups?|"
+    r"icons?|logos?|banners?|pngs?|qwen-images?"
+    r")\b"
 )
 CODING_TASK_RE = re.compile(
     r"(?is)\b("
