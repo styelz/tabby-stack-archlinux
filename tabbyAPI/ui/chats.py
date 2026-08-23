@@ -111,6 +111,23 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
     return store
 
 
+def chat_count(username: str) -> int:
+    """Conversations that have at least one user message."""
+    n = 0
+    for chat in load_store(username).get("chats") or []:
+        messages = chat.get("messages") if isinstance(chat, dict) else None
+        if not isinstance(messages, list):
+            continue
+        if any(
+            isinstance(item, dict)
+            and item.get("role") == "user"
+            and str(item.get("content") or "").strip()
+            for item in messages
+        ):
+            n += 1
+    return n
+
+
 def delete_store(username: str) -> None:
     path = chat_path(username)
     with _LOCK:

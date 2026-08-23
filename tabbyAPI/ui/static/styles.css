@@ -952,11 +952,12 @@ figure.shot .open { display: block; }
   .cards { grid-template-columns: 1fr; }
 }
 
-.users-page { display: grid; gap: 16px; max-width: 880px; }
+.users-page { display: grid; gap: 16px; max-width: 1080px; }
 .users-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; }
 .users-table { width: 100%; border-collapse: collapse; }
 .users-table th, .users-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
-.users-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.users-table th.num, .users-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.users-actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 @media (max-width: 720px) {
   .users-form { grid-template-columns: 1fr; }
 }

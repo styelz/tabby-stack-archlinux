@@ -55,11 +55,11 @@ function mountGallery(root) {
     boxes = Array.from(grid.querySelectorAll(".pick input"));
   }
 
-  function applyRange(from, to) {
+  function applyRange(from, to, checked) {
     const a = Math.min(from, to);
     const z = Math.max(from, to);
     for (let j = a; j <= z; j += 1) {
-      if (boxes[j]) boxes[j].checked = true;
+      if (boxes[j]) boxes[j].checked = checked;
     }
     paint();
   }
@@ -70,11 +70,13 @@ function mountGallery(root) {
     const i = Number(pick.closest("figure")?.dataset.index);
     if (!Number.isInteger(i) || !boxes[i]) return;
     if (event.shiftKey) {
-      event.preventDefault();
       const from = lastIndex;
-      // The browser toggles the clicked box before this handler, then
-      // undoes that toggle when click is cancelled. Re-apply after that.
-      setTimeout(() => applyRange(from, i), 0);
+      // The browser toggles the clicked box before this handler. That
+      // new state is the range action (tick or untick). preventDefault
+      // then undoes the single toggle; re-apply it across the range.
+      const checked = boxes[i].checked;
+      event.preventDefault();
+      setTimeout(() => applyRange(from, i, checked), 0);
       return;
     }
     lastIndex = i;

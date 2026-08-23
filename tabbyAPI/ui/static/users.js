@@ -23,7 +23,14 @@ function mountUsers(root) {
         </div>
         <table class="users-table">
           <thead>
-            <tr><th>Username</th><th>Created</th><th></th></tr>
+            <tr>
+              <th>Username</th>
+              <th>Created</th>
+              <th class="num">Logins</th>
+              <th class="num">Chats</th>
+              <th class="num">Images</th>
+              <th></th>
+            </tr>
           </thead>
           <tbody id="users-body"></tbody>
         </table>
@@ -53,18 +60,25 @@ function mountUsers(root) {
     showError("");
     const data = await TabbyUI.api("users");
     const rows = data.users || [];
-    empty.hidden = rows.length > 0;
+    empty.hidden = rows.some((user) => !user.is_admin);
     body.innerHTML = rows
       .map((user) => {
         const name = TabbyUI.escapeHtml(user.username);
-        const created = TabbyUI.escapeHtml(user.created_at || "");
+        const created = TabbyUI.escapeHtml(user.created_at || (user.is_admin ? "Linux admin" : ""));
+        const logins = Number(user.logins || 0);
+        const chats = Number(user.chats || 0);
+        const images = Number(user.images || 0);
+        const actions = user.is_admin
+          ? `<span class="muted">PAM account</span>`
+          : `<button class="btn" type="button" data-reset="${name}">Reset password</button>
+            <button class="btn danger" type="button" data-del="${name}">Delete</button>`;
         return `<tr data-name="${name}">
-          <td>${name}</td>
+          <td>${name}${user.is_admin ? ' <span class="muted">admin</span>' : ""}</td>
           <td class="muted">${created}</td>
-          <td class="users-actions">
-            <button class="btn" type="button" data-reset="${name}">Reset password</button>
-            <button class="btn danger" type="button" data-del="${name}">Delete</button>
-          </td>
+          <td class="num">${logins}</td>
+          <td class="num">${chats}</td>
+          <td class="num">${images}</td>
+          <td class="users-actions">${actions}</td>
         </tr>`;
       })
       .join("");

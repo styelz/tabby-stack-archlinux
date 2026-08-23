@@ -143,6 +143,116 @@ def list_users() -> list[dict[str, str]]:
         return rows
 
 
+def _logins_map(data: dict[str, Any]) -> dict[str, int]:
+    raw = data.get("logins")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            out[name] = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _login_count_from(logins: dict[str, int], username: str) -> int:
+    wanted = normalize_username(username).lower()
+    if not wanted:
+        return 0
+    for name, count in logins.items():
+        if name.lower() == wanted:
+            return count
+    return 0
+
+
+def record_login(username: str) -> int:
+    """Count a successful UI login for extra users and the Linux admin."""
+    name = normalize_username(username)
+    if not name:
+        return 0
+    with _LOCK:
+        data = _load()
+        canonical = name
+        for user in data.get("users") or []:
+            if not isinstance(user, dict):
+                continue
+            stored = str(user.get("username") or "").strip()
+            if stored.lower() == name.lower():
+                canonical = stored
+                break
+        logins = _logins_map(data)
+        count = 0
+        for existing in list(logins):
+            if existing.lower() == canonical.lower():
+                count = logins.pop(existing)
+        count += 1
+        logins[canonical] = count
+        data["logins"] = logins
+        _save(data)
+        return count
+
+
+def list_accounts() -> list[dict[str, Any]]:
+    """Admin plus extra users, with login / chat / image counts for the Users page."""
+    from common.gallery_owners import image_counts
+    from ui.chats import chat_count
+
+    stack = _stack_name()
+    with _LOCK:
+        data = _load()
+        logins = _logins_map(data)
+        extras: list[dict[str, Any]] = []
+        for user in data.get("users") or []:
+            if not isinstance(user, dict):
+                continue
+            name = str(user.get("username") or "").strip()
+            if not name:
+                continue
+            extras.append(
+                {
+                    "username": name,
+                    "created_at": str(user.get("created_at") or ""),
+                    "is_admin": False,
+                    "logins": _login_count_from(logins, name),
+                }
+            )
+        extras.sort(key=lambda item: item["username"].lower())
+    owned, untagged = image_counts()
+
+    def images_for(name: str, is_admin: bool) -> int:
+        total = 0
+        wanted = name.lower()
+        for owner, count in owned.items():
+            if str(owner).lower() == wanted:
+                total += count
+        if is_admin:
+            total += untagged
+        return total
+
+    rows: list[dict[str, Any]] = []
+    if stack:
+        rows.append(
+            {
+                "username": stack,
+                "created_at": "",
+                "is_admin": True,
+                "logins": _login_count_from(logins, stack),
+                "chats": chat_count(stack),
+                "images": images_for(stack, True),
+            }
+        )
+    for extra in extras:
+        name = str(extra["username"])
+        extra["chats"] = chat_count(name)
+        extra["images"] = images_for(name, False)
+        rows.append(extra)
+    return rows
+
+
 def create_user(username: str, password: str) -> dict[str, str]:
     username = validate_username(username)
     if not password or len(password) < MIN_PASSWORD:
@@ -202,6 +312,16 @@ def delete_user(username: str) -> None:
         if len(kept) == len(users):
             raise KeyError("User not found.")
         data["users"] = kept
+        logins = data.get("logins")
+        if isinstance(logins, dict):
+            drop = [
+                key
+                for key in logins
+                if str(key).lower() == username.lower()
+            ]
+            for key in drop:
+                logins.pop(key, None)
+            data["logins"] = logins
         _save(data)
 
 

@@ -95,6 +95,12 @@ async def ui_login(request: Request):
     record_login_attempt(ip)
     if not authenticate_user(username, password):
         raise HTTPException(401, "Invalid username or password.")
+    try:
+        from ui.users import record_login
+
+        record_login(username)
+    except Exception:
+        pass
     token = create_session(username)
     response = Response(
         content=json.dumps({"ok": True, "username": username, "redirect": "./"}),
@@ -245,9 +251,9 @@ async def ui_chat(request: Request, _user: str = Depends(require_ui_user)):
 
 @router.get("/users", include_in_schema=False)
 async def ui_users_list(_admin: str = Depends(require_ui_admin)):
-    from ui.users import list_users
+    from ui.users import list_accounts
 
-    return {"users": list_users()}
+    return {"users": list_accounts()}
 
 
 @router.post("/users", include_in_schema=False)

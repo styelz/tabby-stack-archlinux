@@ -114,3 +114,20 @@ def filter_files(files: list[Path], username: str, is_admin: bool) -> list[Path]
     if is_admin:
         return list(files)
     return [path for path in files if owner_of(path.name) == username]
+
+
+def image_counts() -> tuple[dict[str, int], int]:
+    """Return (owner → count, untagged count). Untagged files count as admin's."""
+    from common.gpu_mode import list_generated_files
+
+    with _LOCK:
+        mapping = _load()
+    owned: dict[str, int] = {}
+    untagged = 0
+    for path in list_generated_files():
+        owner = mapping.get(png_name(path.name))
+        if owner:
+            owned[owner] = owned.get(owner, 0) + 1
+        else:
+            untagged += 1
+    return owned, untagged
