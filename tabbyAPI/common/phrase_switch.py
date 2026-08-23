@@ -1759,11 +1759,35 @@ async def ensure_mixed_image_job(
     return job
 
 
+def _last_ask_wants_image_tools(data: ChatCompletionRequest) -> bool:
+    """True when this user line still needs wait/download, not a CSS edit."""
+    if user_says_images_missing(data):
+        return True
+    last = _last_ask_text(data)
+    if _text_is_pillow_debug(last) or _text_is_image_redo(last):
+        return True
+    return is_mixed_image_request(data)
+
+
 async def prepare_mixed_image_turn(
     data: ChatCompletionRequest, api_base: Optional[str] = None
 ):
-    """Start a mixed job if needed, then wait or download. None means the 9B may run."""
+    """Start a mixed job if needed, then wait or download. None means the 9B may run.
+
+    A layout-only follow-up must not re-curl a finished job. Restart clears
+    client_saved, and this chat already has sleep/ls history, so gpu_busy
+    used to keep inventing curl even after the user only asked to fix CSS.
+    """
     await ensure_mixed_image_job(data, api_base)
+    try:
+        from endpoints.core.image_jobs import active_mcp_image_job
+
+        busy = active_mcp_image_job()
+    except Exception:
+        busy = None
+    running = bool(busy and getattr(busy, "status", "") in ("queued", "running"))
+    if not running and not _last_ask_wants_image_tools(data):
+        return None
     return await await_gpu_busy_image_response(data)
 
 
@@ -1854,6 +1878,9 @@ def _gpu_busy_sync(data: ChatCompletionRequest):
             if refused:
                 return refused
             return _drive_running_image_job(data, job)
+        return None
+
+    if not _last_ask_wants_image_tools(data):
         return None
 
     refused = _refuse_fake_pngs(data, job)

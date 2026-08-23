@@ -261,6 +261,7 @@ def _job_to_persist(job: McpImageJob) -> dict:
         "error": job.error,
         "started_at": job.started_at,
         "current_index": job.current_index,
+        "client_saved": bool(job.client_saved),
     }
 
 
@@ -289,13 +290,14 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         error=str(data.get("error") or ""),
         started_at=started_at,
         current_index=int(data.get("current_index") or 0),
-        client_saved=False,
+        client_saved=bool(data.get("client_saved")),
     )
     if job.status not in ("done", "error"):
         # The render task that owned this job is gone; it cannot resume.
         # Keep any items that already finished so Shell can still save them.
         job.status = "error"
         job.phase = "error"
+        job.client_saved = False
         if not job.error:
             if job.done_count:
                 job.error = (

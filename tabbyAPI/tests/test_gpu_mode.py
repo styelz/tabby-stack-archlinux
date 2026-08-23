@@ -2497,6 +2497,71 @@ class ServerOwnedMixedJobTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_awaited()
         self.assertIsNone(job)
 
+    async def test_layout_followup_does_not_curl_after_restart(self):
+        """Restart sets client_saved False. This chat already waited on the
+        Cosmos job, so gpu_busy kept inventing curl instead of letting the
+        9B edit CSS (live log after 16:35 bounce)."""
+        spec = (
+            'Create a complete, production-ready website for a solar system '
+            'tour company called "Cosmos Tours." The logo should be large. '
+            "Tours to different planets (Mars, Jupiter, Saturn, Neptune). "
+            "Each planet package should have a generated transparent PNG "
+            "image of that planet."
+        )
+        existing = mock.Mock(
+            id="a7f86b12-a3af-4fa4-8a0d-80f6a8e8f809",
+            status="done",
+            wait_text="About 17 minutes.",
+            wait_s=1114,
+            output_path="images/logo.png",
+            items=[
+                mock.Mock(output_path="images/logo.png", urls=[], prompt="", status="done", error="")
+            ],
+            urls=["https://git.pbptech.com/openai/v1/images/generated-x.png"],
+            client_saved=False,
+            download_attempts=0,
+            error="",
+        )
+        follow = (
+            "<attachment id=\"file:///workspace/styles.css\">\n"
+            ".packages { grid-template-columns: repeat(auto-fit, minmax(1fr, 1fr)); }\n"
+            'img[src="images/logo.png"] { width: 180px; }\n'
+            "</attachment>\n"
+            "<userRequest>can you make the panels wider not long</userRequest>"
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="user", content=spec),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="Still generating job a7f86b12-a3af-4fa4-8a0d-80f6a8e8f809.",
+                ),
+                ChatCompletionMessage(role="user", content=follow),
+            ]
+        )
+        self.assertFalse(is_mixed_image_request(data))
+        with (
+            mock.patch(
+                "endpoints.core.image_jobs.active_mcp_image_job",
+                return_value=None,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.get_mcp_image_job",
+                return_value=existing,
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.recent_mcp_image_jobs",
+                return_value=[existing],
+            ),
+            mock.patch(
+                "endpoints.core.image_jobs.start_mcp_image_job",
+                new=mock.AsyncMock(),
+            ) as start,
+        ):
+            response = await prepare_mixed_image_turn(data)
+        start.assert_not_awaited()
+        self.assertIsNone(response)
+
     async def test_logo_only_job_does_not_block_missing_planet_dests(self):
         """Once the chat waited on a logo-only job, reuse used to skip the
         covers check. Re-running the Cosmos prompt then never queued planets."""

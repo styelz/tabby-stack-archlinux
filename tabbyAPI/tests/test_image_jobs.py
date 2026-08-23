@@ -171,6 +171,49 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(recovered.client_saved)
                 await reset_mcp_image_jobs_for_tests()
 
+    async def test_finished_job_keeps_client_saved_across_restart(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _persist_jobs,
+            get_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-restart-saved",
+                    items=[
+                        McpImageItem(
+                            prompt="qwen-image: logo",
+                            output_path="images/logo.png",
+                            urls=["https://gpu.example/v1/images/a.png"],
+                            status="done",
+                        )
+                    ],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="about 4 minutes",
+                    wait_s=240,
+                    status="done",
+                    phase="done",
+                    urls=["https://gpu.example/v1/images/a.png"],
+                    client_saved=True,
+                )
+                from endpoints.core.image_jobs import _MCP_JOBS, _MCP_ORDER
+
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                _persist_jobs()
+                await reset_mcp_image_jobs_for_tests()
+                recovered = get_mcp_image_job("job-restart-saved")
+                self.assertIsNotNone(recovered)
+                self.assertEqual(recovered.status, "done")
+                self.assertTrue(recovered.client_saved)
+                await reset_mcp_image_jobs_for_tests()
+
     async def test_interrupted_job_keeps_finished_items_but_errors(self):
         from endpoints.core.image_jobs import (
             McpImageItem,
