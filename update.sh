@@ -225,11 +225,62 @@ ensure_stack_origin() {
   fi
 }
 
+is_stack_wrapper() {
+  case "$1" in
+    install.sh|uninstall.sh|update.sh) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+dirty_tracked_names() {
+  local dir="$1"
+  git -C "$dir" diff --name-only
+  git -C "$dir" diff --cached --name-only
+}
+
+restore_head_file() {
+  local dir="$1" file="$2"
+  git -C "$dir" restore --source=HEAD --staged --worktree -- "$file" 2>/dev/null \
+    || git -C "$dir" restore --worktree --source=HEAD -- "$file"
+}
+
+# Copy-to-live of files already on origin must not block a fast-forward.
+# Real edits (content that is not on origin) still abort, except install/update
+# wrappers which are held aside and put back after the merge.
+take_origin_copies() {
+  local dir="$1" spec="$2"
+  local f
+  local -A seen=()
+  MATCHED_ORIGIN=()
+  AHEAD_WRAPPERS=()
+  REAL_EDITS=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -z "${seen[$f]:-}" ]] || continue
+    seen[$f]=1
+    [[ -f "$dir/$f" ]] || {
+      REAL_EDITS+=("$f")
+      continue
+    }
+    if git -C "$dir" cat-file -e "$spec:$f" 2>/dev/null && matches_origin_blob "$dir" "$spec" "$f"; then
+      MATCHED_ORIGIN+=("$f")
+      restore_head_file "$dir" "$f"
+      continue
+    fi
+    if is_stack_wrapper "$f"; then
+      AHEAD_WRAPPERS+=("$f")
+    else
+      REAL_EDITS+=("$f")
+    fi
+  done < <(dirty_tracked_names "$dir")
+}
+
 ff_pull() {
   local dir="$1"
   local label="$2"
   local branch=""
   local wrappers_tmp=""
+  local wrap f
   echo "==> Fetching $label"
   git -C "$dir" fetch origin
   branch="$(origin_branch "$dir")"
@@ -237,20 +288,30 @@ ff_pull() {
     branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
   fi
   [[ -n "$branch" && "$branch" != "HEAD" ]] || die "Could not determine the branch for $label."
-  # Newer install/update scripts copied onto the install must not block the pull.
-  local wrap
-  for wrap in install.sh uninstall.sh update.sh; do
-    [[ -f "$dir/$wrap" ]] || continue
-    [[ -n "$(git -C "$dir" diff --ignore-cr-at-eol -- "$wrap" 2>/dev/null)" ]] || continue
-    if [[ -z "$wrappers_tmp" ]]; then
-      wrappers_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-wrappers.XXXXXX")"
-      echo "==> Holding local $wrap (not on origin yet)"
-    else
-      echo "==> Holding local $wrap (not on origin yet)"
+  take_origin_copies "$dir" "origin/$branch"
+  if ((${#MATCHED_ORIGIN[@]})); then
+    echo "==> Local copies already match origin/$branch; taking the pull"
+  fi
+  if ((${#AHEAD_WRAPPERS[@]})); then
+    wrappers_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tabby-stack-wrappers.XXXXXX")"
+    for wrap in "${AHEAD_WRAPPERS[@]}"; do
+      echo "==> Holding local $wrap (newer than origin/$branch)"
+      cp "$dir/$wrap" "$wrappers_tmp/$wrap"
+      restore_head_file "$dir" "$wrap"
+    done
+  fi
+  if ((${#REAL_EDITS[@]})); then
+    if [[ -n "$wrappers_tmp" ]]; then
+      cp -a "$wrappers_tmp/." "$dir/"
+      rm -rf "$wrappers_tmp"
     fi
-    cp "$dir/$wrap" "$wrappers_tmp/$wrap"
-    git -C "$dir" restore --worktree --source=HEAD -- "$wrap"
-  done
+    die "$label has local edits that are not on origin/$branch:
+$(printf '  %s\n' "${REAL_EDITS[@]}")
+Commit, stash, or restore them, then re-run. Copies that already match
+GitHub are fine. Untracked venv, models, ComfyUI, and config.yml are fine.
+
+  git -C $dir status"
+  fi
   if real_tracked_diff "$dir"; then
     if [[ -n "$wrappers_tmp" ]]; then
       cp -a "$wrappers_tmp/." "$dir/"
