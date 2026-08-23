@@ -91,6 +91,7 @@ class McpImageJob:
     dead_requeued: bool = False
     is_requeue: bool = False
     download_stopped: bool = False
+    code_turns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     progress: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -265,6 +266,7 @@ def _job_to_persist(job: McpImageJob) -> dict:
         "started_at": job.started_at,
         "current_index": job.current_index,
         "client_saved": bool(job.client_saved),
+        "code_turns": int(job.code_turns or 0),
     }
 
 
@@ -294,7 +296,11 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         started_at=started_at,
         current_index=int(data.get("current_index") or 0),
         client_saved=bool(data.get("client_saved")),
+        code_turns=int(data.get("code_turns") or 0),
     )
+    if job.status == "coding":
+        job.phase = "writing_code"
+        return job
     if job.status not in ("done", "error"):
         # The render task that owned this job is gone; it cannot resume.
         # Keep any items that already finished so Shell can still save them.
@@ -524,7 +530,7 @@ def active_mcp_image_job() -> Optional[McpImageJob]:
     _drop_dead_jobs()
     for job_id in reversed(_MCP_ORDER):
         job = _MCP_JOBS.get(job_id)
-        if job and job.status in ("queued", "running"):
+        if job and job.status in ("queued", "running", "coding"):
             return job
     return None
 
@@ -630,6 +636,9 @@ def _new_items(
     resolve_output_paths(parsed)
     for item in parsed:
         item.prompt = rewrite_comfy_prompt(item.prompt)
+    from common.gen_logging import log_image_translator
+
+    log_image_translator("generate", parsed, source="comfy handoff")
     return parsed
 
 
@@ -646,12 +655,16 @@ async def start_mcp_image_job(
     wait_s: int = 0,
     delay: Optional[float] = None,
     items: Optional[list[dict]] = None,
+    start: bool = True,
 ) -> tuple[McpImageJob, str]:
     """Queue a Comfy job that survives the MCP HTTP client disconnecting.
 
     Extra generate_image calls while a batch is queued or generating are
     appended so Comfy stays up and the LLM reloads once at the end.
-    Returns (job, "started"|"appended"|"busy").
+    Returns (job, "started"|"appended"|"busy"|"coding").
+
+    `start=False` remembers dests in a coding-phase job and does not
+    unload the LLM. Call launch_mcp_image_job when the page is written.
     """
     new_items = _new_items(
         prompt=prompt,
@@ -684,9 +697,6 @@ async def start_mcp_image_job(
                 return busy, "appended"
         return busy, "busy"
 
-    if delay is None:
-        delay = MCP_HANDOFF_DELAY_S if loaded_tabby_name() else 0.0
-
     job = McpImageJob(
         id=str(uuid4()),
         items=new_items,
@@ -698,11 +708,42 @@ async def start_mcp_image_job(
     )
     refresh_job_wait(job)
     _remember_mcp_job(job)
-    loop = asyncio.get_running_loop()
+    if not start:
+        job.status = "coding"
+        job.phase = "writing_code"
+        job.code_turns = 1
+        _signal(job)
+        return job, "coding"
+    await launch_mcp_image_job(job, delay=delay)
+    return job, "started"
+
+
+async def launch_mcp_image_job(
+    job: McpImageJob, delay: Optional[float] = None
+) -> McpImageJob:
+    """Hand a remembered coding job to Comfy. No-op if already rendering."""
     global _MCP_TASK, _MCP_JOB_ID
+    if job.status in ("queued", "running") and _MCP_JOB_ID == job.id and _worker_is_alive():
+        return job
+    if delay is None:
+        delay = MCP_HANDOFF_DELAY_S if loaded_tabby_name() else 0.0
+    job.status = "queued"
+    job.phase = "queued"
+    refresh_job_wait(job)
+    _signal(job)
+    loop = asyncio.get_running_loop()
     _MCP_TASK = loop.create_task(_run_mcp_image_job(job, float(delay)))
     _MCP_JOB_ID = job.id
-    return job, "started"
+    return job
+
+
+def note_coding_progress(job: McpImageJob) -> int:
+    """Count another file-write turn. Comfy still must not start."""
+    job.status = "coding"
+    job.phase = "writing_code"
+    job.code_turns = int(job.code_turns or 0) + 1
+    _signal(job)
+    return job.code_turns
 
 
 async def wait_until_done(job: McpImageJob) -> McpImageJob:

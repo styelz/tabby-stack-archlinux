@@ -14,6 +14,9 @@ def broadcast_status():
     if config.logging.log_prompt:
         enabled.append("prompts")
 
+    if getattr(config.logging, "log_image_prompts", True):
+        enabled.append("image translator prompts")
+
     if config.logging.log_generation_params:
         enabled.append("generation params")
 
@@ -34,6 +37,60 @@ def log_generation_params(**kwargs):
     """Logs generation parameters to console."""
     if config.logging.log_generation_params:
         xlogger.info("Generation options:", kwargs, details=f"{kwargs}\n")
+
+
+def image_prompt_logging_on() -> bool:
+    """True unless logging.log_image_prompts is explicitly false."""
+    try:
+        value = getattr(config.logging, "log_image_prompts", None)
+    except Exception:
+        return True
+    if value is None:
+        return True
+    return bool(value)
+
+
+def _item_dest_and_prompt(item) -> tuple[str, str]:
+    if isinstance(item, dict):
+        dest = str(item.get("output_path") or item.get("filename") or "").strip()
+        prompt = str(item.get("prompt") or "").strip()
+        return dest, prompt
+    dest = str(getattr(item, "output_path", "") or "").strip()
+    prompt = str(getattr(item, "prompt", "") or "").strip()
+    return dest, prompt
+
+
+def log_image_translator(
+    action: str,
+    items=None,
+    *,
+    source: str = "",
+    user_text: str = "",
+):
+    """Print dest prompts the classifier/rewrite handed to Comfy."""
+    if not image_prompt_logging_on():
+        return
+    rows = list(items or [])
+    where = f" ({source})" if source else ""
+    header = (
+        f"Image translator{where}: action={action or 'unknown'}, "
+        f"{len(rows)} dest(s)"
+    )
+    lines = []
+    snippet = (user_text or "").strip().replace("\n", " ")
+    if snippet:
+        lines.append(f"  user: {snippet[:300]}")
+    dests = []
+    for item in rows:
+        dest, prompt = _item_dest_and_prompt(item)
+        dests.append({"output_path": dest, "prompt": prompt})
+        lines.append(f"  {dest or '(no dest)'}")
+        lines.append(f"    {prompt or '(empty prompt)'}")
+    xlogger.info(
+        header,
+        {"action": action, "source": source, "dests": dests},
+        details=("\n" + "\n".join(lines) + "\n") if lines else None,
+    )
 
 
 def log_prompt(prompt: str, request_id: str, negative_prompt: Optional[str] = None):

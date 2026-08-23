@@ -98,6 +98,13 @@ class LoggingConfig(BaseConfigModel):
         False,
         description="Enable prompt logging (default: False).",
     )
+    log_image_prompts: Optional[bool] = Field(
+        True,
+        description=(
+            "Log the image translator's dest prompts (classify JSON + Comfy rewrite). "
+            "Default: True."
+        ),
+    )
     log_generation_params: Optional[bool] = Field(
         False,
         description="Enable generation parameter logging (default: False).",

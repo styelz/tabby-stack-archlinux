@@ -52,8 +52,8 @@ Returns `b64_json` and `url`. Save the PNG into the project with a shell command
 
 A line like “create a webpage and generate a header and logo” is a **coding task**. This API writes the HTML/CSS/JS first (file tools), then generates the PNGs on the GPU. Do not turn it into React/Vite boilerplate, SVG/CSS art, or a Pillow/`generate_images.py` script. Transparent PNGs are produced on the GPU after Comfy — do not write or debug a Python drawing script even if the spec asked for PIL/Pillow.
 
-1. Apply the file tools from the first reply. Point `img src` at the planned local paths such as `images/logo.png`. Do not dump the page in chat. Do not overwrite those PNGs with Pillow, SVG, or `generate_images.py`.
-2. The follow-up request holds until every planned PNG exists on the GPU host, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`. Do not invent `/v1/images/generated-*.png` timestamps. Do not curl a leftover URL from another chat. A backgrounded command is not success. If a curl 404s, the file is missing on the GPU host — do not write `generate_images.py`.
+1. Apply the file tools from each coding reply. Point `img src` at the planned local paths such as `images/logo.png`. Do not dump the page in chat. Do not overwrite those PNGs with Pillow, SVG, or `generate_images.py`. More Write/StrReplace turns may follow while the coding model stays loaded.
+2. After the page is written, the next reply holds until every planned PNG exists on the GPU host, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`. Do not invent `/v1/images/generated-*.png` timestamps. Do not curl a leftover URL from another chat. A backgrounded command is not success. If a curl 404s, the file is missing on the GPU host — do not write `generate_images.py`.
 3. Prefix `qwen-image:` for logos and readable text. Hero/header photos: describe a scene, not a website. Flux draft about 3 minutes each, Qwen-Image about 4 minutes each, then about 65 seconds to reload the coding model once.
 
 Text editors cannot save PNG bytes. Several PNGs share one Comfy batch.

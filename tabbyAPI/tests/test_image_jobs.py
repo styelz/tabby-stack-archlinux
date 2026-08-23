@@ -246,6 +246,48 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(disk[-1]["items"][1]["status"], "error")
                 await reset_mcp_image_jobs_for_tests()
 
+    async def test_coding_job_survives_restart_without_starting_comfy(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            _persist_jobs,
+            active_mcp_image_job,
+            get_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-coding",
+                    items=[
+                        McpImageItem(
+                            prompt="qwen-image: logo",
+                            output_path="images/logo.png",
+                        )
+                    ],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="coding",
+                    phase="writing_code",
+                    code_turns=2,
+                )
+                from endpoints.core.image_jobs import _MCP_JOBS, _MCP_ORDER
+
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                _persist_jobs()
+                await reset_mcp_image_jobs_for_tests()
+                recovered = get_mcp_image_job("job-coding")
+                self.assertEqual(recovered.status, "coding")
+                self.assertEqual(recovered.phase, "writing_code")
+                self.assertEqual(recovered.code_turns, 2)
+                self.assertEqual(active_mcp_image_job().id, "job-coding")
+                await reset_mcp_image_jobs_for_tests()
+
     async def test_persisted_error_job_clears_unfinished_items(self):
         from endpoints.core.image_jobs import (
             McpImageItem,

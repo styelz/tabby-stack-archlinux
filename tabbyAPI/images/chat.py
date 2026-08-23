@@ -13,6 +13,8 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 from images.jobs import (
     active_mcp_image_job,
     get_mcp_image_job,
+    launch_mcp_image_job,
+    note_coding_progress,
     start_mcp_image_job,
     wait_until_done,
 )
@@ -27,6 +29,21 @@ from images.paths import (
 from images.plan import classify_image_turn
 
 JOB_MARK = "tabby-image-job:"
+MAX_CODE_TURNS = 16
+FILE_WRITE_NAMES = (
+    "write",
+    "write_file",
+    "write_to_file",
+    "create_file",
+    "strreplace",
+    "search_replace",
+    "replace_in_file",
+    "apply_patch",
+    "applypatch",
+    "apply_diff",
+    "edit_notebook",
+    "edit_file",
+)
 
 
 def _content_text(content) -> str:
@@ -110,6 +127,38 @@ def _assistant_message(response):
     return getattr(choices[0], "message", None)
 
 
+def _file_write_pairs(message) -> list[tuple[str, dict]]:
+    from common.image_paths import match_tool_name
+
+    return [
+        (name, args)
+        for name, args in _tool_call_pairs(message)
+        if match_tool_name([name], FILE_WRITE_NAMES)
+    ]
+
+
+def _job_plan_items(job) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for item in getattr(job, "items", None) or []:
+        dest = str(getattr(item, "output_path", "") or "").strip()
+        if dest:
+            items.append(
+                {
+                    "prompt": str(getattr(item, "prompt", "") or ""),
+                    "output_path": dest,
+                }
+            )
+    return items
+
+
+def _keep_writing_page(code_response, job) -> bool:
+    if not code_response:
+        return False
+    if not _file_write_pairs(_assistant_message(code_response)):
+        return False
+    return int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
+
+
 def _tool_call_pairs(message) -> list[tuple[str, dict]]:
     pairs: list[tuple[str, dict]] = []
     for call in getattr(message, "tool_calls", None) or []:
@@ -144,6 +193,7 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
     """One coding completion while the LLM is still loaded. None if it cannot run."""
     from common import model
     from common.assistant_text import strip_response_apologies
+    from common.networking import DisconnectHandler
     from endpoints.OAI.utils.chat_completion import (
         apply_chat_template,
         generate_chat_completion,
@@ -152,6 +202,7 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
     request = getattr(disconnect_handler, "request", None) if disconnect_handler else None
     container = getattr(model, "container", None)
     if request is None or not container or not getattr(container, "loaded", False):
+        xlogger.info("Mixed chat code pass skipped: no request or loaded model")
         return None
     if getattr(container, "prompt_template", None) is None:
         return None
@@ -160,12 +211,18 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
         return None
     state = getattr(request, "state", None)
     if state is None or not getattr(state, "id", None):
+        xlogger.info("Mixed chat code pass skipped: request has no id")
         return None
+    nested = DisconnectHandler(
+        request=request,
+        description="mixed site code",
+        abort_event=getattr(disconnect_handler, "abort_event", None),
+    )
     try:
         sync = data.model_copy(update={"stream": False, "n": 1})
         prompt, embeddings = await apply_chat_template(sync)
         response = await generate_chat_completion(
-            prompt, embeddings, sync, request, model_path, disconnect_handler
+            prompt, embeddings, sync, request, model_path, nested
         )
         return strip_response_apologies(response)
     except Exception as exc:
@@ -173,16 +230,25 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
         return None
 
 
-async def _start_mixed_job(items: list[dict[str, str]], api_base: str):
+async def _start_mixed_job(
+    items: list[dict[str, str]], api_base: str, *, start: bool = True
+):
     job, kind = await start_mcp_image_job(
         items=items,
         seed=None,
         restore=True,
         api_base=api_base or "",
         delay=0.0,
+        start=start,
     )
     xlogger.info(f"Mixed chat queued image job {job.id} ({kind}, {len(items)} dests)")
     return job
+
+
+async def _launch_mixed_job(job):
+    launched = await launch_mcp_image_job(job)
+    xlogger.info(f"Mixed chat started Comfy for job {job.id}")
+    return launched
 
 
 async def _start_prompt_job(
@@ -324,19 +390,40 @@ async def handle(
 ):
     """Mixed generate writes the page first, then holds until PNGs exist.
 
-    File-write tool calls go out immediately; the next turn holds for the
-    curl. Always wins over the 9B while this conversation's job is still
-    running.
+    File-write tool calls go out while the LLM stays loaded. Comfy starts
+    only after a coding turn has no more file tools. Always wins over the
+    9B while this conversation's job is still running.
     """
-    from common.phrase_switch import requested_image_prompt
+    from common.phrase_switch import requested_image_prompt, text_response
 
     job_id = job_id_from_history(data)
     job = get_mcp_image_job(job_id) if job_id else None
     role = last_role(data)
+    if not job and role in ("tool", "function") and llm_ready:
+        busy = active_mcp_image_job()
+        if busy and busy.status == "coding":
+            job = busy
 
     if job and job.status in ("queued", "running"):
         return await _hold_then_reply(
             data, job, mixed=_job_uses_curl(job), api_base=api_base
+        )
+
+    if job and job.status == "coding" and llm_ready:
+        _inject_planned_dests(data, _job_plan_items(job))
+        note_coding_progress(job)
+        code_response = await _write_site_code(data, disconnect_handler)
+        if _keep_writing_page(code_response, job):
+            return _code_reply(data, job, code_response)
+        await _launch_mixed_job(job)
+        if code_response and _file_write_pairs(_assistant_message(code_response)):
+            return _code_reply(data, job, code_response)
+        return await _hold_then_reply(
+            data,
+            job,
+            mixed=True,
+            api_base=api_base,
+            code_response=code_response,
         )
 
     if role in ("tool", "function"):
@@ -358,8 +445,6 @@ async def handle(
         if plan.action == "generate" and plan.items:
             busy = active_mcp_image_job()
             if busy and not job_id:
-                from common.phrase_switch import text_response
-
                 return text_response(
                     data,
                     f"The GPU is already generating job {busy.id}. "
@@ -367,8 +452,14 @@ async def handle(
                 )
             _inject_planned_dests(data, plan.items)
             code_response = await _write_site_code(data, disconnect_handler)
-            started = await _start_mixed_job(plan.items, api_base or "")
-            if code_response and _tool_call_pairs(_assistant_message(code_response)):
+            keep = bool(
+                code_response
+                and _file_write_pairs(_assistant_message(code_response))
+            )
+            started = await _start_mixed_job(
+                plan.items, api_base or "", start=not keep
+            )
+            if keep:
                 return _code_reply(data, started, code_response)
             return await _hold_then_reply(
                 data,
@@ -398,6 +489,19 @@ async def handle(
             return await _hold_then_reply(
                 data, started, mixed=False, api_base=api_base
             )
-        return None
+
+    if not llm_ready:
+        if job and job.status == "coding":
+            await _launch_mixed_job(job)
+            return await _hold_then_reply(
+                data, job, mixed=True, api_base=api_base
+            )
+        busy = active_mcp_image_job()
+        if busy and busy.status in ("queued", "running"):
+            return text_response(
+                data,
+                f"Images are still rendering (job {busy.id}). "
+                "Wait for the download curl in the chat that started that job.",
+            )
 
     return None

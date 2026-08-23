@@ -657,8 +657,8 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
             return _write_code_response()
 
         async def fake_start(**kwargs):
-            order.append("images")
-            return job, "started"
+            order.append("remember" if not kwargs.get("start", True) else "images")
+            return job, "coding" if not kwargs.get("start", True) else "started"
 
         data = _user("Create a website with a logo")
         with (
@@ -673,11 +673,14 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "images.chat.start_mcp_image_job",
                 new=mock.AsyncMock(side_effect=fake_start),
-            ),
+            ) as start,
+            mock.patch("images.chat.launch_mcp_image_job", new=mock.AsyncMock()) as launch,
             mock.patch("images.chat.wait_until_done", new=mock.AsyncMock()) as wait,
         ):
             response = await handle(data, "https://gpu.example/v1")
-        self.assertEqual(order, ["code", "images"])
+        self.assertEqual(order, ["code", "remember"])
+        self.assertFalse(start.await_args.kwargs.get("start", True))
+        launch.assert_not_awaited()
         wait.assert_not_awaited()
         self.assertIn("images/logo.png", captured["user"])
         self.assertIn("Write every HTML/CSS/JS file", captured["user"])
@@ -686,6 +689,143 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("index.html", message.tool_calls[0].function.arguments)
         self.assertIn("tabby-image-job: job-code", message.content)
         self.assertNotIn("curl ", message.tool_calls[0].function.arguments)
+
+    async def test_coding_followup_keeps_llm_for_another_write(self):
+        job = _job(id="abc-123", status="coding", code_turns=1)
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Create a website with a logo",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123\nwriting the page",
+                    tool_calls=[
+                        ToolCall(
+                            function=Tool(
+                                name="Write",
+                                arguments='{"path":"index.html","contents":"<html></html>"}',
+                            )
+                        )
+                    ],
+                ),
+                ChatCompletionMessage(
+                    role="tool",
+                    content="wrote index.html",
+                    tool_call_id="call_1",
+                ),
+            ]
+        )
+
+        async def fake_write(_data, _handler):
+            return _write_code_response(path="styles.css")
+
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch("images.chat.note_coding_progress", return_value=2),
+            mock.patch("images.chat._write_site_code", side_effect=fake_write),
+            mock.patch("images.chat.launch_mcp_image_job", new=mock.AsyncMock()) as launch,
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+            mock.patch("images.chat.wait_until_done", new=mock.AsyncMock()) as wait,
+        ):
+            job.code_turns = 2
+            response = await handle(data, "https://gpu.example/v1")
+        start.assert_not_called()
+        launch.assert_not_awaited()
+        wait.assert_not_awaited()
+        message = response.choices[0].message
+        self.assertEqual(message.tool_calls[0].function.name, "Write")
+        self.assertIn("styles.css", message.tool_calls[0].function.arguments)
+        self.assertNotIn("curl ", message.tool_calls[0].function.arguments)
+
+    async def test_coding_followup_without_file_tools_starts_comfy(self):
+        job = _job(
+            id="abc-123",
+            status="coding",
+            code_turns=2,
+            items=[
+                SimpleNamespace(
+                    prompt="logo",
+                    output_path="images/logo.png",
+                    urls=[],
+                    status="queued",
+                )
+            ],
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content="Create a website with a logo",
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123",
+                ),
+                ChatCompletionMessage(
+                    role="tool",
+                    content="wrote index.html",
+                    tool_call_id="call_1",
+                ),
+            ]
+        )
+
+        async def fake_write(_data, _handler):
+            return ChatCompletionResponse(
+                model="gpt-4o",
+                choices=[
+                    ChatCompletionRespChoice(
+                        finish_reason="stop",
+                        message=ChatCompletionMessage(
+                            role="assistant",
+                            content="page is ready",
+                        ),
+                    )
+                ],
+            )
+
+        async def finish(j):
+            j.status = "done"
+            j.items[0].urls = ["https://gpu.example/v1/images/generated-logo.png"]
+            j.items[0].status = "done"
+            return j
+
+        async def fake_launch(j, delay=None):
+            j.status = "queued"
+            return j
+
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch("images.chat.note_coding_progress", return_value=3),
+            mock.patch("images.chat._write_site_code", side_effect=fake_write),
+            mock.patch(
+                "images.chat.launch_mcp_image_job",
+                new=mock.AsyncMock(side_effect=fake_launch),
+            ) as launch,
+            mock.patch("images.chat.wait_until_done", side_effect=finish),
+            mock.patch("images.paths.gpu_generated_file_missing", return_value=False),
+        ):
+            job.code_turns = 3
+            response = await handle(data, "https://gpu.example/v1")
+        launch.assert_awaited()
+        args = response.choices[0].message.tool_calls[0].function.arguments
+        self.assertIn("generated-logo.png", args)
+
+    async def test_running_job_without_id_does_not_say_no_llm(self):
+        busy = _job(id="abc-123", status="running")
+        data = _user("please write a title for this conversation")
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=None),
+            mock.patch("images.chat.active_mcp_image_job", return_value=busy),
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+        ):
+            response = await handle(
+                data, "https://gpu.example/v1", llm_ready=False, gpu_is_comfy=False
+            )
+        start.assert_not_called()
+        self.assertIn("still rendering", response.choices[0].message.content)
+        self.assertNotIn("No LLM is loaded", response.choices[0].message.content)
 
     async def test_mixed_followup_after_code_holds_for_curl(self):
         job = _job(

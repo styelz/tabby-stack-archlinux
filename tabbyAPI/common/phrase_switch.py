@@ -567,10 +567,11 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
             "  8. Send switch to qwen when you want the coding model back.",
             "",
             "Coding plus images (same chat, any IDE):",
-            "  The API writes HTML/CSS/JS first (file tools), then generates the PNGs. "
-            "Apply those file tools. The next reply holds until every PNG exists "
-            "and returns one Shell curl of those real URLs. Do not sleep/ls, "
-            "do not invent generated-*.png timestamps, and do not POST /v1/mcp for that batch.",
+            "  The API writes HTML/CSS/JS first (file tools) while the coding model stays loaded. "
+            "Apply those file tools. More file tools may follow. After the page is written, "
+            "the next reply holds until every PNG exists and returns one Shell curl of those "
+            "real URLs. Do not sleep/ls, do not invent generated-*.png timestamps, "
+            "and do not POST /v1/mcp for that batch.",
             "  A chat dump is not a file.",
             "  Do not fake images with SVG, CSS art, Pillow/PIL, emoji, placeholder URLs, or Unsplash.",
             "  Point img src at the planned local PNG paths. Never use the browser.",
@@ -1081,6 +1082,14 @@ def requested_image_prompt(
 
 def should_yield_comfy_to_llm(data: ChatCompletionRequest) -> bool:
     """True when Comfy owns the GPU but this turn needs the coding model."""
+    try:
+        from images.jobs import active_mcp_image_job
+
+        busy = active_mcp_image_job()
+    except Exception:
+        busy = None
+    if busy and busy.status in ("queued", "running"):
+        return False
     if last_role(data) in ("tool", "function"):
         return True
     return requested_image_prompt(data) is None
@@ -1174,6 +1183,20 @@ async def llm_not_ready_response(data: ChatCompletionRequest):
         if name in GPU_ALIASES or name == "comfy":
             return text_response(data, comfy_starting_text())
         return text_response(data, llm_loading_text(name))
+    try:
+        from images.jobs import active_mcp_image_job
+
+        busy = active_mcp_image_job()
+    except Exception:
+        busy = None
+    if busy and busy.status in ("queued", "running"):
+        return text_response(
+            data,
+            f"Images are still rendering (job {busy.id}). "
+            "Wait for the download curl in the chat that started that job.",
+        )
+    if busy and busy.status == "coding":
+        return text_response(data, llm_loading_text(last_llm_profile_name()))
     return text_response(data, llm_not_ready_text())
 
 

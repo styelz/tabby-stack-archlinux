@@ -356,7 +356,17 @@ async def llm_classify_turn(
         return ImageTurnPlan()
     spec = (last_user_text(data) or blob).strip()
     plan = _plan_from_model_text(spec, raw)
-    return plan if plan is not None else ImageTurnPlan()
+    if plan is None:
+        plan = ImageTurnPlan()
+    from common.gen_logging import log_image_translator
+
+    log_image_translator(
+        plan.action,
+        plan.items,
+        source="classify",
+        user_text=spec,
+    )
+    return plan
 
 
 async def classify_image_turn(
@@ -368,6 +378,15 @@ async def classify_image_turn(
     key = classify_blob(data, prior_facts=prior_facts)
     remembered = recalled_plan(key)
     if remembered is not None:
+        from common.gen_logging import log_image_translator
+        from common.phrase_switch import last_user_text
+
+        log_image_translator(
+            remembered.action,
+            remembered.items,
+            source="classify cache",
+            user_text=last_user_text(data) or "",
+        )
         return remembered
     plan = await llm_classify_turn(
         data, disconnect_handler=disconnect_handler, prior_facts=prior_facts

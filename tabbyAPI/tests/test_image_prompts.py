@@ -520,5 +520,55 @@ class ImagePromptRewriteTests(unittest.TestCase):
         self.assertNotIn("transparent", cut[0]["prompt"].lower())
 
 
+class ImageTranslatorLogTests(unittest.TestCase):
+    def test_logs_dest_prompts_when_enabled(self):
+        from unittest import mock
+
+        from common import gen_logging
+
+        logged = []
+
+        def fake_info(message, extra=None, details=None):
+            logged.append((message, details or ""))
+
+        with (
+            mock.patch.object(gen_logging, "image_prompt_logging_on", return_value=True),
+            mock.patch.object(gen_logging.xlogger, "info", side_effect=fake_info),
+        ):
+            gen_logging.log_image_translator(
+                "generate",
+                [
+                    {
+                        "output_path": "images/logo.png",
+                        "prompt": "qwen-image: logo that says Cafe",
+                    }
+                ],
+                source="classify",
+                user_text="create a cafe site with a logo",
+            )
+        self.assertEqual(len(logged), 1)
+        message, details = logged[0]
+        self.assertIn("action=generate", message)
+        self.assertIn("classify", message)
+        self.assertIn("images/logo.png", details)
+        self.assertIn("qwen-image: logo that says Cafe", details)
+        self.assertIn("create a cafe site with a logo", details)
+
+    def test_silent_when_option_is_off(self):
+        from unittest import mock
+
+        from common import gen_logging
+
+        with (
+            mock.patch.object(gen_logging, "image_prompt_logging_on", return_value=False),
+            mock.patch.object(gen_logging.xlogger, "info") as info,
+        ):
+            gen_logging.log_image_translator(
+                "generate",
+                [{"output_path": "images/logo.png", "prompt": "logo"}],
+            )
+        info.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

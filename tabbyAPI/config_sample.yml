@@ -41,6 +41,10 @@ logging:
   # Enable prompt logging (default: False).
   log_prompt: false
 
+  # Log dest prompts from the image translator (classify + Comfy rewrite).
+  # Default: true.
+  log_image_prompts: true
+
   # Enable generation parameter logging (default: False).
   log_generation_params: false
 
