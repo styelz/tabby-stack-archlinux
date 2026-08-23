@@ -248,7 +248,91 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   white-space: pre-wrap;
 }
 .bubble.user { margin-left: auto; background: rgba(122,162,255,0.16); }
-.bubble.assistant { background: var(--bg-elev-2); border: 1px solid var(--line); }
+.bubble.assistant {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  white-space: normal;
+}
+.bubble.assistant p { margin: 0 0 0.55em; }
+.bubble.assistant p:last-child { margin-bottom: 0; }
+.bubble.assistant h1,
+.bubble.assistant h2,
+.bubble.assistant h3 {
+  margin: 0.7em 0 0.35em;
+  line-height: 1.25;
+  font-weight: 650;
+}
+.bubble.assistant h1 { font-size: 1.25em; }
+.bubble.assistant h2 { font-size: 1.12em; }
+.bubble.assistant h3 { font-size: 1.05em; }
+.bubble.assistant h1:first-child,
+.bubble.assistant h2:first-child,
+.bubble.assistant h3:first-child { margin-top: 0; }
+.bubble.assistant ul,
+.bubble.assistant ol {
+  margin: 0.35em 0 0.55em;
+  padding-left: 1.35em;
+}
+.bubble.assistant li { margin: 0.15em 0; }
+.bubble.assistant code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.12em 0.38em;
+  border-radius: 4px;
+}
+.md-code {
+  margin: 0.65em 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #07080c;
+  overflow: hidden;
+}
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.md-code-lang {
+  font-family: var(--mono);
+  text-transform: lowercase;
+}
+.md-code-copy {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.md-code-copy:hover { color: var(--text); border-color: var(--accent); }
+.md-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.md-code code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+.bubble.assistant .md-code code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
 .bubble img {
   display: block;
   max-width: min(420px, 100%);
@@ -370,10 +454,15 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
-  white-space: pre-wrap;
+  white-space: normal;
   max-height: 220px;
   overflow: auto;
 }
+.think-body p { margin: 0 0 0.4em; }
+.think-body p:last-child { margin-bottom: 0; }
+.think-body ul,
+.think-body ol { margin: 0.25em 0 0.4em; padding-left: 1.25em; }
+.think-body .md-code { margin: 0.45em 0; }
 .chat-turn.is-working .think-body {
   max-height: 280px;
 }

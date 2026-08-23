@@ -1159,6 +1159,42 @@ function mountChat(root) {
     }
   });
 
+  log.addEventListener("click", (event) => {
+    const btn = event.target.closest(".md-code-copy");
+    if (!btn || !log.contains(btn)) return;
+    event.preventDefault();
+    const block = btn.closest(".md-code");
+    const code = block && block.querySelector("code");
+    if (!code) return;
+    const text = code.textContent || "";
+    const done = () => {
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.textContent = "Copy";
+      }, 1200);
+    };
+    const fail = () => {
+      btn.textContent = "Copy failed";
+      setTimeout(() => {
+        btn.textContent = "Copy";
+      }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(fail);
+      return;
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      done();
+    } catch {
+      fail();
+    }
+  });
   log.addEventListener("mouseup", () => {
     const sel = window.getSelection();
     if (sel && String(sel).trim()) return;

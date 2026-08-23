@@ -347,28 +347,16 @@ def job_progress_line(job) -> str:
 
 
 def _console_ready_text(job, api_base: Optional[str]) -> str:
-    from common.phrase_switch import image_job_wait_text
+    from common.phrase_switch import image_job_done_text
 
     pairs = living_download_pairs(job)
-    wait = str(getattr(job, "wait_text", "") or "").strip()
-    if not wait:
-        prompts = [
-            str(getattr(item, "prompt", "") or "")
-            for item in (getattr(job, "items", None) or [])
-        ]
-        wait = image_job_wait_text(
-            prompts=prompts or None,
-            restore=bool(getattr(job, "restore", True)),
-            count=max(1, len(pairs)),
-        )
     n = len(pairs)
     lead = "Here's the picture." if n == 1 else f"Here are the {n} pictures."
     lines = [lead, ""]
     for url, _dest in pairs:
         lines.append(f"![]({url})")
         lines.append("")
-    if wait:
-        lines.append(wait)
+    lines.append(image_job_done_text(job=job, count=max(1, n)))
     lines.append(
         "It's also in Gallery. Describe another picture to generate it, "
         "or switch models from Status."

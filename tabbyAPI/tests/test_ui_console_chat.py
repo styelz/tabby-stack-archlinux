@@ -7,6 +7,7 @@ from images import chat as images_chat
 from ui.chat import completion_request_from_payload
 from ui.manager import sanitize_chat_payload
 from common.phrase_switch import (
+    image_job_done_text,
     image_ready_response,
     is_help_request,
     is_list_request,
@@ -98,6 +99,11 @@ class ConsoleImageReplyTests(unittest.TestCase):
         self.assertIn("Here's the picture", text)
         self.assertIn(f"![]({url})", text)
         self.assertEqual(text.count(url), 1)
+        self.assertNotIn("to render", text)
+        self.assertNotIn("to reload the coding model", text)
+        self.assertNotIn(job.wait_text, text)
+        self.assertIn("Rendered with Flux", text)
+        self.assertIn("It's also in Gallery", text)
 
     def test_ide_reply_still_stamps_job(self):
         data = ChatCompletionRequest(
@@ -120,16 +126,35 @@ class ConsoleImageReplyTests(unittest.TestCase):
         data = ChatCompletionRequest(
             messages=[ChatCompletionMessage(role="user", content="a red cube")]
         )
-        with mock.patch(
-            "common.phrase_switch.image_job_wait_text",
-            return_value="About 3 minutes to render (Flux).",
-        ):
-            text = image_ready_response(
-                data, "generated-x.png", api_base="http://x"
-            ).choices[0].message.content
+        text = image_ready_response(
+            data, "generated-x.png", api_base="http://x"
+        ).choices[0].message.content
         self.assertNotIn("Another picture:", text)
         self.assertNotIn("This picture:", text)
-        self.assertEqual(text.count("About 3 minutes"), 1)
+        self.assertNotIn("to render", text)
+        self.assertNotIn("to reload the coding model", text)
+        self.assertIn("Rendered with Flux", text)
+        self.assertEqual(text.count("Rendered with"), 1)
+
+    def test_done_text_names_backend_and_elapsed(self):
+        qwen = image_job_done_text(
+            "qwen-image: a logo that says Cafe",
+            restore=True,
+            elapsed_s=238,
+        )
+        self.assertIn("Rendered with Qwen-Image in 3m 58s", qwen)
+        self.assertIn("The coding model is loaded again", qwen)
+        self.assertNotIn("to render", qwen)
+        flux = image_job_done_text("a red cube", restore=False, elapsed_s=12)
+        self.assertIn("Rendered with Flux in 12s", flux)
+        self.assertNotIn("coding model", flux)
+        mixed = image_job_done_text(
+            prompts=["a forest at dusk", "qwen-image: SALE poster"],
+            restore=True,
+        )
+        self.assertIn("Rendered 2 pictures in one Comfy session", mixed)
+        self.assertIn("Flux", mixed)
+        self.assertIn("Qwen-Image", mixed)
 
     def test_job_progress_line(self):
         job = SimpleNamespace(

@@ -1023,6 +1023,66 @@ def image_job_wait_text(
     return ", ".join(bits) + "."
 
 
+def _compact_elapsed(seconds: float) -> str:
+    total = max(0, int(round(float(seconds) or 0)))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if minutes:
+        return f"{hours}h {minutes}m"
+    return f"{hours}h"
+
+
+def _image_backends(texts: list[str]) -> list[str]:
+    from common.gpu_mode import wants_qwen_image
+
+    names: list[str] = []
+    for text in texts:
+        label = "Qwen-Image" if (text and wants_qwen_image(text)) else "Flux"
+        if label not in names:
+            names.append(label)
+    return names or ["Flux"]
+
+
+def image_job_done_text(
+    prompt: str = "",
+    restore: bool = True,
+    count: int = 1,
+    prompts: Optional[list[str]] = None,
+    elapsed_s: Optional[float] = None,
+    job=None,
+) -> str:
+    """Past-tense summary after a Comfy batch finished."""
+    if job is not None:
+        restore = bool(getattr(job, "restore", restore))
+        items = getattr(job, "items", None) or []
+        prompts = [
+            str(getattr(item, "prompt", "") or "") for item in items
+        ] or prompts
+        started = float(getattr(job, "started_at", 0) or 0)
+        if elapsed_s is None and started > 0:
+            elapsed_s = max(0.0, time.time() - started)
+        if not prompts:
+            count = max(1, int(getattr(job, "count", 0) or count))
+    texts = list(prompts) if prompts else [prompt or ""] * max(1, int(count))
+    n = len(texts)
+    backends = _image_backends(texts)
+    named = " and ".join(backends) if len(backends) <= 2 else ", ".join(backends[:-1]) + f", and {backends[-1]}"
+    if n == 1:
+        lead = f"Rendered with {named}"
+    else:
+        lead = f"Rendered {n} pictures in one Comfy session ({named})"
+    if elapsed_s is not None and elapsed_s >= 1:
+        lead += f" in {_compact_elapsed(elapsed_s)}"
+    lead += "."
+    if restore:
+        lead += " The coding model is loaded again."
+    return lead
+
+
 def image_job_wait_seconds(
     prompt: str = "",
     restore: bool = True,
@@ -1245,7 +1305,7 @@ def image_ready_response(
     count: int = 1,
     filenames: Optional[list[str]] = None,
 ):
-    this = image_job_wait_text(last_user_text(data), restore=restore, count=count)
+    this = image_job_done_text(last_user_text(data), restore=restore, count=count)
     names = [name for name in (filenames or []) if name]
     if not names:
         names = [filename] if filename else []
