@@ -174,25 +174,55 @@
     );
   }
 
+  function stripFenceIndent(line, indent) {
+    if (!indent) return line;
+    if (line.startsWith(indent)) return line.slice(indent.length);
+    let n = 0;
+    while (n < indent.length && n < line.length && (line[n] === " " || line[n] === "\t")) n += 1;
+    return line.slice(n);
+  }
+
   function extractFences(raw) {
     const fences = [];
-    const lines = String(raw || "").split("\n");
+    const lines = String(raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     const out = [];
+    const openRe = /^(\s*)(`{3,}|~{3,})[ \t]*([\w+-]*)(.*)$/;
     for (let i = 0; i < lines.length; i += 1) {
-      const open = /^```([\w+-]*)[ \t]*$/.exec(lines[i]);
+      const open = openRe.exec(lines[i]);
       if (!open) {
+        out.push(lines[i]);
+        continue;
+      }
+      const indent = open[1];
+      const marker = open[2];
+      const lang = open[3] || "";
+      const rest = open[4] || "";
+      const fenceChar = marker[0];
+      const closeSame = rest.match(fenceChar === "`" ? /`{3,}[ \t]*$/ : /~{3,}[ \t]*$/);
+      if (closeSame && rest.slice(0, closeSame.index).trim()) {
+        const code = rest.slice(0, closeSame.index).trim();
+        const token = `@@CODE${fences.length}@@`;
+        fences.push(codeBlockHtml(lang, code));
+        out.push(`${indent}${token}`);
+        continue;
+      }
+      if (rest.includes(fenceChar)) {
         out.push(lines[i]);
         continue;
       }
       const body = [];
       i += 1;
-      while (i < lines.length && !/^```[ \t]*$/.test(lines[i])) {
-        body.push(lines[i]);
+      const closeRe =
+        fenceChar === "`"
+          ? new RegExp(`^\\s*\`{${marker.length},}[ \\t]*$`)
+          : new RegExp(`^\\s*~{${marker.length},}[ \\t]*$`);
+      while (i < lines.length && !closeRe.test(lines[i])) {
+        body.push(stripFenceIndent(lines[i], indent));
         i += 1;
       }
       const token = `@@CODE${fences.length}@@`;
-      fences.push(codeBlockHtml(open[1], body.join("\n")));
-      out.push(token);
+      fences.push(codeBlockHtml(lang, body.join("\n")));
+      out.push(`${indent}${token}`);
     }
     return { text: out.join("\n"), fences };
   }
@@ -250,13 +280,42 @@
       const bullet = /^\s*[-*]\s+/.test(line);
       if (ordered || bullet) {
         const itemRe = ordered ? /^\s*\d+\.\s+(.+)$/ : /^\s*[-*]\s+(.+)$/;
+        const otherListRe = ordered ? /^\s*[-*]\s+/ : /^\s*\d+\.\s+/;
         const tag = ordered ? "ol" : "ul";
         const items = [];
         while (i < lines.length) {
           const item = itemRe.exec(lines[i]);
           if (!item) break;
-          items.push(`<li>${formatInline(item[1], used)}</li>`);
+          const parts = [formatInline(item[1], used)];
           i += 1;
+          while (i < lines.length) {
+            const raw = lines[i];
+            if (!raw.trim()) {
+              let j = i + 1;
+              while (j < lines.length && !lines[j].trim()) j += 1;
+              if (j >= lines.length) break;
+              if (itemRe.test(lines[j]) || otherListRe.test(lines[j])) break;
+              if (isFenceToken(lines[j]) || /^\s+/.test(lines[j])) {
+                i += 1;
+                continue;
+              }
+              break;
+            }
+            if (itemRe.test(raw) || otherListRe.test(raw)) break;
+            if (/^(#{1,3})\s+/.test(raw)) break;
+            if (isFenceToken(raw)) {
+              parts.push(raw.trim());
+              i += 1;
+              continue;
+            }
+            if (/^\s+/.test(raw)) {
+              parts.push(`<br>${formatInline(raw.trim(), used)}`);
+              i += 1;
+              continue;
+            }
+            break;
+          }
+          items.push(`<li>${parts.join("")}</li>`);
         }
         out.push(`<${tag}>${items.join("")}</${tag}>`);
         continue;
@@ -296,6 +355,43 @@
     return html;
   }
 
+  function confirmModal({ title, text, yes = "Restart", no = "Skip" } = {}) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "dialog-modal";
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-modal", "true");
+      wrap.innerHTML =
+        '<div class="dialog-card">' +
+        "<h2></h2>" +
+        '<pre class="dialog-text"></pre>' +
+        '<div class="dialog-actions">' +
+        '<button type="button" class="btn dialog-no"></button>' +
+        '<button type="button" class="btn danger dialog-yes"></button>' +
+        "</div></div>";
+      wrap.querySelector("h2").textContent = title || "Confirm";
+      wrap.querySelector(".dialog-text").textContent = text || "";
+      wrap.querySelector(".dialog-no").textContent = no;
+      wrap.querySelector(".dialog-yes").textContent = yes;
+      const finish = (value) => {
+        document.removeEventListener("keydown", onKey);
+        wrap.remove();
+        resolve(value);
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") finish(false);
+      };
+      wrap.querySelector(".dialog-no").addEventListener("click", () => finish(false));
+      wrap.querySelector(".dialog-yes").addEventListener("click", () => finish(true));
+      wrap.addEventListener("click", (ev) => {
+        if (ev.target === wrap) finish(false);
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(wrap);
+      wrap.querySelector(".dialog-yes").focus();
+    });
+  }
+
   window.TabbyUI = {
     base: uiBase,
     path: uiPath,
@@ -303,6 +399,7 @@
     api,
     $,
     $all,
+    confirmModal,
     escapeHtml,
     formatBytes,
     formatDuration,

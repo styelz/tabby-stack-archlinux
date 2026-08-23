@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -180,7 +181,7 @@ async def ui_update(request: Request, _admin: str = Depends(require_ui_admin)):
         body = await request.json()
     except Exception:
         body = {}
-    return start_stack_update(full=bool(body.get("full")))
+    return await asyncio.to_thread(start_stack_update, full=bool(body.get("full")))
 
 
 @router.post("/gpu", include_in_schema=False)

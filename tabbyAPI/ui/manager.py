@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -346,6 +347,10 @@ def gallery_listing(
     }
 
 
+UPDATE_PROMPT_NAME = "tabby-update-prompt.json"
+GIT_UPDATE_TIMEOUT_S = 300
+
+
 def start_stack_restart() -> dict[str, Any]:
     from common.phrase_switch import restart_reply_text, start_restart
 
@@ -356,29 +361,95 @@ def start_stack_restart() -> dict[str, Any]:
     }
 
 
+def _update_log_tail(limit: int = 40) -> str:
+    path = STACK_ROOT / "tabby-update.log"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-max(1, limit) :])
+
+
+def load_update_prompt(path: Path | None = None) -> dict[str, Any] | None:
+    target = path if path is not None else STACK_ROOT / UPDATE_PROMPT_NAME
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _prompt_response(prompt: dict[str, Any] | None, fallback: str) -> dict[str, Any]:
+    if not prompt:
+        return {"ok": True, "message": fallback, "ask_restart": False}
+    summary = str(prompt.get("summary") or fallback)
+    text = str(prompt.get("text") or "").strip()
+    return {
+        "ok": True,
+        "message": summary,
+        "ask_restart": bool(text),
+        "restart_title": str(prompt.get("title") or "Restart API?"),
+        "restart_text": text,
+        "restart_yes": str(prompt.get("yes_label") or "Restart"),
+        "restart_no": str(prompt.get("no_label") or "Skip"),
+        "pulled": bool(prompt.get("pulled")),
+    }
+
+
 def start_stack_update(*, full: bool = False) -> dict[str, Any]:
     script = STACK_ROOT / "update.sh"
     if not script.is_file():
         return {"ok": False, "message": f"update.sh not found at {script}"}
-    args = ["bash", str(script), "--all" if full else "--git", "--restart"]
+    if full:
+        args = ["bash", str(script), "--all", "--restart"]
+        try:
+            subprocess.Popen(
+                args,
+                cwd=str(STACK_ROOT),
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return {"ok": False, "message": str(exc)}
+        return {
+            "ok": True,
+            "message": (
+                "Started full (git + deps) update. TabbyAPI will bounce when it finishes. "
+                "Watch Logs for progress."
+            ),
+        }
+
+    prompt_path = STACK_ROOT / UPDATE_PROMPT_NAME
     try:
-        subprocess.Popen(
-            args,
+        prompt_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    env = os.environ.copy()
+    env["TABBY_UPDATE_RESTART"] = "0"
+    try:
+        proc = subprocess.run(
+            ["bash", str(script), "--git", "--no-restart"],
             cwd=str(STACK_ROOT),
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=GIT_UPDATE_TIMEOUT_S,
         )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "Git update timed out after 5 minutes."}
     except OSError as exc:
         return {"ok": False, "message": str(exc)}
-    kind = "full (git + deps)" if full else "git"
-    return {
-        "ok": True,
-        "message": (
-            f"Started {kind} update. TabbyAPI will bounce when it finishes. "
-            "Watch Logs for progress."
-        ),
-    }
+    if proc.returncode != 0:
+        detail = _update_log_tail() or (proc.stderr or proc.stdout or "").strip()
+        return {
+            "ok": False,
+            "message": detail[:1500] if detail else "update.sh --git failed.",
+        }
+    return _prompt_response(load_update_prompt(prompt_path), "Git update finished.")
 
 
 def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
@@ -415,8 +486,3 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
     if body.get("max_tokens") is not None:
         payload["max_tokens"] = body["max_tokens"]
     return payload
-
-
-journalctl_history = journalctl_history
-stream_journal_lines = stream_journal_lines
-sanitize_chat_payload = sanitize_chat_payload

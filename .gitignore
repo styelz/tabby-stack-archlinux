@@ -37,6 +37,7 @@ Thumbs.db
 **/api_tokens.yml
 ui_users.json
 **/tabby.env
+/tabby-update-prompt.json
 **/HOW-TO-ARCH.txt
 **/switch-model.log
 **/ssh-forwarder.log

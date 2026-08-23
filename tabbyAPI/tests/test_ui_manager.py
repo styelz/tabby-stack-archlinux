@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -108,3 +110,52 @@ class UiManagerTests(unittest.TestCase):
                 result = manager.start_stack_update()
         self.assertFalse(result["ok"])
         self.assertIn("update.sh", result["message"])
+
+    def test_git_update_waits_and_returns_restart_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "update.sh").write_text("#!/bin/bash\nexit 0\n")
+
+            def fake_run(cmd, **kwargs):
+                (root / manager.UPDATE_PROMPT_NAME).write_text(
+                    json.dumps(
+                        {
+                            "title": "Restart API?",
+                            "text": (
+                                "The pull changed API code. Restart tabbyapi now so it loads "
+                                "(about 65 seconds)?\n\n  tabbyAPI/foo.py"
+                            ),
+                            "summary": "Pulled the latest code.",
+                            "pulled": True,
+                            "yes_label": "Restart",
+                            "no_label": "Skip",
+                        }
+                    )
+                )
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(manager, "STACK_ROOT", root):
+                with mock.patch.object(manager.subprocess, "run", side_effect=fake_run) as run:
+                    with mock.patch.object(manager.subprocess, "Popen") as popen:
+                        result = manager.start_stack_update(full=False)
+            popen.assert_not_called()
+            self.assertEqual(run.call_args[0][0][2:], ["--git", "--no-restart"])
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["ask_restart"])
+            self.assertEqual(result["restart_title"], "Restart API?")
+            self.assertIn("tabbyAPI/foo.py", result["restart_text"])
+            self.assertEqual(result["restart_yes"], "Restart")
+            self.assertEqual(result["restart_no"], "Skip")
+            self.assertEqual(result["message"], "Pulled the latest code.")
+
+    def test_full_update_still_starts_in_background(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "update.sh").write_text("#!/bin/bash\nexit 0\n")
+            with mock.patch.object(manager, "STACK_ROOT", root):
+                with mock.patch.object(manager.subprocess, "Popen") as popen:
+                    result = manager.start_stack_update(full=True)
+            popen.assert_called_once()
+            self.assertIn("--all", popen.call_args[0][0])
+            self.assertTrue(result["ok"])
+            self.assertNotIn("ask_restart", result)

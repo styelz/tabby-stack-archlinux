@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -25,6 +26,9 @@ class UpdateShRestartOptionTests(unittest.TestCase):
         self.assertIn('--no-label "Skip"', src)
         self.assertIn("Already up to date. Restart tabbyapi anyway", src)
         self.assertIn("if ask_restart_api; then", src)
+        self.assertIn("write_restart_prompt_json", src)
+        self.assertIn("tabby-update-prompt.json", src)
+        self.assertIn("restart_prompt_text", src)
         self.assertNotIn("tabbyapi is not running, so it was not restarted.", src)
         self.assertNotIn(
             'if [[ "$pulled" -eq 0 ]]; then\n    ui_msg "Update git" "Already up to date. The API was not restarted.',
@@ -111,3 +115,11 @@ class UpdateShFfPullTests(unittest.TestCase):
             self.assertTrue(backups, log)
             self.assertEqual(backups[0].read_text(), "frankenstein-not-on-origin\n")
             self.assertIn("Moving tracked copies that are not on origin/main aside", log)
+            prompt = live / "tabby-update-prompt.json"
+            self.assertTrue(prompt.is_file(), log)
+            data = json.loads(prompt.read_text())
+            self.assertEqual(data["title"], "Restart API?")
+            self.assertEqual(data["yes_label"], "Restart")
+            self.assertEqual(data["no_label"], "Skip")
+            self.assertTrue(data["pulled"])
+            self.assertTrue(data.get("text"))

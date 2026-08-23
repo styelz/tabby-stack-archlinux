@@ -333,6 +333,9 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   padding: 0;
   font-size: inherit;
 }
+.bubble.assistant li .md-code {
+  margin: 0.4em 0 0.5em;
+}
 .bubble img {
   display: block;
   max-width: min(420px, 100%);
@@ -888,6 +891,43 @@ figure.shot .open { display: block; }
 }
 .modal.is-open { display: grid; }
 .modal img { max-width: 96vw; max-height: 88vh; border-radius: 12px; }
+
+.dialog-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+.dialog-card {
+  width: min(560px, 100%);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 22px 16px;
+}
+.dialog-card h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+.dialog-text {
+  margin: 0 0 16px;
+  white-space: pre-wrap;
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: var(--text);
+  max-height: 50vh;
+  overflow: auto;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 
 @media (max-width: 1100px) {
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }

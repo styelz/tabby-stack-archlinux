@@ -446,24 +446,57 @@ Log: $UPDATE_LOG"
 Log: $UPDATE_LOG"
 }
 
-ask_restart_api() {
-  local text
+restart_prompt_text() {
   local new_head=""
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
   if ! api_unit_running; then
-    text="tabbyapi is not running. Start it now so it loads the current files (about 65 seconds)?"
+    printf '%s' "tabbyapi is not running. Start it now so it loads the current files (about 65 seconds)?"
   elif [[ "${TABBY_UPDATE_FROM_REV:-none}" == none ]]; then
-    text="This install was checked out from git. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
+    printf '%s' "This install was checked out from git. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
   elif ((${#RESTART_FILES[@]})); then
-    text="The pull changed API code. Restart tabbyapi now so it loads (about 65 seconds)?
-
-$(format_restart_file_list)"
+    printf '%s\n\n%s' \
+      "The pull changed API code. Restart tabbyapi now so it loads (about 65 seconds)?" \
+      "$(format_restart_file_list)"
   elif [[ "${TABBY_UPDATE_FROM_REV:-}" == "$new_head" ]]; then
-    text="Already up to date. Restart tabbyapi anyway (about 65 seconds)?"
+    printf '%s' "Already up to date. Restart tabbyapi anyway (about 65 seconds)?"
   else
-    text="The pull updated this install. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
+    printf '%s' "The pull updated this install. Restart tabbyapi now so it loads the new files (about 65 seconds)?"
   fi
-  ui_yesno "Restart API?" "$text" 1
+}
+
+ask_restart_api() {
+  ui_yesno "Restart API?" "$(restart_prompt_text)" 1
+}
+
+# Sidecar for /v1/ui Status: same title/text as the TTY Restart/Skip dialog.
+write_restart_prompt_json() {
+  local path="$DEST/tabby-update-prompt.json"
+  local new_head pulled=0 summary
+  new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "${TABBY_UPDATE_FROM_REV:-none}" == none || "${TABBY_UPDATE_FROM_REV:-}" != "$new_head" ]]; then
+    pulled=1
+  fi
+  if [[ "$pulled" -eq 1 ]]; then
+    summary="Pulled the latest code."
+  else
+    summary="Already up to date."
+  fi
+  command -v python3 >/dev/null 2>&1 || return 0
+  TABBY_PROMPT_SUMMARY="$summary" TABBY_PROMPT_PULLED="$pulled" python3 -c '
+import json, os, sys
+json.dump(
+    {
+        "title": "Restart API?",
+        "text": sys.stdin.read().rstrip("\n"),
+        "summary": os.environ["TABBY_PROMPT_SUMMARY"],
+        "pulled": os.environ["TABBY_PROMPT_PULLED"] == "1",
+        "yes_label": "Restart",
+        "no_label": "Skip",
+    },
+    open(sys.argv[1], "w", encoding="utf-8"),
+    indent=2,
+)
+' "$path" <<<"$(restart_prompt_text)" || true
 }
 
 finish_git_update() {
@@ -471,6 +504,7 @@ finish_git_update() {
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
   collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"
   printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]} restart=${RESTART_API:-auto}" >> "$UPDATE_LOG"
+  write_restart_prompt_json
 
   progress 100 "Git update finished"
   trap - EXIT

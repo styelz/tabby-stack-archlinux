@@ -333,9 +333,37 @@ function mountStatus(root) {
     if (!confirm("Restart TabbyAPI now? The UI will drop for about a minute.")) return;
     act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
   });
-  root.querySelector("#update-git").addEventListener("click", () => {
-    if (!confirm("Run update.sh --git --restart?")) return;
-    act(() => TabbyUI.api("update", { method: "POST", body: { full: false } }));
+  let gitBusy = false;
+  root.querySelector("#update-git").addEventListener("click", async () => {
+    if (gitBusy) return;
+    gitBusy = true;
+    msg.textContent = "Updating git…";
+    try {
+      const result = await TabbyUI.api("update", { method: "POST", body: { full: false } });
+      if (!result.ok) {
+        msg.textContent = result.message || "Git update failed.";
+        return;
+      }
+      msg.textContent = result.message || "Git update finished.";
+      await refresh().catch(() => {});
+      if (!result.ask_restart) return;
+      const yes = await TabbyUI.confirmModal({
+        title: result.restart_title || "Restart API?",
+        text: result.restart_text || "",
+        yes: result.restart_yes || "Restart",
+        no: result.restart_no || "Skip",
+      });
+      if (yes) {
+        await act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
+      } else {
+        msg.textContent = `${result.message || "Git update finished."} The API was not restarted.`;
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+      TabbyUI.paintApiDown(err);
+    } finally {
+      gitBusy = false;
+    }
   });
   root.querySelector("#update-all").addEventListener("click", () => {
     if (!confirm("Run a full update (git + deps) and restart?")) return;
