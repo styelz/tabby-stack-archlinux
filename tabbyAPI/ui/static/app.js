@@ -44,6 +44,18 @@
     })
     .catch(() => {});
 
+  async function refreshHeaderStatus() {
+    try {
+      const data = await TabbyUI.api("status");
+      TabbyUI.paintGpuChip(data);
+    } catch {
+      const chip = document.getElementById("gpu-chip");
+      if (chip) chip.textContent = "GPU …";
+    }
+  }
+  refreshHeaderStatus();
+  setInterval(refreshHeaderStatus, 15000);
+
   window.addEventListener("hashchange", () => show(currentName()));
   show(currentName());
 })();

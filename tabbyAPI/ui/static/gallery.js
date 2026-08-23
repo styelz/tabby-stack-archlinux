@@ -23,13 +23,40 @@ function mountGallery(root) {
   let boxes = [];
 
   function selected() {
-    return boxes.filter((box) => box.checked).map((box) => box.closest("figure").dataset.name);
+    return boxes
+      .filter((box) => box.checked)
+      .map((box) => box.closest("figure")?.dataset.name)
+      .filter(Boolean);
   }
+
   function paint() {
-    boxes.forEach((box) => box.closest("figure").classList.toggle("is-on", box.checked));
+    boxes.forEach((box) => {
+      const fig = box.closest("figure");
+      if (fig) fig.classList.toggle("is-on", box.checked);
+    });
     const n = selected().length;
     count.textContent = `${n} selected`;
     delSel.disabled = !n;
+  }
+
+  function bindBoxes() {
+    boxes = Array.from(grid.querySelectorAll(".pick input"));
+    boxes.forEach((box, i) => {
+      box.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (event.shiftKey) {
+          event.preventDefault();
+          const want = !box.checked;
+          const a = Math.min(lastIndex, i);
+          const z = Math.max(lastIndex, i);
+          for (let j = a; j <= z; j += 1) boxes[j].checked = want;
+          box.checked = want;
+        }
+        lastIndex = i;
+        paint();
+      });
+      box.addEventListener("change", paint);
+    });
   }
 
   async function load(nextPage) {
@@ -46,34 +73,27 @@ function mountGallery(root) {
       .map((item, index) => {
         const url = TabbyUI.resolveUiUrl(item.url);
         const thumb = TabbyUI.resolveUiUrl(item.thumb);
+        const name = TabbyUI.escapeHtml(item.name);
         return `
-        <figure data-name="${TabbyUI.escapeHtml(item.name)}" data-index="${index}">
-          <span class="pick"><input type="checkbox" aria-label="Select ${TabbyUI.escapeHtml(item.name)}"></span>
+        <figure class="shot" data-name="${name}" data-index="${index}">
+          <label class="pick" title="Select">
+            <input type="checkbox" aria-label="Select ${name}" />
+          </label>
           <a class="open" href="${url}" data-full="${url}">
-            <img src="${thumb}" alt="${TabbyUI.escapeHtml(item.name)}" loading="lazy" />
+            <img src="${thumb}" alt="${name}" loading="lazy" />
           </a>
-          <figcaption>${TabbyUI.escapeHtml(item.name)}<br>${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}</figcaption>
+          <figcaption>${name}<br>${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}</figcaption>
         </figure>`;
       })
       .join("");
-    boxes = Array.from(root.querySelectorAll(".pick input"));
-    boxes.forEach((box, i) => {
-      box.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (event.shiftKey) {
-          event.preventDefault();
-          const a = Math.min(lastIndex, i);
-          const z = Math.max(lastIndex, i);
-          for (let j = a; j <= z; j += 1) boxes[j].checked = true;
-        }
-        lastIndex = i;
-        paint();
-      });
-      box.addEventListener("change", paint);
-    });
+    bindBoxes();
     const links = [];
     for (let n = 1; n <= data.pages; n += 1) {
-      links.push(n === data.page ? `<span class="btn" disabled>${n}</span>` : `<button class="btn" data-page="${n}">${n}</button>`);
+      links.push(
+        n === data.page
+          ? `<span class="btn" disabled>${n}</span>`
+          : `<button type="button" class="btn" data-page="${n}">${n}</button>`
+      );
     }
     pager.innerHTML = `Page ${data.page} / ${data.pages} · ${data.total} images ` + links.join("");
     pager.querySelectorAll("button[data-page]").forEach((btn) => {
@@ -109,7 +129,12 @@ function mountGallery(root) {
   load(1).catch((err) => {
     grid.innerHTML = `<p class="error">${TabbyUI.escapeHtml(err.message)}</p>`;
   });
-  return { destroy() {} };
+  return {
+    resume() {
+      load(page).catch(() => {});
+    },
+    destroy() {},
+  };
 }
 
 window.mountGallery = mountGallery;

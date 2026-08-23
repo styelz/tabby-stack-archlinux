@@ -51,11 +51,7 @@ function mountStatus(root) {
     select.innerHTML = profiles.map((name) => `<option value="${TabbyUI.escapeHtml(name)}">${TabbyUI.escapeHtml(name)}</option>`).join("");
     if (data.profile) select.value = data.profile;
     root.querySelector("#status-stamp").textContent = data.now || "";
-    const chip = document.getElementById("gpu-chip");
-    if (chip) {
-      chip.textContent = `${(data.gpu_mode || "gpu").toUpperCase()} · ${data.profile || data.tabby_model || "idle"}`;
-      chip.className = "chip" + (data.gpu_mode === "llm" ? " ok" : " warn");
-    }
+    TabbyUI.paintGpuChip(data);
     return data;
   }
 

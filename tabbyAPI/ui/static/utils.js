@@ -121,5 +121,13 @@
     formatBytes,
     formatDuration,
     renderMarkdown,
+    paintGpuChip(data) {
+      const chip = document.getElementById("gpu-chip");
+      if (!chip || !data) return;
+      const mode = data.gpu_mode || "gpu";
+      const label = data.profile || data.tabby_model || "idle";
+      chip.textContent = `${String(mode).toUpperCase()} · ${label}`;
+      chip.className = "chip" + (mode === "llm" ? " ok" : " warn");
+    },
   };
 })();
