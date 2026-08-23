@@ -69,12 +69,14 @@ You'll need Arch Linux, an NVIDIA GPU, and an internet connection. Run this as *
 
 ```bash
 sudo pacman -S --needed git
-git clone https://github.com/styelz/tabby-stack-archlinux.git
-cd tabby-stack-archlinux
+git clone https://github.com/styelz/tabby-stack-archlinux.git "$HOME/tabby-stack"
+cd "$HOME/tabby-stack"
 bash install.sh
 ```
 
-It installs to `$HOME/tabby-stack` by default. Along the way it'll ask where to put things, whether you want a weights cache, which models to grab, and which addresses to listen on.
+Clone into the install root so later updates are `git pull` on this same folder. If you clone somewhere else, `install.sh` still defaults to `$HOME/tabby-stack` and plants a git checkout there.
+
+Along the way it'll ask where to put things, whether you want a weights cache, which models to grab, and which addresses to listen on.
 
 - **core** — enough to code and make images (qwen 9B, Flux, Qwen-Image, plus a small embedder on CPU)
 - **all** — everything in core, plus the bigger models in the switch table below
@@ -82,6 +84,18 @@ It installs to `$HOME/tabby-stack` by default. Along the way it'll ask where to 
 If Hugging Face throws a 401 or 403 at you, run `huggingface-cli login` (or set `HF_TOKEN`) and try the install again.
 
 Need a USB cache, non-interactive flags, or something went wrong? See [tabbyAPI/deploy/arch/README.md](tabbyAPI/deploy/arch/README.md).
+
+## Update
+
+On the GPU host, from the install root:
+
+```bash
+bash "$HOME/tabby-stack/update.sh"
+```
+
+That fast-forwards this checkout, reinstalls Python packages if they changed, skips model files that already exist, restarts TabbyAPI, and waits until `GET /health` is healthy (~65s). `config.yml`, `tabby.env`, weights, and the venv stay. Pass `--comfy` only if you also want ComfyUI and ComfyUI-GGUF pulled.
+
+An install that was copied without `.git` is bootstrapped from GitHub the first time you run `update.sh`. You do not need a second clone.
 
 ## First use
 

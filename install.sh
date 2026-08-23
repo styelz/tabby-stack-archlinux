@@ -2,6 +2,7 @@
 # Install TabbyAPI + ComfyUI on Arch. Weights are copied from an optional
 # local cache (USB or a folder you point at) or downloaded from Hugging Face.
 # Re-run skips files that already exist. The git tree does not ship LLMs.
+# To pull later changes on the install itself, run update.sh (this script --update).
 set -euo pipefail
 
 STACK_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -18,6 +19,30 @@ BACKTITLE="tabby-stack Arch installer"
 TUI=""
 USE_TUI=0
 INTERACTIVE=1
+UPDATE_MODE=0
+
+usage_install() {
+  cat <<EOF
+Usage: $(basename "$0") [--update]
+
+  (no args)   Interactive or env-driven install / re-run
+  --update    Apply code and deps after git pull. Prefer: bash update.sh
+              Reuses tabby.env; does not overwrite config.yml or tabby.env.
+  -h, --help  This text
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --update) UPDATE_MODE=1; TABBY_NONINTERACTIVE=1; shift ;;
+    -h|--help) usage_install; exit 0 ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage_install >&2
+      exit 2
+      ;;
+  esac
+done
 
 prompt() {
   local __var="$1"
@@ -183,6 +208,34 @@ port_in_use() {
   else
     return 1
   fi
+}
+
+# Poll until GET /health reports status healthy (LLM reload ~65s).
+wait_for_tabby_health() {
+  local port="${TABBY_NETWORK_PORT:-5000}"
+  local url="http://127.0.0.1:${port}/health"
+  local tries="${TABBY_HEALTH_TRIES:-180}"
+  local i body
+  for ((i = 1; i <= tries; i++)); do
+    body="$(curl -sf "$url" 2>/dev/null || true)"
+    if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
+      echo "API healthy at $url (${i}s)." >> "${INSTALL_LOG:-/dev/null}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Timed out after ${tries}s waiting for $url" >> "${INSTALL_LOG:-/dev/null}"
+  [[ -n "$body" ]] && echo "Last body: $body" >> "${INSTALL_LOG:-/dev/null}"
+  return 1
+}
+
+load_tabby_env_file() {
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 0
+  # shellcheck disable=SC1090
+  set -a
+  . "$env_file"
+  set +a
 }
 
 INSTALL_LOG=""
@@ -444,6 +497,7 @@ clear_install_resume() {
 RSYNC_EXCLUDES=(
   --exclude 'venv/'
   --exclude 'models/'
+  --exclude 'ComfyUI/'
   --exclude 'pasted-images/'
   --exclude '__pycache__/'
   --exclude '*.pyc'
@@ -452,22 +506,31 @@ RSYNC_EXCLUDES=(
   --exclude '*.egg-info/'
   --exclude '.pytest_cache/'
   --exclude '*.log'
+  --exclude 'config.yml'
+  --exclude 'tabby.env'
   --exclude 'deploy/arch/tabby.env'
+  --exclude 'tabbyAPI/deploy/arch/tabby.env'
+  --exclude 'HOW-TO-ARCH.txt'
+  --exclude 'CURSOR.md'
+  --exclude 'HANDOFF.md'
+  --exclude 'REPEATED-ISSUES.md'
+  --exclude '.cursor/'
+  --exclude 'api_tokens.yml'
 )
 
-# Copy the source tree to the install root and leave a self-contained
-# install.sh there, so a re-run or a post-reboot resume does not need the
-# USB or other cache mounted.
+# Copy the git tree (including .git when present) to the install root so the
+# live copy can git pull. Skip when dest is already this checkout.
+# Runtime dirs and secrets listed above are left alone.
 sync_tabby_sources_to_dest() {
-  mkdir -p "$DEST_TABBY"
+  mkdir -p "$DEST" "$DEST_TABBY"
   local src_abs dest_abs
-  src_abs="$(cd "$TABBY_SRC" && pwd)"
-  dest_abs="$(cd "$DEST_TABBY" && pwd)"
+  src_abs="$(cd "$STACK_ROOT" && pwd)"
+  dest_abs="$(cd "$DEST" && pwd)"
   if [[ "$src_abs" != "$dest_abs" ]]; then
-    rsync -a "${RSYNC_EXCLUDES[@]}" "$TABBY_SRC/" "$DEST_TABBY/"
+    rsync -a "${RSYNC_EXCLUDES[@]}" "$STACK_ROOT/" "$DEST/"
   fi
   local script
-  for script in install.sh uninstall.sh; do
+  for script in install.sh uninstall.sh update.sh; do
     [[ -f "$STACK_ROOT/$script" ]] || continue
     if [[ "$STACK_ROOT/$script" -ef "$DEST/$script" ]]; then
       chmod 755 "$DEST/$script"
@@ -662,7 +725,8 @@ if [[ ! -f "$CATALOG" || ! -f "$FETCH_MODELS" ]]; then
 fi
 
 # Resume after an NVIDIA driver reboot (hooks or a manual re-run).
-if [[ -z "${TABBY_NVIDIA_REBOOT_DONE:-}" && -f "${XDG_CONFIG_HOME:-$HOME/.config}/tabby-stack/install-resume.env" ]]; then
+# update.sh must not pick up a leftover resume env.
+if [[ "$UPDATE_MODE" -eq 0 && -z "${TABBY_NVIDIA_REBOOT_DONE:-}" && -f "${XDG_CONFIG_HOME:-$HOME/.config}/tabby-stack/install-resume.env" ]]; then
   # shellcheck disable=SC1090
   set -a
   . "${XDG_CONFIG_HOME:-$HOME/.config}/tabby-stack/install-resume.env"
@@ -816,7 +880,16 @@ cache_on_dest() {
 DEFAULT_DEST="$HOME/tabby-stack"
 
 if [[ "$INTERACTIVE" -eq 0 ]]; then
-  DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+  if [[ "$UPDATE_MODE" -eq 1 ]]; then
+    DEST="${TABBY_INSTALL_ROOT:-$STACK_ROOT}"
+    DEST="$(abs_path "${DEST%/}")"
+    DEST="${DEST%/}"
+    load_tabby_env_file "$DEST/tabbyAPI/deploy/arch/tabby.env"
+    DEST="$(abs_path "${TABBY_INSTALL_ROOT:-$DEST}")"
+    DEST="${DEST%/}"
+  else
+    DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+  fi
   if [[ -n "${TABBY_CACHE+x}" ]]; then
     WIN_ROOT="$TABBY_CACHE"
   else
@@ -835,6 +908,12 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
   fi
   if ! dest_is_sane; then
     echo "Refusing to install into $DEST. Pick a dedicated folder, e.g. $HOME/tabby-stack."
+    exit 1
+  fi
+  if [[ "$UPDATE_MODE" -eq 1 && ! -x "$DEST_TABBY/venv/bin/python" ]]; then
+    echo "No TabbyAPI venv at $DEST_TABBY."
+    echo "Run bash update.sh from the install root (default \$HOME/tabby-stack),"
+    echo "not from a source checkout that has not been installed."
     exit 1
   fi
   if cache_on_dest; then
@@ -869,6 +948,9 @@ What you get
 
 Models are not in git. They are copied from an optional local cache
 or downloaded from Hugging Face.
+
+Prefer cloning this repo into the install root (default \$HOME/tabby-stack)
+so later you can run update.sh there instead of a second clone.
 
 Source: ${TABBY_SRC}
 More detail: ${SCRIPT_DIR}/README.md
@@ -1245,6 +1327,10 @@ elif [[ "${TABBY_NVIDIA_REBOOT_DONE:-}" == 1 ]]; then
   nvidia-smi >>"$INSTALL_LOG" 2>&1 || true
   progress_fail 1
 elif [[ "$NVIDIA_DRIVER_INSTALLED_NOW" -eq 1 ]] && pci_has_nvidia; then
+  if [[ "$UPDATE_MODE" -eq 1 ]]; then
+    echo "nvidia-smi failed during update; not rebooting." >> "$INSTALL_LOG"
+    progress_fail 1
+  fi
   schedule_nvidia_reboot
 else
   echo "nvidia-smi failed and a reboot will not help." >> "$INSTALL_LOG"
@@ -1263,7 +1349,7 @@ if [[ "$PY_VER" != "3.12" ]]; then
   progress_fail 1
 fi
 
-progress 22 "Copying TabbyAPI code"
+progress 22 "Syncing tabby-stack sources"
 run_quiet sync_tabby_sources_to_dest
 if need_cmd dos2unix; then
   run_quiet find "$DEST_TABBY" -type f -name '*.sh' -exec dos2unix -q {} +
@@ -1281,11 +1367,15 @@ if [[ -f "$PATCH_SPAWN" ]]; then
   run_quiet "$PY" "$PATCH_SPAWN" "$DEST_TABBY"
 fi
 
+CREATED_CONFIG=0
 if [[ ! -f "$DEST_TABBY/config.yml" && -f "$DEST_TABBY/config_sample.yml" ]]; then
   cp "$DEST_TABBY/config_sample.yml" "$DEST_TABBY/config.yml"
+  CREATED_CONFIG=1
 fi
 DEFAULT_MODEL="Qwen3.5-9B-exl3-4.00bpw"
-if [[ -f "$DEST_TABBY/config.yml" ]]; then
+# Seed model_name only when we just created config.yml. A re-run or update
+# must not throw away the profile the user last switched to.
+if [[ "$CREATED_CONFIG" -eq 1 ]]; then
   "$PY" -c "
 from pathlib import Path
 p = Path(r'''$DEST_TABBY/config.yml''')
@@ -1356,13 +1446,16 @@ if ! tabby_venv_ok; then
     echo "TabbyAPI venv check failed (torch/exllamav3/CUDA)." >> "$INSTALL_LOG"
     progress_fail 1
   fi
+elif [[ "$UPDATE_MODE" -eq 1 ]]; then
+  progress 45 "Updating TabbyAPI Python packages"
+  run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[cu12]"
 fi
-if ! "$DEST_TABBY/venv/bin/python" -c "import infinity_emb, sentence_transformers" >/dev/null 2>&1; then
+if [[ "$UPDATE_MODE" -eq 1 ]] || ! "$DEST_TABBY/venv/bin/python" -c "import infinity_emb, sentence_transformers" >/dev/null 2>&1; then
   progress 55 "TabbyAPI extras"
   run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[extras]"
 fi
 run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U 'numpy>=2.1.0'
-if [[ -x "$DEST_TABBY/venv/bin/python" && -f "$DEST_TABBY/switch_model.py" ]]; then
+if [[ "$UPDATE_MODE" -eq 0 && -x "$DEST_TABBY/venv/bin/python" && -f "$DEST_TABBY/switch_model.py" ]]; then
   ( cd "$DEST_TABBY" && "$DEST_TABBY/venv/bin/python" switch_model.py qwen --no-load ) >>"$INSTALL_LOG" 2>&1 || true
 fi
 
@@ -1415,6 +1508,9 @@ elif ! comfy_torch_cu13; then
     echo "ComfyUI torch CUDA 13 upgrade failed." >> "$INSTALL_LOG"
     progress_fail 1
   fi
+elif [[ "${TABBY_UPDATE_COMFY:-}" == 1 && -f "$DEST_COMFY/requirements.txt" ]]; then
+  progress 65 "Updating ComfyUI Python packages"
+  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U -r "$DEST_COMFY/requirements.txt"
 fi
 
 cat > "$DEST_COMFY/start.sh" <<'EOF'
@@ -1479,7 +1575,9 @@ else
   echo "Missing $STACK_ROOT/AGENTS.md" >> "$INSTALL_LOG"
   progress_fail 1
 fi
-write_tabby_env "$DEST_TABBY/deploy/arch/tabby.env"
+if [[ "$UPDATE_MODE" -eq 0 || ! -f "$DEST_TABBY/deploy/arch/tabby.env" ]]; then
+  write_tabby_env "$DEST_TABBY/deploy/arch/tabby.env"
+fi
 
 UNIT_SRC="$DEST_TABBY/deploy/arch/tabbyapi.service"
 if [[ ! -f "$UNIT_SRC" ]]; then
@@ -1513,6 +1611,15 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl; then
     echo "WARNING: $START_NOTE" >> "$INSTALL_LOG"
   else
     systemctl --user start tabbyapi >>"$INSTALL_LOG" 2>&1 || true
+  fi
+fi
+if [[ "$UPDATE_MODE" -eq 1 ]]; then
+  progress 97 "Waiting for API health"
+  if [[ -n "$START_NOTE" ]]; then
+    echo "WARNING: skipping health wait ($START_NOTE)" >> "$INSTALL_LOG"
+  elif ! wait_for_tabby_health; then
+    echo "API did not become healthy. Check: journalctl --user -u tabbyapi -e" >> "$INSTALL_LOG"
+    progress_fail 1
   fi
 fi
 
@@ -1618,6 +1725,14 @@ If something fails
                          and wait; first start should already load the 9B model
   no LLM loaded          wait for startup, or send switch to qwen in chat
 
+Update
+  $DEST/update.sh              git pull this install, then apply deps and restart
+  $DEST/update.sh --comfy      also pull ComfyUI and ComfyUI-GGUF
+
+  This folder is the git checkout. You do not need a second clone.
+  config.yml, tabby.env, models, venv, and ComfyUI weights are kept.
+  The API reloads until GET /health is healthy (~65s).
+
 Uninstall
   $DEST/uninstall.sh              stop services, then remove the install
   $DEST/uninstall.sh --dry-run    show what it would do
@@ -1631,14 +1746,20 @@ Uninstall
   Weights and generated images are kept unless you pass --purge. Packages,
   the NVIDIA driver, pyenv and ~/.ssh are never touched.
 
-Re-run is safe. Existing weights and a good venv are not downloaded or rebuilt.
+Re-run is safe. Existing weights are not downloaded again.
+A code update uses update.sh (pip -U plus restart), not a fresh clone.
 EOF
 
-echo "Install finished."
+if [[ "$UPDATE_MODE" -eq 1 ]]; then
+  echo "Update finished."
+else
+  echo "Install finished."
+fi
 [[ -n "$START_NOTE" ]] && echo "  NOTE: $START_NOTE"
 echo "  API:  $API_URL"
 echo "  Start: $DEST/start.sh"
 echo "  Agents: $DEST/AGENTS.md"
+echo "  Update: $DEST/update.sh"
 echo "  Uninstall: $DEST/uninstall.sh"
 echo "  Log:  $INSTALL_LOG"
 echo "  How-to: $HOWTO"
@@ -1670,6 +1791,9 @@ IDE / agent notes (not Cursor-only):
 To remove this install later:
   ${DEST}/uninstall.sh            (stops the services first — do not rm -rf)
   ${DEST}/uninstall.sh --dry-run  to preview
+
+To pull later git changes on this install:
+  ${DEST}/update.sh
 
 The same how-to is in:
   ${HOWTO}

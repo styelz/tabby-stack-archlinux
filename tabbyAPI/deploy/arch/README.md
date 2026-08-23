@@ -14,10 +14,12 @@ Needs Arch Linux, an NVIDIA GPU, and internet. Run as **your user**, not root.
 
 ```bash
 sudo pacman -S --needed git
-git clone https://github.com/styelz/tabby-stack-archlinux.git
-cd tabby-stack-archlinux
+git clone https://github.com/styelz/tabby-stack-archlinux.git "$HOME/tabby-stack"
+cd "$HOME/tabby-stack"
 bash install.sh
 ```
+
+Clone into `$HOME/tabby-stack` so this folder *is* the git checkout. A leftover `tabby-stack-archlinux` clone is optional; if you still clone elsewhere, the installer copies the tree (including `.git`) into the dest you pick.
 
 The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc cancels. After you confirm, the work phase shows a **progress bar** only; full output goes to `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command.
 
@@ -172,7 +174,23 @@ Set `TABBY_PUBLIC_BASE` if image URLs must use a tunnel hostname. Otherwise the 
 
 Embeddings stay on CPU: `POST /v1/embeddings` with `Qwen3-Embedding-0.6B`. Do not switch to comfy for repo search.
 
-## 6. If something fails
+## 6. Update
+
+The install root is the git checkout. On the GPU host:
+
+```bash
+bash "$HOME/tabby-stack/update.sh"
+```
+
+That fast-forwards `origin`, runs `install.sh --update` (pip -U, skip existing weights, rewrite systemd units), restarts `tabbyapi`, and waits until `GET /health` is healthy (~65s). It does not overwrite `config.yml` or `tabby.env`.
+
+- First run on an older rsync-only dest bootstraps `.git` from `https://github.com/styelz/tabby-stack-archlinux.git`.
+- `--comfy` also pulls ComfyUI and ComfyUI-GGUF. Leave that off unless you want image-gen to move with upstream.
+- Tracked local edits abort the pull; untracked `venv/`, `models/`, and `ComfyUI/` are ignored.
+
+A leftover `tabby-stack-archlinux` clone next to the install is optional after this.
+
+## 7. If something fails
 
 | Problem | What to do |
 |---|---|
@@ -191,4 +209,4 @@ Embeddings stay on CPU: `POST /v1/embeddings` with `Qwen3-Embedding-0.6B`. Do no
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |
 | First start hangs / no `:5000` | Model is loading before the port opens. qwen ~65s; qwen35 ~3 min. First Linux boot may compile Triton. |
 
-Re-run is safe: it skips a venv that already imports CUDA + ExLlamaV3.
+`update.sh` is the usual way to pull new code. Re-running `install.sh` is still safe for missing weights: it skips files that already exist. A healthy venv is rebuilt only when `update.sh` runs (pip -U).

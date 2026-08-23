@@ -5,8 +5,8 @@ This directory is the customized [TabbyAPI](https://github.com/theroyallab/tabby
 Install from the **repository root**, not from here:
 
 ```bash
-git clone https://github.com/styelz/tabby-stack-archlinux.git
-cd tabby-stack-archlinux
+git clone https://github.com/styelz/tabby-stack-archlinux.git "$HOME/tabby-stack"
+cd "$HOME/tabby-stack"
 bash install.sh
 ```
 
