@@ -247,6 +247,10 @@ async def stack_status(request=None) -> dict[str, Any]:
             "count": getattr(job, "count", None),
             "current_index": getattr(job, "current_index", 0),
             "done_count": getattr(job, "done_count", 0),
+            "wait_s": getattr(job, "wait_s", None),
+            "wait_text": getattr(job, "wait_text", None),
+            "prompt": getattr(job, "prompt", None),
+            "started_at": getattr(job, "started_at", None),
         }
     return {
         "ok": True,

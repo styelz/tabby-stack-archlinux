@@ -1246,15 +1246,13 @@ def image_ready_response(
     filenames: Optional[list[str]] = None,
 ):
     this = image_job_wait_text(last_user_text(data), restore=restore, count=count)
-    another = image_job_wait_text("", restore=restore)
     names = [name for name in (filenames or []) if name]
     if not names:
         names = [filename] if filename else []
     text = (
         _image_url_block(names, api_base=api_base)
-        + f"\n\nThis picture: {this}"
+        + f"\n\n{this}"
         + "\nSend another short description for a different picture, or switch to qwen."
-        + f"\nAnother picture: {another}"
     )
     return text_response(data, text)
 

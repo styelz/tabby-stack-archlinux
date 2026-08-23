@@ -29,6 +29,7 @@ from images.paths import (
 from images.plan import classify_image_turn
 
 JOB_MARK = "tabby-image-job:"
+STATUS_MARK = "tabby-image-status:"
 MAX_CODE_TURNS = 16
 FILE_WRITE_NAMES = (
     "write",
@@ -320,17 +321,84 @@ def _curl_response(data: ChatCompletionRequest, job, code_response=None):
     return text_response(data, body)
 
 
-def _url_response(data: ChatCompletionRequest, job, api_base: Optional[str]):
+def job_progress_line(job) -> str:
+    """Short live status for the management UI (and SSE comments)."""
+    phase = str(getattr(job, "phase", "") or getattr(job, "status", "") or "")
+    count = int(getattr(job, "count", 0) or 0)
+    index = int(getattr(job, "current_index", 0) or 0) + 1
+    if phase == "queued":
+        return "Queued"
+    if phase in ("writing_code", "coding"):
+        return "Planning the picture"
+    if phase == "starting_comfy":
+        return "Starting Comfy"
+    if phase in ("generating", "running"):
+        if count > 1:
+            return f"Rendering image {min(index, count)} of {count}"
+        return "Rendering in Comfy"
+    if phase == "restoring_llm":
+        return "Reloading the coding model"
+    if str(getattr(job, "status", "") or "") == "error":
+        return "Image generation failed"
+    return ""
+
+
+def _console_ready_text(job, api_base: Optional[str]) -> str:
+    from common.phrase_switch import image_job_wait_text
+
+    pairs = living_download_pairs(job)
+    wait = str(getattr(job, "wait_text", "") or "").strip()
+    if not wait:
+        prompts = [
+            str(getattr(item, "prompt", "") or "")
+            for item in (getattr(job, "items", None) or [])
+        ]
+        wait = image_job_wait_text(
+            prompts=prompts or None,
+            restore=bool(getattr(job, "restore", True)),
+            count=max(1, len(pairs)),
+        )
+    n = len(pairs)
+    lead = "Here's the picture." if n == 1 else f"Here are the {n} pictures."
+    lines = [lead, ""]
+    for url, _dest in pairs:
+        lines.append(f"![]({url})")
+        lines.append("")
+    if wait:
+        lines.append(wait)
+    lines.append(
+        "It's also in Gallery. Describe another picture to generate it, "
+        "or switch models from Status."
+    )
+    return "\n".join(lines).strip()
+
+
+def _url_response(
+    data: ChatCompletionRequest,
+    job,
+    api_base: Optional[str],
+    *,
+    console: bool = False,
+):
     from common.phrase_switch import image_ready_response, text_response
 
     pairs = living_download_pairs(job)
     mark = f"{JOB_MARK} {job.id}"
     if not pairs:
         err = job.error or "Image generation finished with no files on this host."
+        if console:
+            return text_response(data, err)
         return text_response(data, f"{mark}\n{err}")
-    filename = pairs[-1][0].rsplit("/", 1)[-1].split("?", 1)[0]
+    if console:
+        return text_response(data, _console_ready_text(job, api_base))
+    names = [url.rsplit("/", 1)[-1].split("?", 1)[0] for url, _dest in pairs]
     response = image_ready_response(
-        data, filename, api_base=api_base, restore=bool(job.restore), count=len(pairs)
+        data,
+        names[-1],
+        api_base=api_base,
+        restore=bool(job.restore),
+        count=len(names),
+        filenames=names,
     )
     message = response.choices[0].message
     body = message.content or ""
@@ -346,18 +414,23 @@ async def _hold_then_reply(
     mixed: bool,
     api_base: Optional[str],
     code_response=None,
+    console: bool = False,
 ):
     from common.phrase_switch import stream_text, stream_tool_calls
 
     sync = data.model_copy(update={"stream": False})
+    mixed = False if console else mixed
 
     async def _body():
         yield ServerSentEvent(comment=f"{JOB_MARK} {job.id}")
+        line = job_progress_line(job)
+        if line:
+            yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
         await wait_until_done(job)
         reply = (
             _curl_response(sync, job, code_response)
             if mixed
-            else _url_response(sync, job, api_base)
+            else _url_response(sync, job, api_base, console=console)
         )
         message = reply.choices[0].message
         if message.tool_calls:
@@ -376,7 +449,7 @@ async def _hold_then_reply(
     await wait_until_done(job)
     if mixed:
         return _curl_response(sync, job, code_response)
-    return _url_response(sync, job, api_base)
+    return _url_response(sync, job, api_base, console=console)
 
 
 async def handle(
@@ -410,14 +483,18 @@ async def handle(
 
     if job and job.status in ("queued", "running"):
         return await _hold_then_reply(
-            data, job, mixed=_job_uses_curl(job), api_base=api_base
+            data,
+            job,
+            mixed=False if console else _job_uses_curl(job),
+            api_base=api_base,
+            console=console,
         )
 
     if job and job.status == "coding" and llm_ready:
         if console:
             await _launch_mixed_job(job)
             return await _hold_then_reply(
-                data, job, mixed=False, api_base=api_base
+                data, job, mixed=False, api_base=api_base, console=True
             )
         _inject_planned_dests(data, _job_plan_items(job))
         note_coding_progress(job)
@@ -433,6 +510,7 @@ async def handle(
             mixed=True,
             api_base=api_base,
             code_response=code_response,
+            console=console,
         )
 
     if role in ("tool", "function"):
@@ -462,7 +540,7 @@ async def handle(
             if console:
                 started = await _start_mixed_job(plan.items, api_base or "", start=True)
                 return await _hold_then_reply(
-                    data, started, mixed=False, api_base=api_base
+                    data, started, mixed=False, api_base=api_base, console=True
                 )
             _inject_planned_dests(data, plan.items)
             code_response = await _write_site_code(data, disconnect_handler)
@@ -481,6 +559,7 @@ async def handle(
                 mixed=True,
                 api_base=api_base,
                 code_response=code_response,
+                console=console,
             )
 
     explicit = requested_image_prompt(data, explicit_only=True)
@@ -488,7 +567,9 @@ async def handle(
         started = await _start_prompt_job(
             explicit, api_base or "", restore=True, source_image=source_image
         )
-        return await _hold_then_reply(data, started, mixed=False, api_base=api_base)
+        return await _hold_then_reply(
+            data, started, mixed=False, api_base=api_base, console=console
+        )
 
     if not llm_ready and gpu_is_comfy:
         prompt = requested_image_prompt(data)
@@ -501,14 +582,14 @@ async def handle(
                 prompt, api_base or "", restore=False, source_image=source_image
             )
             return await _hold_then_reply(
-                data, started, mixed=False, api_base=api_base
+                data, started, mixed=False, api_base=api_base, console=console
             )
 
     if not llm_ready:
         if job and job.status == "coding":
             await _launch_mixed_job(job)
             return await _hold_then_reply(
-                data, job, mixed=True, api_base=api_base
+                data, job, mixed=True, api_base=api_base, console=console
             )
         busy = active_mcp_image_job()
         if busy and busy.status in ("queued", "running"):

@@ -136,22 +136,64 @@
     return `${sec}s`;
   }
 
+  function formatAssistantContent(text) {
+    let out = String(text || "");
+    out = out.replace(/^[ \t]*tabby-image-job:\s*[0-9a-fA-F-]{4,}[ \t]*\n?/gim, "");
+    out = out.replace(/^\d+\s+image\(s\) from this turn:\s*$/gim, "");
+    out = out.replace(/^\d+\.\s+generated-\d{8}-\d{6}-\d+\.png\s*$/gim, "");
+    out = out.replace(/^These URLs are on this API host\.[^\n]*$/gim, "");
+    out = out.replace(/^Another picture:\s*[^\n]+$/gim, "");
+    out = out.replace(/^This picture:\s*/gim, "");
+    out = out.replace(/\n{3,}/g, "\n\n");
+    return out.trim();
+  }
+
+  function isImageHref(href) {
+    return (
+      /\.(png|jpg|jpeg|webp)(\?|$)/i.test(href) ||
+      href.includes("/gallery/file/") ||
+      href.includes("/v1/images/")
+    );
+  }
+
+  function markdownImage(href, alt) {
+    const resolved = resolveUiUrl(href);
+    const safeHref = escapeHtml(resolved);
+    const safeAlt = escapeHtml(alt || "");
+    return `<a href="${safeHref}" target="_blank" rel="noreferrer"><img src="${safeHref}" alt="${safeAlt}"></a>`;
+  }
+
   function renderMarkdown(text) {
     const raw = String(text || "");
-    const escaped = escapeHtml(raw);
-    const withCode = escaped.replace(/`([^`]+)`/g, "<code>$1</code>");
-    const withBold = withCode.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    const withBreaks = withBold.replace(/\n/g, "<br>");
-    return withBreaks.replace(
+    const used = new Set();
+    const placeholders = [];
+    const withMd = raw.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => {
+      const href = String(url || "").trim();
+      used.add(href);
+      used.add(resolveUiUrl(href));
+      const token = `@@IMG${placeholders.length}@@`;
+      placeholders.push(markdownImage(href, alt));
+      return token;
+    });
+    let html = escapeHtml(withMd)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\n/g, "<br>");
+    html = html.replace(
       /(https?:\/\/[^\s<]+|\/v1\/ui\/gallery\/file\/[^\s<]+|\/ui\/gallery\/file\/[^\s<]+|\/v1\/images\/generated-[^\s<]+)/g,
       (url) => {
         const href = resolveUiUrl(url);
-        if (/\.(png|jpg|jpeg|webp)(\?|$)/i.test(href) || href.includes("/gallery/file/") || href.includes("/v1/images/")) {
-          return `<a href="${href}" target="_blank" rel="noreferrer"><img src="${href}" alt=""></a>`;
+        if (used.has(url) || used.has(href)) return "";
+        if (isImageHref(href)) {
+          used.add(href);
+          used.add(url);
+          return markdownImage(href, "");
         }
-        return `<a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
+        return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
       }
     );
+    html = html.replace(/@@IMG(\d+)@@/g, (_, i) => placeholders[Number(i)] || "");
+    return html.replace(/(<br>\s*){3,}/g, "<br><br>");
   }
 
   window.TabbyUI = {
@@ -164,6 +206,7 @@
     escapeHtml,
     formatBytes,
     formatDuration,
+    formatAssistantContent,
     renderMarkdown,
     paintGpuChip(data) {
       const chip = document.getElementById("gpu-chip");

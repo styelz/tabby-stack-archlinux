@@ -179,7 +179,15 @@ function mountChat(root) {
 
   function addBubble(role, text, stick, reasoning) {
     if (role === "assistant") {
-      const turn = addAssistantTurn({ content: text, reasoning, live: false });
+      const cleaned = TabbyUI.formatAssistantContent ? TabbyUI.formatAssistantContent(text) : text;
+      const isImage =
+        /here's the picture|here are the \d+ pictures|\/v1\/images\/generated-/i.test(cleaned || "");
+      const turn = addAssistantTurn({
+        content: text,
+        reasoning,
+        live: false,
+        activity: isImage ? { kind: "image" } : undefined,
+      });
       if (stick !== false) log.scrollTop = log.scrollHeight;
       return turn.node;
     }
@@ -208,7 +216,12 @@ function mountChat(root) {
       /\b(generate|draw|paint|render|create|make)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
       /\b(svg|png|jpg|jpeg|webp)\b.+\b(image|picture|logo|of)\b/i.test(lower)
     ) {
-      return { label: "Generating image", kind: "image", processing: true };
+      return {
+        label: "Starting the picture",
+        kind: "image",
+        processing: true,
+        note: "The GPU will switch to Comfy, render the picture, then reload the coding model. Flux drafts take about 3 minutes; then about 65 seconds to bring the model back.",
+      };
     }
     if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
       return { label: "Working", kind: "cmd", processing: true };
@@ -217,26 +230,58 @@ function mountChat(root) {
   }
 
   function visibleAnswerText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim();
+    const cleaned = TabbyUI.formatAssistantContent
+      ? TabbyUI.formatAssistantContent(text)
+      : String(text || "");
+    return cleaned.replace(/\s+/g, " ").trim();
+  }
+
+  function displayAnswer(text) {
+    const cleaned = TabbyUI.formatAssistantContent
+      ? TabbyUI.formatAssistantContent(text)
+      : String(text || "");
+    return TabbyUI.renderMarkdown(cleaned);
   }
 
   function labelForJob(job) {
     if (!job) return "";
     const phase = String(job.phase || job.status || "");
     const count = Number(job.count) || 0;
-    const done = Number(job.done_count) || 0;
+    const index = (Number(job.current_index) || 0) + 1;
     if (phase === "queued") return "Queued";
-    if (phase === "writing_code" || phase === "coding") return "Planning the image";
-    if (phase === "starting_comfy") return "Handing GPU to Comfy";
+    if (phase === "writing_code" || phase === "coding") return "Planning the picture";
+    if (phase === "starting_comfy") return "Starting Comfy";
     if (phase === "generating" || phase === "running") {
-      if (count > 1) return `Generating image ${Math.min(done + 1, count)} of ${count}`;
-      return "Generating image";
+      if (count > 1) return `Rendering image ${Math.min(index, count)} of ${count}`;
+      return "Rendering in Comfy";
     }
-    if (phase === "restoring_llm") return "Reloading the model";
+    if (phase === "restoring_llm") return "Reloading the coding model";
     if (job.status === "queued" || job.status === "running" || job.status === "coding") {
-      return "Generating image";
+      return "Working on the picture";
     }
     return "";
+  }
+
+  function detailForJob(job) {
+    if (!job) return "";
+    const phase = String(job.phase || job.status || "");
+    const wait = String(job.wait_text || "").trim();
+    const prompt = String(job.prompt || "").trim();
+    const lines = [];
+    if (phase === "queued") {
+      lines.push("Waiting to start. Next: unload the coding model and hand the GPU to Comfy.");
+    } else if (phase === "writing_code" || phase === "coding") {
+      lines.push("Figuring out what to render.");
+    } else if (phase === "starting_comfy") {
+      lines.push("Unloading the coding model so Comfy can use the GPU.");
+    } else if (phase === "generating" || phase === "running") {
+      lines.push("Comfy is rendering the picture on the GPU.");
+    } else if (phase === "restoring_llm") {
+      lines.push("The picture is ready. Reloading the coding model onto the GPU.");
+    }
+    if (wait) lines.push(wait);
+    if (prompt) lines.push(`Prompt: ${prompt}`);
+    return lines.join("\n");
   }
 
   function addAssistantTurn({ content, reasoning, live, activity }) {
@@ -296,7 +341,7 @@ function mountChat(root) {
 
     turn.append(head, thought);
     if (visibleAnswerText(content)) {
-      showAnswer(TabbyUI.renderMarkdown(content));
+      showAnswer(displayAnswer(content));
     }
 
     let reasoningText = reasoning ? String(reasoning) : "";
@@ -305,6 +350,9 @@ function mountChat(root) {
     let processing = Boolean(activity && activity.processing);
     const started = Date.now();
     let ticker = null;
+    const kind = (activity && activity.kind) || "";
+    let statusNotes = [];
+    let lastNote = "";
 
     function setProcessing(on) {
       processing = Boolean(on);
@@ -321,6 +369,18 @@ function mountChat(root) {
       thought.hidden = finished ? !expanded : false;
     }
 
+    function addStatusNote(note) {
+      const line = String(note || "").trim();
+      if (!line || line === lastNote) return;
+      lastNote = line;
+      statusNotes.push(line);
+      if (finished) return;
+      reasoningText = statusNotes.join("\n\n");
+      paintThought();
+      thought.hidden = false;
+      log.scrollTop = log.scrollHeight;
+    }
+
     function settleThought(seconds) {
       head.hidden = false;
       head.classList.remove("is-live");
@@ -331,7 +391,12 @@ function mountChat(root) {
         head.setAttribute("role", "button");
         head.tabIndex = 0;
       }
-      label.textContent = seconds != null ? `Thought for ${seconds}s` : "Thought";
+      const doneWord = kind === "image" ? "Generated" : "Thought";
+      if (seconds != null) {
+        label.textContent = kind === "image" ? `Generated in ${seconds}s` : `Thought for ${seconds}s`;
+      } else {
+        label.textContent = doneWord;
+      }
       timeEl.textContent = "";
       thought.hidden = true;
       expanded = false;
@@ -340,6 +405,7 @@ function mountChat(root) {
 
     if (live) {
       setProcessing(processing);
+      if (activity && activity.note) addStatusNote(activity.note);
       ticker = setInterval(() => {
         const s = Math.round((Date.now() - started) / 1000);
         if (s >= 2) timeEl.textContent = `${s}s`;
@@ -375,7 +441,9 @@ function mountChat(root) {
         label.textContent = text;
         head.hidden = false;
         if (opts && opts.processing != null) setProcessing(opts.processing);
+        if (opts && opts.note) addStatusNote(opts.note);
       },
+      addStatusNote,
       setReasoning(text) {
         if (!text) return;
         reasoningText = text;
@@ -390,9 +458,9 @@ function mountChat(root) {
       setAnswer(text) {
         const value = visibleAnswerText(text);
         if (!value) return;
-        showAnswer(TabbyUI.renderMarkdown(String(text || "")));
-        if (reasoningText) {
-          thought.hidden = true;
+        showAnswer(displayAnswer(text));
+        if (reasoningText || statusNotes.length) {
+          thought.hidden = kind === "image" ? false : true;
         } else {
           // Real answer tokens replace the working status line.
           turn.classList.remove("is-working");
@@ -401,7 +469,7 @@ function mountChat(root) {
         log.scrollTop = log.scrollHeight;
       },
       finish({ content: finalContent, reasoning: finalReasoning } = {}) {
-        if (finished && !live) return;
+        if (finished && !live) return { reasoning: reasoningText };
         finished = true;
         if (ticker) {
           clearInterval(ticker);
@@ -412,10 +480,13 @@ function mountChat(root) {
         turn.removeAttribute("aria-busy");
         turn.setAttribute("aria-live", "off");
         if (finalReasoning) reasoningText = String(finalReasoning);
+        else if (!reasoningText && statusNotes.length) {
+          reasoningText = statusNotes.join("\n\n");
+        }
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
         const answer = visibleAnswerText(finalContent);
         if (answer) {
-          showAnswer(TabbyUI.renderMarkdown(String(finalContent || "")));
+          showAnswer(displayAnswer(finalContent));
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
           showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
@@ -427,6 +498,7 @@ function mountChat(root) {
           thought.hidden = true;
         }
         log.scrollTop = log.scrollHeight;
+        return { reasoning: reasoningText };
       },
       stopClock() {
         if (ticker) {
@@ -689,7 +761,12 @@ function mountChat(root) {
         .filter((line) => line.startsWith(":"))
         .map((line) => line.slice(1).trim());
       const comment = comments.join("\n");
-      if (comment.includes("tabby-image-job:")) onEvent({ comment });
+      if (
+        comment.includes("tabby-image-job:") ||
+        comment.includes("tabby-image-status:")
+      ) {
+        onEvent({ comment });
+      }
       const dataLines = chunk
         .split("\n")
         .filter((line) => line.startsWith("data:"))
@@ -726,7 +803,8 @@ function mountChat(root) {
         const data = await TabbyUI.api("status");
         if (kind === "image") {
           const next = labelForJob(data && data.job);
-          if (next) working.setActivity(next, { processing: true });
+          const note = detailForJob(data && data.job);
+          if (next) working.setActivity(next, { processing: true, note });
           return;
         }
         if (kind === "switch" || kind === "restart") {
@@ -796,8 +874,9 @@ function mountChat(root) {
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           buf = consumeSseBuffer(buf, (event) => {
-            if (event.comment && event.comment.includes("tabby-image-job:")) {
-              working.setActivity("Generating image", { processing: true });
+            if (event.comment && event.comment.includes("tabby-image-status:")) {
+              const label = event.comment.replace(/^[\s\S]*tabby-image-status:\s*/i, "").trim();
+              if (label) working.setActivity(label, { processing: true });
             }
             if (event.reasoning) {
               reasoning += event.reasoning;
@@ -818,7 +897,8 @@ function mountChat(root) {
       assembled = assembled || `Error: ${err.message}`;
     } finally {
       poll.stop();
-      working.finish({ content: assembled, reasoning });
+      const done = working.finish({ content: assembled, reasoning });
+      if (done && done.reasoning) reasoning = done.reasoning;
     }
     const item = { role: "assistant", content: assembled };
     if (reasoning) item.reasoning = reasoning;

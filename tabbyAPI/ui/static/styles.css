@@ -362,6 +362,9 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   max-height: 220px;
   overflow: auto;
 }
+.chat-turn.is-working .think-body {
+  max-height: 280px;
+}
 /* Working turns must never show an empty reply pill. */
 .chat-turn.is-working:not(.has-answer) .bubble,
 .chat-turn .bubble:empty {
