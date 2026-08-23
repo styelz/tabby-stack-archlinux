@@ -77,10 +77,9 @@ function mountStatus(root) {
   let range = { hours: 24, days: null };
   let lastSeries = [];
 
-  function fact(title, value, extra = "", wide = false) {
-    const cls = wide ? "status-fact is-wide" : "status-fact";
+  function fact(title, value, extra = "") {
     const sub = extra ? `<span class="fact-x">${TabbyUI.escapeHtml(extra)}</span>` : "";
-    return `<div class="${cls}"><span class="fact-k">${TabbyUI.escapeHtml(title)}</span><span class="fact-v">${value}</span>${sub}</div>`;
+    return `<div class="status-fact"><span class="fact-k">${TabbyUI.escapeHtml(title)}</span><span class="fact-v">${value}</span>${sub}</div>`;
   }
 
   function syncCustomFields() {
@@ -257,6 +256,9 @@ function mountStatus(root) {
     const health = data.health || {};
     const healthLabel = health.healthy ? "healthy" : "unhealthy";
     const healthClass = health.healthy ? "ok" : "bad";
+    const gpuName = String(gpu.name || "n/a")
+      .replace(/^NVIDIA\s+GeForce\s+/i, "")
+      .replace(/^NVIDIA\s+/i, "");
     cards.innerHTML = [
       fact("GPU", TabbyUI.escapeHtml(data.gpu_mode || "unknown"), data.comfy_up ? "Comfy up" : "Comfy idle"),
       fact("Profile", TabbyUI.escapeHtml(data.profile || "—"), data.tabby_model || "LLM unloaded"),
@@ -266,16 +268,15 @@ function mountStatus(root) {
         `<span class="fact-pill ${healthClass}">${healthLabel}</span>`,
         (health.issues || []).join("; ") || "no issues"
       ),
-      fact("Uptime", TabbyUI.escapeHtml(TabbyUI.formatDuration(data.uptime_s)), ""),
+      fact("Uptime", TabbyUI.escapeHtml(TabbyUI.formatDuration(data.uptime_s)), data.api_base || ""),
       fact("CPU", host.cpu_pct != null ? `${host.cpu_pct}%` : "—", host.load1 != null ? `load ${host.load1}` : ""),
       fact("RAM", host.ram_pct != null ? `${host.ram_pct}%` : "—", ""),
       fact(
         "NVIDIA",
-        TabbyUI.escapeHtml(gpu.name || "n/a"),
+        TabbyUI.escapeHtml(gpuName),
         gpu.memory_total_mib
-          ? `${gpu.memory_used_mib} / ${gpu.memory_total_mib} MiB · ${gpu.utilization_pct}% · ${gpu.temperature_c}°C`
-          : "",
-        true
+          ? `${gpu.memory_used_mib}/${gpu.memory_total_mib} MiB · ${gpu.utilization_pct}% · ${gpu.temperature_c}°C`
+          : ""
       ),
     ].join("");
     const profiles = data.profiles || [];
