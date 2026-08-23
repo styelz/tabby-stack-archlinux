@@ -36,4 +36,9 @@ def file_response(name: str) -> FileResponse:
         ".woff2": "font/woff2",
         ".map": "application/json",
     }.get(path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path, media_type=media)
+    response = FileResponse(path, media_type=media)
+    # Management UI assets change often; avoid sticky browser/proxy caches
+    # that leave empty working bubbles after a status-line fix.
+    if path.suffix.lower() in {".css", ".js", ".html"}:
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response

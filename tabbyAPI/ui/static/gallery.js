@@ -21,6 +21,7 @@ function mountGallery(root) {
   let page = 1;
   let lastIndex = 0;
   let boxes = [];
+  let kept = new Set();
 
   function selected() {
     return boxes
@@ -39,28 +40,57 @@ function mountGallery(root) {
     delSel.disabled = !n;
   }
 
-  function bindBoxes() {
-    boxes = Array.from(grid.querySelectorAll(".pick input"));
-    boxes.forEach((box, i) => {
-      box.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (event.shiftKey) {
-          event.preventDefault();
-          const want = !box.checked;
-          const a = Math.min(lastIndex, i);
-          const z = Math.max(lastIndex, i);
-          for (let j = a; j <= z; j += 1) boxes[j].checked = want;
-          box.checked = want;
-        }
-        lastIndex = i;
-        paint();
-      });
-      box.addEventListener("change", paint);
+  function snapshot() {
+    kept = new Set(selected());
+  }
+
+  function restore() {
+    boxes.forEach((box) => {
+      const name = box.closest("figure")?.dataset.name;
+      box.checked = Boolean(name && kept.has(name));
     });
   }
 
+  function bindBoxes() {
+    boxes = Array.from(grid.querySelectorAll(".pick input"));
+  }
+
+  function applyPick(event, i) {
+    if (event.shiftKey) {
+      const a = Math.min(lastIndex, i);
+      const z = Math.max(lastIndex, i);
+      for (let j = a; j <= z; j += 1) {
+        if (boxes[j]) boxes[j].checked = true;
+      }
+    } else {
+      boxes[i].checked = !boxes[i].checked;
+      lastIndex = i;
+    }
+    paint();
+  }
+
+  grid.addEventListener(
+    "click",
+    (event) => {
+      const pick = event.target.closest(".pick");
+      if (!pick || !grid.contains(pick)) return;
+      const i = Number(pick.closest("figure")?.dataset.index);
+      if (!Number.isInteger(i) || !boxes[i]) return;
+      event.preventDefault();
+      event.stopPropagation();
+      applyPick(event, i);
+    },
+    true
+  );
+  grid.addEventListener("change", (event) => {
+    if (event.target.matches(".pick input")) paint();
+  });
+
   async function load(nextPage) {
-    page = nextPage || 1;
+    snapshot();
+    const target = nextPage || 1;
+    if (target !== page) lastIndex = 0;
+    page = target;
     const data = await TabbyUI.api(`gallery/list?page=${page}&per_page=24`);
     if (!data.items.length) {
       grid.innerHTML = "<p class='muted'>No generated images yet.</p>";
@@ -87,6 +117,7 @@ function mountGallery(root) {
       })
       .join("");
     bindBoxes();
+    restore();
     const links = [];
     for (let n = 1; n <= data.pages; n += 1) {
       links.push(

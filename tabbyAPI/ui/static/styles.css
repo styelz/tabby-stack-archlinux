@@ -326,18 +326,12 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .think-label {
   color: var(--muted);
 }
-.is-working .think-label {
-  background-image: linear-gradient(
-    90deg,
-    var(--muted) 0%,
-    var(--text) 42%,
-    var(--muted) 84%
-  );
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: think-shimmer 1.7s ease-in-out infinite;
+.think-head.is-live .think-label {
+  color: var(--text);
+  opacity: 0.92;
+}
+.is-working .think-head.is-live {
+  animation: think-pulse-row 1.6s ease-in-out infinite;
 }
 .think-time {
   color: var(--muted);
@@ -368,8 +362,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   max-height: 220px;
   overflow: auto;
 }
-.chat-turn.is-working:not(.has-answer) .bubble {
-  display: none;
+/* Working turns must never show an empty reply pill. */
+.chat-turn.is-working:not(.has-answer) .bubble,
+.chat-turn .bubble:empty {
+  display: none !important;
 }
 @keyframes think-spin {
   to { transform: rotate(360deg); }
@@ -378,19 +374,18 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   0%, 100% { opacity: 0.75; transform: scale(0.92); }
   50% { opacity: 1; transform: scale(1.08); }
 }
-@keyframes think-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+@keyframes think-pulse-row {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   .is-working .think-icon,
   .is-working .think-spark,
   .think-icon.is-processing,
   .think-icon.is-processing .think-spark,
-  .is-working .think-label {
+  .is-working .think-head.is-live {
     animation: none;
-    color: var(--muted);
-    background: none;
+    opacity: 1;
     transform: none;
   }
 }

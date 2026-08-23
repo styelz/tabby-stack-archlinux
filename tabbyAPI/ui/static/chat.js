@@ -205,7 +205,8 @@ function mountChat(root) {
     if (
       /^(generate an image|qwen-image:)/i.test(raw) ||
       /^\/image\b/i.test(raw) ||
-      /\b(generate|draw|paint|render)\b.+\b(image|picture|logo|poster|icon)\b/i.test(lower)
+      /\b(generate|draw|paint|render|create|make)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
+      /\b(svg|png|jpg|jpeg|webp)\b.+\b(image|picture|logo|of)\b/i.test(lower)
     ) {
       return { label: "Generating image", kind: "image", processing: true };
     }
@@ -213,6 +214,10 @@ function mountChat(root) {
       return { label: "Working", kind: "cmd", processing: true };
     }
     return { label: "Thinking", kind: "chat", processing: false };
+  }
+
+  function visibleAnswerText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
   }
 
   function labelForJob(job) {
@@ -245,7 +250,7 @@ function mountChat(root) {
       head.type = "button";
       head.className = "think-head";
     } else {
-      head.className = "think-head";
+      head.className = "think-head is-live";
     }
     const icon = document.createElement("span");
     icon.className = "think-icon";
@@ -270,10 +275,29 @@ function mountChat(root) {
 
     const bubble = document.createElement("div");
     bubble.className = "bubble assistant";
-    if (content) bubble.innerHTML = TabbyUI.renderMarkdown(content);
-    else bubble.hidden = true;
+    // Never leave an empty styled bubble in the DOM while waiting.
+    let bubbleMounted = false;
 
-    turn.append(head, thought, bubble);
+    function ensureBubble() {
+      if (bubbleMounted) return;
+      turn.appendChild(bubble);
+      bubbleMounted = true;
+    }
+
+    function showAnswer(html) {
+      const markup = String(html || "").trim();
+      if (!markup) return false;
+      ensureBubble();
+      bubble.innerHTML = markup;
+      bubble.hidden = false;
+      turn.classList.add("has-answer");
+      return true;
+    }
+
+    turn.append(head, thought);
+    if (visibleAnswerText(content)) {
+      showAnswer(TabbyUI.renderMarkdown(content));
+    }
 
     let reasoningText = reasoning ? String(reasoning) : "";
     let finished = !live;
@@ -299,6 +323,7 @@ function mountChat(root) {
 
     function settleThought(seconds) {
       head.hidden = false;
+      head.classList.remove("is-live");
       icon.hidden = true;
       chevron.hidden = false;
       head.classList.add("is-clickable");
@@ -307,7 +332,6 @@ function mountChat(root) {
         head.tabIndex = 0;
       }
       label.textContent = seconds != null ? `Thought for ${seconds}s` : "Thought";
-      label.classList.remove("is-shimmer");
       timeEl.textContent = "";
       thought.hidden = true;
       expanded = false;
@@ -325,11 +349,6 @@ function mountChat(root) {
       paintThought();
     } else {
       head.hidden = true;
-    }
-
-    if (content) {
-      turn.classList.add("has-answer");
-      bubble.hidden = false;
     }
 
     function toggleThought() {
@@ -354,6 +373,7 @@ function mountChat(root) {
       setActivity(text, opts) {
         if (finished || !text) return;
         label.textContent = text;
+        head.hidden = false;
         if (opts && opts.processing != null) setProcessing(opts.processing);
       },
       setReasoning(text) {
@@ -361,20 +381,20 @@ function mountChat(root) {
         reasoningText = text;
         if (!finished) {
           label.textContent = "Thinking";
+          head.hidden = false;
           setProcessing(false);
         }
         paintThought();
         log.scrollTop = log.scrollHeight;
       },
       setAnswer(text) {
-        const value = String(text || "");
+        const value = visibleAnswerText(text);
         if (!value) return;
-        bubble.innerHTML = TabbyUI.renderMarkdown(value);
-        bubble.hidden = false;
-        turn.classList.add("has-answer");
+        showAnswer(TabbyUI.renderMarkdown(String(text || "")));
         if (reasoningText) {
           thought.hidden = true;
         } else {
+          // Real answer tokens replace the working status line.
           turn.classList.remove("is-working");
           head.hidden = true;
         }
@@ -388,19 +408,16 @@ function mountChat(root) {
           ticker = null;
         }
         turn.classList.remove("is-working");
+        head.classList.remove("is-live");
         turn.removeAttribute("aria-busy");
         turn.setAttribute("aria-live", "off");
         if (finalReasoning) reasoningText = String(finalReasoning);
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
-        const answer = String(finalContent || "");
+        const answer = visibleAnswerText(finalContent);
         if (answer) {
-          bubble.innerHTML = TabbyUI.renderMarkdown(answer);
-          bubble.hidden = false;
-          turn.classList.add("has-answer");
-        } else if (!bubble.innerHTML) {
-          bubble.innerHTML = TabbyUI.renderMarkdown("(empty reply)");
-          bubble.hidden = false;
-          turn.classList.add("has-answer");
+          showAnswer(TabbyUI.renderMarkdown(String(finalContent || "")));
+        } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
+          showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
         if (reasoningText) {
           settleThought(seconds);
@@ -707,9 +724,21 @@ function mountChat(root) {
       if (stopped) return;
       try {
         const data = await TabbyUI.api("status");
-        if (kind !== "image") return;
-        const next = labelForJob(data && data.job);
-        if (next) working.setActivity(next, { processing: true });
+        if (kind === "image") {
+          const next = labelForJob(data && data.job);
+          if (next) working.setActivity(next, { processing: true });
+          return;
+        }
+        if (kind === "switch" || kind === "restart") {
+          const model = data && data.model;
+          const busy = data && (data.switching || data.restarting || data.busy);
+          if (busy && kind === "switch") {
+            const name = (model && (model.profile || model.name)) || "";
+            working.setActivity(name ? `Switching to ${name}` : "Switching", { processing: true });
+          } else if (busy && kind === "restart") {
+            working.setActivity("Restarting", { processing: true });
+          }
+        }
       } catch {
         /* still waiting */
       }
@@ -774,9 +803,13 @@ function mountChat(root) {
               reasoning += event.reasoning;
               working.setReasoning(reasoning);
             }
-            if (event.content) {
+            if (visibleAnswerText(event.content)) {
               assembled += event.content;
               working.setAnswer(assembled);
+            } else if (event.content) {
+              // Preserve whitespace-only chunks for final assembly without
+              // promoting an empty bubble.
+              assembled += event.content;
             }
           });
         }

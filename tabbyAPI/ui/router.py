@@ -57,7 +57,7 @@ async def ui_legacy_redirect(rest: str = ""):
 async def ui_login_page(request: Request):
     if validate_session(_session_token(request)):
         return RedirectResponse("./", status_code=303)
-    return FileResponse(STATIC_DIR / "login.html", media_type="text/html; charset=utf-8")
+    return file_response("login.html")
 
 
 @router.get("", include_in_schema=False)
@@ -70,7 +70,7 @@ async def ui_index_noslash(request: Request):
 async def ui_index(request: Request):
     if not validate_session(_session_token(request)):
         return RedirectResponse("./login", status_code=303)
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html; charset=utf-8")
+    return file_response("index.html")
 
 
 @router.get("/assets/{name}", include_in_schema=False)
