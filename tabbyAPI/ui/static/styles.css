@@ -567,7 +567,17 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   padding: 0;
   font-size: inherit;
   border-radius: 0;
+  color: #c0caf5;
 }
+.md-code .tok-comment { color: #565f89; font-style: italic; }
+.md-code .tok-string { color: #9ece6a; }
+.md-code .tok-keyword { color: #7aa2ff; }
+.md-code .tok-number { color: #e0af68; }
+.md-code .tok-fn { color: #7dcfff; }
+.md-code .tok-tag { color: #bb9af7; }
+.md-code .tok-attr { color: #7dcfff; }
+.md-code .tok-var { color: #f7768e; }
+.md-code .tok-punct { color: #89b4fa; }
 .bubble.assistant .md-code code {
   background: none;
   padding: 0;

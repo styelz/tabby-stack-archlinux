@@ -12,7 +12,7 @@
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260825-comfy-chat-hint";
+    window.TABBY_UI_ASSET_V = "20260825-code-highlight";
     ["styles.css"].forEach(function (name) {
       var link = document.createElement("link");
       link.rel = "stylesheet";
@@ -53,7 +53,7 @@
   </main>
 
   <script>
-    ["utils.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
+    ["highlight.js", "utils.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
       document.write('<script src="' + TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V + '"><\/script>');
     });
   </script>

@@ -167,11 +167,16 @@
 
   function codeBlockHtml(lang, code) {
     const label = String(lang || "").trim() || "code";
+    const kind = window.TabbyHighlight ? window.TabbyHighlight.language(lang) : "";
+    const body = window.TabbyHighlight
+      ? window.TabbyHighlight.highlight(lang, code)
+      : escapeHtml(code);
+    const langClass = kind ? ` class="language-${kind}"` : "";
     return (
       `<div class="md-code">` +
       `<div class="md-code-head"><span class="md-code-lang">${escapeHtml(label)}</span>` +
       `<button type="button" class="md-code-copy">Copy</button></div>` +
-      `<pre><code>${escapeHtml(code)}</code></pre></div>`
+      `<pre><code${langClass}>${body}</code></pre></div>`
     );
   }
 
