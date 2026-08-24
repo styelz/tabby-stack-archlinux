@@ -6,6 +6,20 @@ function tabbyChatComposeAction(inFlight, typed, queued) {
   return { mode: "stop", label: "Stop", showSteer: hasQueue };
 }
 
+// sse-starlette keep-alives look like "ping - 2026-08-24 21:42:59.522485+00:00".
+function tabbyIsSsePing(text) {
+  return /^ping\s*-\s*\d{4}-\d{2}-\d{2}[T\s]\d/i.test(String(text || "").trim());
+}
+
+function tabbyCleanStatusLabel(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^:\s*/, "").trim())
+    .filter((line) => line && !tabbyIsSsePing(line))
+    .join(" ")
+    .trim();
+}
+
 function tabbyLooksLikeChatNotImage(raw) {
   const text = String(raw || "").trim();
   if (!text) return false;
@@ -112,6 +126,11 @@ function mountChat(root) {
             <span class="chat-loading-text" id="chat-loading-text">The model is loading. Chat is paused until it is ready.</span>
             <span class="chat-loading-time" id="chat-loading-time"></span>
           </div>
+          <div class="chat-loading" id="chat-waiting" hidden>
+            <span class="chat-loading-mark">Queued</span>
+            <span class="chat-loading-text" id="chat-waiting-text">The stack is being used. You are in a queue.</span>
+            <span class="chat-loading-time" id="chat-waiting-time"></span>
+          </div>
           <div class="chat-comfy-hint" id="chat-comfy-hint" hidden>
             <span class="chat-comfy-hint-mark">Comfy</span>
             <span class="chat-comfy-hint-text" id="chat-comfy-hint-text">This looks like a chat, not a picture. Switch to the coding model?</span>
@@ -178,6 +197,9 @@ function mountChat(root) {
   const loadingBar = root.querySelector("#chat-loading");
   const loadingTextEl = root.querySelector("#chat-loading-text");
   const loadingTimeEl = root.querySelector("#chat-loading-time");
+  const waitingBar = root.querySelector("#chat-waiting");
+  const waitingTextEl = root.querySelector("#chat-waiting-text");
+  const waitingTimeEl = root.querySelector("#chat-waiting-time");
   const comfyHint = root.querySelector("#chat-comfy-hint");
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const filesPane = root.querySelector("#chat-files");
@@ -259,8 +281,34 @@ function mountChat(root) {
     return chat && chat.mode === "code" ? "code" : "chat";
   }
 
+  function emptyLastByMode(raw) {
+    const last = raw && raw.lastByMode && typeof raw.lastByMode === "object" ? raw.lastByMode : {};
+    return {
+      chat: String(last.chat || ""),
+      code: String(last.code || ""),
+    };
+  }
+
   function activeMode() {
     return chatMode(activeChat());
+  }
+
+  function rememberActiveMode() {
+    const chat = activeChat();
+    if (!chat) return;
+    if (!store.lastByMode) store.lastByMode = emptyLastByMode(null);
+    store.lastByMode[chatMode(chat)] = chat.id;
+  }
+
+  function chatForMode(mode) {
+    const want = mode === "code" ? "code" : "chat";
+    const remembered = store.lastByMode && store.lastByMode[want];
+    const hit = remembered
+      && store.chats.find((item) => item.id === remembered && chatMode(item) === want);
+    if (hit && (hasUserTurn(hit) || hit.pinned || hit.id === store.activeId)) return hit;
+    return store.chats
+      .filter((item) => chatMode(item) === want && (hasUserTurn(item) || item.pinned))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
   }
 
   function cloneMessages(list) {
@@ -275,7 +323,8 @@ function mountChat(root) {
       if (out.role === "assistant") {
         const elapsed = Number(item.elapsed_s);
         if (Number.isFinite(elapsed) && elapsed > 0) out.elapsed_s = Math.round(elapsed);
-        if (item.status_label) out.status_label = String(item.status_label);
+        const status = tabbyCleanStatusLabel(item.status_label);
+        if (status) out.status_label = status;
       }
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
@@ -350,7 +399,14 @@ function mountChat(root) {
     if (!chats.length) chats.push(emptyChat());
     let activeId = String((raw && raw.activeId) || "");
     if (!chats.some((chat) => chat.id === activeId)) activeId = chats[0].id;
-    return { version: 1, activeId, chats };
+    const lastByMode = emptyLastByMode(raw);
+    if (!chats.some((chat) => chat.id === lastByMode.chat && chatMode(chat) === "chat")) {
+      lastByMode.chat = "";
+    }
+    if (!chats.some((chat) => chat.id === lastByMode.code && chatMode(chat) === "code")) {
+      lastByMode.code = "";
+    }
+    return { version: 1, activeId, chats, lastByMode };
   }
 
   function readStore() {
@@ -422,8 +478,10 @@ function mountChat(root) {
   }
 
   function listedChats() {
+    const mode = activeMode();
     const q = String((searchEl && searchEl.value) || "").trim().toLowerCase();
     return store.chats
+      .filter((chat) => chatMode(chat) === mode)
       .filter((chat) => chat.id === store.activeId || hasUserTurn(chat))
       .filter((chat) => {
         if (!q) return true;
@@ -438,6 +496,7 @@ function mountChat(root) {
   }
 
   function persist() {
+    rememberActiveMode();
     const chat = activeChat();
     if (chat) {
       chat.messages = cloneMessages(messages);
@@ -510,6 +569,9 @@ function mountChat(root) {
       attachBtn.setAttribute("aria-label", code ? "Attach files" : "Attach image");
       attachBtn.title = code ? "Attach image or project files" : "Attach image";
     }
+    if (searchEl) searchEl.placeholder = code ? "Search code chats" : "Search chats";
+    const newBtn = root.querySelector("#chat-new");
+    if (newBtn) newBtn.textContent = code ? "New code chat" : "New chat";
     paintTabs();
     paintFilesToggle();
   }
@@ -546,22 +608,37 @@ function mountChat(root) {
 
   function setChatMode(mode) {
     const next = mode === "code" ? "code" : "chat";
-    const chat = activeChat();
-    if (!chat || chatMode(chat) === next) return;
-    chat.mode = next;
-    touchActive();
+    if (activeMode() === next) return;
     persist();
-    paintCompose();
+    const existing = chatForMode(next);
+    if (existing) {
+      loadChat(existing.id);
+      return;
+    }
+    cancelEdit();
+    clearPendingImage();
+    const chat = emptyChat(next);
+    store.chats.unshift(chat);
+    store.activeId = chat.id;
+    messages = cloneMessages(chat.messages);
+    persist();
+    resetRecall();
+    renderLog();
     filesSelected = "";
-    resetTabs();
     refreshFiles();
+    hideHistoryMenu();
+    hideMoreMenu();
+    paintCompose();
+    input.focus();
   }
 
   function renderSidebar() {
     if (!navList) return;
     const list = listedChats();
     if (!list.length) {
-      navList.innerHTML = '<div class="chat-nav-empty">No chats match.</div>';
+      navList.innerHTML = activeMode() === "code"
+        ? '<div class="chat-nav-empty">No code chats match.</div>'
+        : '<div class="chat-nav-empty">No chats match.</div>';
       return;
     }
     const frag = document.createDocumentFragment();
@@ -571,18 +648,10 @@ function mountChat(root) {
       btn.dataset.id = item.id;
       btn.setAttribute("role", "button");
       btn.tabIndex = 0;
-      // A chat keeps its badge once it owns files, even after the toggle goes
-      // back to Chat, so the list still shows where a project lives.
-      const tag =
-        chatMode(item) === "code"
-          ? '<span class="chat-nav-tag" title="Code mode">Code</span>'
-          : codeChats.has(item.id)
-            ? '<span class="chat-nav-tag is-quiet" title="Has project files">Code</span>'
-            : "";
       btn.innerHTML =
         `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>` +
         `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span>` +
-        `<span class="chat-nav-when">${tag}${TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>` +
+        `<span class="chat-nav-when">${TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>` +
         `<span class="chat-nav-tools">` +
         `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${item.pinned ? "Unpin" : "Pin"}">★</button>` +
         `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename">✎</button>` +
@@ -708,9 +777,11 @@ function mountChat(root) {
       item.innerHTML =
         `<button type="button" class="chat-file-open" data-file="open" title="${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
         `<span class="chat-file-size">${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.size))}</span>` +
+        `<span class="chat-file-tools">` +
         `<button type="button" class="btn ghost chat-icon${isPendingFile(row.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
         `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
-        `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>`;
+        `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>` +
+        `</span>`;
       frag.appendChild(item);
     });
     filesTree.replaceChildren(frag);
@@ -2156,7 +2227,8 @@ function mountChat(root) {
     chevron.setAttribute("aria-hidden", "true");
     const label = document.createElement("span");
     label.className = "think-label";
-    label.textContent = String(status_label || (activity && activity.label) || "Thinking");
+    const initialLabel = tabbyCleanStatusLabel(status_label) || (activity && activity.label) || "Thinking";
+    label.textContent = String(initialLabel);
     const timeEl = document.createElement("span");
     timeEl.className = "think-time";
     head.append(icon, chevron, label, timeEl);
@@ -2202,9 +2274,8 @@ function mountChat(root) {
     let ticker = null;
     const kind = (activity && activity.kind) || "";
     const target = (activity && activity.target) || "";
-    const keptLabel = !live && SETTLED_LABEL.test(String(status_label || "").trim())
-      ? String(status_label).trim()
-      : "";
+    const storedLabel = tabbyCleanStatusLabel(status_label);
+    const keptLabel = !live && SETTLED_LABEL.test(storedLabel) ? storedLabel : "";
     let statusNotes = [];
     let lastNote = "";
     const storedElapsed = Number(elapsed_s);
@@ -2241,7 +2312,7 @@ function mountChat(root) {
     }
 
     function addStatusNote(note) {
-      const line = String(note || "").trim();
+      const line = tabbyCleanStatusLabel(note);
       if (!line || line === lastNote) return;
       lastNote = line;
       if (!statusNotes.includes(line)) statusNotes.push(line);
@@ -2332,7 +2403,9 @@ function mountChat(root) {
       bubble,
       setActivity(text, opts) {
         if (finished || !text) return;
-        label.textContent = text;
+        const next = tabbyCleanStatusLabel(text);
+        if (!next) return;
+        label.textContent = next;
         head.hidden = false;
         if (opts && opts.processing != null) setProcessing(opts.processing);
         if (opts && opts.note) addStatusNote(opts.note);
@@ -2458,6 +2531,7 @@ function mountChat(root) {
     resetRecall();
     renderLog(stickToEnd !== false);
     refreshFiles();
+    paintCompose();
     input.focus();
     setSidebarOpen(false);
   }
@@ -2479,24 +2553,30 @@ function mountChat(root) {
     if (id === store.activeId || id === flightChatId) abortSession("stop");
     if (id === store.activeId) cancelEdit();
     persist();
-    const mode = activeMode();
+    const mode = chatMode(chat);
     store.chats = store.chats.filter((item) => item.id !== id);
     dropWorkspace(id);
-    if (!store.chats.length) {
-      const chat = emptyChat(mode);
-      store = { version: 1, activeId: chat.id, chats: [chat] };
-      messages = cloneMessages(chat.messages);
-    } else if (store.activeId === id) {
-      const next = listedChats()[0] || store.chats[0];
-      store.activeId = next.id;
-      messages = cloneMessages(next.messages);
-      if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+    if (store.activeId === id) {
+      const next = store.chats
+        .filter((item) => chatMode(item) === mode && (hasUserTurn(item) || item.pinned))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+      if (next) {
+        store.activeId = next.id;
+        messages = cloneMessages(next.messages);
+        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+      } else {
+        const fresh = emptyChat(mode);
+        store.chats.unshift(fresh);
+        store.activeId = fresh.id;
+        messages = cloneMessages(fresh.messages);
+      }
     }
     persist();
     resetRecall();
     renderLog();
     renderHistoryMenu();
     refreshFiles();
+    paintCompose();
     input.focus();
   }
 
@@ -2525,10 +2605,14 @@ function mountChat(root) {
   }
 
   async function clearHistory() {
-    if (store.chats.some(hasUserTurn) || hasUserTurn({ messages })) {
+    const mode = activeMode();
+    const doomed = store.chats.filter((item) => chatMode(item) === mode);
+    if (doomed.some(hasUserTurn) || hasUserTurn({ messages })) {
       const yes = await TabbyUI.confirmModal({
         title: "Clear history",
-        text: "Delete all saved console chats for this account?",
+        text: mode === "code"
+          ? "Delete all saved Code chats for this account?"
+          : "Delete all saved Chat conversations for this account?",
         yes: "Delete all",
         no: "Cancel",
       });
@@ -2537,8 +2621,18 @@ function mountChat(root) {
     abortSession("stop");
     cancelEdit();
     clearPendingImage();
-    const chat = emptyChat(activeMode());
-    store = { version: 1, activeId: chat.id, chats: [chat] };
+    doomed.forEach((item) => dropWorkspace(item.id));
+    const kept = store.chats.filter((item) => chatMode(item) !== mode);
+    const chat = emptyChat(mode);
+    store = {
+      version: 1,
+      activeId: chat.id,
+      chats: [chat, ...kept],
+      lastByMode: {
+        chat: mode === "chat" ? chat.id : (store.lastByMode && store.lastByMode.chat) || "",
+        code: mode === "code" ? chat.id : (store.lastByMode && store.lastByMode.code) || "",
+      },
+    };
     messages = cloneMessages(chat.messages);
     persist();
     resetRecall();
@@ -2845,11 +2939,13 @@ function mountChat(root) {
       const comments = chunk
         .split("\n")
         .filter((line) => line.startsWith(":"))
-        .map((line) => line.slice(1).trim());
+        .map((line) => line.slice(1).trim())
+        .filter((line) => line && !tabbyIsSsePing(line));
       const comment = comments.join("\n");
       if (
         comment.includes("tabby-image-job:") ||
-        comment.includes("tabby-image-status:")
+        comment.includes("tabby-image-status:") ||
+        comment.includes("tabby-stack-queue:")
       ) {
         onEvent({ comment });
       }
@@ -2889,6 +2985,17 @@ function mountChat(root) {
         const data = await TabbyUI.api("status");
         if (stopped) return;
         rememberGpu(data);
+        const queue = data && data.stack_queue;
+        if (queue && queue.queued) {
+          showStackQueue(queue.hint || "", working);
+          return;
+        }
+        if (stackWaiting && !(queue && queue.queued)) {
+          hideStackQueue(working, {
+            label: kind === "image" ? "Starting the picture" : "Thinking",
+            processing: kind === "image",
+          });
+        }
         if (kind === "image") {
           const job = data && data.job;
           const next = labelForJob(job);
@@ -2944,6 +3051,10 @@ function mountChat(root) {
   let modelLoadStarted = 0;
   let modelLoadTicker = null;
   let loadingHintText = "";
+  let stackWaiting = false;
+  let stackWaitStarted = 0;
+  let stackWaitTicker = null;
+  let stackWaitHint = "";
   let gateTicker = null;
 
   function sleep(ms) {
@@ -3069,6 +3180,65 @@ function mountChat(root) {
     else stopLoadingClock();
     paintLoadingElapsed();
     if (loadingBar) loadingBar.hidden = !modelLoading;
+  }
+
+  const STACK_QUEUE_HINT = "The stack is being used. You are in a queue.";
+
+  function paintStackWaitElapsed() {
+    const elapsed = stackWaitStarted ? Math.floor((Date.now() - stackWaitStarted) / 1000) : 0;
+    const clock = elapsed >= 1 ? TabbyUI.formatDuration(elapsed) : "";
+    if (waitingTimeEl) waitingTimeEl.textContent = clock;
+    if (waitingTextEl && stackWaitHint) {
+      waitingTextEl.textContent = clock
+        ? `${stackWaitHint} ${clock} elapsed.`
+        : stackWaitHint;
+    }
+  }
+
+  function startStackWaitClock() {
+    if (!stackWaitStarted) stackWaitStarted = Date.now();
+    if (stackWaitTicker) return;
+    paintStackWaitElapsed();
+    stackWaitTicker = setInterval(paintStackWaitElapsed, 250);
+  }
+
+  function stopStackWaitClock() {
+    if (stackWaitTicker) {
+      clearInterval(stackWaitTicker);
+      stackWaitTicker = null;
+    }
+    stackWaitStarted = 0;
+    stackWaitHint = "";
+    if (waitingTimeEl) waitingTimeEl.textContent = "";
+  }
+
+  function showStackQueue(hint, working) {
+    stackWaitHint = String(hint || "").trim() || STACK_QUEUE_HINT;
+    stackWaiting = true;
+    startStackWaitClock();
+    paintStackWaitElapsed();
+    if (waitingBar) waitingBar.hidden = false;
+    if (working) {
+      working.setActivity("Queued", { processing: true, note: stackWaitHint });
+    }
+    paintCompose();
+  }
+
+  function hideStackQueue(working, resume) {
+    if (!stackWaiting && !stackWaitTicker) {
+      if (waitingBar) waitingBar.hidden = true;
+      return;
+    }
+    stackWaiting = false;
+    stopStackWaitClock();
+    if (waitingBar) waitingBar.hidden = true;
+    if (working && resume) {
+      working.setActivity(resume.label || "Thinking", {
+        processing: resume.processing,
+        note: resume.note,
+      });
+    }
+    paintCompose();
   }
 
   function modelLooksReady(data, activity) {
@@ -3197,6 +3367,7 @@ function mountChat(root) {
 
   function paintCompose() {
     if (form) form.classList.toggle("is-loading", modelLoading);
+    if (waitingBar) waitingBar.hidden = modelLoading || !stackWaiting;
     if (modelLoading) {
       if (queueBar) queueBar.hidden = true;
       if (comfyHint) comfyHint.hidden = true;
@@ -3344,18 +3515,35 @@ function mountChat(root) {
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           buf = consumeSseBuffer(buf, (event) => {
+            if (event.comment && event.comment.includes("tabby-stack-queue:")) {
+              const raw = String(event.comment)
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter((line) => /tabby-stack-queue:/i.test(line))
+                .pop() || "";
+              const hint = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-stack-queue:\s*/i, ""));
+              showStackQueue(hint, working);
+            }
             if (event.comment && event.comment.includes("tabby-image-status:")) {
-              const label = event.comment.replace(/^[\s\S]*tabby-image-status:\s*/i, "").trim();
+              hideStackQueue(working);
+              const raw = String(event.comment)
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter((line) => /tabby-image-status:/i.test(line))
+                .pop() || "";
+              const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
               if (label) working.setActivity(label, { processing: true });
               if (/^(?:Writing|Editing|Deleting) \S/.test(label) && store.activeId === chatId) {
                 refreshFilesSoon();
               }
             }
             if (event.reasoning) {
+              hideStackQueue(working, { label: "Thinking", processing: false });
               reasoning += event.reasoning;
               working.setReasoning(reasoning);
             }
             if (visibleAnswerText(event.content)) {
+              hideStackQueue(working, { label: activity.label || "Thinking", processing: false });
               assembled += event.content;
               working.setAnswer(assembled);
             } else if (event.content) {
@@ -3376,6 +3564,7 @@ function mountChat(root) {
     }
     let stoppedEmpty = false;
     poll.stop();
+    hideStackQueue();
     const waitingOnModel = activity.kind === "switch" || activity.kind === "restart";
     if (waitingOnModel) {
       await ensureModelWait(working, activity);
@@ -4071,6 +4260,7 @@ function mountChat(root) {
       abortSession("stop");
       stopGatePoll();
       stopLoadingClock();
+      hideStackQueue();
       if (filesRefreshTimer) clearTimeout(filesRefreshTimer);
       if (highlightFrame) cancelAnimationFrame(highlightFrame);
       persist();

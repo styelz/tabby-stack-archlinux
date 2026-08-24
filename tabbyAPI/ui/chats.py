@@ -13,7 +13,12 @@ _LOCK = threading.Lock()
 _CHATS_DIR: Optional[Path] = None
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-EMPTY_STORE = {"version": 1, "activeId": "", "chats": []}
+EMPTY_STORE = {
+    "version": 1,
+    "activeId": "",
+    "chats": [],
+    "lastByMode": {"chat": "", "code": ""},
+}
 
 
 def chats_dir() -> Path:
@@ -54,7 +59,12 @@ def _atomic_write(path: Path, payload: str) -> None:
 
 def normalize_store(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        return dict(EMPTY_STORE)
+        return {
+            "version": 1,
+            "activeId": "",
+            "chats": [],
+            "lastByMode": {"chat": "", "code": ""},
+        }
     chats = raw.get("chats")
     if not isinstance(chats, list):
         chats = []
@@ -94,7 +104,27 @@ def normalize_store(raw: Any) -> dict[str, Any]:
         version = int(version)
     except (TypeError, ValueError):
         version = 1
-    return {"version": version or 1, "activeId": active, "chats": cleaned}
+    last_raw = raw.get("lastByMode")
+    last = last_raw if isinstance(last_raw, dict) else {}
+    ids = {c["id"] for c in cleaned}
+    last_by_mode = {
+        "chat": str(last.get("chat") or ""),
+        "code": str(last.get("code") or ""),
+    }
+    if last_by_mode["chat"] not in ids or not any(
+        c["id"] == last_by_mode["chat"] and c["mode"] == "chat" for c in cleaned
+    ):
+        last_by_mode["chat"] = ""
+    if last_by_mode["code"] not in ids or not any(
+        c["id"] == last_by_mode["code"] and c["mode"] == "code" for c in cleaned
+    ):
+        last_by_mode["code"] = ""
+    return {
+        "version": version or 1,
+        "activeId": active,
+        "chats": cleaned,
+        "lastByMode": last_by_mode,
+    }
 
 
 def load_store(username: str) -> dict[str, Any]:

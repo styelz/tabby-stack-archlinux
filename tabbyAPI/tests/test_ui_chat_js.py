@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 CHAT_JS = Path(__file__).resolve().parents[1] / "ui" / "static" / "chat.js"
+CHAT_CSS = Path(__file__).resolve().parents[1] / "ui" / "static" / "styles.css"
 
 
 def compose_action(in_flight: bool, typed: str, queued: str) -> tuple[str, bool]:
@@ -77,6 +78,22 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("item.status_label = statusLabel", self.src)
         self.assertNotIn("Replied in ${elapsed}", self.src)
         self.assertIn("timeEl.textContent = seconds != null ? TabbyUI.formatDuration(seconds) : \"\"", self.src)
+
+    def test_mode_toggle_opens_a_separate_conversation(self):
+        self.assertIn("function chatForMode(mode)", self.src)
+        self.assertIn("function setChatMode(mode)", self.src)
+        self.assertNotIn("chat.mode = next", self.src)
+        self.assertIn("chatMode(chat) === mode", self.src)
+        self.assertIn("lastByMode", self.src)
+
+    def test_sidebar_row_actions_overlay_the_cell(self):
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        self.assertIn(".chat-nav-tools {", css)
+        self.assertIn(".chat-file-tools {", css)
+        self.assertIn("position: absolute", css)
+        self.assertNotRegex(css, r"\.chat-nav \{[^}]*grid-template-columns: 18px minmax\(0, 1fr\) auto")
+        self.assertNotRegex(css, r"\.chat-file \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto auto auto")
+        self.assertIn('class="chat-file-tools"', self.src)
 
 
 if __name__ == "__main__":
