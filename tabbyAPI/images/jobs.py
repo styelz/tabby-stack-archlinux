@@ -28,7 +28,8 @@ from common.gpu_mode import (
     stop_comfy,
     write_mode,
 )
-from common.vram_recover import is_vram_error
+from common.logger import xlogger
+from common.vram_recover import FALLBACK_PROFILE, is_vram_error, mark_fallback
 from common.tabby_config import config
 from endpoints.core.types.model import ModelLoadRequest
 from endpoints.core.utils.model import stream_model_load
@@ -155,19 +156,7 @@ async def ensure_comfy() -> None:
         raise RuntimeError("ComfyUI did not start")
 
 
-async def reload_last_llm(name: Optional[str] = None) -> str:
-    """Free Comfy and load a TabbyAPI profile. Returns the profile alias."""
-    names = available_profiles()
-    if name in names:
-        profile_name = name
-    elif last_profile() in names:
-        profile_name = last_profile()
-    else:
-        profile_name = names[0] if names else None
-    if not profile_name:
-        raise RuntimeError("No TabbyAPI profile is installed")
-
-    await asyncio.to_thread(stop_comfy)
+async def _load_profile(profile_name: str) -> None:
     try:
         profile = apply_profile(profile_name)
     except SystemExit as exc:
@@ -182,30 +171,61 @@ async def reload_last_llm(name: Optional[str] = None) -> str:
     if not model_path.exists():
         raise RuntimeError(f"Model folder missing: {model_path}")
 
-    from common.phrase_switch import clear_switch_lock, set_switch_lock
+    load_data = ModelLoadRequest(model_name=model_name)
+    for key in LOAD_FIELDS:
+        if key in model_cfg and model_cfg[key] is not None:
+            setattr(load_data, key, model_cfg[key])
+    async for event in stream_model_load(load_data, model_path):
+        if _is_load_error(event):
+            raise RuntimeError(event)
 
-    async def _load() -> None:
-        load_data = ModelLoadRequest(model_name=model_name)
-        for key in LOAD_FIELDS:
-            if key in model_cfg and model_cfg[key] is not None:
-                setattr(load_data, key, model_cfg[key])
-        async for event in stream_model_load(load_data, model_path):
-            if _is_load_error(event):
-                raise RuntimeError(event)
+
+async def reload_last_llm(name: Optional[str] = None) -> str:
+    """Free Comfy and load a TabbyAPI profile. Returns the profile alias."""
+    names = available_profiles()
+    if name in names:
+        profile_name = name
+    elif last_profile() in names:
+        profile_name = last_profile()
+    else:
+        profile_name = names[0] if names else None
+    if not profile_name:
+        raise RuntimeError("No TabbyAPI profile is installed")
+
+    await asyncio.to_thread(stop_comfy)
+
+    from common.phrase_switch import clear_switch_lock, set_switch_lock
 
     set_switch_lock(profile_name)
     try:
         try:
-            await _load()
+            await _load_profile(profile_name)
         except RuntimeError as exc:
             if not is_vram_error(exc):
                 raise
-            print("  LLM load hit leftover VRAM; stopping Comfy and retrying")
+            xlogger.warning("LLM load hit leftover VRAM; stopping Comfy and retrying")
             await asyncio.to_thread(stop_comfy)
             if loaded_tabby_name():
                 await model.unload_model(skip_wait=True)
             await asyncio.sleep(2)
-            await _load()
+            try:
+                await _load_profile(profile_name)
+            except RuntimeError as retry_exc:
+                dest = FALLBACK_PROFILE
+                if (
+                    not is_vram_error(retry_exc)
+                    or dest == profile_name
+                    or dest not in names
+                ):
+                    raise
+                xlogger.warning(
+                    f"Falling back to {dest} after VRAM fail on {profile_name}"
+                )
+                if loaded_tabby_name():
+                    await model.unload_model(skip_wait=True)
+                await _load_profile(dest)
+                mark_fallback(profile_name, dest)
+                profile_name = dest
 
         write_mode("llm", profile=profile_name)
         return profile_name

@@ -178,6 +178,17 @@ def free_comfy() -> bool:
         return False
 
 
+def comfy_unit_active() -> bool:
+    """True if the user unit is active (HTTP may still be coming up)."""
+    if os.name == "nt" or not comfy_user_unit_path().is_file():
+        return False
+    result = subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", "comfyui"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def stop_comfy_via_systemd() -> bool:
     """Stop the user unit so Flux cannot keep the GPU."""
     if os.name == "nt":
@@ -203,7 +214,10 @@ def stop_comfy(timeout: float = 30) -> None:
     `/free` is not enough: Comfy stays up and can still hold VRAM
     (RAM-pressure cache). Stop the unit, then wait until it is gone.
     """
-    if comfy_up():
+    http_up = comfy_up()
+    if not http_up and not comfy_unit_active():
+        return
+    if http_up:
         free_comfy()
     stopped = stop_comfy_via_systemd()
     if not comfy_up() and not stopped:

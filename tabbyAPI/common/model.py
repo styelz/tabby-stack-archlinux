@@ -190,6 +190,12 @@ async def load_model_gen(model_path: pathlib.Path, **kwargs):
         # Check model compatibility and dependencies before creating a container
         validate_backend(kwargs.get("backend"), hf_model)
 
+        # Exclusive GPU: Comfy's RAM-pressure cache OOMs a 27B split if it
+        # is still up. Every load path goes through here.
+        from common.gpu_mode import stop_comfy
+
+        await asyncio.to_thread(stop_comfy)
+
         new_container = await ExllamaV3Container.create(model_path.resolve(), hf_model, **kwargs)
 
         # Add possible types of models that can be loaded
