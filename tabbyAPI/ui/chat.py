@@ -1,11 +1,11 @@
-"""Console chat: LLM replies plus inline images, no file tools."""
+"""Console chat: LLM replies plus inline images. Code mode writes a jailed project."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import HTTPException, Request
-from sse_starlette import EventSourceResponse
+from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from common import model
 from common.assistant_text import strip_apology_sse, strip_response_apologies
@@ -21,6 +21,7 @@ from common.phrase_switch import (
     llm_not_ready_response,
     looks_like_chat_not_image,
     should_yield_comfy_to_llm,
+    stream_text,
     switch_lock_held,
     text_response,
     yield_comfy_to_llm_response,
@@ -33,8 +34,8 @@ from endpoints.OAI.utils.chat_completion import (
     stream_generate_chat_completion,
 )
 from common.pasted_images import materialize_pasted_images
-from images.chat import handle as handle_image_chat
-from ui.manager import sanitize_chat_payload
+from images.chat import STATUS_MARK, handle as handle_image_chat
+from ui.manager import sanitize_chat_payload, sanitize_code_payload
 
 
 def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
@@ -50,12 +51,56 @@ def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRe
     return ChatCompletionRequest(**fields)
 
 
+def is_code_request(body: dict[str, Any]) -> bool:
+    return str(body.get("mode") or "").strip().lower() == "code"
+
+
+async def stream_code_only(
+    data: ChatCompletionRequest,
+    disconnect_handler,
+    username: str,
+    chat_id: str,
+):
+    from ui.code_agent import final_code_text, iter_code_turns
+
+    sync = data.model_copy(update={"stream": False})
+
+    async def _body():
+        text = ""
+        written: list[str] = []
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Writing files")
+        async for event in iter_code_turns(sync, disconnect_handler, username, chat_id):
+            if event[0] == "status":
+                yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
+            elif event[0] == "done":
+                text = event[1] or ""
+                written = list(event[2] or [])
+        async for chunk in stream_text(data, final_code_text(text, written)):
+            yield chunk
+
+    if data.stream:
+        return EventSourceResponse(
+            _body(),
+            ping=get_sse_ping_interval(),
+            sep="\n",
+        )
+    text = ""
+    written: list[str] = []
+    async for event in iter_code_turns(sync, disconnect_handler, username, chat_id):
+        if event[0] == "done":
+            text = event[1] or ""
+            written = list(event[2] or [])
+    return text_response(sync, final_code_text(text, written))
+
+
 async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
+    code = is_code_request(body)
     try:
-        payload = sanitize_chat_payload(body)
+        payload = sanitize_code_payload(body) if code else sanitize_chat_payload(body)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    chat_id = str(payload.get("chat_id") or "") if code else ""
     data = completion_request_from_payload(payload)
     saved_images = materialize_pasted_images(data)
     api_base = public_api_base(request)
@@ -77,6 +122,8 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         disconnect_handler=disconnect_handler,
         console=True,
         owner=username or None,
+        code=code,
+        chat_id=chat_id or None,
     )
     if image_response is not None:
         return image_response
@@ -88,6 +135,9 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
                 return await yield_comfy_to_llm_response(data, console=True)
             return await comfy_idle_response(data, api_base=api_base)
         return await llm_not_ready_response(data, console=True)
+
+    if code and chat_id:
+        return await stream_code_only(data, disconnect_handler, username, chat_id)
 
     await check_model_container()
     if not (model.container and getattr(model.container, "model_dir", None)):

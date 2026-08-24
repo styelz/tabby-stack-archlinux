@@ -325,6 +325,80 @@ async def ui_chats_put(request: Request, _user: str = Depends(require_ui_user)):
         raise HTTPException(400, "JSON body required") from exc
     return save_store(_user, body)
 
+
+def _workspace_chat_id(chat_id: str) -> str:
+    from ui.workspace import safe_name
+
+    raw = str(chat_id or "").strip()
+    if not raw:
+        raise HTTPException(400, "Invalid chat id")
+    return safe_name(raw)
+
+
+@router.get("/workspace/{chat_id}", include_in_schema=False)
+async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.workspace import listing
+
+    return listing(_user, _workspace_chat_id(chat_id))
+
+
+@router.get("/workspace/{chat_id}/file", include_in_schema=False)
+async def ui_workspace_file(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import guess_media_type, read_bytes
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    try:
+        file_path, _data = read_bytes(_user, _workspace_chat_id(chat_id), path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    return FileResponse(
+        file_path, media_type=guess_media_type(file_path), filename=file_path.name
+    )
+
+
+@router.delete("/workspace/{chat_id}/file", include_in_schema=False)
+async def ui_workspace_delete_file(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import delete_file, listing
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    try:
+        delete_file(_user, _workspace_chat_id(chat_id), path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    return {"ok": True, **listing(_user, _workspace_chat_id(chat_id))}
+
+
+@router.get("/workspace/{chat_id}/zip", include_in_schema=False)
+async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.workspace import zip_bytes
+
+    cid = _workspace_chat_id(chat_id)
+    data = zip_bytes(_user, cid)
+    filename = f"{cid}.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete("/workspace/{chat_id}", include_in_schema=False)
+async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.workspace import delete_workspace
+
+    delete_workspace(_user, _workspace_chat_id(chat_id))
+    return {"ok": True, "files": [], "bytes": 0, "count": 0}
+
 @router.get("/gallery/list", include_in_schema=False)
 async def ui_gallery_list(
     page: int = 1,

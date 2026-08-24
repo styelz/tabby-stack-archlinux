@@ -70,6 +70,9 @@ def normalize_store(raw: Any) -> dict[str, Any]:
         messages = item.get("messages")
         if not isinstance(messages, list):
             messages = []
+        mode = str(item.get("mode") or "chat").strip().lower()
+        if mode not in ("chat", "code"):
+            mode = "chat"
         cleaned.append(
             {
                 "id": chat_id,
@@ -77,6 +80,7 @@ def normalize_store(raw: Any) -> dict[str, Any]:
                 "updatedAt": int(item.get("updatedAt") or 0),
                 "pinned": bool(item.get("pinned")),
                 "titleLocked": bool(item.get("titleLocked")),
+                "mode": mode,
                 "messages": messages,
             }
         )
@@ -106,10 +110,19 @@ def load_store(username: str) -> dict[str, Any]:
 
 
 def save_store(username: str, raw: Any) -> dict[str, Any]:
+    previous = load_store(username)
     store = normalize_store(raw)
+    old_ids = {str(chat.get("id") or "") for chat in previous.get("chats") or []}
+    new_ids = {str(chat.get("id") or "") for chat in store.get("chats") or []}
+    dropped = [chat_id for chat_id in old_ids - new_ids if chat_id]
     payload = json.dumps(store, ensure_ascii=False) + "\n"
     with _LOCK:
         _atomic_write(chat_path(username), payload)
+    if dropped:
+        from ui.workspace import delete_workspace
+
+        for chat_id in dropped:
+            delete_workspace(username, chat_id)
     return store
 
 
@@ -137,3 +150,6 @@ def delete_store(username: str) -> None:
             path.unlink()
         except OSError:
             pass
+    from ui.workspace import delete_user_workspaces
+
+    delete_user_workspaces(username)

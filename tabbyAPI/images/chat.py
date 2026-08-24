@@ -346,7 +346,13 @@ def job_progress_line(job) -> str:
     return ""
 
 
-def _console_ready_text(job, api_base: Optional[str]) -> str:
+def _console_ready_text(
+    job,
+    api_base: Optional[str],
+    *,
+    code: bool = False,
+    extra_files: Optional[list[str]] = None,
+) -> str:
     from common.phrase_switch import image_job_done_text
 
     pairs = living_download_pairs(job)
@@ -357,11 +363,33 @@ def _console_ready_text(job, api_base: Optional[str]) -> str:
         lines.append(f"![]({url})")
         lines.append("")
     lines.append(image_job_done_text(job=job, count=max(1, n)))
-    lines.append(
-        "It's also in Gallery. Describe another picture to generate it, "
-        "or switch models from Status."
-    )
+    if code:
+        dests = [dest for _url, dest in pairs]
+        names = []
+        for name in list(extra_files or []) + dests:
+            if name and name not in names:
+                names.append(name)
+        if names:
+            lines.append("They're also in this chat's Files: " + ", ".join(names) + ".")
+        else:
+            lines.append("It's also in Gallery and in this chat's Files.")
+    else:
+        lines.append(
+            "It's also in Gallery. Describe another picture to generate it, "
+            "or switch models from Status."
+        )
     return "\n".join(lines).strip()
+
+
+def _copy_workspace_pngs(job, workspace) -> list[str]:
+    if not workspace:
+        return []
+    owner, chat_id = workspace
+    if not owner or not chat_id:
+        return []
+    from ui.workspace import copy_job_pngs
+
+    return copy_job_pngs(owner, chat_id, job)
 
 
 def _url_response(
@@ -370,6 +398,8 @@ def _url_response(
     api_base: Optional[str],
     *,
     console: bool = False,
+    code: bool = False,
+    extra_files: Optional[list[str]] = None,
 ):
     from common.phrase_switch import image_ready_response, text_response
 
@@ -381,7 +411,10 @@ def _url_response(
             return text_response(data, err)
         return text_response(data, f"{mark}\n{err}")
     if console:
-        return text_response(data, _console_ready_text(job, api_base))
+        return text_response(
+            data,
+            _console_ready_text(job, api_base, code=code, extra_files=extra_files),
+        )
     names = [url.rsplit("/", 1)[-1].split("?", 1)[0] for url, _dest in pairs]
     response = image_ready_response(
         data,
@@ -406,11 +439,14 @@ async def _hold_then_reply(
     api_base: Optional[str],
     code_response=None,
     console: bool = False,
+    workspace=None,
+    extra_files: Optional[list[str]] = None,
 ):
     from common.phrase_switch import stream_text, stream_tool_calls
 
     sync = data.model_copy(update={"stream": False})
     mixed = False if console else mixed
+    code = bool(workspace)
 
     async def _body():
         yield ServerSentEvent(comment=f"{JOB_MARK} {job.id}")
@@ -418,10 +454,14 @@ async def _hold_then_reply(
         if line:
             yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
         await wait_until_done(job)
+        copied = _copy_workspace_pngs(job, workspace)
+        names = list(extra_files or []) + copied
         reply = (
             _curl_response(sync, job, code_response)
             if mixed
-            else _url_response(sync, job, api_base, console=console)
+            else _url_response(
+                sync, job, api_base, console=console, code=code, extra_files=names
+            )
         )
         message = reply.choices[0].message
         if message.tool_calls:
@@ -438,9 +478,99 @@ async def _hold_then_reply(
             sep="\n",
         )
     await wait_until_done(job)
+    copied = _copy_workspace_pngs(job, workspace)
+    names = list(extra_files or []) + copied
     if mixed:
         return _curl_response(sync, job, code_response)
-    return _url_response(sync, job, api_base, console=console)
+    return _url_response(
+        sync, job, api_base, console=console, code=code, extra_files=names
+    )
+
+
+async def _stream_code_then_images(
+    data: ChatCompletionRequest,
+    *,
+    api_base: Optional[str],
+    disconnect_handler,
+    owner: str,
+    chat_id: str,
+    items: Optional[list[dict[str, str]]] = None,
+    job=None,
+):
+    from common.phrase_switch import stream_text
+    from ui.code_agent import final_code_text, iter_code_turns
+
+    workspace = (owner, chat_id)
+    sync = data.model_copy(update={"stream": False})
+
+    async def _body():
+        written: list[str] = []
+        text = ""
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Writing files")
+        async for event in iter_code_turns(sync, disconnect_handler, owner, chat_id):
+            kind = event[0]
+            if kind == "status":
+                yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
+            elif kind == "done":
+                text = event[1] or ""
+                written = list(event[2] or [])
+        started = job
+        if items:
+            started = await _start_mixed_job(items, api_base or "", start=True, owner=owner)
+        elif started is not None and getattr(started, "status", "") == "coding":
+            await _launch_mixed_job(started)
+        if started is not None:
+            yield ServerSentEvent(comment=f"{JOB_MARK} {started.id}")
+            line = job_progress_line(started)
+            if line:
+                yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
+            await wait_until_done(started)
+            copied = _copy_workspace_pngs(started, workspace)
+            reply = _url_response(
+                sync,
+                started,
+                api_base,
+                console=True,
+                code=True,
+                extra_files=written + copied,
+            )
+            text = reply.choices[0].message.content or final_code_text(text, written)
+        else:
+            text = final_code_text(text, written)
+        async for chunk in stream_text(data, text):
+            yield chunk
+
+    if data.stream:
+        return EventSourceResponse(
+            _body(),
+            ping=get_sse_ping_interval(),
+            sep="\n",
+        )
+    written: list[str] = []
+    text = ""
+    async for event in iter_code_turns(sync, disconnect_handler, owner, chat_id):
+        if event[0] == "done":
+            text = event[1] or ""
+            written = list(event[2] or [])
+    started = job
+    if items:
+        started = await _start_mixed_job(items, api_base or "", start=True, owner=owner)
+    elif started is not None and getattr(started, "status", "") == "coding":
+        await _launch_mixed_job(started)
+    if started is not None:
+        await wait_until_done(started)
+        copied = _copy_workspace_pngs(started, workspace)
+        return _url_response(
+            sync,
+            started,
+            api_base,
+            console=True,
+            code=True,
+            extra_files=written + copied,
+        )
+    from common.phrase_switch import text_response as _text
+
+    return _text(sync, final_code_text(text, written))
 
 
 async def handle(
@@ -453,6 +583,8 @@ async def handle(
     disconnect_handler=None,
     console: bool = False,
     owner: str | None = None,
+    code: bool = False,
+    chat_id: str | None = None,
 ):
     """Mixed generate writes the page first, then holds until PNGs exist.
 
@@ -461,10 +593,12 @@ async def handle(
     9B while this conversation's job is still running.
 
     console=True (management UI) still generates images but never emits
-    Write/StrReplace tool calls.
+    Write/StrReplace tool calls unless code=True, which writes into a
+    per-chat host workspace instead.
     """
     from common.phrase_switch import requested_image_prompt, text_response
 
+    workspace = (owner, chat_id) if code and owner and chat_id else None
     job_id = job_id_from_history(data)
     job = get_mcp_image_job(job_id) if job_id else None
     role = last_role(data)
@@ -480,9 +614,19 @@ async def handle(
             mixed=False if console else _job_uses_curl(job),
             api_base=api_base,
             console=console,
+            workspace=workspace,
         )
 
     if job and job.status == "coding" and llm_ready:
+        if workspace:
+            return await _stream_code_then_images(
+                data,
+                api_base=api_base,
+                disconnect_handler=disconnect_handler,
+                owner=owner or "",
+                chat_id=chat_id or "",
+                job=job,
+            )
         if console:
             await _launch_mixed_job(job)
             return await _hold_then_reply(
@@ -529,6 +673,16 @@ async def handle(
                     f"The GPU is already generating job {busy.id}. "
                     "Wait until that batch finishes, then ask again.",
                 )
+            if workspace:
+                _inject_planned_dests(data, plan.items)
+                return await _stream_code_then_images(
+                    data,
+                    api_base=api_base,
+                    disconnect_handler=disconnect_handler,
+                    owner=owner or "",
+                    chat_id=chat_id or "",
+                    items=plan.items,
+                )
             if console:
                 started = await _start_mixed_job(plan.items, api_base or "", start=True, owner=owner)
                 return await _hold_then_reply(
@@ -560,7 +714,12 @@ async def handle(
             explicit, api_base or "", restore=True, source_image=source_image, owner=owner
         )
         return await _hold_then_reply(
-            data, started, mixed=False, api_base=api_base, console=console
+            data,
+            started,
+            mixed=False,
+            api_base=api_base,
+            console=console,
+            workspace=workspace,
         )
 
     if not llm_ready and gpu_is_comfy:
@@ -576,7 +735,12 @@ async def handle(
                 prompt, api_base or "", restore=False, source_image=source_image, owner=owner
             )
             return await _hold_then_reply(
-                data, started, mixed=False, api_base=api_base, console=console
+                data,
+                started,
+                mixed=False,
+                api_base=api_base,
+                console=console,
+                workspace=workspace,
             )
 
     if not llm_ready:

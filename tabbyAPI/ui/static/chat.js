@@ -47,6 +47,10 @@ function mountChat(root) {
         <div class="toolbar chat-toolbar">
           <button class="btn ghost chat-icon" type="button" id="chat-sidebar-toggle" aria-label="Hide sidebar" title="Hide sidebar">‹</button>
           <span class="chat-title" id="chat-title">New chat</span>
+          <div class="chat-mode" id="chat-mode" role="group" aria-label="Chat mode">
+            <button type="button" class="chat-mode-btn is-active" data-mode="chat">Chat</button>
+            <button type="button" class="chat-mode-btn" data-mode="code">Code</button>
+          </div>
           <span class="spacer"></span>
           <span class="muted" id="chat-hint">Tab chats · ↑↓ recall · Enter send</span>
           <div class="chat-more">
@@ -66,9 +70,9 @@ function mountChat(root) {
         </div>
         <div class="chat-log-wrap">
           <div class="chat-empty" id="chat-empty" hidden>
-            <h2>Console chat</h2>
-            <p>Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
-            <div class="chat-suggests">
+            <h2 id="chat-empty-title">Console chat</h2>
+            <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
+            <div class="chat-suggests" id="chat-suggests">
               <button type="button" data-suggest="help">Usage guide</button>
               <button type="button" data-suggest="list models">List models</button>
               <button type="button" data-suggest="What model is loaded?">What's loaded?</button>
@@ -119,6 +123,18 @@ function mountChat(root) {
           </form>
         </div>
       </div>
+      <aside class="chat-files" id="chat-files" hidden>
+        <div class="chat-files-head">
+          <span>Files</span>
+          <span class="spacer"></span>
+          <button class="btn ghost" type="button" id="chat-files-zip">Download zip</button>
+          <button class="btn ghost" type="button" id="chat-files-clear">Clear</button>
+        </div>
+        <div class="chat-files-tree" id="chat-files-tree"></div>
+        <div class="chat-files-preview" id="chat-files-preview">
+          <p class="muted">Select a file</p>
+        </div>
+      </aside>
     </div>
   `;
   const shell = root.querySelector("#chat-shell");
@@ -148,11 +164,19 @@ function mountChat(root) {
   const loadingTimeEl = root.querySelector("#chat-loading-time");
   const comfyHint = root.querySelector("#chat-comfy-hint");
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
+  const filesPane = root.querySelector("#chat-files");
+  const filesTree = root.querySelector("#chat-files-tree");
+  const filesPreview = root.querySelector("#chat-files-preview");
+  const filesZipBtn = root.querySelector("#chat-files-zip");
+  const filesClearBtn = root.querySelector("#chat-files-clear");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
+  let filesListing = [];
+  let filesSelected = "";
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
   const SYSTEM = { role: "system", content: "Console chat. No file tools." };
+  const CODE_PLACEHOLDER = "Describe the page or files to create. They land in Files; download a zip when you want a copy.";
   const STORAGE_KEY = "tabby-ui-chat-store";
   const SETTINGS_KEY = "tabby-ui-chat-settings";
   const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
@@ -163,15 +187,24 @@ function mountChat(root) {
     return `c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function emptyChat() {
+  function emptyChat(mode) {
     return {
       id: newId(),
       title: "New chat",
       updatedAt: Date.now(),
       pinned: false,
       titleLocked: false,
+      mode: mode === "code" ? "code" : "chat",
       messages: [{ ...SYSTEM }],
     };
+  }
+
+  function chatMode(chat) {
+    return chat && chat.mode === "code" ? "code" : "chat";
+  }
+
+  function activeMode() {
+    return chatMode(activeChat());
   }
 
   function cloneMessages(list) {
@@ -225,6 +258,7 @@ function mountChat(root) {
         updatedAt: Number(item.updatedAt) || Date.now(),
         pinned: Boolean(item.pinned),
         titleLocked: Boolean(item.titleLocked),
+        mode: item.mode === "code" ? "code" : "chat",
         messages,
       });
     });
@@ -322,6 +356,7 @@ function mountChat(root) {
       chat.messages = cloneMessages(messages);
       if (!chat.titleLocked) chat.title = titleFromMessages(chat.messages);
     }
+    const before = new Set(store.chats.map((item) => item.id));
     store.chats = store.chats.filter((item) => item.id === store.activeId || hasUserTurn(item) || item.pinned);
     if (store.chats.length > MAX_CHATS) {
       const extras = store.chats
@@ -330,9 +365,13 @@ function mountChat(root) {
       const drop = new Set(extras.slice(0, store.chats.length - MAX_CHATS).map((item) => item.id));
       store.chats = store.chats.filter((item) => !drop.has(item.id));
     }
+    const kept = new Set(store.chats.map((item) => item.id));
     paintToolbar();
     renderSidebar();
     if (!persistReady) return;
+    before.forEach((id) => {
+      if (!kept.has(id)) dropWorkspace(id);
+    });
     TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
   }
 
@@ -363,7 +402,32 @@ function mountChat(root) {
       toggleBtn.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
       toggleBtn.title = hidden ? "Show sidebar" : "Hide sidebar";
     }
+    paintMode();
     paintEmpty();
+  }
+
+  function paintMode() {
+    const mode = activeMode();
+    shell.classList.toggle("is-code", mode === "code");
+    root.querySelectorAll(".chat-mode-btn").forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.mode === mode);
+    });
+    if (filesPane) filesPane.hidden = mode !== "code";
+    const hint = root.querySelector("#chat-hint");
+    if (hint) {
+      hint.textContent = mode === "code"
+        ? "Code mode · files stay on this host · zip from Files"
+        : "Tab chats · ↑↓ recall · Enter send";
+    }
+  }
+
+  function setChatMode(mode) {
+    const next = mode === "code" ? "code" : "chat";
+    const chat = activeChat();
+    if (chat) chat.mode = next;
+    persist();
+    paintCompose();
+    if (next === "code") refreshFiles();
   }
 
   function renderSidebar() {
@@ -398,6 +462,96 @@ function mountChat(root) {
     if (!emptyEl) return;
     const empty = !messages.some((item) => item.role !== "system" && String(item.content || "").trim());
     emptyEl.hidden = !empty;
+    if (!empty) return;
+    const code = activeMode() === "code";
+    const title = emptyEl.querySelector("#chat-empty-title");
+    const copy = emptyEl.querySelector("#chat-empty-copy");
+    const suggests = emptyEl.querySelector("#chat-suggests");
+    if (title) title.textContent = code ? "Code mode" : "Console chat";
+    if (copy) {
+      copy.textContent = code
+        ? "Ask for a page, logo, or set of files. The model writes them into this chat's Files pane. Images also show in Gallery. Download a zip when you want a copy."
+        : "Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.";
+    }
+    if (suggests) {
+      suggests.innerHTML = code
+        ? '<button type="button" data-suggest="Create a simple landing page with a logo and a header photo">Landing page</button>' +
+          '<button type="button" data-suggest="qwen-image: a logo that says Cafe">Cafe logo</button>' +
+          '<button type="button" data-suggest="Write a small HTML/CSS/JS todo app">Todo app</button>'
+        : '<button type="button" data-suggest="help">Usage guide</button>' +
+          '<button type="button" data-suggest="list models">List models</button>' +
+          '<button type="button" data-suggest="What model is loaded?">What\'s loaded?</button>' +
+          '<button type="button" data-suggest="generate an image of a harbor at dusk">Harbor at dusk</button>';
+    }
+  }
+
+  function dropWorkspace(chatId) {
+    if (!chatId) return;
+    TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  function fileUrl(chatId, path) {
+    return TabbyUI.path(`workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(path)}`);
+  }
+
+  function paintFiles() {
+    if (!filesTree) return;
+    if (!filesListing.length) {
+      filesTree.innerHTML = '<p class="muted chat-files-empty">No files yet.</p>';
+    } else {
+      const frag = document.createDocumentFragment();
+      filesListing.forEach((row) => {
+        const item = document.createElement("div");
+        item.className = "chat-file" + (row.path === filesSelected ? " is-active" : "");
+        item.dataset.path = row.path;
+        item.innerHTML =
+          `<button type="button" class="chat-file-open" data-file="open">${TabbyUI.escapeHtml(row.path)}</button>` +
+          `<span class="muted">${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.size))}</span>` +
+          `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file">×</button>`;
+        frag.appendChild(item);
+      });
+      filesTree.replaceChildren(frag);
+    }
+    if (!filesPreview) return;
+    const row = filesListing.find((item) => item.path === filesSelected);
+    if (!row) {
+      filesPreview.innerHTML = '<p class="muted">Select a file</p>';
+      return;
+    }
+    const chatId = store.activeId;
+    if (row.kind === "image") {
+      filesPreview.innerHTML = `<img alt="" src="${TabbyUI.escapeHtml(fileUrl(chatId, row.path))}" />`;
+      return;
+    }
+    fetch(fileUrl(chatId, row.path), { credentials: "same-origin" })
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error("Could not read file"))))
+      .then((text) => {
+        if (filesSelected !== row.path) return;
+        filesPreview.innerHTML = `<pre class="chat-files-pre">${TabbyUI.escapeHtml(text)}</pre>`;
+      })
+      .catch(() => {
+        if (filesSelected !== row.path) return;
+        filesPreview.innerHTML = '<p class="muted">Could not preview this file.</p>';
+      });
+  }
+
+  async function refreshFiles() {
+    if (activeMode() !== "code" || !store.activeId) {
+      filesListing = [];
+      filesSelected = "";
+      paintFiles();
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(store.activeId)}`);
+      filesListing = Array.isArray(data.files) ? data.files : [];
+      if (filesSelected && !filesListing.some((row) => row.path === filesSelected)) {
+        filesSelected = "";
+      }
+    } catch {
+      filesListing = [];
+    }
+    paintFiles();
   }
 
   let followLog = true;
@@ -1327,6 +1481,7 @@ function mountChat(root) {
     persist();
     resetRecall();
     renderLog(stickToEnd !== false);
+    refreshFiles();
     input.focus();
     setSidebarOpen(false);
   }
@@ -1349,8 +1504,9 @@ function mountChat(root) {
     if (id === store.activeId) cancelEdit();
     persist();
     store.chats = store.chats.filter((item) => item.id !== id);
+    dropWorkspace(id);
     if (!store.chats.length) {
-      const chat = emptyChat();
+      const chat = emptyChat(activeMode());
       store = { version: 1, activeId: chat.id, chats: [chat] };
       messages = cloneMessages(chat.messages);
     } else if (store.activeId === id) {
@@ -1363,6 +1519,7 @@ function mountChat(root) {
     resetRecall();
     renderLog();
     renderHistoryMenu();
+    refreshFiles();
     input.focus();
   }
 
@@ -1377,7 +1534,7 @@ function mountChat(root) {
       input.focus();
       return;
     }
-    const chat = emptyChat();
+    const chat = emptyChat(activeMode());
     store.chats.unshift(chat);
     store.activeId = chat.id;
     messages = cloneMessages(chat.messages);
@@ -1401,13 +1558,14 @@ function mountChat(root) {
     abortSession("stop");
     cancelEdit();
     clearPendingImage();
-    const chat = emptyChat();
+    const chat = emptyChat(activeMode());
     store = { version: 1, activeId: chat.id, chats: [chat] };
     messages = cloneMessages(chat.messages);
     persist();
     resetRecall();
     renderLog();
     hideHistoryMenu();
+    refreshFiles();
     input.focus();
   }
 
@@ -2067,7 +2225,9 @@ function mountChat(root) {
         : "Session running. Type a follow-up to queue it."
       : comfyOwnsGpu()
         ? "Describe a picture, or type a question to switch back to the LLM."
-        : DEFAULT_PLACEHOLDER;
+        : activeMode() === "code"
+          ? CODE_PLACEHOLDER
+          : DEFAULT_PLACEHOLDER;
     if (editBar) editBar.hidden = pendingEditIndex < 0;
     paintComfyHint();
   }
@@ -2126,6 +2286,10 @@ function mountChat(root) {
     const outbound = outboundMessages();
     const body = { messages: outbound, stream: true };
     if (settings.temperature != null) body.temperature = settings.temperature;
+    if (activeMode() === "code") {
+      body.mode = "code";
+      body.chat_id = chatId;
+    }
     try {
       const response = await fetch(TabbyUI.path("chat"), {
         method: "POST",
@@ -2211,6 +2375,9 @@ function mountChat(root) {
       }
     } else if (store.activeId === chatId) {
       persist();
+    }
+    if (chatMode(store.chats.find((item) => item.id === chatId)) === "code") {
+      refreshFiles();
     }
   }
 
@@ -2506,6 +2673,76 @@ function mountChat(root) {
     }
     if (act === "delete") deleteChat(store.activeId);
   });
+  root.querySelector("#chat-mode").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-mode]");
+    if (!btn || modelLoading) return;
+    setChatMode(btn.dataset.mode);
+  });
+  if (filesTree) {
+    filesTree.addEventListener("click", async (event) => {
+      const btn = event.target.closest("[data-file]");
+      if (!btn) return;
+      const row = btn.closest(".chat-file");
+      const path = row && row.dataset.path;
+      if (!path) return;
+      if (btn.dataset.file === "open") {
+        filesSelected = path;
+        paintFiles();
+        return;
+      }
+      if (btn.dataset.file === "delete") {
+        try {
+          const data = await TabbyUI.api(
+            `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
+            { method: "DELETE" }
+          );
+          filesListing = Array.isArray(data.files) ? data.files : [];
+          if (filesSelected === path) filesSelected = "";
+          paintFiles();
+        } catch (err) {
+          addBubble("assistant", `Error: ${err.message}`);
+        }
+      }
+    });
+  }
+  if (filesZipBtn) {
+    filesZipBtn.addEventListener("click", async () => {
+      try {
+        const response = await fetch(TabbyUI.path(`workspace/${encodeURIComponent(store.activeId)}/zip`), {
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("Could not download zip");
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "project.zip";
+        link.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        addBubble("assistant", `Error: ${err.message}`);
+      }
+    });
+  }
+  if (filesClearBtn) {
+    filesClearBtn.addEventListener("click", async () => {
+      const yes = await TabbyUI.confirmModal({
+        title: "Clear files",
+        text: "Delete every file in this chat's project?",
+        yes: "Clear",
+        no: "Cancel",
+      });
+      if (!yes) return;
+      try {
+        await TabbyUI.api(`workspace/${encodeURIComponent(store.activeId)}`, { method: "DELETE" });
+        filesListing = [];
+        filesSelected = "";
+        paintFiles();
+      } catch (err) {
+        addBubble("assistant", `Error: ${err.message}`);
+      }
+    });
+  }
   emptyEl.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-suggest]");
     if (!btn || modelLoading) return;
@@ -2623,6 +2860,7 @@ function mountChat(root) {
     renderSidebar();
     paintCompose();
     resizeInput();
+    refreshFiles();
     syncModelGate();
   }
   loadStore();

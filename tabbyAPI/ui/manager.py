@@ -514,3 +514,20 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
     if body.get("max_tokens") is not None:
         payload["max_tokens"] = body["max_tokens"]
     return payload
+
+
+def sanitize_code_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """Chat sanitizer, but force the Code-mode system prompt and keep chat_id."""
+    from ui.code_agent import CODE_SYSTEM
+    from ui.workspace import safe_name
+
+    payload = sanitize_chat_payload(body)
+    messages = [item for item in payload["messages"] if item.get("role") != "system"]
+    messages.insert(0, {"role": "system", "content": CODE_SYSTEM})
+    payload["messages"] = messages
+    raw_id = str(body.get("chat_id") or "").strip()
+    if not raw_id:
+        raise ValueError("chat_id is required in Code mode")
+    payload["chat_id"] = safe_name(raw_id)
+    payload["mode"] = "code"
+    return payload
