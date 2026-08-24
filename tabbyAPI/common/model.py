@@ -227,6 +227,17 @@ async def load_model_gen(model_path: pathlib.Path, **kwargs):
                         index += 1
 
             container = new_container
+        except Exception:
+            # A mid-load VRAM failure leaves weights on the GPU, but this
+            # function never assigns `container`, so the next switch skips
+            # unload and fails the same way. Free the leftover before
+            # the client retries.
+            xlogger.error("Model load failed; unloading leftovers so VRAM can be reused.")
+            try:
+                await new_container.unload(skip_wait=True)
+            except Exception as unload_exc:
+                xlogger.warning(f"Could not unload leftover model after a failed load: {unload_exc}")
+            raise
         finally:
             progress.stop()
 

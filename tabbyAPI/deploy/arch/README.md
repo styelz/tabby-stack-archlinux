@@ -1,7 +1,5 @@
 # Arch Linux install
 
-Use **gpt-4o** as the model name in your editor, and leave it. That is not ChatGPT — it is only a name. Many editors sandbox or block tools unless they see a known OpenAI name. The GPU still runs the local model you switched to.
-
 The git tree is **code only**. It does not ship LLMs, Flux, or Qwen-Image weights. `install.sh` copies a file from an optional local cache if that file already exists, otherwise it downloads it from Hugging Face. Re-run skips anything already on disk.
 
 Stack overview lives in the [repository root README](../../../README.md).
@@ -134,49 +132,11 @@ Manual start (same as the unit):
 
 ## 4. IDE / agents
 
-Same notes are in `$HOME/tabby-stack/AGENTS.md` (any editor, not Cursor-only).
+Chat phrases, images, and mixed page+images: `$HOME/tabby-stack/AGENTS.md` (copied by the installer). Editor model name is **`gpt-4o`** (a label only).
 
-- OpenAI-compatible base URL for remote IDEs: `http://<gpu-host>:5000/v1`
-- Model name: **`gpt-4o`** (leave it — see the top of this file)
-- Host console: `http://<gpu-host>:5000/v1/ui` (or the same path under your HTTPS `/v1` prefix). Use it for logs and status; keep coding in the editor.
 - After `switch to …`, wait for the GPU (warm RTX 4070 Ti 12 GB: qwen / gemma ~65s, qwen36 ~85s, gemma26 ~2 min, qwen35 ~3 min, glm ~15s). After `switch to comfy`, wait about **35 seconds** (first Flux ~3 min, first Qwen-Image ~4 min). GLM is thinking-only on RTX 4070 Ti 12 GB (vision off). You can also load an LLM or hand the GPU to Comfy from the Status page in `/v1/ui`.
 
-Chat phrases (send as the whole message):
-
-| Phrase | What it does |
-|---|---|
-| `help` | Full usage guide |
-| `list models` | Show installed profiles |
-| `restart` | Bounce the API; last model reloads |
-| `switch to qwen` | Daily coding, 9B, faster |
-| `switch to qwen35` / `qwen36` | Long or hard Agent work (slower on 12 GB) |
-| `switch to gemma` / `gemma26` | General |
-| `switch to glm` | Thinking (vision off on 12 GB) |
-| `switch to comfy` / `flux` | Unload the LLM, Comfy image gen |
-| `switch to llm` | Free Comfy, reload the last LLM |
-
-The 12 GB GPU is exclusive: **LLM or Comfy, not both**. `Qwen3-Embedding-0.6B` stays on CPU and does not need a switch. Clients switch with the chat phrases above, not a shell on the GPU host.
-
-A short chat like `hello` is slow on `qwen35` because Cursor still sends the whole Agent prompt. Use `qwen` for daily chat.
-
-## 5. Images (Comfy)
-
-Coding machines are remote. The GPU server generates the PNG and returns a URL on the same API host your editor or IDE already uses. Chat phrases and `POST /v1/images/generations` work in **any** editor — no MCP required.
-
-1. `switch to comfy`, wait ~35 seconds, then describe the image
-2. Or one line: `generate an image of a red bicycle` (API hands off the GPU, returns a URL, reloads the last LLM)
-3. Or `POST /v1/images/generations` with `{"prompt":"..."}` (`b64_json` + `url`) — use this from VS Code, Continue, Cline, scripts, etc.
-4. A page plus pictures: the API starts the image job from the user line. No `mcp.json` is required.
-5. Flux Schnell drafts: `cartoon style`, `a red bicycle in the rain` (first picture ~3 min)
-6. Qwen-Image (readable text): `a poster with the heading SALE`, or `qwen-image: login form with Submit` (first picture ~4 min)
-7. Paste a photo in the same turn for Flux img2img
-8. `switch to qwen` when you want the coding model back (~65s)
-
-Set `TABBY_PUBLIC_BASE` if image URLs must use a tunnel hostname. Otherwise the reply uses the Host the client already called.
-
-Embeddings stay on CPU: `POST /v1/embeddings` with `Qwen3-Embedding-0.6B`. Do not switch to comfy for repo search.
-
-## 6. Update
+## 5. Update
 
 The install root is the git checkout. On the GPU host:
 
@@ -192,7 +152,7 @@ A dialog asks **Update git** vs **Update all** (or `--git` / `--all`). Update gi
 
 A leftover `tabby-stack-archlinux` clone next to the install is optional after this.
 
-## 7. If something fails
+## 6. If something fails
 
 | Problem | What to do |
 |---|---|

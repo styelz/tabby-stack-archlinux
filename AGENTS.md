@@ -2,16 +2,16 @@
 
 Use **gpt-4o** as the model name in your editor, and leave it. That is not ChatGPT — it is only a name. Many editors sandbox or block tools unless they see a known OpenAI name. The GPU still runs the local model you switched to.
 
-This file is for **any** editor that talks to the TabbyAPI server (Cursor, VS Code, Continue, Cline, Roo, JetBrains with an OpenAI-compatible plugin, plain HTTP clients, and so on). The coding workspace is a different computer. Treat this API like OpenAI: chat and HTTP only. Some editors will only accept an `https://` endpoint; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
+This file is for **any** editor that talks to the TabbyAPI server. The coding workspace is a different computer. Treat this API like OpenAI: chat and HTTP only. Some editors only accept `https://`; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
 
 ## API
 
-- Base URL: the `/v1` URL you configured in your editor or IDE (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
+- Base URL: the `/v1` URL you configured (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
 - Management UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created. Logs, console chat, GPU/status, image gallery, restart, and update live there. Only the admin can create extra UI users. Coding and mixed page+images still go through this editor chat, not the UI console.
 
-Do not SSH into the GPU host just to change models. Send a chat phrase instead, use the Status page in `/v1/ui`, or send `restart` to bounce the API.
+Do not SSH into the GPU host just to change models. Send a chat phrase, use Status in `/v1/ui`, or send `restart` to bounce the API.
 
 ## Switch models
 
@@ -37,27 +37,19 @@ The GPU is exclusive: **LLM or Comfy, not both**. `Qwen3-Embedding-0.6B` stays o
 
 The GPU server generates the PNG and returns a URL on **this same API host**. No special IDE plugin is required.
 
-- In chat: send `switch to comfy`, wait until Comfy is ready, then describe the image. Flux Schnell is the default draft. Prefix `qwen-image:` (or mention poster / button / logo) for readable text. Hero/header photos: describe a scene, not a website. Paste a photo in the same turn for Flux img2img. Then `switch to qwen`.
+- In chat: `switch to comfy`, wait until Comfy is ready, then describe the image. Flux Schnell is the default draft. Prefix `qwen-image:` (or mention poster / button / logo) for readable text. Hero/header photos: a scene, not a website. Paste a photo in the same turn for Flux img2img. Then `switch to qwen`.
 - Or one line while coding: `generate an image of a login form`. The API hands the GPU to Comfy, returns the URL, and reloads the last LLM.
-- Or OpenAI-shaped (portable; use this from VS Code, Continue, scripts, etc.):
-
-```bash
-curl -sS -X POST "$TABBY_V1/images/generations" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"qwen-image: a logo that says Cafe"}'
-```
-
-Returns `b64_json` and `url`. Save the PNG into the project with a shell command (decode `b64_json`, or download the `url`). Do not paste binary into chat. Never use a built-in cloud “generate image”. Never open a browser to POST JSON.
+- Or OpenAI-shaped: `POST $TABBY_V1/images/generations` with `{"prompt":"qwen-image: a logo that says Cafe"}`. Returns `b64_json` and `url`. Save the PNG with a shell command. Do not paste binary into chat. Never use a built-in cloud “generate image”.
 
 ### Coding plus images (same chat)
 
-A line like “create a webpage and generate a header and logo” is a **coding task**. This API writes the HTML/CSS/JS first (file tools), then generates the PNGs on the GPU. Do not turn it into React/Vite boilerplate, SVG/CSS art, or a Pillow/`generate_images.py` script. Transparent PNGs are produced on the GPU after Comfy — do not write or debug a Python drawing script even if the spec asked for PIL/Pillow.
+A line like “create a webpage and generate a header and logo” is a **coding task**. Write HTML/CSS/JS first, then generate PNGs on the GPU. Do not use React/Vite boilerplate, SVG/CSS art, or Pillow/`generate_images.py`.
 
-1. Apply the file tools from each coding reply. Point `img src` at the planned local paths such as `images/logo.png`. Do not dump the page in chat. Do not overwrite those PNGs with Pillow, SVG, or `generate_images.py`. More Write/StrReplace turns may follow while the coding model stays loaded.
-2. After the page is written, the next reply holds until every planned PNG exists on the GPU host, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`. Do not invent `/v1/images/generated-*.png` timestamps. Do not curl a leftover URL from another chat. A backgrounded command is not success. If a curl 404s, the file is missing on the GPU host — do not write `generate_images.py`.
-3. Prefix `qwen-image:` for logos and readable text. Hero/header photos: describe a scene, not a website. Flux draft about 3 minutes each, Qwen-Image about 4 minutes each, then about 65 seconds to reload the coding model once.
+1. Apply file tools. Point `img src` at planned paths such as `images/logo.png`. Do not dump the page in chat or overwrite those PNGs.
+2. After the page is written, the next reply holds until every planned PNG exists, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`, invent timestamps, or curl another chat’s leftovers. A 404 means the file is missing on the GPU host.
+3. Prefix `qwen-image:` for logos and readable text. Hero/header photos: a scene, not a website.
 
-Text editors cannot save PNG bytes. Several PNGs share one Comfy batch.
+Several PNGs share one Comfy batch (Flux ~3 min each, Qwen-Image ~4 min, then ~65 s to reload the coding model once).
 
 ## Long tasks
 

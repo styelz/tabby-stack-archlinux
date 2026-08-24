@@ -131,16 +131,7 @@ One-shot from chat: `generate an image of a neon diner at night` — the API han
 - **Readable text / logos:** prefix `qwen-image:` (e.g. `qwen-image: a logo that says Harbor Cafe`).
 - First Flux ~3 min, first Qwen-Image ~4 min, then ~65 s to bring the LLM back.
 
-**Page plus images** in one chat is a coding task — write HTML/CSS to files, generate the PNGs, point `img` at those paths. Example:
-
-```
-Create a cafe landing page under harbor/. Write the HTML and CSS.
-Generate harbor/images/header.png of a neon diner street at night,
-and qwen-image: harbor/images/logo.png that says Harbor Cafe.
-Point the page at those files.
-```
-
-The assistant downloads the real API URLs into the project (Shell `curl`). No `mcp.json` required. `POST /v1/images/generations` works the same from any OpenAI-shaped client.
+`POST /v1/images/generations` works from any OpenAI-shaped client. Page-plus-images in one chat (write the files, then one `curl` of real URLs) is in [AGENTS.md](AGENTS.md). No `mcp.json` required.
 
 ## Update
 

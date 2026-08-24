@@ -90,7 +90,7 @@ def ping_chat(base: str, timeout: float = 180) -> float:
 
 def _load_or_retry(name: str, base: str) -> dict:
     try:
-        return switch_to_llm(name, base=base, force=True)
+        return switch_to_llm(name, base=base, force=True, recover=False)
     except (SystemExit, RuntimeError, OSError) as exc:
         print(f"  load failed ({exc}); unloading leftovers, stopping idle Comfy, retrying")
         try:
@@ -99,7 +99,7 @@ def _load_or_retry(name: str, base: str) -> dict:
             pass
         _stop_comfy_unit()
         time.sleep(3)
-        return switch_to_llm(name, base=base, force=True)
+        return switch_to_llm(name, base=base, force=True, recover=False)
 
 
 def bench_llm(name: str, base: str, results: dict) -> None:
@@ -163,7 +163,7 @@ def bench_comfy(base: str, results: dict, skip_images: bool) -> None:
 def bench_restore(base: str, results: dict) -> None:
     print("\n=== switch to llm ===")
     name = last_profile() or RESTORE_PROFILE
-    info = switch_to_llm(name, base=base, force=False)
+    info = switch_to_llm(name, base=base, force=False, recover=False)
     results["llm"] = {
         "ready_s": round(float(info.get("ready_s") or 0), 1),
         "profile": name,
@@ -228,7 +228,7 @@ def run_bench(
 
     if not no_restore:
         print(f"\n=== restore {RESTORE_PROFILE} ===")
-        switch_to_llm(RESTORE_PROFILE, base=base, force=False)
+        switch_to_llm(RESTORE_PROFILE, base=base, force=False, recover=False)
         results["restored"] = RESTORE_PROFILE
         _write_times(dest, results)
 

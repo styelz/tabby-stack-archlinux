@@ -6,9 +6,7 @@ from calibrate import (
     DEPLOY_WAIT_RE,
     SWITCH_BLOCK_RE,
     agents_switch_block,
-    cursor_wait_paragraph,
     deploy_wait_line,
-    readme_times_paragraph,
     rewrite_agents_md,
 )
 
@@ -71,16 +69,7 @@ class CalibrateDocsTests(unittest.TestCase):
             self.assertNotIn("CLI:", text)
             self.assertEqual(len(SWITCH_BLOCK_RE.findall(text)), 1)
 
-    def test_readme_and_cursor_paragraphs(self):
-        readme = readme_times_paragraph(SAMPLE, "Test GPU 8 GB")
-        self.assertTrue(readme.startswith("Warm switch times on this Test GPU 8 GB"))
-        self.assertIn("qwen / gemma / `switch to llm` ~10s", readme)
-        self.assertIn("qwen35 ~2 min", readme)
-        self.assertIn("first Flux ~40s", readme)
-        cursor = cursor_wait_paragraph(SAMPLE, "Test GPU 8 GB")
-        self.assertIn("Warm wait on this Test GPU 8 GB", cursor)
-        self.assertIn("qwen35 about 2 minutes", cursor)
-        self.assertIn("Images come back as URLs on the same API host your editor or IDE already uses.", cursor)
+    def test_deploy_wait_line(self):
         sample = (
             "- After `switch to …`, wait for the GPU (warm 12 GB 4070 Ti: qwen ~65s). "
             "GLM is thinking-only on 12 GB (vision off)."

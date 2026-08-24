@@ -189,6 +189,7 @@ pasted-images/
 switch-model.log
 model_profiles/last.json
 model_profiles/gpu_mode.json
+model_profiles/vram_recover.json
 deploy/arch/tabby.env
 HOW-TO-ARCH.txt
 

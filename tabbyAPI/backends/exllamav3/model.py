@@ -799,22 +799,25 @@ class ExllamaV3Container:
             # Clear the image embedding cache
             clear_image_embedding_cache()
 
-            self.model.unload()
+            # Guards: a failed load can leave only some of these set.
+            if self.model is not None:
+                self.model.unload()
             self.model = None
             self.config = None
             self.cache = None
             self.tokenizer = None
 
-            if self.use_draft_model:
+            if self.use_draft_model and self.draft_model is not None:
                 self.draft_model.unload()
                 self.draft_model = None
                 self.draft_config = None
                 self.draft_cache = None
 
-            if self.use_vision:
+            if self.use_vision and self.vision_model is not None:
                 self.vision_model.unload()
                 self.vision_model = None
 
+            self.loaded = False
             gc.collect()
             torch.cuda.empty_cache()
 

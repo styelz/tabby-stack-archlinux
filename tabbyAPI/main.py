@@ -20,6 +20,64 @@ from common.networking import is_port_in_use
 from common.optional_dependencies import dependencies
 from common.signals import signal_handler
 from common.tabby_config import config
+from common.vram_recover import FALLBACK_PROFILE, is_vram_error, mark_fallback
+
+
+async def _load_startup_model(model, model_name: str) -> None:
+    """Load the configured LLM. On VRAM failure, fall back to qwen and stay up."""
+    model_path = pathlib.Path(config.model.model_dir) / model_name
+    try:
+        await model.load_model(
+            model_path.resolve(),
+            **config.model.model_dump(exclude_none=True),
+            draft_model=config.draft_model.model_dump(exclude_none=True),
+        )
+        if config.lora.loras:
+            lora_dir = pathlib.Path(config.lora.lora_dir)
+            await model.container.load_loras(lora_dir.resolve(), **config.lora.model_dump())
+        return
+    except Exception as exc:
+        logger.error(f"Startup model load failed ({model_name}): {exc}")
+        if model.container:
+            try:
+                await model.unload_model(skip_wait=True)
+            except Exception as unload_exc:
+                logger.warning(
+                    f"Could not unload leftover model after startup failure: {unload_exc}"
+                )
+        if not is_vram_error(exc):
+            raise
+
+    from select_model import PROFILES_DIR, apply_profile, available_profiles, load_yaml
+
+    if FALLBACK_PROFILE not in available_profiles():
+        logger.error("No qwen profile to fall back to; starting with no LLM")
+        return
+    _, fallback = load_yaml(PROFILES_DIR / f"{FALLBACK_PROFILE}.yml")
+    fb_model = fallback.get("model") or {}
+    fb_name = fb_model.get("model_name")
+    if not fb_name or fb_name == model_name:
+        logger.error("Daily model also failed to load; starting with no LLM")
+        return
+
+    logger.warning(f"Falling back to {FALLBACK_PROFILE} so the API stays up")
+    apply_profile(FALLBACK_PROFILE)
+    mark_fallback(model_name, FALLBACK_PROFILE)
+    fb_path = pathlib.Path(config.model.model_dir) / fb_name
+    load_kwargs = {key: value for key, value in fb_model.items() if key != "model_name"}
+    try:
+        await model.load_model(
+            fb_path.resolve(),
+            **load_kwargs,
+            draft_model=fallback.get("draft_model") or {},
+        )
+    except Exception as exc:
+        logger.error(f"Fallback {FALLBACK_PROFILE} failed: {exc}; starting with no LLM")
+        if model.container:
+            try:
+                await model.unload_model(skip_wait=True)
+            except Exception:
+                pass
 
 
 async def entrypoint_async():
@@ -61,21 +119,7 @@ async def entrypoint_async():
         )
         model_name = None
     if model_name:
-        model_path = pathlib.Path(config.model.model_dir)
-        model_path = model_path / model_name
-
-        # TODO: remove model_dump()
-        await model.load_model(
-            model_path.resolve(),
-            **config.model.model_dump(exclude_none=True),
-            draft_model=config.draft_model.model_dump(exclude_none=True),
-        )
-
-        # Load loras after loading the model
-        if config.lora.loras:
-            lora_dir = pathlib.Path(config.lora.lora_dir)
-            # TODO: remove model_dump()
-            await model.container.load_loras(lora_dir.resolve(), **config.lora.model_dump())
+        await _load_startup_model(model, model_name)
 
     # If an initial embedding model name is specified, create a separate container
     # and load the model

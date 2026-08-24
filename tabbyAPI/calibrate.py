@@ -7,8 +7,9 @@ Run from the live install (systemd already owns port 5000):
     tabbyAPI/venv/bin/python tabbyAPI/calibrate.py --docs-only
 
 Writes model_profiles/switch_times.json (chat wait copy) and refreshes
-the switch table in AGENTS.md. Optional --context climbs cache sizes,
-including stepping down if this card is smaller than the last one.
+the switch table in AGENTS.md plus the Arch deploy wait line. Optional
+--context climbs cache sizes, including stepping down if this card is
+smaller than the last one.
 """
 
 from __future__ import annotations
@@ -40,7 +41,6 @@ from switch_model import api_base, server_up, switch_to_llm
 ROOT = Path(__file__).resolve().parent
 INSTALL_ROOT = ROOT.parent
 AGENTS_PATH = INSTALL_ROOT / "AGENTS.md"
-CURSOR_RULE = Path.home() / ".cursor" / "rules" / "tabby-model-switch.mdc"
 
 USES = {
     "qwen": "Daily coding, 9B",
@@ -55,13 +55,6 @@ ALIAS_ORDER = ("qwen", "qwen35", "qwen36", "gemma", "gemma26", "glm")
 
 SWITCH_BLOCK_RE = re.compile(
     r"(## Switch models\n\n)(.*?)(\n\nThe GPU is exclusive:)",
-    re.S,
-)
-README_TIMES_RE = re.compile(r"Warm switch times on (?:a|an|this) [^\n]+\n")
-CURSOR_WAIT_RE = re.compile(
-    r"Do not (?:restart or )?kill `main\.py`.+?"
-    r"(?:ComfyUI is http://127\.0\.0\.1:8188\.|"
-    r"Images come back as URLs on the same API host your editor or IDE already uses\.)",
     re.S,
 )
 DEPLOY_WAIT_RE = re.compile(
@@ -199,54 +192,6 @@ def rewrite_agents_md(
     return True
 
 
-def readme_times_paragraph(times: dict, label: str) -> str:
-    qwen = _compact(ready_seconds("qwen", times))
-    qwen36 = _compact(ready_seconds("qwen36", times))
-    gemma26 = _compact(ready_seconds("gemma26", times))
-    qwen35 = _compact(ready_seconds("qwen35", times))
-    glm = _compact(ready_seconds("glm", times))
-    comfy = _compact(ready_seconds("comfy", times))
-    flux = extra_seconds("comfy", "flux_s", times)
-    qwen_img = extra_seconds("comfy", "qwen_image_s", times)
-    flux_s = _compact(float(flux)) if flux else "—"
-    qwen_s = _compact(float(qwen_img)) if qwen_img else "—"
-    vision = _profile_meta("glm").get("vision")
-    glm_note = "thinking only; vision is off so it fits" if vision is False else "thinking"
-    return (
-        f"Warm switch times on this {label} (see `tabbyAPI/model_profiles/switch_times.json`): "
-        f"qwen / gemma / `switch to llm` {qwen}, qwen36 {qwen36}, gemma26 {gemma26}, "
-        f"qwen35 {qwen35}, glm {glm} ({glm_note}). "
-        f"Comfy is ready in {comfy}; first Flux {flux_s}, first Qwen-Image {qwen_s}.\n"
-    )
-
-
-def cursor_wait_paragraph(times: dict, label: str) -> str:
-    qwen = format_duration(ready_seconds("qwen", times))
-    qwen36 = format_duration(ready_seconds("qwen36", times))
-    gemma26 = format_duration(ready_seconds("gemma26", times))
-    qwen35 = format_duration(ready_seconds("qwen35", times))
-    glm = format_duration(ready_seconds("glm", times))
-    comfy = format_duration(ready_seconds("comfy", times))
-    flux = extra_seconds("comfy", "flux_s", times)
-    qwen_img = extra_seconds("comfy", "qwen_image_s", times)
-    flux_s = format_duration(flux) if flux else "a few minutes"
-    qwen_s = format_duration(qwen_img) if qwen_img else "a few minutes"
-    vision = _profile_meta("glm").get("vision")
-    glm_bit = (
-        f"glm about {glm} (thinking only; vision is off)"
-        if vision is False
-        else f"glm about {glm}"
-    )
-    return (
-        "Do not kill `main.py` or port 5000 to bounce the API — send `restart`. "
-        f"Warm wait on this {label}: qwen / gemma / `switch to llm` about {qwen}; "
-        f"qwen36 about {qwen36}; gemma26 about {gemma26}; qwen35 about {qwen35}; "
-        f"{glm_bit}. After `switch to comfy`, wait about {comfy} "
-        f"(first Flux about {flux_s}, first Qwen-Image about {qwen_s}). "
-        "Images come back as URLs on the same API host your editor or IDE already uses."
-    )
-
-
 def deploy_wait_line(times: dict, label: str) -> str:
     qwen = _compact(ready_seconds("qwen", times))
     qwen36 = _compact(ready_seconds("qwen36", times))
@@ -282,14 +227,10 @@ def _rewrite_regex(path: Path, pattern: re.Pattern[str], replacement: str, label
     return True
 
 
-def rewrite_docs(times: dict, label: str, agents: Path, cursor_rule: Path | None) -> None:
+def rewrite_docs(times: dict, label: str, agents: Path) -> None:
     rewrite_agents_md(agents, times, label)
-    readme = agents.parent / "README.md"
-    _rewrite_regex(readme, README_TIMES_RE, readme_times_paragraph(times, label), "README")
     deploy = ROOT / "deploy" / "arch" / "README.md"
     _rewrite_regex(deploy, DEPLOY_WAIT_RE, deploy_wait_line(times, label), "deploy README")
-    if cursor_rule:
-        _rewrite_regex(cursor_rule, CURSOR_WAIT_RE, cursor_wait_paragraph(times, label), "cursor rule")
 
 
 def _set_glm_pretty(vision: bool) -> None:
@@ -317,7 +258,7 @@ def try_glm_vision() -> bool:
         yaml.dump(data, handle)
     _set_glm_pretty(True)
     try:
-        info = switch_to_llm("glm", force=True)
+        info = switch_to_llm("glm", force=True, recover=False)
         if info.get("offline") or not info.get("loaded"):
             raise RuntimeError("glm did not load")
         print("  glm vision: loaded")
@@ -378,7 +319,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--docs-only",
         action="store_true",
-        help="Rewrite AGENTS.md / README from the current JSON and profiles (no GPU work)",
+        help="Rewrite AGENTS.md and the Arch deploy wait line from the current JSON (no GPU work)",
     )
     parser.add_argument("--skip-images", action="store_true")
     parser.add_argument("--only", nargs="*", help="Subset of profiles / comfy / llm")
@@ -401,12 +342,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--docs", type=Path, default=AGENTS_PATH)
     parser.add_argument("--out", type=Path, default=TIMES_PATH)
-    parser.add_argument(
-        "--cursor-rule",
-        type=Path,
-        default=CURSOR_RULE if CURSOR_RULE.is_file() else None,
-    )
-    parser.add_argument("--no-cursor-rule", action="store_true")
     return parser.parse_args()
 
 
@@ -420,12 +355,7 @@ def main() -> int:
         if not times:
             raise SystemExit(f"no times in {args.out}; run without --docs-only first")
         label = gpu_label(times)
-        rewrite_docs(
-            times,
-            label,
-            args.docs,
-            None if args.no_cursor_rule else args.cursor_rule,
-        )
+        rewrite_docs(times, label, args.docs)
         if args.source:
             sync_source(args.source)
         print("\nDocs refreshed from switch_times.json (no bench).")
@@ -463,12 +393,7 @@ def main() -> int:
         times = load_switch_times(args.out) or results
 
     label = str(times.get("gpu") or gpu.get("label") or "this GPU")
-    rewrite_docs(
-        times,
-        label,
-        args.docs,
-        None if args.no_cursor_rule else args.cursor_rule,
-    )
+    rewrite_docs(times, label, args.docs)
 
     if args.source:
         sync_source(args.source)

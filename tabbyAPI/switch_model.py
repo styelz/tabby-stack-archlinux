@@ -20,6 +20,14 @@ from common.gpu_mode import (
     write_mode,
 )
 
+from common.vram_recover import (
+    FALLBACK_PROFILE,
+    bounce_is_cooling,
+    health_timeout_s,
+    is_vram_error,
+    mark_bounce,
+    mark_fallback,
+)
 from select_model import (
     CONFIG_PATH,
     apply_profile,
@@ -165,6 +173,105 @@ def unload_tabby(base: str) -> None:
     print("  LLM unloaded")
 
 
+def wait_until_up(base: str, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if server_up(base):
+            return True
+        time.sleep(2)
+    return False
+
+
+def bounce_api(base: str, profile: str) -> bool:
+    """One systemd bounce. reset-failed so start-limit cannot strand us."""
+    from restart_stack import abandon_persisted_jobs, restart_units
+
+    print("  bouncing TabbyAPI once for a fresh CUDA context")
+    abandon_persisted_jobs()
+    restart_units("llm")
+    mark_bounce(profile)
+    if not wait_until_up(base, health_timeout_s(profile)):
+        print("  bounce: API did not become healthy")
+        return False
+    print("  bounce: healthy")
+    return True
+
+
+def fallback_name(failed: str) -> str | None:
+    names = available_profiles()
+    if FALLBACK_PROFILE in names and FALLBACK_PROFILE != failed:
+        return FALLBACK_PROFILE
+    for name in names:
+        if name != failed:
+            return name
+    return None
+
+
+def load_fallback(base: str, failed: str) -> dict:
+    dest = fallback_name(failed)
+    if not dest:
+        raise SystemExit(f"Load failed and no fallback profile is available (tried {failed})")
+    print(f"  falling back to {dest}")
+    profile = apply_profile(dest)
+    model_cfg = profile.get("model") or {}
+    model_name = model_cfg.get("model_name")
+    preset = (profile.get("sampling") or {}).get("override_preset")
+    if not model_name:
+        raise SystemExit(f"Profile {dest} has no model_name")
+    write_mode("llm", profile=dest)
+    switch_sampler(base, preset)
+    load_model(base, model_name, model_cfg)
+    mark_fallback(failed, dest)
+    return {"profile": dest, "loaded": model_name, "recovered": "fallback"}
+
+
+def recover_after_vram(base: str, name: str, model_name: str, model_cfg: dict, preset: str | None) -> dict:
+    """Retry leftovers, bounce once, then fall back to qwen. Never loops."""
+    print("  freeing leftover VRAM and retrying once")
+    try:
+        unload_tabby(base)
+    except SystemExit:
+        pass
+    time.sleep(2)
+    try:
+        load_model(base, model_name, model_cfg)
+        return {"profile": name, "loaded": model_name, "recovered": "retry"}
+    except SystemExit as exc:
+        if not is_vram_error(exc):
+            raise
+        print(f"  {exc}")
+
+    if bounce_is_cooling():
+        print("  skip bounce (already bounced recently); falling back")
+        return load_fallback(base, name)
+
+    if bounce_api(base, name):
+        loaded = current_model(base)
+        if loaded == model_name:
+            print(f"  recovered after bounce: {loaded}")
+            return {"profile": name, "loaded": loaded, "recovered": "bounce"}
+        if loaded:
+            print(f"  {name} did not fit after bounce; keeping {loaded}")
+            mark_fallback(name, last_profile() or FALLBACK_PROFILE)
+            return {
+                "profile": last_profile() or name,
+                "loaded": loaded,
+                "recovered": "fallback",
+            }
+        try:
+            switch_sampler(base, preset)
+            load_model(base, model_name, model_cfg)
+            return {"profile": name, "loaded": model_name, "recovered": "bounce"}
+        except SystemExit as exc:
+            if not is_vram_error(exc):
+                raise
+            print(f"  {exc}")
+
+    if not server_up(base):
+        raise SystemExit("TabbyAPI did not recover after a VRAM bounce")
+    return load_fallback(base, name)
+
+
 def switch_to_comfy(base: str) -> dict:
     started = time.time()
     if server_up(base):
@@ -180,8 +287,17 @@ def switch_to_comfy(base: str) -> dict:
     return {"ready_s": elapsed, "mode": "comfy"}
 
 
-def switch_to_llm(name: str, base: str | None = None, force: bool = False) -> dict:
-    """Apply a profile, free Comfy, and load the model. Returns timing metadata."""
+def switch_to_llm(
+    name: str,
+    base: str | None = None,
+    force: bool = False,
+    recover: bool = True,
+) -> dict:
+    """Apply a profile, free Comfy, and load the model. Returns timing metadata.
+
+    recover=True (chat / CLI): leftover retry, one bounce, then qwen.
+    recover=False (calibrate / bench): raise on the first load failure.
+    """
     profile = apply_profile(name)
     model_cfg = profile.get("model") or {}
     model_name = model_cfg.get("model_name")
@@ -215,12 +331,29 @@ def switch_to_llm(name: str, base: str | None = None, force: bool = False) -> di
     if loaded == model_name and force:
         unload_tabby(base)
     switch_sampler(base, preset)
-    load_model(base, model_name, model_cfg)
+    recovered = None
+    try:
+        load_model(base, model_name, model_cfg)
+    except SystemExit as exc:
+        if not recover or not is_vram_error(exc):
+            raise
+        print(f"  {exc}")
+        extra = recover_after_vram(base, name, model_name, model_cfg, preset)
+        name = extra.get("profile") or name
+        recovered = extra.get("recovered")
     loaded = current_model(base)
     elapsed = time.time() - started
     print(f"Now loaded: {loaded} ({elapsed:.0f}s)")
+    if recovered:
+        print(f"  recover: {recovered}")
     print("GPU mode: llm")
-    return {"ready_s": elapsed, "already": False, "loaded": loaded, "profile": name}
+    return {
+        "ready_s": elapsed,
+        "already": False,
+        "loaded": loaded,
+        "profile": name,
+        "recovered": recovered,
+    }
 
 
 def resolve_name(raw: str | None) -> str:
