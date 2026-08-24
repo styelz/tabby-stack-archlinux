@@ -1454,6 +1454,21 @@ function mountChat(root) {
     return "";
   }
 
+  // Labels a settled header may keep across a reload. Anything else was a
+  // transient live status ("Rendering image 2 of 3", "Writing index.html").
+  const SETTLED_LABEL = /^(Generated|Replied|Thought|Restarted|Loaded |Still loading$)/;
+
+  function settledLabel({ kind, target, reasoning, answer }) {
+    if (kind === "image") return looksLikeImageReply(answer) ? "Generated" : "Replied";
+    if (kind === "restart" || target === "restart") return "Restarted";
+    if (kind === "switch") {
+      const name = String(target || "").trim();
+      if (name === "comfy" || name === "flux") return "Loaded Comfy";
+      return name ? `Loaded ${name}` : "Loaded the model";
+    }
+    return reasoning ? "Thought" : "Replied";
+  }
+
   function addAssistantTurn({ content, reasoning, live, activity, elapsed_s, status_label }) {
     const turn = document.createElement("div");
     turn.className = live ? "chat-turn assistant is-working" : "chat-turn assistant";
@@ -1492,6 +1507,7 @@ function mountChat(root) {
     bubble.className = "bubble assistant";
     // Never leave an empty styled bubble in the DOM while waiting.
     let bubbleMounted = false;
+    let answerText = String(content || "");
 
     function ensureBubble() {
       if (bubbleMounted) return;
@@ -1502,6 +1518,7 @@ function mountChat(root) {
     function showAnswer(html, raw) {
       const markup = String(html || "").trim();
       if (!markup) return false;
+      if (raw != null) answerText = String(raw);
       ensureBubble();
       bubble.innerHTML = markup;
       bubble.hidden = false;
@@ -1522,6 +1539,10 @@ function mountChat(root) {
     const started = Date.now();
     let ticker = null;
     const kind = (activity && activity.kind) || "";
+    const target = (activity && activity.target) || "";
+    const keptLabel = !live && SETTLED_LABEL.test(String(status_label || "").trim())
+      ? String(status_label).trim()
+      : "";
     let statusNotes = [];
     let lastNote = "";
     const storedElapsed = Number(elapsed_s);
@@ -1532,6 +1553,19 @@ function mountChat(root) {
     function setProcessing(on) {
       processing = Boolean(on);
       icon.classList.toggle("is-processing", processing);
+    }
+
+    // Every finished reply keeps the same static icon, whatever it was doing.
+    function markSettledIcon() {
+      icon.hidden = false;
+      icon.classList.remove("is-processing");
+      icon.classList.add("is-done");
+    }
+
+    function headLabel() {
+      if (keptLabel) return keptLabel;
+      if (label.textContent === "Still loading") return "Still loading";
+      return settledLabel({ kind, target, reasoning: reasoningText, answer: answerText });
     }
 
     function paintThought() {
@@ -1586,22 +1620,16 @@ function mountChat(root) {
       chevron.hidden = !canExpand;
       head.classList.toggle("is-clickable", canExpand);
       if (canExpand) {
-        if (head.tagName !== "BUTTON") {
-          head.setAttribute("role", "button");
-          head.tabIndex = 0;
-        }
+        if (head.tagName !== "BUTTON") head.setAttribute("role", "button");
+        head.tabIndex = 0;
+        head.setAttribute("aria-expanded", "false");
       } else {
-        head.removeAttribute("role");
-        head.removeAttribute("tabindex");
+        if (head.tagName !== "BUTTON") head.removeAttribute("role");
+        head.tabIndex = -1;
+        head.removeAttribute("aria-expanded");
       }
-      if (kind === "image") {
-        icon.hidden = false;
-        icon.classList.remove("is-processing");
-        icon.classList.add("is-done");
-      } else {
-        icon.hidden = true;
-        icon.classList.remove("is-done");
-      }
+      markSettledIcon();
+      label.textContent = headLabel();
       timeEl.textContent = seconds != null ? TabbyUI.formatDuration(seconds) : "";
       thought.hidden = true;
       expanded = false;
@@ -1615,11 +1643,9 @@ function mountChat(root) {
         const s = Math.floor((Date.now() - started) / 1000);
         if (s >= 1) timeEl.textContent = TabbyUI.formatDuration(s);
       }, 250);
-    } else if (reasoningText || elapsedSec) {
+    } else {
       settleThought(elapsedSec);
       paintThought();
-    } else {
-      head.hidden = true;
     }
 
     function toggleThought() {
@@ -1705,13 +1731,9 @@ function mountChat(root) {
         if (!alreadySettled) {
           settleThought(seconds);
           paintThought();
-        } else if (kind === "image") {
-          icon.hidden = false;
-          icon.classList.remove("is-processing");
-          icon.classList.add("is-done");
         } else {
-          icon.hidden = true;
-          icon.classList.remove("is-processing");
+          markSettledIcon();
+          label.textContent = headLabel();
         }
         stickLog();
         return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
