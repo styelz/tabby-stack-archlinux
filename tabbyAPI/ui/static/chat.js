@@ -782,6 +782,7 @@ function mountChat(root) {
     const wrap = document.createElement("div");
     wrap.className = "dialog-modal";
     wrap.setAttribute("role", "dialog");
+    wrap.setAttribute("aria-modal", "true");
     wrap.innerHTML =
       '<div class="dialog-card"><h2>Sampling</h2>' +
       '<label>Temperature <strong id="chat-temp-val"></strong><input id="chat-temp" type="range" min="0" max="2" step="0.1" /></label>' +
@@ -797,7 +798,13 @@ function mountChat(root) {
     range.addEventListener("input", () => {
       label.textContent = range.value;
     });
-    const close = () => wrap.remove();
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      wrap.remove();
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") close();
+    };
     wrap.querySelector("#chat-temp-default").addEventListener("click", () => {
       settings.temperature = null;
       saveSettings();
@@ -811,6 +818,7 @@ function mountChat(root) {
     wrap.addEventListener("click", (ev) => {
       if (ev.target === wrap) close();
     });
+    document.addEventListener("keydown", onKey);
     document.body.appendChild(wrap);
   }
 
@@ -1253,7 +1261,20 @@ function mountChat(root) {
     setSidebarOpen(false);
   }
 
-  function deleteChat(id) {
+  async function deleteChat(id) {
+    const chat = store.chats.find((item) => item.id === id);
+    if (!chat) return;
+    const hasContent = hasUserTurn(chat) || (id === store.activeId && hasUserTurn({ messages }));
+    if (hasContent) {
+      const named = String(chat.title || "").replace(/\s+/g, " ").trim() || "this chat";
+      const yes = await TabbyUI.confirmModal({
+        title: "Delete chat",
+        text: `Delete “${named}”? This cannot be undone.`,
+        yes: "Delete",
+        no: "Cancel",
+      });
+      if (!yes) return;
+    }
     if (id === store.activeId || id === flightChatId) abortSession("stop");
     if (id === store.activeId) cancelEdit();
     persist();
@@ -1297,9 +1318,15 @@ function mountChat(root) {
     input.focus();
   }
 
-  function clearHistory() {
+  async function clearHistory() {
     if (store.chats.some(hasUserTurn) || hasUserTurn({ messages })) {
-      if (!window.confirm("Delete all saved console chats for this account?")) return;
+      const yes = await TabbyUI.confirmModal({
+        title: "Clear history",
+        text: "Delete all saved console chats for this account?",
+        yes: "Delete all",
+        no: "Cancel",
+      });
+      if (!yes) return;
     }
     abortSession("stop");
     cancelEdit();

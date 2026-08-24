@@ -146,12 +146,25 @@ function mountGallery(root) {
   });
   delSel.addEventListener("click", async () => {
     const names = selected();
-    if (!names.length || !confirm(`Delete ${names.length} image(s)?`)) return;
+    if (!names.length) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete images",
+      text: `Delete ${names.length} image(s)?`,
+      yes: "Delete",
+      no: "Cancel",
+    });
+    if (!yes) return;
     await TabbyUI.api("gallery/delete", { method: "POST", body: { names } });
     await load(page);
   });
   root.querySelector("#del-all").addEventListener("click", async () => {
-    if (!confirm("Delete ALL generated images?")) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete all images",
+      text: "Delete ALL generated images?",
+      yes: "Delete all",
+      no: "Cancel",
+    });
+    if (!yes) return;
     await TabbyUI.api("gallery/delete", { method: "POST", body: { all: true } });
     await load(1);
   });

@@ -1340,6 +1340,7 @@ figure.shot .open { display: block; }
   max-height: 50vh;
   overflow: auto;
 }
+.dialog-form { margin: 0; }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

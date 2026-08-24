@@ -329,8 +329,14 @@ function mountStatus(root) {
       });
     })
     .catch(() => {});
-  root.querySelector("#restart-btn").addEventListener("click", () => {
-    if (!confirm("Restart TabbyAPI now? The UI will drop for about a minute.")) return;
+  root.querySelector("#restart-btn").addEventListener("click", async () => {
+    const yes = await TabbyUI.confirmModal({
+      title: "Restart API?",
+      text: "Restart TabbyAPI now? The UI will drop for about a minute.",
+      yes: "Restart",
+      no: "Cancel",
+    });
+    if (!yes) return;
     act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
   });
   let gitBusy = false;
@@ -365,8 +371,14 @@ function mountStatus(root) {
       gitBusy = false;
     }
   });
-  root.querySelector("#update-all").addEventListener("click", () => {
-    if (!confirm("Run a full update (git + deps) and restart?")) return;
+  root.querySelector("#update-all").addEventListener("click", async () => {
+    const yes = await TabbyUI.confirmModal({
+      title: "Full update?",
+      text: "Run a full update (git + deps) and restart?",
+      yes: "Update",
+      no: "Cancel",
+    });
+    if (!yes) return;
     act(() => TabbyUI.api("update", { method: "POST", body: { full: true } }));
   });
 

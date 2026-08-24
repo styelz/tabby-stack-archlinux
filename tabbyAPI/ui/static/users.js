@@ -106,7 +106,15 @@ function mountUsers(root) {
     try {
       if (reset) {
         const username = reset.dataset.reset;
-        const password = window.prompt(`New password for ${username}`);
+        const password = await TabbyUI.promptModal({
+          title: "Reset password",
+          text: `New password for ${username}.`,
+          label: "Password",
+          type: "password",
+          minlength: 8,
+          yes: "Save",
+          no: "Cancel",
+        });
         if (!password) return;
         await TabbyUI.api(`users/${encodeURIComponent(username)}/password`, {
           method: "POST",
@@ -115,7 +123,13 @@ function mountUsers(root) {
         showOk(`Password updated for ${username}.`);
       } else if (del) {
         const username = del.dataset.del;
-        if (!window.confirm(`Delete ${username}? Their chats are removed. Gallery files stay for admin.`)) return;
+        const yes = await TabbyUI.confirmModal({
+          title: "Delete account",
+          text: `Delete ${username}? Their chats are removed. Gallery files stay for admin.`,
+          yes: "Delete",
+          no: "Cancel",
+        });
+        if (!yes) return;
         await TabbyUI.api(`users/${encodeURIComponent(username)}`, { method: "DELETE" });
         showOk(`Deleted ${username}.`);
         await load();

@@ -392,6 +392,76 @@
     });
   }
 
+  function promptModal({
+    title,
+    text,
+    label,
+    yes = "Save",
+    no = "Cancel",
+    type = "text",
+    minlength = 0,
+    autocomplete = "off",
+  } = {}) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "dialog-modal";
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-modal", "true");
+      wrap.innerHTML =
+        '<div class="dialog-card">' +
+        "<h2></h2>" +
+        '<p class="dialog-text" hidden></p>' +
+        '<form class="dialog-form">' +
+        '<label><span class="dialog-label"></span><input class="dialog-input" /></label>' +
+        '<div class="dialog-actions">' +
+        '<button type="button" class="btn dialog-no"></button>' +
+        '<button type="submit" class="btn primary dialog-yes"></button>' +
+        "</div></form></div>";
+      wrap.querySelector("h2").textContent = title || "Enter a value";
+      const textEl = wrap.querySelector(".dialog-text");
+      if (text) {
+        textEl.hidden = false;
+        textEl.textContent = text;
+      }
+      wrap.querySelector(".dialog-label").textContent = label || "";
+      const input = wrap.querySelector(".dialog-input");
+      input.type = type === "password" ? "password" : "text";
+      input.autocomplete = autocomplete || "off";
+      const min = Number(minlength) || 0;
+      if (min) {
+        input.minLength = min;
+        input.required = true;
+      }
+      wrap.querySelector(".dialog-no").textContent = no;
+      wrap.querySelector(".dialog-yes").textContent = yes;
+      const finish = (value) => {
+        document.removeEventListener("keydown", onKey);
+        wrap.remove();
+        resolve(value);
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          finish(null);
+        }
+      };
+      wrap.querySelector(".dialog-no").addEventListener("click", () => finish(null));
+      wrap.querySelector("form").addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const value = String(input.value || "");
+        if (min && value.length < min) return;
+        if (!value) return;
+        finish(value);
+      });
+      wrap.addEventListener("click", (ev) => {
+        if (ev.target === wrap) finish(null);
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(wrap);
+      input.focus();
+    });
+  }
+
   window.TabbyUI = {
     base: uiBase,
     path: uiPath,
@@ -400,6 +470,7 @@
     $,
     $all,
     confirmModal,
+    promptModal,
     escapeHtml,
     formatBytes,
     formatDuration,
