@@ -49,6 +49,13 @@ def _session_token(request: Request) -> str:
     return request.cookies.get(COOKIE_NAME) or ""
 
 
+def _private_response(response: Response) -> Response:
+    """Auth-dependent UI responses must never be reused after login/logout."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Cookie"
+    return response
+
+
 @legacy_router.get("/ui", include_in_schema=False)
 @legacy_router.get("/ui/", include_in_schema=False)
 @legacy_router.get("/ui/{rest:path}", include_in_schema=False)
@@ -61,8 +68,8 @@ async def ui_legacy_redirect(rest: str = ""):
 @router.get("/login", include_in_schema=False)
 async def ui_login_page(request: Request):
     if validate_session(_session_token(request)):
-        return RedirectResponse("./", status_code=303)
-    return file_response("login.html")
+        return _private_response(RedirectResponse("./", status_code=303))
+    return _private_response(file_response("login.html"))
 
 
 @router.get("", include_in_schema=False)
@@ -74,8 +81,8 @@ async def ui_index_noslash(request: Request):
 @router.get("/", include_in_schema=False)
 async def ui_index(request: Request):
     if not validate_session(_session_token(request)):
-        return RedirectResponse("./login", status_code=303)
-    return file_response("index.html")
+        return _private_response(RedirectResponse("./login", status_code=303))
+    return _private_response(file_response("index.html"))
 
 
 @router.get("/assets/{name}", include_in_schema=False)
@@ -109,7 +116,7 @@ async def ui_login(request: Request):
         media_type="application/json",
     )
     set_session_cookie(response, token, request)
-    return response
+    return _private_response(response)
 
 
 @router.post("/auth/logout", include_in_schema=False)
@@ -117,7 +124,7 @@ async def ui_logout(request: Request):
     destroy_session(_session_token(request))
     response = Response(content=json.dumps({"ok": True}), media_type="application/json")
     clear_session_cookie(response)
-    return response
+    return _private_response(response)
 
 
 @router.get("/auth/check", include_in_schema=False)

@@ -55,9 +55,22 @@
     });
   }
 
-  document.getElementById("logout-btn").addEventListener("click", async () => {
-    await fetch(TabbyUI.path("auth/logout"), { method: "POST", credentials: "same-origin" });
-    window.location.href = TabbyUI.path("login");
+  document.getElementById("logout-btn").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const response = await fetch(TabbyUI.path("auth/logout"), {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`Logout failed (${response.status})`);
+      TabbyUI.redirectToLogin();
+    } catch (err) {
+      button.disabled = false;
+      console.error(err);
+    }
   });
 
   TabbyUI.api("auth/check")

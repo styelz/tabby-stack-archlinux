@@ -40,9 +40,9 @@ FONT_SANS_B = Path("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf")
 
 API = "http://<gpu-host>:5000/v1"
 QWEN_FOLDER = "Qwen3.5-9B-exl3-4.00bpw"
-DURATION_MS = 10000
+DURATION_MS = 4200
 
-W, H = 980, 760
+W, H = 1080, 720
 MARGIN = 22
 TITLE_H = 44
 INPUT_H = 56
@@ -50,20 +50,20 @@ LINE = 19
 PAD = 8
 AV = 20
 
-BG = (26, 26, 28)
-BAR = (32, 32, 34)
-COMPOSER = (30, 30, 32)
-YOU_BG = (44, 44, 48)
-CARD = (36, 36, 40)
-PREVIEW = (18, 18, 20)
-TEXT = (232, 232, 234)
-DIM = (150, 150, 156)
-TOOL = (210, 190, 255)
-SEP = (58, 58, 64)
-DOT = (210, 210, 214)
-YOU_AV = (88, 156, 246)
-AGENT_AV = (245, 130, 78)
-ACCENT = (245, 130, 78)
+BG = (8, 11, 17)
+BAR = (11, 16, 24)
+COMPOSER = (12, 17, 26)
+YOU_BG = (24, 38, 61)
+CARD = (17, 24, 36)
+PREVIEW = (12, 18, 28)
+TEXT = (238, 243, 250)
+DIM = (137, 151, 171)
+TOOL = (170, 196, 255)
+SEP = (42, 53, 70)
+DOT = (105, 166, 255)
+YOU_AV = (105, 166, 255)
+AGENT_AV = (164, 112, 255)
+ACCENT = (105, 166, 255)
 
 BODY_TOP = TITLE_H + 12
 BODY_FLOOR = H - INPUT_H - 26
@@ -111,8 +111,9 @@ def new_window(slide: int, total: int, caption: str) -> tuple[Image.Image, Image
     d = ImageDraw.Draw(im)
     d.rectangle((0, 0, W, TITLE_H), fill=BAR)
     d.line((0, TITLE_H, W, TITLE_H), fill=SEP, width=1)
-    d.ellipse((18, 12, 38, 32), fill=AGENT_AV)
-    d.text((46, 12), "Agent", font=font(15, bold=True), fill=TEXT)
+    d.rounded_rectangle((17, 10, 39, 34), radius=7, fill=(20, 29, 44), outline=SEP)
+    d.polygon(((23, 15), (34, 15), (30, 21), (35, 21), (26, 30), (28, 23), (22, 23)), fill=ACCENT)
+    d.text((48, 12), "Tabby Stack", font=font(15, bold=True), fill=TEXT)
     chip = "gpt-4o"
     chip_w = int(d.textlength(chip, font=font(12))) + 18
     d.rounded_rectangle((W - MARGIN - chip_w, 10, W - MARGIN, 34), radius=9, fill=(42, 42, 46), outline=SEP)
@@ -120,8 +121,8 @@ def new_window(slide: int, total: int, caption: str) -> tuple[Image.Image, Image
 
     d.rectangle((0, H - INPUT_H, W, H), fill=COMPOSER)
     d.line((0, H - INPUT_H, W, H - INPUT_H), fill=SEP, width=1)
-    d.rounded_rectangle((MARGIN, H - 44, W - MARGIN, H - 12), radius=10, outline=SEP, width=1)
-    d.text((MARGIN + 14, H - 36), "Add a follow-up", font=font(13), fill=DIM)
+    d.rounded_rectangle((MARGIN, H - 44, W - MARGIN, H - 12), radius=12, fill=(7, 10, 16), outline=SEP, width=1)
+    d.text((MARGIN + 14, H - 36), "Ask Tabby Stack…", font=font(13), fill=DIM)
 
     cy = H - INPUT_H - 12
     gap = 12
@@ -180,23 +181,32 @@ def draw_tool_card(d: ImageDraw.ImageDraw, y: int, name: str, detail: str) -> in
 
 
 def draw_bike_preview(im: Image.Image, d: ImageDraw.ImageDraw, y: int) -> int:
-    """Stand-in for Cursor rendering ![](url) — docs art, not Comfy."""
-    box = (TEXT_X, y, TEXT_X + 360, y + 150)
+    """Stand-in for an editor-rendered generated image — docs art, not Comfy."""
+    box = (TEXT_X, y, TEXT_X + 420, y + 164)
     d.rounded_rectangle(box, radius=8, fill=PREVIEW, outline=SEP)
     x0, y0, x1, y1 = box
-    # street
-    d.rectangle((x0, y1 - 36, x1, y1), fill=(28, 28, 32))
-    d.line((x0 + 16, y1 - 18, x1 - 16, y1 - 18), fill=(80, 80, 88), width=2)
-    # red bicycle
-    wheel = (200, 40, 44)
-    d.ellipse((x0 + 90, y0 + 58, x0 + 150, y0 + 118), outline=wheel, width=5)
-    d.ellipse((x0 + 200, y0 + 58, x0 + 260, y0 + 118), outline=wheel, width=5)
-    d.line((x0 + 120, y0 + 88, x0 + 170, y0 + 50), fill=wheel, width=4)
-    d.line((x0 + 170, y0 + 50, x0 + 230, y0 + 88), fill=wheel, width=4)
-    d.line((x0 + 170, y0 + 50, x0 + 170, y0 + 88), fill=wheel, width=4)
-    d.line((x0 + 155, y0 + 50, x0 + 188, y0 + 50), fill=wheel, width=4)
-    d.text((x0 + 12, y0 + 8), "generated-20260821-105900.png", font=font(11), fill=DIM)
-    return y + 158
+    # Rainy neon street scene with a bicycle silhouette.
+    for row in range(y1 - y0):
+        t = row / max(1, y1 - y0 - 1)
+        color = (int(18 + 22 * t), int(24 + 10 * t), int(48 + 28 * t))
+        d.line((x0 + 1, y0 + row, x1 - 1, y0 + row), fill=color)
+    d.rectangle((x0 + 42, y0 + 35, x0 + 170, y1 - 30), fill=(14, 18, 28))
+    d.rectangle((x0 + 58, y0 + 52, x0 + 154, y0 + 92), fill=(221, 54, 135))
+    d.text((x0 + 76, y0 + 61), "OPEN", font=font(18, bold=True), fill=(255, 215, 235))
+    d.rectangle((x0 + 270, y0 + 18, x0 + 375, y1 - 34), fill=(12, 19, 30))
+    for wy in (38, 76, 114):
+        d.rectangle((x0 + 286, y0 + wy, x0 + 310, y0 + wy + 18), fill=(62, 202, 232))
+        d.rectangle((x0 + 330, y0 + wy, x0 + 354, y0 + wy + 18), fill=(250, 185, 79))
+    d.rectangle((x0 + 1, y1 - 34, x1 - 1, y1 - 1), fill=(15, 19, 28))
+    d.line((x0 + 35, y1 - 10, x1 - 28, y1 - 22), fill=(87, 58, 109), width=3)
+    wheel = (225, 62, 118)
+    d.ellipse((x0 + 156, y1 - 68, x0 + 204, y1 - 20), outline=wheel, width=4)
+    d.ellipse((x0 + 235, y1 - 68, x0 + 283, y1 - 20), outline=wheel, width=4)
+    d.line((x0 + 180, y1 - 44, x0 + 220, y1 - 77), fill=wheel, width=4)
+    d.line((x0 + 220, y1 - 77, x0 + 259, y1 - 44), fill=wheel, width=4)
+    d.line((x0 + 180, y1 - 44, x0 + 259, y1 - 44), fill=wheel, width=4)
+    d.text((x0 + 12, y0 + 8), "generated-20260821-105900.png", font=font(10), fill=DIM)
+    return y + 172
 
 
 def paint_page(im: Image.Image, d: ImageDraw.ImageDraw, page: dict) -> None:

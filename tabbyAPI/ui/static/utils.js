@@ -1,5 +1,6 @@
 (() => {
   const MARKER = "/v1/ui";
+  let authRedirecting = false;
 
   function uiBase() {
     const path = window.location.pathname || "";
@@ -12,6 +13,12 @@
     const base = uiBase();
     const part = String(suffix || "").replace(/^\/+/, "");
     return part ? `${base}/${part}` : `${base}/`;
+  }
+
+  function redirectToLogin() {
+    if (authRedirecting) return;
+    authRedirecting = true;
+    window.location.replace(uiPath("login"));
   }
 
   /** Map server paths (/v1/ui/...) onto the browser's proxy prefix. */
@@ -87,7 +94,7 @@
       throw new Error("API unreachable — service may be restarting");
     }
     if (response.status === 401 && !String(url).includes("/auth/login")) {
-      window.location.href = uiPath("login");
+      redirectToLogin();
       throw new Error("Not authenticated");
     }
     const type = response.headers.get("content-type") || "";
@@ -723,6 +730,7 @@
   window.TabbyUI = {
     base: uiBase,
     path: uiPath,
+    redirectToLogin,
     resolveUiUrl,
     api,
     $,

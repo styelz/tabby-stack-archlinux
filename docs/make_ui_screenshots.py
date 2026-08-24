@@ -20,18 +20,18 @@ FONT_SANS = Path("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf")
 FONT_MONO = Path("/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf")
 
 W, H = 1280, 820
-BG = (11, 13, 18)
-ELEV = (18, 21, 28)
-ELEV2 = (24, 28, 38)
-LINE = (40, 44, 54)
-TEXT = (232, 236, 244)
-MUTED = (154, 163, 181)
-ACCENT = (122, 162, 255)
-ACCENT2 = (139, 92, 246)
-OK = (61, 214, 140)
-WARN = (245, 197, 66)
-BAD = (255, 107, 122)
-CHART_BG = (7, 8, 12)
+BG = (8, 11, 17)
+ELEV = (14, 19, 29)
+ELEV2 = (22, 29, 43)
+LINE = (42, 53, 70)
+TEXT = (238, 243, 250)
+MUTED = (137, 151, 171)
+ACCENT = (105, 166, 255)
+ACCENT2 = (164, 112, 255)
+OK = (74, 222, 154)
+WARN = (250, 198, 78)
+BAD = (255, 105, 128)
+CHART_BG = (7, 10, 16)
 
 
 def font(size: int, *, mono: bool = False) -> ImageFont.FreeTypeFont:
@@ -47,18 +47,17 @@ def rr(draw: ImageDraw.ImageDraw, box, radius: int, fill, outline=None, width: i
 
 def header(img: Image.Image, active: str) -> ImageDraw.ImageDraw:
     draw = ImageDraw.Draw(img)
-    draw.rectangle((0, 0, W, 64), fill=(14, 16, 22))
+    draw.rectangle((0, 0, W, 64), fill=(10, 14, 21))
     draw.line((0, 64, W, 64), fill=LINE)
 
     # brand mark
     mark = Image.new("RGBA", (42, 42), (0, 0, 0, 0))
     md = ImageDraw.Draw(mark)
-    md.rounded_rectangle((0, 0, 41, 41), 12, fill=ACCENT)
-    for i, color in enumerate((ACCENT, ACCENT2, OK)):
-        md.pieslice((2, 2, 39, 39), i * 120, i * 120 + 120, fill=color)
+    md.rounded_rectangle((0, 0, 41, 41), 13, fill=(20, 28, 43), outline=LINE)
+    md.polygon(((8, 9), (31, 9), (23, 20), (33, 20), (17, 34), (20, 23), (8, 23)), fill=ACCENT)
     img.paste(mark, (18, 11), mark)
 
-    draw.text((72, 12), "TABBY STACK", fill=MUTED, font=font(11))
+    draw.text((72, 11), "TABBY STACK", fill=ACCENT, font=font(11))
     titles = {"logs": "Logs", "chat": "Chat", "status": "Status", "gallery": "Gallery"}
     draw.text((72, 28), titles[active], fill=TEXT, font=font(18))
 
@@ -75,8 +74,9 @@ def header(img: Image.Image, active: str) -> ImageDraw.ImageDraw:
         x += tw + 8
 
     # chips
-    rr(draw, (W - 320, 18, W - 190, 46), 999, fill=(30, 50, 40), outline=(50, 100, 70))
-    draw.text((W - 308, 24), "LLM · qwen", fill=OK, font=font(12))
+    rr(draw, (W - 320, 18, W - 190, 46), 999, fill=(17, 48, 39), outline=(36, 98, 76))
+    draw.ellipse((W - 307, 29, W - 299, 37), fill=OK)
+    draw.text((W - 291, 24), "LLM · qwen", fill=OK, font=font(12))
     rr(draw, (W - 180, 18, W - 100, 46), 999, fill=None, outline=LINE)
     draw.text((W - 168, 24), "pbp", fill=MUTED, font=font(12))
     draw.text((W - 88, 24), "Log out", fill=MUTED, font=font(12))
@@ -285,29 +285,152 @@ def make_gallery() -> Image.Image:
     draw.text((W - 160, 88), "Page 1 / 3", fill=MUTED, font=font(13))
 
     thumbs = [
-        ("generated-20260824-031201-1122.png", (40, 70, 120)),
-        ("generated-20260824-031508-1188.png", (120, 50, 90)),
-        ("generated-20260824-032044-1201.png", (30, 90, 140)),
-        ("harbor-logo.png", (200, 160, 60)),
-        ("harbor-header.png", (20, 40, 90)),
-        ("cosmos-logo.png", (90, 40, 140)),
-        ("mars.png", (160, 70, 40)),
-        ("neptune.png", (30, 60, 160)),
+        ("rainy-neon-diner.png", "diner"),
+        ("alpine-lake.png", "lake"),
+        ("harbor-cafe-logo.png", "logo"),
+        ("desert-observatory.png", "desert"),
+        ("night-train.png", "train"),
+        ("paper-fox.png", "fox"),
+        ("mars-outpost.png", "mars"),
+        ("botanical-study.png", "plant"),
     ]
     gap, tw, th = 14, 290, 210
-    for i, (name, color) in enumerate(thumbs):
+    for i, (name, scene) in enumerate(thumbs):
         col, row = i % 4, i // 4
         x = 18 + col * (tw + gap)
         y = 128 + row * (th + gap)
         rr(draw, (x, y, x + tw, y + th), 12, fill=ELEV, outline=LINE)
-        # fake image area with gradient-ish blocks
-        for band in range(6):
-            c = tuple(max(0, min(255, int(v + band * 8 - 20))) for v in color)
-            draw.rectangle((x + 1, y + 1 + band * 28, x + tw - 1, y + 1 + (band + 1) * 28), fill=c)
+        draw_thumbnail(draw, (x + 1, y + 1, x + tw - 1, y + th - 44), scene)
         draw.rectangle((x + 1, y + th - 44, x + tw - 1, y + th - 1), fill=ELEV)
         draw.text((x + 12, y + th - 32), name[:34], fill=MUTED, font=font(11))
         # checkbox
         rr(draw, (x + tw - 36, y + 10, x + tw - 12, y + 34), 6, fill=(0, 0, 0), outline=LINE)
+    return img
+
+
+def draw_thumbnail(draw: ImageDraw.ImageDraw, box, scene: str) -> None:
+    """Small illustrated samples make the gallery read like a real image library."""
+    x0, y0, x1, y1 = box
+    palettes = {
+        "diner": ((18, 27, 58), (238, 66, 140), (62, 202, 232)),
+        "lake": ((53, 95, 137), (139, 195, 210), (28, 73, 78)),
+        "logo": ((244, 226, 183), (24, 54, 62), (206, 104, 57)),
+        "desert": ((64, 35, 57), (239, 140, 79), (252, 210, 135)),
+        "train": ((15, 29, 51), (62, 126, 163), (246, 190, 83)),
+        "fox": ((228, 218, 200), (222, 105, 58), (46, 55, 65)),
+        "mars": ((74, 31, 29), (194, 74, 47), (239, 173, 102)),
+        "plant": ((24, 52, 44), (84, 151, 105), (219, 196, 135)),
+    }
+    sky, mid, light = palettes[scene]
+    h = y1 - y0
+    for i in range(h):
+        t = i / max(1, h - 1)
+        c = tuple(int(sky[j] * (1 - t) + mid[j] * t) for j in range(3))
+        draw.line((x0, y0 + i, x1, y0 + i), fill=c)
+
+    if scene in {"diner", "train"}:
+        draw.rectangle((x0 + 34, y0 + 58, x1 - 32, y1 - 18), fill=(13, 19, 28))
+        for wx in range(x0 + 52, x1 - 45, 44):
+            draw.rectangle((wx, y0 + 72, wx + 24, y0 + 100), fill=light)
+        draw.line((x0, y1 - 15, x1, y1 - 15), fill=light, width=3)
+    elif scene in {"lake", "desert", "mars"}:
+        draw.polygon(((x0, y1), (x0 + 70, y0 + 52), (x0 + 126, y1), (x0 + 190, y0 + 35), (x1, y1)), fill=mid)
+        draw.polygon(((x0 + 138, y0 + 77), (x0 + 190, y0 + 35), (x0 + 221, y0 + 80)), fill=light)
+        draw.ellipse((x1 - 66, y0 + 18, x1 - 30, y0 + 54), fill=light)
+    elif scene == "logo":
+        draw.ellipse((x0 + 78, y0 + 27, x0 + 210, y0 + 135), fill=(246, 232, 199), outline=mid, width=4)
+        draw.arc((x0 + 112, y0 + 51, x0 + 174, y0 + 107), 0, 180, fill=mid, width=5)
+        draw.text((x0 + 77, y1 - 33), "HARBOR CAFE", fill=mid, font=font(18))
+    elif scene == "fox":
+        draw.polygon(((x0 + 92, y0 + 42), (x0 + 140, y0 + 18), (x0 + 190, y0 + 45), (x0 + 174, y0 + 124), (x0 + 115, y0 + 124)), fill=mid)
+        draw.polygon(((x0 + 96, y0 + 43), (x0 + 104, y0 + 8), (x0 + 136, y0 + 28)), fill=mid)
+        draw.polygon(((x0 + 185, y0 + 43), (x0 + 179, y0 + 8), (x0 + 148, y0 + 27)), fill=mid)
+        draw.ellipse((x0 + 126, y0 + 68, x0 + 134, y0 + 76), fill=sky)
+        draw.ellipse((x0 + 158, y0 + 68, x0 + 166, y0 + 76), fill=sky)
+    else:
+        for ox, oy, r in ((80, 84, 35), (132, 61, 42), (194, 88, 37)):
+            draw.ellipse((x0 + ox - r, y0 + oy - r, x0 + ox + r, y0 + oy + r), fill=mid)
+            draw.line((x0 + ox, y0 + oy, x0 + 145, y1), fill=light, width=4)
+
+
+def make_ide_preview() -> Image.Image:
+    """Polished editor + live preview hero for the top of the README."""
+    pw, ph = 1440, 900
+    img = Image.new("RGB", (pw, ph), (7, 10, 16))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((0, 0, pw, 48), fill=(13, 18, 27))
+    draw.ellipse((18, 17, 30, 29), fill=BAD)
+    draw.ellipse((38, 17, 50, 29), fill=WARN)
+    draw.ellipse((58, 17, 70, 29), fill=OK)
+    draw.text((94, 15), "tabby-stack  —  Cursor", fill=MUTED, font=font(13))
+
+    # Explorer.
+    draw.rectangle((0, 48, 228, ph), fill=(10, 14, 21))
+    draw.text((22, 74), "EXPLORER", fill=MUTED, font=font(11))
+    draw.text((22, 105), "▾  HARBOR", fill=TEXT, font=font(13, mono=True))
+    files = ("▾  images", "   header.png", "   logo.png", "index.html", "styles.css")
+    for i, name in enumerate(files):
+        color = ACCENT if name == "index.html" else MUTED
+        draw.text((34, 140 + i * 31), name, fill=color, font=font(13, mono=True))
+
+    # Browser preview.
+    bx0, by0, bx1, by1 = 228, 48, 1000, ph
+    draw.rectangle((bx0, by0, bx1, by1), fill=(245, 239, 226))
+    draw.rectangle((bx0, by0, bx1, 96), fill=(22, 29, 39))
+    rr(draw, (bx0 + 110, 61, bx1 - 110, 84), 8, fill=(9, 13, 20), outline=LINE)
+    draw.text((bx0 + 132, 66), "http://127.0.0.1:5173", fill=MUTED, font=font(11, mono=True))
+    draw.rectangle((bx0, 96, bx1, 158), fill=(252, 248, 239))
+    draw.text((bx0 + 34, 115), "HARBOR", fill=(24, 55, 64), font=font(22))
+    draw.text((bx1 - 240, 119), "Menu     Story     Visit", fill=(76, 78, 74), font=font(12))
+
+    # Hero scene.
+    for i in range(340):
+        t = i / 339
+        c = (int(19 + 49 * t), int(43 + 61 * t), int(62 + 63 * t))
+        draw.line((bx0, 158 + i, bx1, 158 + i), fill=c)
+    draw.ellipse((bx1 - 210, 202, bx1 - 125, 287), fill=(246, 194, 109))
+    draw.polygon(((bx0, 498), (bx0 + 165, 300), (bx0 + 335, 498), (bx0 + 530, 250), (bx1, 498)), fill=(20, 57, 66))
+    draw.rectangle((bx0 + 56, 318, bx0 + 432, 458), fill=(12, 26, 34))
+    draw.rectangle((bx0 + 76, 338, bx0 + 412, 438), outline=(219, 155, 78), width=2)
+    draw.text((bx0 + 91, 350), "COFFEE BY THE WATER", fill=(251, 239, 205), font=font(29))
+    draw.text((bx0 + 92, 395), "Small-batch coffee, baked daily.", fill=(195, 207, 202), font=font(15))
+    rr(draw, (bx0 + 92, 421, bx0 + 226, 453), 999, fill=(219, 155, 78))
+    draw.text((bx0 + 119, 429), "View the menu", fill=(21, 38, 43), font=font(12))
+
+    draw.text((bx0 + 55, 548), "Made slowly. Served warmly.", fill=(24, 55, 64), font=font(28))
+    for i, label in enumerate(("Morning roast", "Fresh pastry", "Harbor views")):
+        cx = bx0 + 55 + i * 226
+        rr(draw, (cx, 604, cx + 194, 734), 14, fill=(255, 252, 245), outline=(219, 211, 195))
+        draw.ellipse((cx + 18, 624, cx + 54, 660), fill=(219, 155, 78))
+        draw.text((cx + 18, 680), label, fill=(24, 55, 64), font=font(15))
+        draw.text((cx + 18, 709), "Local · seasonal", fill=(112, 108, 98), font=font(11))
+
+    # Agent pane.
+    ax0 = 1000
+    draw.rectangle((ax0, 48, pw, ph), fill=(12, 16, 24))
+    draw.text((ax0 + 22, 72), "AGENT", fill=MUTED, font=font(11))
+    rr(draw, (ax0 + 18, 105, pw - 18, 177), 12, fill=(26, 35, 51))
+    draw.text((ax0 + 34, 121), "You", fill=ACCENT, font=font(12))
+    draw.text((ax0 + 34, 145), "Build a warm cafe landing page", fill=TEXT, font=font(14))
+    draw.text((ax0 + 34, 164), "with a header image and logo.", fill=TEXT, font=font(14))
+    steps = (
+        ("✓", "Created index.html"),
+        ("✓", "Created styles.css"),
+        ("✓", "Generated header.png"),
+        ("✓", "Generated logo.png"),
+    )
+    y = 211
+    for mark, label in steps:
+        draw.ellipse((ax0 + 24, y, ax0 + 44, y + 20), fill=(24, 67, 53))
+        draw.text((ax0 + 29, y + 1), mark, fill=OK, font=font(11))
+        draw.text((ax0 + 56, y + 1), label, fill=TEXT, font=font(13, mono=True))
+        y += 42
+    rr(draw, (ax0 + 18, 400, pw - 18, 520), 12, fill=ELEV, outline=LINE)
+    draw.text((ax0 + 34, 420), "The page is ready.", fill=TEXT, font=font(15))
+    draw.text((ax0 + 34, 450), "Responsive layout, generated assets,", fill=MUTED, font=font(12))
+    draw.text((ax0 + 34, 470), "and a live local preview.", fill=MUTED, font=font(12))
+    rr(draw, (ax0 + 18, ph - 76, pw - 18, ph - 22), 12, fill=(8, 11, 17), outline=LINE)
+    draw.text((ax0 + 34, ph - 57), "Ask for a change…", fill=MUTED, font=font(13))
     return img
 
 
@@ -458,6 +581,7 @@ def save_jpg(img: Image.Image, name: str) -> Path:
 
 
 def main() -> None:
+    save_jpg(make_ide_preview(), "ide-preview.jpg")
     save_jpg(make_status(), "ui-status.jpg")
     save_jpg(make_logs(), "ui-logs.jpg")
     save_jpg(make_gallery(), "ui-gallery.jpg")
