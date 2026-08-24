@@ -55,7 +55,7 @@ function mountChat(root) {
             </div>
           </div>
           <div class="chat-log" id="chat-log"></div>
-          <button class="btn chat-jump" type="button" id="chat-jump" hidden>Jump to latest</button>
+          <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
         </div>
         <div class="chat-compose">
           <ul class="slash-menu" id="history-menu" hidden></ul>
@@ -350,23 +350,27 @@ function mountChat(root) {
     emptyEl.hidden = !empty;
   }
 
+  let followLog = true;
+
   function nearBottom() {
-    return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 48;
   }
 
   function paintJump() {
     if (!jumpBtn) return;
-    jumpBtn.hidden = nearBottom() || log.scrollHeight <= log.clientHeight + 8;
+    const overflow = log.scrollHeight > log.clientHeight + 8;
+    jumpBtn.hidden = !overflow || followLog || nearBottom();
   }
 
   function stickLog(force) {
-    if (force || nearBottom()) log.scrollTop = log.scrollHeight;
+    if (force) followLog = true;
+    if (followLog) log.scrollTop = log.scrollHeight;
     paintJump();
   }
 
   function resizeInput() {
     input.style.height = "auto";
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, 46), 200)}px`;
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 36), 180)}px`;
     if (countEl) {
       const n = input.value.length;
       countEl.textContent = n >= 400 ? `${n.toLocaleString()} chars` : "";
@@ -444,7 +448,7 @@ function mountChat(root) {
     const add = (act, label) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "btn ghost chat-icon";
+      btn.className = "btn ghost";
       btn.dataset.act = act;
       btn.dataset.idx = String(idx);
       btn.textContent = label;
@@ -2018,10 +2022,19 @@ function mountChat(root) {
     if (event.target.closest("button, a, textarea, input")) return;
     const sel = window.getSelection();
     if (sel && String(sel).trim()) return;
+    if (!followLog && !nearBottom()) return;
     input.focus();
   });
-  log.addEventListener("scroll", paintJump, { passive: true });
-  if (jumpBtn) jumpBtn.addEventListener("click", () => stickLog(true));
+  log.addEventListener("scroll", () => {
+    followLog = nearBottom();
+    paintJump();
+  }, { passive: true });
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", () => {
+      stickLog(true);
+      input.focus();
+    });
+  }
   titleEl.addEventListener("click", () => beginRename());
   root.querySelector("#chat-sidebar-toggle").addEventListener("click", () => {
     setSidebarOpen(!shell.classList.contains("is-sidebar-open"));

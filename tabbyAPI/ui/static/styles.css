@@ -336,6 +336,34 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-icon:hover { color: var(--text); }
 .chat-icon.danger:hover { color: var(--bad); }
 .chat-icon.is-live { color: var(--bad); }
+.chat-shell .btn {
+  padding: 0 10px;
+  min-height: 28px;
+  height: 28px;
+  font-size: 12px;
+  font-weight: 550;
+  border-radius: 8px;
+  line-height: 1;
+}
+.chat-shell .btn.primary {
+  padding: 0 10px;
+  font-weight: 600;
+}
+.chat-shell .chat-icon,
+.chat-shell .chat-queue-clear {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
+.chat-shell .chat-send { min-width: 4.25rem; }
+.chat-actions .btn {
+  width: auto;
+  min-width: 0;
+  height: 22px;
+  min-height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+}
 
 .chat-wrap {
   display: grid;
@@ -368,11 +396,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-elev);
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   flex: 1 1 auto;
+  font-size: 13px;
+  line-height: 1.45;
 }
 .chat-empty {
   position: absolute;
@@ -385,8 +415,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   pointer-events: none;
 }
 .chat-empty[hidden] { display: none; }
-.chat-empty h2 { margin: 0; font-size: 22px; }
-.chat-empty p { margin: 0; color: var(--muted); max-width: 36rem; }
+.chat-empty h2 { margin: 0; font-size: 18px; }
+.chat-empty p { margin: 0; color: var(--muted); max-width: 36rem; font-size: 13px; }
 .chat-suggests {
   display: flex;
   flex-wrap: wrap;
@@ -398,16 +428,20 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-suggests button {
   border: 1px solid var(--line);
   background: var(--bg-elev-2);
-  border-radius: 999px;
-  padding: 8px 12px;
+  border-radius: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
   color: var(--text);
 }
 .chat-suggests button:hover { border-color: var(--accent); }
 .chat-jump {
   position: absolute;
-  right: 18px;
-  bottom: 14px;
+  left: 50%;
+  bottom: 12px;
   z-index: 3;
+  transform: translateX(-50%);
+  box-shadow: var(--shadow);
 }
 .chat-jump[hidden] { display: none; }
 .chat-row {
@@ -448,9 +482,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .bubble {
   max-width: 100%;
-  padding: 10px 12px;
-  border-radius: 12px;
-  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 .bubble.user { margin-left: auto; background: rgba(122,162,255,0.16); }
@@ -779,10 +814,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-width: 0;
   flex: 1;
 }
-.chat-form { display: flex; gap: 8px; flex: 0 0 auto; align-items: stretch; }
-.chat-form textarea { min-height: 46px; resize: none; }
+.chat-form { display: flex; gap: 8px; flex: 0 0 auto; align-items: flex-end; }
+.chat-form textarea { min-height: 36px; resize: none; font-size: 13px; }
 .chat-send {
-  min-width: 5.75rem;
+  min-width: 4.25rem;
   flex: 0 0 auto;
 }
 .chat-send.is-stop .chat-stop-icon,
@@ -822,10 +857,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   white-space: nowrap;
   font-size: 13px;
 }
-.chat-queue .btn { padding: 6px 10px; }
 .chat-queue-clear {
   width: 28px;
-  padding: 6px 0;
   color: var(--muted);
 }
 .chat-title-edit {
@@ -859,7 +892,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   background: none;
   border: 0;
   border-radius: 8px;
-  padding: 8px 10px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
   color: inherit;
 }
 .chat-more-menu button:hover,
@@ -907,10 +943,11 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-width: 0;
 }
 .chat-input-wrap textarea {
-  min-height: 46px;
-  max-height: 200px;
+  min-height: 36px;
+  max-height: 180px;
   resize: none;
   overflow-y: auto;
+  font-size: 13px;
 }
 .chat-compose-meta {
   display: flex;
