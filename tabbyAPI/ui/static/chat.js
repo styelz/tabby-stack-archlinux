@@ -27,6 +27,11 @@ function tabbyLooksLikeChatNotImage(raw) {
   );
 }
 
+// One left-pointing chevron; the rail toggles rotate it to mean "collapse"
+// or "expand" on whichever side they sit.
+const CHEVRON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 5-7 7 7 7" /></svg>';
+
 function mountChat(root) {
   root.innerHTML = `
     <div class="chat-shell" id="chat-shell">
@@ -45,13 +50,12 @@ function mountChat(root) {
       </aside>
       <div class="chat-wrap">
         <div class="toolbar chat-toolbar">
-          <button class="btn ghost chat-icon" type="button" id="chat-sidebar-toggle" aria-label="Hide sidebar" title="Hide sidebar">‹</button>
+          <button class="rail-toggle" type="button" id="chat-sidebar-toggle" aria-label="Hide sidebar" title="Hide sidebar">${CHEVRON_SVG}</button>
           <span class="chat-title" id="chat-title">New chat</span>
           <div class="chat-mode" id="chat-mode" role="group" aria-label="Chat mode">
             <button type="button" class="chat-mode-btn is-active" data-mode="chat">Chat</button>
             <button type="button" class="chat-mode-btn" data-mode="code">Code</button>
           </div>
-          <button class="btn ghost" type="button" id="chat-files-toggle" hidden aria-expanded="true" aria-controls="chat-files">Files</button>
           <span class="spacer"></span>
           <span class="muted" id="chat-hint">Tab chats · ↑↓ recall · Enter send</span>
           <div class="chat-more">
@@ -68,6 +72,7 @@ function mountChat(root) {
               <button type="button" data-more="delete">Delete this chat</button>
             </div>
           </div>
+          <button class="rail-toggle" type="button" id="chat-files-toggle" hidden aria-expanded="true" aria-controls="chat-files" aria-label="Hide files" title="Hide files">${CHEVRON_SVG}</button>
         </div>
         <div class="chat-view">
           <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
@@ -434,7 +439,9 @@ function mountChat(root) {
       const hidden = isNarrowChat()
         ? !shell.classList.contains("is-sidebar-open")
         : shell.classList.contains("is-sidebar-hidden");
-      toggleBtn.textContent = hidden ? "›" : "‹";
+      // Points at the edge it would move the pane toward.
+      toggleBtn.classList.toggle("is-flipped", hidden);
+      toggleBtn.setAttribute("aria-expanded", hidden ? "false" : "true");
       toggleBtn.setAttribute("aria-label", hidden ? "Show sidebar" : "Hide sidebar");
       toggleBtn.title = hidden ? "Show sidebar" : "Hide sidebar";
     }
@@ -468,10 +475,15 @@ function mountChat(root) {
     const code = activeMode() === "code";
     filesToggleBtn.hidden = !code;
     if (!code) return;
-    filesToggleBtn.textContent = filesListing.length ? `Files · ${filesListing.length}` : "Files";
-    filesToggleBtn.classList.toggle("is-active", filesOpen);
+    const count = filesListing.length;
+    // Open means the chevron points right, the way the pane would fold away.
+    filesToggleBtn.classList.toggle("is-flipped", filesOpen);
+    // The file count lives in the pane header, so a closed pane keeps a dot.
+    filesToggleBtn.classList.toggle("is-marked", !filesOpen && count > 0);
     filesToggleBtn.setAttribute("aria-expanded", filesOpen ? "true" : "false");
-    filesToggleBtn.title = filesOpen ? "Hide the files pane" : "Show the files pane";
+    const files = count === 1 ? "1 file" : `${count} files`;
+    filesToggleBtn.setAttribute("aria-label", filesOpen ? "Hide files" : "Show files");
+    filesToggleBtn.title = filesOpen ? "Hide the files pane" : `Show the files pane (${files})`;
   }
 
   function setFilesOpen(open) {
