@@ -872,6 +872,34 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   background: var(--bg-elev);
 }
 .chat-queue[hidden] { display: none; }
+.chat-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(245, 197, 66, 0.35);
+  border-radius: 12px;
+  background: rgba(245, 197, 66, 0.08);
+}
+.chat-loading[hidden] { display: none; }
+.chat-loading-mark {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #f5c542;
+}
+.chat-loading-text {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+}
+.chat-form.is-loading textarea,
+.chat-form.is-loading .chat-icon {
+  opacity: 0.55;
+}
 .chat-queue-mark {
   flex: 0 0 auto;
   font-size: 11px;

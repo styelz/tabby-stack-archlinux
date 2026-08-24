@@ -483,6 +483,15 @@
         this.paintApiDown();
         return;
       }
+      if (data.switching || data.restarting || data.busy) {
+        const name = data.switch_target || data.profile || "model";
+        chip.textContent = data.restarting ? "RESTARTING" : `LOADING · ${name}`;
+        chip.className = "chip warn";
+        chip.title = data.restarting
+          ? "API is restarting"
+          : `Loading ${name}. Chat is paused until the model is ready.`;
+        return;
+      }
       const mode = data.gpu_mode || "gpu";
       const label = data.profile || data.tabby_model || "idle";
       chip.textContent = `${String(mode).toUpperCase()} · ${label}`;

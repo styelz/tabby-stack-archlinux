@@ -18,6 +18,7 @@ from common.phrase_switch import (
     handle_if_requested,
     llm_not_ready_response,
     should_yield_comfy_to_llm,
+    switch_lock_held,
     yield_comfy_to_llm_response,
 )
 from common.tabby_config import config
@@ -57,6 +58,8 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     switched = handle_if_requested(data, api_base=api_base)
     if switched is not None:
         return switched
+    if switch_lock_held():
+        return await llm_not_ready_response(data, console=True)
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")

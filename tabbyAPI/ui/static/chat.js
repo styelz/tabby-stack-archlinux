@@ -75,6 +75,10 @@ function mountChat(root) {
             <button class="btn" type="button" id="chat-steer" hidden>Steer</button>
             <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
           </div>
+          <div class="chat-loading" id="chat-loading" hidden>
+            <span class="chat-loading-mark">Loading</span>
+            <span class="chat-loading-text" id="chat-loading-text">The model is loading. Chat is paused until it is ready.</span>
+          </div>
           <form class="chat-form" id="chat-form">
             <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
             <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
@@ -112,6 +116,8 @@ function mountChat(root) {
   const fileInput = root.querySelector("#chat-file");
   const micBtn = root.querySelector("#chat-mic");
   const countEl = root.querySelector("#chat-count");
+  const loadingBar = root.querySelector("#chat-loading");
+  const loadingTextEl = root.querySelector("#chat-loading-text");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
@@ -510,7 +516,7 @@ function mountChat(root) {
   }
 
   function beginEdit(idx) {
-    if (inFlight) return;
+    if (inFlight || modelLoading) return;
     const item = messages[idx];
     if (!item || item.role !== "user") return;
     pendingEditIndex = idx;
@@ -530,7 +536,7 @@ function mountChat(root) {
   }
 
   function deleteTurn(idx) {
-    if (inFlight) return;
+    if (inFlight || modelLoading) return;
     const item = messages[idx];
     if (!item || item.role !== "user") return;
     const next = messages[idx + 1];
@@ -550,14 +556,14 @@ function mountChat(root) {
   }
 
   function canSplit(idx) {
-    if (inFlight) return false;
+    if (inFlight || modelLoading) return false;
     const start = splitStartIndex(idx);
     if (start < 0) return false;
     return messages.slice(0, start).some((msg) => msg.role !== "system");
   }
 
   function splitAfterTurn(idx) {
-    if (inFlight) return;
+    if (inFlight || modelLoading) return;
     const start = splitStartIndex(idx);
     if (start < 0) return;
     const tail = cloneMessages(messages.slice(start)).filter((msg) => msg.role !== "system");
@@ -586,7 +592,7 @@ function mountChat(root) {
   }
 
   function regenerateLast() {
-    if (inFlight) return;
+    if (inFlight || modelLoading) return;
     if (messages.length && messages[messages.length - 1].role === "assistant") {
       messages.pop();
     }
@@ -708,7 +714,7 @@ function mountChat(root) {
   }
 
   async function setPendingImageFromFile(file) {
-    if (!file) return;
+    if (!file || modelLoading) return;
     if (!/^image\//.test(file.type || "")) {
       addBubble("assistant", "Error: Attach a PNG, JPEG, WebP, or GIF.");
       return;
@@ -891,12 +897,12 @@ function mountChat(root) {
     const raw = String(text || "").trim();
     const lower = raw.toLowerCase();
     if (/^restart$/i.test(lower) || lower === "/restart") {
-      return { label: "Restarting", kind: "restart", processing: true };
+      return { label: "Restarting", kind: "restart", processing: true, target: "restart" };
     }
     const sw = lower.match(/^switch to (\S+)/) || lower.match(/^\/(qwen\d*|gemma\d*|glm|comfy|flux|llm)\b/);
     if (sw) {
       const name = sw[1];
-      return { label: `Switching to ${name}`, kind: "switch", processing: true };
+      return { label: `Loading ${name}`, kind: "switch", processing: true, target: name };
     }
     if (
       /^(generate an image|qwen-image:)/i.test(raw) ||
@@ -1632,6 +1638,10 @@ function mountChat(root) {
   }
 
   function applyCommand(item, submitAfter) {
+    if (modelLoading) {
+      hideMenu();
+      return false;
+    }
     if (item.keepOpen) {
       input.value = item.send;
       hideMenu();
@@ -1710,13 +1720,18 @@ function mountChat(root) {
           return;
         }
         if (kind === "switch" || kind === "restart") {
-          const model = data && data.model;
-          const busy = data && (data.switching || data.restarting || data.busy);
+          const busy = statusIsBusy(data);
+          const name = (data && data.switch_target) || "";
           if (busy && kind === "switch") {
-            const name = (model && (model.profile || model.name)) || "";
-            working.setActivity(name ? `Switching to ${name}` : "Switching", { processing: true });
+            working.setActivity(loadingLabel("switch", name), {
+              processing: true,
+              note: loadingHint("switch", name),
+            });
           } else if (busy && kind === "restart") {
-            working.setActivity("Restarting", { processing: true });
+            working.setActivity("Restarting", {
+              processing: true,
+              note: loadingHint("restart", name),
+            });
           }
         }
       } catch {
@@ -1739,6 +1754,129 @@ function mountChat(root) {
   let stopKind = "";
   let loopBusy = false;
   let flightChatId = "";
+  let modelLoading = false;
+  let modelWait = null;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function statusIsBusy(data) {
+    return Boolean(data && (data.switching || data.restarting || data.busy));
+  }
+
+  function loadingHint(kind, name) {
+    if (kind === "restart" || name === "restart") {
+      return "Restarting. Chat is paused until the API is ready.";
+    }
+    const label = String(name || "").trim();
+    return label
+      ? `Loading ${label}. Chat is paused until the model is ready.`
+      : "The model is loading. Chat is paused until it is ready.";
+  }
+
+  function loadingLabel(kind, name) {
+    if (kind === "restart" || name === "restart") return "Restarting";
+    const label = String(name || "").trim();
+    if (label === "comfy" || label === "flux") return "Loading Comfy";
+    return label ? `Loading ${label}` : "Loading the model";
+  }
+
+  function setLoadingBanner(text) {
+    if (loadingTextEl && text) loadingTextEl.textContent = text;
+    if (loadingBar) loadingBar.hidden = !modelLoading;
+  }
+
+  function modelLooksReady(data, activity) {
+    if (!data || statusIsBusy(data)) return false;
+    const dest = String((activity && activity.target) || data.switch_target || "").toLowerCase();
+    if (dest === "comfy" || dest === "flux") return Boolean(data.comfy_up);
+    if (dest === "restart") {
+      return Boolean(data.ok) && (Boolean(data.tabby_model) || Boolean(data.comfy_up) || Boolean(data.health && data.health.healthy));
+    }
+    return Boolean(data.tabby_model) || Boolean(data.model && (data.model.id || data.model.max_seq_len));
+  }
+
+  async function waitForModelReady(working, activity) {
+    const target = (activity && activity.target) || "";
+    const kind = (activity && activity.kind) || "switch";
+    const started = Date.now();
+    const deadline = started + 4 * 60 * 1000;
+    let sawBusy = false;
+    setLoadingBanner(loadingHint(kind, target));
+    if (working) {
+      working.setActivity(loadingLabel(kind, target), {
+        processing: true,
+        note: loadingHint(kind, target),
+      });
+    }
+    while (Date.now() < deadline) {
+      try {
+        const data = await TabbyUI.api("status");
+        const name = (data && data.switch_target) || target;
+        const nextKind = data && data.restarting ? "restart" : kind;
+        if (statusIsBusy(data)) {
+          sawBusy = true;
+          setLoadingBanner(loadingHint(nextKind, name));
+          if (working) {
+            working.setActivity(loadingLabel(nextKind, name), {
+              processing: true,
+              note: loadingHint(nextKind, name),
+            });
+          }
+        } else if (sawBusy) {
+          if (working) working.setActivity("Ready", { processing: false, note: "The model is ready." });
+          return true;
+        } else if (Date.now() - started > 2500 && modelLooksReady(data, activity)) {
+          if (working) working.setActivity("Ready", { processing: false, note: "The model is ready." });
+          return true;
+        }
+      } catch {
+        sawBusy = true;
+        setLoadingBanner(loadingHint(kind, target));
+        if (working) {
+          working.setActivity(loadingLabel(kind, target), {
+            processing: true,
+            note: loadingHint(kind, target),
+          });
+        }
+      }
+      await sleep(1500);
+    }
+    if (working) {
+      working.setActivity("Still loading", {
+        processing: false,
+        note: "The model is taking longer than expected.",
+      });
+    }
+    return false;
+  }
+
+  function ensureModelWait(working, activity) {
+    if (modelWait) return modelWait;
+    modelLoading = true;
+    paintCompose();
+    modelWait = waitForModelReady(working, activity || { kind: "switch" }).finally(() => {
+      modelWait = null;
+      modelLoading = false;
+      setLoadingBanner("");
+      paintCompose();
+    });
+    return modelWait;
+  }
+
+  async function syncModelGate() {
+    if (modelWait) return;
+    try {
+      const data = await TabbyUI.api("status");
+      if (!statusIsBusy(data)) return;
+      const target = data.switch_target || "";
+      const kind = data.restarting ? "restart" : "switch";
+      await ensureModelWait(null, { kind, target });
+    } catch {
+      /* status unavailable */
+    }
+  }
 
   function abortSession(kind) {
     stopKind = kind || "stop";
@@ -1757,6 +1895,27 @@ function mountChat(root) {
   }
 
   function paintCompose() {
+    if (form) form.classList.toggle("is-loading", modelLoading);
+    if (modelLoading) {
+      if (queueBar) queueBar.hidden = true;
+      if (steerBtn) {
+        steerBtn.hidden = true;
+        steerBtn.disabled = true;
+      }
+      if (loadingBar) loadingBar.hidden = false;
+      if (!sendBtn) return;
+      sendBtn.disabled = true;
+      sendBtn.classList.add("primary");
+      sendBtn.classList.remove("danger", "is-stop");
+      sendBtn.setAttribute("aria-label", "Loading");
+      sendBtn.textContent = "Loading";
+      input.disabled = true;
+      input.placeholder = "The model is loading. Chat is paused until it is ready.";
+      if (editBar) editBar.hidden = pendingEditIndex < 0;
+      return;
+    }
+    input.disabled = false;
+    if (loadingBar) loadingBar.hidden = true;
     const action = tabbyChatComposeAction(inFlight, input.value, queuedText);
     const hasQueue = Boolean(queuedText);
     if (queueBar) queueBar.hidden = !hasQueue;
@@ -1899,7 +2058,11 @@ function mountChat(root) {
     }
     let stoppedEmpty = false;
     poll.stop();
-    stoppedEmpty = Boolean(stopKind) && !String(assembled || "").trim() && !reasoning;
+    const waitingOnModel = activity.kind === "switch" || activity.kind === "restart";
+    if (waitingOnModel) {
+      await ensureModelWait(working, activity);
+    }
+    stoppedEmpty = Boolean(stopKind) && !waitingOnModel && !String(assembled || "").trim() && !reasoning;
     if (stoppedEmpty) {
       working.discard();
     } else {
@@ -1923,7 +2086,9 @@ function mountChat(root) {
   }
 
   async function runLoop(firstText, opts) {
+    if (modelLoading && !loopBusy) return;
     if (loopBusy) {
+      if (modelLoading) return;
       if (firstText && !(opts && opts.replay)) queueFollowup(firstText);
       return;
     }
@@ -1966,6 +2131,7 @@ function mountChat(root) {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (modelLoading) return;
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
     }
@@ -2095,6 +2261,7 @@ function mountChat(root) {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      if (modelLoading) return;
       form.requestSubmit();
     }
   });
@@ -2207,13 +2374,16 @@ function mountChat(root) {
   });
   emptyEl.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-suggest]");
-    if (!btn) return;
+    if (!btn || modelLoading) return;
     input.value = btn.dataset.suggest || "";
     resizeInput();
     form.requestSubmit();
   });
   root.querySelector("#chat-edit-cancel").addEventListener("click", cancelEdit);
-  root.querySelector("#chat-attach-btn").addEventListener("click", () => fileInput && fileInput.click());
+  root.querySelector("#chat-attach-btn").addEventListener("click", () => {
+    if (modelLoading) return;
+    if (fileInput) fileInput.click();
+  });
   root.querySelector("#chat-attach-clear").addEventListener("click", () => {
     clearPendingImage();
     input.focus();
@@ -2319,6 +2489,7 @@ function mountChat(root) {
     renderSidebar();
     paintCompose();
     resizeInput();
+    syncModelGate();
   }
   loadStore();
   return {
@@ -2326,6 +2497,9 @@ function mountChat(root) {
       hideHistoryMenu();
       hideMoreMenu();
       setSidebarOpen(false);
+    },
+    resume() {
+      syncModelGate();
     },
     destroy() {
       abortSession("stop");

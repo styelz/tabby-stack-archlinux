@@ -231,7 +231,7 @@ def _model_card() -> dict[str, Any]:
 async def stack_status(request=None) -> dict[str, Any]:
     from common.gpu_mode import comfy_up, public_api_base, read_mode
     from common.health import HealthManager
-    from common.phrase_switch import last_llm_profile_name
+    from common.phrase_switch import last_llm_profile_name, switch_lock_held, switch_lock_name
     from images.jobs import active_mcp_image_job, loaded_tabby_name
     from select_model import available_profiles, last_profile
 
@@ -245,6 +245,10 @@ async def stack_status(request=None) -> dict[str, Any]:
         ]
     except Exception:
         healthy, issue_text = True, []
+    lock_name = switch_lock_name()
+    lock_held = switch_lock_held()
+    restarting = lock_held and lock_name == "restart"
+    switching = lock_held and not restarting
     job = active_mcp_image_job()
     job_info = None
     if job:
@@ -278,6 +282,10 @@ async def stack_status(request=None) -> dict[str, Any]:
         "uptime_s": int(time.time() - _STARTED_AT),
         "api_base": public_api_base(request),
         "job": job_info,
+        "switching": switching,
+        "restarting": restarting,
+        "busy": lock_held,
+        "switch_target": lock_name or None,
         "user": os.environ.get("USER") or "",
         "now": datetime.now(timezone.utc).isoformat(),
     }

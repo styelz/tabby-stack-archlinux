@@ -1274,14 +1274,29 @@ def switch_lock_name() -> str:
         return ""
 
 
-def switch_in_progress() -> bool:
-    if LOCK.exists() and time.time() - LOCK.stat().st_mtime < 180:
-        return True
+def switch_lock_held() -> bool:
+    """True while a detached switch/restart still owns the GPU."""
+    try:
+        if LOCK.exists() and time.time() - LOCK.stat().st_mtime < 180:
+            return True
+    except OSError:
+        pass
     try:
         from common import model as tabby_model
 
         if tabby_model.load_lock.locked():
             return True
+    except Exception:
+        pass
+    return False
+
+
+def switch_in_progress() -> bool:
+    if switch_lock_held():
+        return True
+    try:
+        from common import model as tabby_model
+
         container = tabby_model.container
         if container is not None and not getattr(container, "loaded", False):
             return True
