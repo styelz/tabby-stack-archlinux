@@ -444,14 +444,15 @@ function mountChat(root) {
     host.querySelectorAll(".chat-actions, .chat-stamp").forEach((node) => node.remove());
     const actions = document.createElement("div");
     actions.className = "chat-actions";
-    const add = (act, label) => {
+    const add = (act, label, hint) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn ghost";
       btn.dataset.act = act;
       btn.dataset.idx = String(idx);
       btn.textContent = label;
-      btn.setAttribute("aria-label", label);
+      btn.setAttribute("aria-label", hint || label);
+      if (hint) btn.title = hint;
       actions.appendChild(btn);
     };
     add("copy", "Copy");
@@ -462,6 +463,7 @@ function mountChat(root) {
       if (idx === lastAssistantIndex()) add("regen", "Regen");
       if (/^Error:/i.test(String(text || ""))) add("retry", "Retry");
     }
+    if (canSplit(idx)) add("split", "Split", "Move this turn and later messages to a new chat");
     host.appendChild(actions);
     const item = messages[idx];
     if (item && item.createdAt) {
@@ -507,6 +509,51 @@ function mountChat(root) {
     messages.splice(idx, drop);
     persist();
     renderLog();
+  }
+
+  function splitStartIndex(idx) {
+    const item = messages[idx];
+    if (!item || item.role === "system") return -1;
+    if (item.role === "assistant" && idx > 0 && messages[idx - 1].role === "user") {
+      return idx - 1;
+    }
+    return idx;
+  }
+
+  function canSplit(idx) {
+    if (inFlight) return false;
+    const start = splitStartIndex(idx);
+    if (start < 0) return false;
+    return messages.slice(0, start).some((msg) => msg.role !== "system");
+  }
+
+  function splitAfterTurn(idx) {
+    if (inFlight) return;
+    const start = splitStartIndex(idx);
+    if (start < 0) return;
+    const tail = cloneMessages(messages.slice(start)).filter((msg) => msg.role !== "system");
+    const kept = messages.slice(0, start);
+    if (!kept.some((msg) => msg.role !== "system") || !tail.length) return;
+    cancelEdit();
+    clearPendingImage();
+    messages = kept;
+    if (!messages.some((msg) => msg.role === "system")) messages.unshift({ ...SYSTEM });
+    touchActive();
+    persist();
+    const chat = emptyChat();
+    chat.messages = [{ ...SYSTEM }, ...tail];
+    chat.title = titleFromMessages(chat.messages);
+    chat.updatedAt = Date.now();
+    store.chats.unshift(chat);
+    store.activeId = chat.id;
+    messages = cloneMessages(chat.messages);
+    persist();
+    resetRecall();
+    renderLog();
+    hideHistoryMenu();
+    hideMoreMenu();
+    setSidebarOpen(false);
+    input.focus();
   }
 
   function regenerateLast() {
@@ -2006,6 +2053,7 @@ function mountChat(root) {
       }
       if (act === "edit") beginEdit(idx);
       if (act === "delete") deleteTurn(idx);
+      if (act === "split") splitAfterTurn(idx);
       if (act === "regen" || act === "retry") regenerateLast();
       return;
     }
