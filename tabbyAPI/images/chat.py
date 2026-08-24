@@ -566,9 +566,11 @@ async def handle(
     if not llm_ready and gpu_is_comfy:
         prompt = requested_image_prompt(data)
         if not prompt and source_image is not None:
-            from common.phrase_switch import last_user_text
+            from common.phrase_switch import last_user_text, looks_like_chat_not_image
 
-            prompt = last_user_text(data).strip() or "cartoon style"
+            text = last_user_text(data).strip()
+            if not looks_like_chat_not_image(text):
+                prompt = text or "cartoon style"
         if prompt:
             started = await _start_prompt_job(
                 prompt, api_base or "", restore=False, source_image=source_image, owner=owner

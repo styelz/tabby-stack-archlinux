@@ -6,6 +6,27 @@ function tabbyChatComposeAction(inFlight, typed, queued) {
   return { mode: "stop", label: "Stop", showSteer: hasQueue };
 }
 
+function tabbyLooksLikeChatNotImage(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return false;
+  if (/^qwen-image:/i.test(text)) return false;
+  if (/^(?:please\s+)?(?:can you\s+|could you\s+)?(?:generate|draw|imagine|create|make|render)\b/i.test(text)) {
+    return false;
+  }
+  const asksImage = /\b(?:images?|pictures?|photos?|pics?|posters?|logos?|icons?|banners?|pngs?)\b/i.test(text);
+  const question = /^(?:what(?:'s|s)?|why|who|when|where|which|how\s+(?:are|do|does|did|can|to|is|come))\b/i.test(text);
+  if (asksImage && !question) return false;
+  return (
+    /^(?:hi|hello|hey|yo|sup|thanks|thank you|thx|good (?:morning|afternoon|evening)|ok(?:ay)?|sure|yes|no|yep|nope|got it|cool|great)(?:\s|[!.]|$)/i.test(text)
+    || /^(?:please\s+)?(?:tell me|explain|help(?:\s+me)?)\b/i.test(text)
+    || /^(?:i(?:'m|m)?\s+(?:just\s+)?(?:have|need|want|think|wonder)|i have a question)\b/i.test(text)
+    || /^(?:what(?:'s|s)?|why|who|when|where|which)\b/i.test(text)
+    || /^(?:is|are|do|does|did|am)\s+(?:the|this|that|it|there|you|we|they|i|these|those)\b/i.test(text)
+    || /^(?:can|could|would|should|will)\s+you\s+(?:explain|tell|help|show me how)\b/i.test(text)
+    || /^how\s+(?:are|do|does|did|can|to|is|come)\b/i.test(text)
+  );
+}
+
 function mountChat(root) {
   root.innerHTML = `
     <div class="chat-shell" id="chat-shell">
@@ -78,6 +99,12 @@ function mountChat(root) {
           <div class="chat-loading" id="chat-loading" hidden>
             <span class="chat-loading-mark">Loading</span>
             <span class="chat-loading-text" id="chat-loading-text">The model is loading. Chat is paused until it is ready.</span>
+            <span class="chat-loading-time" id="chat-loading-time"></span>
+          </div>
+          <div class="chat-comfy-hint" id="chat-comfy-hint" hidden>
+            <span class="chat-comfy-hint-mark">Comfy</span>
+            <span class="chat-comfy-hint-text" id="chat-comfy-hint-text">This looks like a chat, not a picture. Switch to the coding model?</span>
+            <button class="btn primary" type="button" id="chat-switch-llm">Switch to LLM</button>
           </div>
           <form class="chat-form" id="chat-form">
             <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
@@ -118,6 +145,9 @@ function mountChat(root) {
   const countEl = root.querySelector("#chat-count");
   const loadingBar = root.querySelector("#chat-loading");
   const loadingTextEl = root.querySelector("#chat-loading-text");
+  const loadingTimeEl = root.querySelector("#chat-loading-time");
+  const comfyHint = root.querySelector("#chat-comfy-hint");
+  const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
@@ -253,6 +283,7 @@ function mountChat(root) {
 
   TabbyUI.api("status")
     .then((data) => {
+      rememberGpu(data);
       const profiles = data.profiles || [];
       const extra = profiles.map((name) => ({
         slash: `/${name}`,
@@ -261,6 +292,7 @@ function mountChat(root) {
       }));
       commands = [...STATIC_COMMANDS.slice(0, 3), ...extra, ...STATIC_COMMANDS.slice(3)];
       if (input.value.startsWith("/")) renderMenu();
+      paintCompose();
     })
     .catch(() => {});
 
@@ -869,6 +901,7 @@ function mountChat(root) {
         elapsed_s: extra && extra.elapsed_s,
         status_label: extra && extra.status_label,
       });
+      attachSwitchLlm(turn.bubble || turn.node, text);
       attachMsgActions(turn.node, "assistant", idx, text);
       if (stick !== false) stickLog(true);
       return turn.node;
@@ -1032,19 +1065,20 @@ function mountChat(root) {
       bubbleMounted = true;
     }
 
-    function showAnswer(html) {
+    function showAnswer(html, raw) {
       const markup = String(html || "").trim();
       if (!markup) return false;
       ensureBubble();
       bubble.innerHTML = markup;
       bubble.hidden = false;
       turn.classList.add("has-answer");
+      attachSwitchLlm(bubble, raw);
       return true;
     }
 
     turn.append(head, thought);
     if (visibleAnswerText(content)) {
-      showAnswer(displayAnswer(content));
+      showAnswer(displayAnswer(content), content);
     }
 
     let reasoningText = reasoning ? String(reasoning) : "";
@@ -1173,6 +1207,7 @@ function mountChat(root) {
 
     return {
       node: turn,
+      bubble,
       setActivity(text, opts) {
         if (finished || !text) return;
         label.textContent = text;
@@ -1195,7 +1230,7 @@ function mountChat(root) {
       setAnswer(text) {
         const value = visibleAnswerText(text);
         if (!value) return;
-        showAnswer(displayAnswer(text));
+        showAnswer(displayAnswer(text), text);
         if (kind === "image" && looksLikeImageReply(String(text || ""))) {
           const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
           foldNotesIntoThought();
@@ -1229,7 +1264,7 @@ function mountChat(root) {
         if (!alreadySettled) elapsedSec = seconds;
         const answer = visibleAnswerText(finalContent);
         if (answer) {
-          showAnswer(displayAnswer(finalContent));
+          showAnswer(displayAnswer(finalContent), finalContent);
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
           showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
@@ -1707,6 +1742,7 @@ function mountChat(root) {
       try {
         const data = await TabbyUI.api("status");
         if (stopped) return;
+        rememberGpu(data);
         if (kind === "image") {
           const job = data && data.job;
           const next = labelForJob(job);
@@ -1754,11 +1790,65 @@ function mountChat(root) {
   let stopKind = "";
   let loopBusy = false;
   let flightChatId = "";
+  let gpuMode = "";
+  let comfyUp = false;
   let modelLoading = false;
   let modelWait = null;
+  let modelLoadStarted = 0;
+  let modelLoadTicker = null;
+  let loadingHintText = "";
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function rememberGpu(data) {
+    if (!data) return;
+    gpuMode = String(data.gpu_mode || "").toLowerCase();
+    comfyUp = Boolean(data.comfy_up);
+  }
+
+  function comfyOwnsGpu() {
+    return gpuMode === "comfy" || (comfyUp && gpuMode !== "llm");
+  }
+
+  function hasSwitchLlmMark(text) {
+    return /\btabby-switch-llm\b/i.test(String(text || ""));
+  }
+
+  function startLlmSwitch() {
+    if (modelLoading) return;
+    if (inFlight) {
+      queueFollowup("switch to llm");
+      return;
+    }
+    runLoop("switch to llm");
+  }
+
+  function attachSwitchLlm(host, text) {
+    if (!host || !hasSwitchLlmMark(text)) return;
+    if (host.querySelector("[data-switch-llm]")) return;
+    const row = document.createElement("div");
+    row.className = "chat-switch-llm";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn primary";
+    btn.dataset.switchLlm = "1";
+    btn.textContent = "Switch to LLM";
+    btn.addEventListener("click", startLlmSwitch);
+    row.appendChild(btn);
+    host.appendChild(row);
+  }
+
+  function paintComfyHint() {
+    if (!comfyHint) return;
+    if (modelLoading || inFlight) {
+      comfyHint.hidden = true;
+      return;
+    }
+    const typed = String((input && input.value) || "").trim();
+    const show = comfyOwnsGpu() && tabbyLooksLikeChatNotImage(typed);
+    comfyHint.hidden = !show;
   }
 
   function statusIsBusy(data) {
@@ -1782,8 +1872,39 @@ function mountChat(root) {
     return label ? `Loading ${label}` : "Loading the model";
   }
 
+  function paintLoadingElapsed() {
+    const elapsed = modelLoadStarted ? Math.floor((Date.now() - modelLoadStarted) / 1000) : 0;
+    const clock = elapsed >= 1 ? TabbyUI.formatDuration(elapsed) : "";
+    if (loadingTimeEl) loadingTimeEl.textContent = clock;
+    if (loadingTextEl && loadingHintText) {
+      loadingTextEl.textContent = clock
+        ? `${loadingHintText} ${clock} elapsed.`
+        : loadingHintText;
+    }
+  }
+
+  function startLoadingClock() {
+    if (!modelLoadStarted) modelLoadStarted = Date.now();
+    if (modelLoadTicker) return;
+    paintLoadingElapsed();
+    modelLoadTicker = setInterval(paintLoadingElapsed, 250);
+  }
+
+  function stopLoadingClock() {
+    if (modelLoadTicker) {
+      clearInterval(modelLoadTicker);
+      modelLoadTicker = null;
+    }
+    modelLoadStarted = 0;
+    loadingHintText = "";
+    if (loadingTimeEl) loadingTimeEl.textContent = "";
+  }
+
   function setLoadingBanner(text) {
-    if (loadingTextEl && text) loadingTextEl.textContent = text;
+    loadingHintText = String(text || "");
+    if (loadingHintText) startLoadingClock();
+    else stopLoadingClock();
+    paintLoadingElapsed();
     if (loadingBar) loadingBar.hidden = !modelLoading;
   }
 
@@ -1813,6 +1934,7 @@ function mountChat(root) {
     while (Date.now() < deadline) {
       try {
         const data = await TabbyUI.api("status");
+        rememberGpu(data);
         const name = (data && data.switch_target) || target;
         const nextKind = data && data.restarting ? "restart" : kind;
         if (statusIsBusy(data)) {
@@ -1860,6 +1982,7 @@ function mountChat(root) {
       modelWait = null;
       modelLoading = false;
       setLoadingBanner("");
+      stopLoadingClock();
       paintCompose();
     });
     return modelWait;
@@ -1869,6 +1992,8 @@ function mountChat(root) {
     if (modelWait) return;
     try {
       const data = await TabbyUI.api("status");
+      rememberGpu(data);
+      paintCompose();
       if (!statusIsBusy(data)) return;
       const target = data.switch_target || "";
       const kind = data.restarting ? "restart" : "switch";
@@ -1898,6 +2023,7 @@ function mountChat(root) {
     if (form) form.classList.toggle("is-loading", modelLoading);
     if (modelLoading) {
       if (queueBar) queueBar.hidden = true;
+      if (comfyHint) comfyHint.hidden = true;
       if (steerBtn) {
         steerBtn.hidden = true;
         steerBtn.disabled = true;
@@ -1939,8 +2065,11 @@ function mountChat(root) {
       ? hasQueue
         ? "Session running. Steer the queued message or type a replacement."
         : "Session running. Type a follow-up to queue it."
-      : DEFAULT_PLACEHOLDER;
+      : comfyOwnsGpu()
+        ? "Describe a picture, or type a question to switch back to the LLM."
+        : DEFAULT_PLACEHOLDER;
     if (editBar) editBar.hidden = pendingEditIndex < 0;
+    paintComfyHint();
   }
 
   function appendAssistantToChat(chatId, item) {
@@ -2156,6 +2285,11 @@ function mountChat(root) {
       persist();
     });
   });
+  if (switchLlmBtn) {
+    switchLlmBtn.addEventListener("click", () => {
+      startLlmSwitch();
+    });
+  }
   sendBtn.addEventListener("click", (event) => {
     if (!inFlight) return;
     if (input.value.trim()) return;
@@ -2503,6 +2637,7 @@ function mountChat(root) {
     },
     destroy() {
       abortSession("stop");
+      stopLoadingClock();
       persist();
       hideHistoryMenu();
       hideMoreMenu();
@@ -2515,3 +2650,4 @@ function mountChat(root) {
 
 window.mountChat = mountChat;
 window.tabbyChatComposeAction = tabbyChatComposeAction;
+window.tabbyLooksLikeChatNotImage = tabbyLooksLikeChatNotImage;

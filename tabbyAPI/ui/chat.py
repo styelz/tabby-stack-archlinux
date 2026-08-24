@@ -13,12 +13,16 @@ from common.gpu_mode import public_api_base
 from common.model import check_model_container
 from common.networking import DisconnectHandler, get_sse_ping_interval
 from common.phrase_switch import (
+    comfy_chat_suggest_text,
     comfy_idle_response,
     gpu_is_comfy,
     handle_if_requested,
+    last_user_text,
     llm_not_ready_response,
+    looks_like_chat_not_image,
     should_yield_comfy_to_llm,
     switch_lock_held,
+    text_response,
     yield_comfy_to_llm_response,
 )
 from common.tabby_config import config
@@ -78,6 +82,8 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         return image_response
     if not llm_ready:
         if gpu_is_comfy():
+            if looks_like_chat_not_image(last_user_text(data)):
+                return text_response(data, comfy_chat_suggest_text())
             if should_yield_comfy_to_llm(data):
                 return await yield_comfy_to_llm_response(data, console=True)
             return await comfy_idle_response(data, api_base=api_base)

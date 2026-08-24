@@ -896,9 +896,54 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   flex: 1;
   font-size: 13px;
 }
+.chat-loading-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .chat-form.is-loading textarea,
 .chat-form.is-loading .chat-icon {
   opacity: 0.55;
+}
+.chat-comfy-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(122, 162, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(122, 162, 255, 0.08);
+}
+.chat-comfy-hint[hidden] { display: none; }
+.chat-comfy-hint-mark {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.chat-comfy-hint-text {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+}
+.chat-comfy-hint .btn {
+  flex: 0 0 auto;
+}
+.chat-switch-llm {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  white-space: normal;
+}
+.bubble.assistant .chat-switch-llm .btn {
+  width: auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
 }
 .chat-queue-mark {
   flex: 0 0 auto;

@@ -134,6 +134,28 @@ COMFY_IDLE = (
     "The reply will include a PNG URL on this same API host. "
     "Send switch to qwen when you want the LLM back."
 )
+SWITCH_LLM_MARK = "tabby-switch-llm"
+CHAT_OPENER_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"(?:hi|hello|hey|yo|sup|thanks|thank you|thx|"
+    r"good (?:morning|afternoon|evening)|"
+    r"ok(?:ay)?|sure|yes|no|yep|nope|got it|cool|great"
+    r")(?:\s|[!.]|$)"
+    r"|(?:please\s+)?(?:tell me|explain|help(?:\s+me)?)\b"
+    r"|(?:i(?:'m|m)?\s+(?:just\s+)?(?:have|need|want|think|wonder)|i have a question)\b"
+    r"|(?:what(?:'s|s)?|why|who|when|where|which)\b"
+    r"|(?:is|are|do|does|did|am)\s+(?:the|this|that|it|there|you|we|they|i|these|those)\b"
+    r"|(?:can|could|would|should|will)\s+you\s+(?:explain|tell|help|show me how)\b"
+    r"|how\s+(?:are|do|does|did|can|to|is|come)\b"
+    r")"
+)
+CHAT_QUESTION_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"(?:what(?:'s|s)?|why|who|when|where|which)\b"
+    r"|how\s+(?:are|do|does|did|can|to|is|come)\b"
+    r"|(?:can|could|would|should|will)\s+you\s+(?:explain|tell|help|show me how)\b"
+    r")"
+)
 
 
 def llm_not_ready_text(*, console: bool = False) -> str:
@@ -1165,6 +1187,8 @@ def requested_image_prompt(
         return None
     if is_page_layout_ask(text):
         return None
+    if looks_like_chat_not_image(text):
+        return None
     if explicit_only and is_coding_task(text):
         return None
     match = IMAGE_GEN_RE.match(text)
@@ -1176,6 +1200,29 @@ def requested_image_prompt(
     if explicit_only:
         return None
     return text
+
+
+def looks_like_chat_not_image(text: str) -> bool:
+    """True when this line is conversation, not a Comfy picture prompt."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if IMAGE_GEN_RE.match(raw) or IMAGE_COUNT_RE.match(raw):
+        return False
+    if raw.lower().startswith("qwen-image:"):
+        return False
+    if IMAGE_NOUN_RE.search(raw) and not CHAT_QUESTION_RE.match(raw):
+        return False
+    return bool(CHAT_OPENER_RE.match(raw))
+
+
+def comfy_chat_suggest_text() -> str:
+    return (
+        f"{SWITCH_LLM_MARK}\n"
+        "ComfyUI is loaded, so this would generate a picture. "
+        "That looks like a chat for the coding model. "
+        "Switch to the last LLM to talk, or send a short image description instead."
+    )
 
 
 def should_yield_comfy_to_llm(data: ChatCompletionRequest) -> bool:
