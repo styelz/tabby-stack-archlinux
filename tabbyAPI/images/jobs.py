@@ -181,17 +181,23 @@ async def reload_last_llm(name: Optional[str] = None) -> str:
     if not model_path.exists():
         raise RuntimeError(f"Model folder missing: {model_path}")
 
-    load_data = ModelLoadRequest(model_name=model_name)
-    for key in LOAD_FIELDS:
-        if key in model_cfg and model_cfg[key] is not None:
-            setattr(load_data, key, model_cfg[key])
+    from common.phrase_switch import clear_switch_lock, set_switch_lock
 
-    async for event in stream_model_load(load_data, model_path):
-        if _is_load_error(event):
-            raise RuntimeError(event)
+    set_switch_lock(profile_name)
+    try:
+        load_data = ModelLoadRequest(model_name=model_name)
+        for key in LOAD_FIELDS:
+            if key in model_cfg and model_cfg[key] is not None:
+                setattr(load_data, key, model_cfg[key])
 
-    write_mode("llm", profile=profile_name)
-    return profile_name
+        async for event in stream_model_load(load_data, model_path):
+            if _is_load_error(event):
+                raise RuntimeError(event)
+
+        write_mode("llm", profile=profile_name)
+        return profile_name
+    finally:
+        clear_switch_lock()
 
 
 def _generate_lock() -> asyncio.Lock:

@@ -12,7 +12,14 @@ from common.assistant_text import strip_apology_sse, strip_response_apologies
 from common.gpu_mode import public_api_base
 from common.model import check_model_container
 from common.networking import DisconnectHandler, get_sse_ping_interval
-from common.phrase_switch import gpu_is_comfy, handle_if_requested
+from common.phrase_switch import (
+    comfy_idle_response,
+    gpu_is_comfy,
+    handle_if_requested,
+    llm_not_ready_response,
+    should_yield_comfy_to_llm,
+    yield_comfy_to_llm_response,
+)
 from common.tabby_config import config
 from endpoints.OAI.types.chat_completion import ChatCompletionRequest
 from endpoints.OAI.utils.chat_completion import (
@@ -65,10 +72,11 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     if image_response is not None:
         return image_response
     if not llm_ready:
-        raise HTTPException(
-            503,
-            "The coding model is not loaded. Switch to an LLM profile from Status, then try again.",
-        )
+        if gpu_is_comfy():
+            if should_yield_comfy_to_llm(data):
+                return await yield_comfy_to_llm_response(data, console=True)
+            return await comfy_idle_response(data, api_base=api_base)
+        return await llm_not_ready_response(data, console=True)
 
     await check_model_container()
     if not (model.container and getattr(model.container, "model_dir", None)):

@@ -228,3 +228,68 @@ class SlashCommandTests(unittest.TestCase):
         self.assertEqual(requested_profile(self._req("/comfy")), "comfy")
         self.assertEqual(requested_profile(self._req("/llm")), "llm")
         self.assertEqual(requested_profile(self._req("/switch to comfy")), "comfy")
+
+
+class ConsoleChatNotReadyTests(unittest.IsolatedAsyncioTestCase):
+    def _body(self):
+        return {
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+        }
+
+    def test_source_uses_loading_helper_not_status_error(self):
+        from pathlib import Path
+        import ui.chat as ui_chat
+
+        src = Path(ui_chat.__file__).read_text(encoding="utf-8")
+        self.assertIn("llm_not_ready_response", src)
+        self.assertNotIn("The coding model is not loaded", src)
+
+    async def test_chat_while_loading_says_still_loading(self):
+        from fastapi import HTTPException
+        from ui.chat import run_console_chat
+
+        handler = mock.Mock()
+        handler.poll = mock.AsyncMock()
+        request = mock.Mock()
+        with (
+            mock.patch("ui.chat.model") as mdl,
+            mock.patch("ui.chat.handle_if_requested", return_value=None),
+            mock.patch("ui.chat.handle_image_chat", new=mock.AsyncMock(return_value=None)),
+            mock.patch("ui.chat.gpu_is_comfy", return_value=False),
+            mock.patch("ui.chat.public_api_base", return_value="http://x"),
+            mock.patch("ui.chat.DisconnectHandler", return_value=handler),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=True),
+            mock.patch("common.phrase_switch.switch_lock_name", return_value="qwen"),
+            mock.patch(
+                "common.phrase_switch.wait_hint", return_value="Wait about 65 seconds"
+            ),
+        ):
+            mdl.container = None
+            result = await run_console_chat(request, self._body())
+        self.assertNotIsInstance(result, HTTPException)
+        text = result.choices[0].message.content
+        self.assertIn("still loading", text.lower())
+        self.assertNotIn("not loaded", text.lower())
+        self.assertNotIn("Status", text)
+
+    async def test_chat_when_idle_unloaded_is_not_loaded_copy(self):
+        from ui.chat import run_console_chat
+
+        handler = mock.Mock()
+        handler.poll = mock.AsyncMock()
+        request = mock.Mock()
+        with (
+            mock.patch("ui.chat.model") as mdl,
+            mock.patch("ui.chat.handle_if_requested", return_value=None),
+            mock.patch("ui.chat.handle_image_chat", new=mock.AsyncMock(return_value=None)),
+            mock.patch("ui.chat.gpu_is_comfy", return_value=False),
+            mock.patch("ui.chat.public_api_base", return_value="http://x"),
+            mock.patch("ui.chat.DisconnectHandler", return_value=handler),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=False),
+            mock.patch("images.jobs.active_mcp_image_job", return_value=None),
+        ):
+            mdl.container = None
+            result = await run_console_chat(request, self._body())
+        text = result.choices[0].message.content
+        self.assertIn("not loaded", text.lower())

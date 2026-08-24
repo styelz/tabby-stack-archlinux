@@ -68,6 +68,11 @@ class SwitchTimesTests(unittest.TestCase):
                         loading = llm_loading_text("qwen35")
                         self.assertIn("Wait about 2 minutes", loading)
                         self.assertIn("qwen35 on 12 GB", loading)
+                        console = llm_loading_text("qwen35", console=True)
+                        self.assertIn("still loading", console.lower())
+                        self.assertIn("Wait about 2 minutes", console)
+                        self.assertNotIn("gpt-4o", console)
+                        self.assertNotIn("not loaded", console.lower())
                         comfy = comfy_not_running_text()
                         self.assertIn("wait about 5 seconds", comfy)
 
@@ -87,7 +92,8 @@ class NotReadyWaitTests(unittest.IsolatedAsyncioTestCase):
         )
 
         data = ChatCompletionRequest(
-            messages=[ChatCompletionMessage(role="user", content="continue")]
+            messages=[ChatCompletionMessage(role="user", content="continue")],
+            stream=False,
         )
         slept = []
 
@@ -109,6 +115,15 @@ class NotReadyWaitTests(unittest.IsolatedAsyncioTestCase):
         ):
             await yield_comfy_to_llm_response(data)
         self.assertEqual(slept, [LLM_NOT_READY_WAIT_S])
+
+        slept.clear()
+        with (
+            mock.patch("common.phrase_switch.asyncio.sleep", side_effect=fake_sleep),
+            mock.patch("common.phrase_switch.switch_in_progress", return_value=True),
+        ):
+            result = await llm_not_ready_response(data, console=True)
+        self.assertEqual(slept, [])
+        self.assertIn("still loading", result.choices[0].message.content.lower())
 
 
 if __name__ == "__main__":

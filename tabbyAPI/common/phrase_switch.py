@@ -136,7 +136,11 @@ COMFY_IDLE = (
 )
 
 
-def llm_not_ready_text() -> str:
+def llm_not_ready_text(*, console: bool = False) -> str:
+    if console:
+        return (
+            "The coding model is not loaded. Switch to an LLM profile from Status, then try again."
+        )
     qwen = wait_hint("qwen").lower()
     qwen35 = format_duration(ready_seconds("qwen35"))
     return (
@@ -147,7 +151,7 @@ def llm_not_ready_text() -> str:
     )
 
 
-def llm_loading_text(name: str = "") -> str:
+def llm_loading_text(name: str = "", *, console: bool = False) -> str:
     key = (name or "").strip().lower() or "qwen"
     if key == "restart":
         return restart_reply_text()
@@ -157,6 +161,8 @@ def llm_loading_text(name: str = "") -> str:
     extra = ""
     if key in ("qwen35", "qwen36"):
         extra = f" ({key} on {gpu_label()})"
+    if console:
+        return f"The model is still loading. {hint}{extra}, then send your message again."
     return f"A model is still loading. {hint}{extra}, then keep using gpt-4o."
 
 
@@ -720,12 +726,20 @@ def start_restart() -> bool:
     return True
 
 
+def set_switch_lock(name: str) -> None:
+    LOCK.write_text((name or "qwen").strip().lower() or "qwen", encoding="utf-8")
+
+
+def clear_switch_lock() -> None:
+    LOCK.unlink(missing_ok=True)
+
+
 def start_switch(name: str) -> None:
     LOG.touch(exist_ok=True)
     # Write the lock before spawning: switch_model.py removes it when it exits,
     # and a fast failure (unknown profile, server down) would otherwise finish
     # first and leave a lock nobody clears for 180s.
-    LOCK.write_text(name, encoding="utf-8")
+    set_switch_lock(name)
     with LOG.open("a", encoding="utf-8") as log:
         log.write(f"\n--- switch {name} (from Cursor chat) ---\n")
         log.flush()
@@ -1192,14 +1206,17 @@ def last_llm_profile_name() -> str:
     return "qwen"
 
 
-async def yield_comfy_to_llm_response(data: ChatCompletionRequest):
+async def yield_comfy_to_llm_response(
+    data: ChatCompletionRequest, *, console: bool = False
+):
     """Reload the last LLM so mixed Agent / tool turns can keep coding."""
     if switch_in_progress():
-        return await llm_not_ready_response(data)
+        return await llm_not_ready_response(data, console=console)
     name = last_llm_profile_name()
     start_switch(name)
-    await asyncio.sleep(LLM_NOT_READY_WAIT_S)
-    return text_response(data, llm_loading_text(name))
+    if not console:
+        await asyncio.sleep(LLM_NOT_READY_WAIT_S)
+    return text_response(data, llm_loading_text(name, console=console))
 
 
 def requested_image_count(prompt: str) -> tuple[int, str]:
@@ -1250,23 +1267,39 @@ def gpu_is_comfy() -> bool:
     return (read_mode().get("mode") or "llm").lower() == "comfy"
 
 
+def switch_lock_name() -> str:
+    try:
+        return LOCK.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""
+
+
 def switch_in_progress() -> bool:
     if LOCK.exists() and time.time() - LOCK.stat().st_mtime < 180:
         return True
+    try:
+        from common import model as tabby_model
+
+        if tabby_model.load_lock.locked():
+            return True
+        container = tabby_model.container
+        if container is not None and not getattr(container, "loaded", False):
+            return True
+    except Exception:
+        pass
     return False
 
 
-async def llm_not_ready_response(data: ChatCompletionRequest):
-    await asyncio.sleep(LLM_NOT_READY_WAIT_S)
+async def llm_not_ready_response(
+    data: ChatCompletionRequest, *, console: bool = False
+):
+    if not console:
+        await asyncio.sleep(LLM_NOT_READY_WAIT_S)
     if switch_in_progress():
-        name = ""
-        try:
-            name = LOCK.read_text(encoding="utf-8").strip().lower()
-        except OSError:
-            name = ""
+        name = switch_lock_name() or last_llm_profile_name()
         if name in GPU_ALIASES or name == "comfy":
             return text_response(data, comfy_starting_text())
-        return text_response(data, llm_loading_text(name))
+        return text_response(data, llm_loading_text(name, console=console))
     try:
         from images.jobs import active_mcp_image_job
 
@@ -1280,8 +1313,10 @@ async def llm_not_ready_response(data: ChatCompletionRequest):
             "Wait for the download curl in the chat that started that job.",
         )
     if busy and busy.status == "coding":
-        return text_response(data, llm_loading_text(last_llm_profile_name()))
-    return text_response(data, llm_not_ready_text())
+        return text_response(
+            data, llm_loading_text(last_llm_profile_name(), console=console)
+        )
+    return text_response(data, llm_not_ready_text(console=console))
 
 
 async def comfy_idle_response(data: ChatCompletionRequest, api_base: Optional[str] = None):
