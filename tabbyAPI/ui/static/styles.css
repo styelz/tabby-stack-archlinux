@@ -230,12 +230,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-shell.is-sidebar-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
-/* Only an open pane adds a column, so closing it hands the width back. */
+/* Only an open pane adds a column, so closing it hands the width back. The
+   pane is a file list now; the editor opens as a tab in the chat column. */
 .chat-shell.is-code.is-files-open {
-  grid-template-columns: 268px minmax(0, 1fr) minmax(220px, 300px);
+  grid-template-columns: 268px minmax(0, 1fr) minmax(190px, 250px);
 }
 .chat-shell.is-sidebar-hidden.is-code.is-files-open {
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 250px);
 }
 .chat-shell.is-sidebar-hidden .chat-sidebar {
   display: none;
@@ -463,7 +464,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   font-variant-numeric: tabular-nums;
 }
 .chat-files-tree {
-  flex: 0 1 42%;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 0 8px 8px;
@@ -482,6 +483,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .chat-file:hover { background: rgba(122, 162, 255, 0.1); }
 .chat-file.is-active { background: rgba(122, 162, 255, 0.16); }
+.chat-file.is-open .chat-file-open { color: var(--text); }
 .chat-file-open {
   border: 0;
   background: transparent;
@@ -505,45 +507,99 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 @media (hover: none) {
   .chat-file .chat-icon { opacity: 1; }
 }
-.chat-files-preview {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  border-top: 1px solid var(--line);
-  padding: 10px;
+/* Chat and any open file share the main column; tabs pick which one shows. */
+.chat-view {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  gap: 8px;
 }
-.chat-files-preview.is-editing { overflow: hidden; }
-.chat-files-preview > p { margin: 0; }
-.chat-files-edit {
+.chat-view > .chat-log-wrap,
+.chat-view > .chat-editor {
   flex: 1 1 auto;
-  min-height: 120px;
-  resize: none;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre;
-  overflow: auto;
-  tab-size: 2;
+  min-height: 0;
 }
-.chat-files-note {
+.chat-tabs {
+  display: flex;
   flex: 0 0 auto;
-  margin: 6px 0 0;
-  font-size: 11px;
-  min-height: 1.1em;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
 }
-.chat-files-name {
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  max-width: 15rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(18, 21, 28, 0.72);
+}
+.chat-tab.is-active {
+  background: var(--bg-elev);
+  border-color: rgba(122, 162, 255, 0.45);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.chat-tab-open {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 4px 5px 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-tab.is-active .chat-tab-open { color: var(--text); }
+.chat-tab:hover .chat-tab-open { color: var(--text); }
+.chat-tab-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 8px 0 2px;
+  cursor: pointer;
+  opacity: 0;
+}
+.chat-tab:hover .chat-tab-close,
+.chat-tab:focus-within .chat-tab-close,
+.chat-tab.is-active .chat-tab-close,
+.chat-tab.is-dirty .chat-tab-close { opacity: 1; }
+.chat-tab-close:hover { color: var(--bad); }
+/* Unsaved work gets a dot next to the name. */
+.chat-tab.is-dirty .chat-tab-open::after {
+  content: " ●";
+  color: var(--warn);
+  font-size: 9px;
+}
+
+.chat-editor {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+.chat-editor-head {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  margin: -2px 0 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
 }
-.chat-files-name strong {
+.chat-editor-head strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -551,21 +607,117 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   color: var(--text);
   font-weight: 550;
 }
-.chat-files-preview img {
+.chat-editor-lang {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(122, 162, 255, 0.16);
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.chat-editor-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.chat-editor-body > p { margin: 0; }
+.chat-editor-body.is-image { display: grid; place-content: start center; }
+.chat-editor-body img {
   display: block;
-  flex: 0 0 auto;
   max-width: 100%;
   height: auto;
   border-radius: 8px;
 }
-.chat-files-pre {
+.chat-editor-note {
+  flex: 0 0 auto;
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--mono);
+  padding: 4px 10px 6px;
   font-size: 11px;
-  line-height: 1.45;
+  min-height: 1.1em;
 }
+
+/* The highlighted <pre> sits under a see-through textarea. Both use the same
+   metrics and are scrolled together, so the colours land on the real glyphs. */
+.code-edit {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  --code-font-size: 12px;
+  --code-line: 1.55;
+  --code-pad: 10px;
+}
+.code-edit-gutter {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: var(--code-pad) 8px var(--code-pad) 12px;
+  border-right: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+  color: #5a6379;
+  font-family: var(--mono);
+  font-size: var(--code-font-size);
+  line-height: var(--code-line);
+  white-space: pre;
+  text-align: right;
+  user-select: none;
+}
+.code-edit-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.code-hl,
+.code-edit .chat-files-edit {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: var(--code-pad) 12px;
+  font-family: var(--mono);
+  font-size: var(--code-font-size);
+  line-height: var(--code-line);
+  letter-spacing: normal;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  tab-size: 2;
+}
+.code-hl {
+  overflow: hidden;
+  pointer-events: none;
+  color: #c0caf5;
+}
+.code-hl code {
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+.code-edit .chat-files-edit {
+  overflow: auto;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  outline: none;
+  box-shadow: none;
+}
+.code-edit:focus-within { outline: 1px solid rgba(122, 162, 255, 0.35); outline-offset: -1px; }
+.code-edit .chat-files-edit::selection { background: rgba(122, 162, 255, 0.35); }
+/* Very large files skip the overlay, so the textarea has to draw its own text. */
+.code-edit.is-plain .code-hl { display: none; }
+.code-edit.is-plain .chat-files-edit { color: #c0caf5; }
+.code-hl .tok-comment { color: #565f89; font-style: italic; }
+.code-hl .tok-string { color: #9ece6a; }
+.code-hl .tok-keyword { color: #7aa2ff; }
+.code-hl .tok-number { color: #e0af68; }
+.code-hl .tok-fn { color: #7dcfff; }
+.code-hl .tok-tag { color: #bb9af7; }
+.code-hl .tok-attr { color: #7dcfff; }
+.code-hl .tok-var { color: #f7768e; }
+.code-hl .tok-punct { color: #89b4fa; }
 /* Shrink before the toolbar wraps; Code mode leaves this column narrow. */
 #chat-hint {
   min-width: 0;
@@ -1674,10 +1826,10 @@ figure.shot .open { display: block; }
 @media (max-width: 1100px) {
   /* Less room for the pane, but the chat keeps a usable column. */
   .chat-shell.is-code.is-files-open {
-    grid-template-columns: 268px minmax(0, 1fr) minmax(200px, 250px);
+    grid-template-columns: 268px minmax(0, 1fr) minmax(170px, 220px);
   }
   .chat-shell.is-sidebar-hidden.is-code.is-files-open {
-    grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 240px);
   }
 }
 @media (max-width: 900px) {
@@ -1691,8 +1843,8 @@ figure.shot .open { display: block; }
   .chat-shell.is-sidebar-hidden.is-code.is-files-open {
     grid-template-columns: minmax(0, 1fr);
   }
-  /* Out of the grid and over the chat: one narrow column cannot hold both, and
-     a full-height pane leaves room to actually edit a file. The chat list
+  /* Out of the grid and over the chat: one narrow column cannot hold both.
+     Opening a file closes this, since the tab is behind it. The chat list
      overlay still sits above this. */
   .chat-shell.is-code .chat-files {
     position: absolute;
@@ -1701,8 +1853,9 @@ figure.shot .open { display: block; }
     border-left: 0;
     background: var(--bg-elev);
   }
-  .chat-files-tree { flex: 0 1 38%; }
   .chat-files-close { display: inline-grid; }
+  .chat-tab { max-width: 10rem; }
+  .code-edit { --code-font-size: 11px; }
   #chat-sidebar-toggle { display: inline-grid; }
   .chat-sidebar {
     position: absolute;

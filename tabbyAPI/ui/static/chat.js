@@ -69,19 +69,23 @@ function mountChat(root) {
             </div>
           </div>
         </div>
-        <div class="chat-log-wrap">
-          <div class="chat-empty" id="chat-empty" hidden>
-            <h2 id="chat-empty-title">Console chat</h2>
-            <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
-            <div class="chat-suggests" id="chat-suggests">
-              <button type="button" data-suggest="help">Usage guide</button>
-              <button type="button" data-suggest="list models">List models</button>
-              <button type="button" data-suggest="What model is loaded?">What's loaded?</button>
-              <button type="button" data-suggest="generate an image of a harbor at dusk">Harbor at dusk</button>
+        <div class="chat-view">
+          <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
+          <div class="chat-log-wrap" id="chat-log-wrap">
+            <div class="chat-empty" id="chat-empty" hidden>
+              <h2 id="chat-empty-title">Console chat</h2>
+              <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
+              <div class="chat-suggests" id="chat-suggests">
+                <button type="button" data-suggest="help">Usage guide</button>
+                <button type="button" data-suggest="list models">List models</button>
+                <button type="button" data-suggest="What model is loaded?">What's loaded?</button>
+                <button type="button" data-suggest="generate an image of a harbor at dusk">Harbor at dusk</button>
+              </div>
             </div>
+            <div class="chat-log" id="chat-log"></div>
+            <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
           </div>
-          <div class="chat-log" id="chat-log"></div>
-          <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
+          <section class="chat-editor" id="chat-editor" aria-label="File editor" hidden></section>
         </div>
         <div class="chat-compose">
           <ul class="slash-menu" id="history-menu" hidden></ul>
@@ -136,9 +140,6 @@ function mountChat(root) {
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
-        <div class="chat-files-preview" id="chat-files-preview">
-          <p class="muted">Select a file</p>
-        </div>
       </aside>
     </div>
   `;
@@ -171,7 +172,9 @@ function mountChat(root) {
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const filesPane = root.querySelector("#chat-files");
   const filesTree = root.querySelector("#chat-files-tree");
-  const filesPreview = root.querySelector("#chat-files-preview");
+  const tabsBar = root.querySelector("#chat-tabs");
+  const logWrap = root.querySelector("#chat-log-wrap");
+  const editorPane = root.querySelector("#chat-editor");
   const filesZipBtn = root.querySelector("#chat-files-zip");
   const filesClearBtn = root.querySelector("#chat-files-clear");
   const filesRefreshBtn = root.querySelector("#chat-files-refresh");
@@ -183,12 +186,12 @@ function mountChat(root) {
   let filesListing = [];
   let filesSelected = "";
   let filesEntry = "";
-  let previewPath = "";
-  let previewChat = "";
-  let previewSize = -1;
-  let previewOriginal = null;
-  let previewDirty = false;
-  let previewBusy = false;
+  // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
+  // its own buffer so switching away does not throw away unsaved edits.
+  let openTabs = [];
+  let activeTab = "";
+  let tabsChat = "";
+  let logScroll = 0;
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
@@ -447,6 +450,7 @@ function mountChat(root) {
       btn.setAttribute("aria-pressed", on ? "true" : "false");
     });
     if (filesPane) filesPane.hidden = !code || !filesOpen;
+    paintTabs();
     paintFilesToggle();
     const hint = root.querySelector("#chat-hint");
     if (hint) {
@@ -490,6 +494,7 @@ function mountChat(root) {
     persist();
     paintCompose();
     filesSelected = "";
+    resetTabs();
     refreshFiles();
   }
 
@@ -590,7 +595,10 @@ function mountChat(root) {
     const frag = document.createDocumentFragment();
     filesListing.forEach((row) => {
       const item = document.createElement("div");
-      item.className = "chat-file" + (row.path === filesSelected ? " is-active" : "");
+      item.className =
+        "chat-file" +
+        (row.path === filesSelected ? " is-active" : "") +
+        (findTab(row.path) ? " is-open" : "");
       item.dataset.path = row.path;
       item.innerHTML =
         `<button type="button" class="chat-file-open" data-file="open" title="${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
@@ -602,160 +610,420 @@ function mountChat(root) {
     filesTree.replaceChildren(frag);
   }
 
-  function previewHeadHtml(row, tools) {
-    return (
-      `<div class="chat-files-name"><strong>${TabbyUI.escapeHtml(row.path)}</strong>` +
-      `<span>${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.size))}</span>` +
-      `<span class="spacer"></span>${tools || ""}</div>`
-    );
+  // Past this many characters the editor drops the highlight overlay; retinting
+  // a huge file on every keystroke costs more than the colour is worth.
+  const HIGHLIGHT_LIMIT = 120_000;
+
+  function fileLang(path) {
+    return window.TabbyHighlight ? window.TabbyHighlight.pathLanguage(path) : "";
   }
 
-  function paintEditorState() {
-    const save = filesPreview && filesPreview.querySelector("[data-edit='save']");
-    const revert = filesPreview && filesPreview.querySelector("[data-edit='revert']");
-    if (save) {
-      save.disabled = !previewDirty || previewBusy;
-      save.textContent = previewBusy ? "Saving" : previewDirty ? "Save" : "Saved";
-    }
-    if (revert) revert.hidden = !previewDirty;
+  function fileHighlight(path, text) {
+    return window.TabbyHighlight
+      ? window.TabbyHighlight.highlight(fileLang(path), text)
+      : TabbyUI.escapeHtml(text);
   }
 
-  function setPreviewNote(text) {
-    const note = filesPreview && filesPreview.querySelector(".chat-files-note");
-    if (note) note.textContent = text || "";
+  function findTab(path) {
+    return openTabs.find((tab) => tab.path === path) || null;
   }
 
-  function confirmDropEdits() {
+  function activeTabRow() {
+    return activeTab ? findTab(activeTab) : null;
+  }
+
+  function editorBox() {
+    return editorPane ? editorPane.querySelector(".chat-files-edit") : null;
+  }
+
+  function tabLabel(tab) {
+    const base = tab.path.split("/").pop() || tab.path;
+    const clash = openTabs.some((other) => other !== tab && (other.path.split("/").pop() || "") === base);
+    return clash ? tab.path : base;
+  }
+
+  function confirmDropEdits(path) {
     return TabbyUI.confirmModal({
       title: "Discard changes?",
-      text: `${previewPath} has edits you have not saved.`,
+      text: `${path} has edits you have not saved.`,
       yes: "Discard",
       no: "Keep editing",
     });
   }
 
-  function renderEditor(row, text) {
-    if (!filesPreview) return;
-    previewPath = row.path;
-    previewChat = store.activeId;
-    previewSize = Number(row.size) || 0;
-    previewOriginal = text;
-    previewDirty = false;
-    filesPreview.classList.add("is-editing");
-    filesPreview.innerHTML =
-      previewHeadHtml(
-        row,
-        '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
+  /** Keep the live textarea in the tab so a re-render or tab switch restores it. */
+  function stashEditor() {
+    const tab = activeTabRow();
+    const box = editorBox();
+    if (!tab || !box) return;
+    tab.text = box.value;
+    tab.scrollTop = box.scrollTop;
+    tab.scrollLeft = box.scrollLeft;
+    tab.caret = [box.selectionStart, box.selectionEnd];
+  }
+
+  function paintTabs() {
+    if (!tabsBar) return;
+    const show = activeMode() === "code" && openTabs.length > 0;
+    tabsBar.hidden = !show;
+    if (!show) return;
+    const frag = document.createDocumentFragment();
+    const chatTab = document.createElement("div");
+    chatTab.className = "chat-tab" + (activeTab ? "" : " is-active");
+    chatTab.dataset.tab = "";
+    chatTab.innerHTML = '<button type="button" class="chat-tab-open">Chat</button>';
+    frag.appendChild(chatTab);
+    openTabs.forEach((tab) => {
+      const name = TabbyUI.escapeHtml(tabLabel(tab));
+      const item = document.createElement("div");
+      item.className =
+        "chat-tab" + (tab.path === activeTab ? " is-active" : "") + (tab.dirty ? " is-dirty" : "");
+      item.dataset.tab = tab.path;
+      item.innerHTML =
+        `<button type="button" class="chat-tab-open" title="${TabbyUI.escapeHtml(tab.path)}">${name}</button>` +
+        `<button type="button" class="chat-tab-close" data-tab-close aria-label="Close ${name}">×</button>`;
+      frag.appendChild(item);
+    });
+    tabsBar.replaceChildren(frag);
+  }
+
+  function paintEditorHead() {
+    if (!editorPane) return;
+    const tab = activeTabRow();
+    if (!tab) return;
+    const size = editorPane.querySelector(".chat-editor-size");
+    if (size) size.textContent = TabbyUI.formatBytes(tab.size);
+    const note = editorPane.querySelector(".chat-editor-note");
+    if (note) note.textContent = tab.gone && !tab.note ? "This file is no longer in the project." : tab.note;
+    const save = editorPane.querySelector("[data-edit='save']");
+    if (save) {
+      save.disabled = !tab.dirty || tab.busy;
+      save.textContent = tab.busy ? "Saving" : tab.dirty ? "Save" : "Saved";
+    }
+    const revert = editorPane.querySelector("[data-edit='revert']");
+    if (revert) revert.hidden = !tab.dirty;
+  }
+
+  /** A reload keeps showing the text it already has instead of flashing. */
+  function tabView(tab) {
+    return tab.state === "loading" && tab.rev > 0 ? "ready" : tab.state;
+  }
+
+  function editorBodyHtml(tab, view) {
+    if (view === "image") {
+      const src = `${fileUrl(store.activeId, tab.path)}&v=${tab.size}`;
+      return `<div class="chat-editor-body is-image"><img alt="" src="${TabbyUI.escapeHtml(src)}" /></div>`;
+    }
+    if (view === "binary") {
+      return '<div class="chat-editor-body"><p class="muted">Download this file to open it.</p></div>';
+    }
+    if (view === "error") {
+      return '<div class="chat-editor-body"><p class="muted">Could not read this file.</p></div>';
+    }
+    if (view !== "ready") {
+      return '<div class="chat-editor-body"><p class="muted">Loading…</p></div>';
+    }
+    const plain = tab.text.length > HIGHLIGHT_LIMIT || !fileLang(tab.path);
+    return (
+      `<div class="code-edit${plain ? " is-plain" : ""}">` +
+      '<div class="code-edit-gutter" aria-hidden="true"></div>' +
+      '<div class="code-edit-main">' +
+      '<pre class="code-hl" aria-hidden="true"><code></code></pre>' +
+      '<textarea class="chat-files-edit" spellcheck="false" wrap="off" aria-label="File contents"></textarea>' +
+      "</div></div>"
+    );
+  }
+
+  function renderEditorPane() {
+    if (!editorPane) return;
+    const tab = activeTabRow();
+    if (!tab) return;
+    // Code turns repaint the listing every 600 ms; only rebuild when the file,
+    // its state, or a reloaded revision actually changed, so typing survives.
+    const view = tabView(tab);
+    const key = `${store.activeId}|${tab.path}|${view}|${tab.rev}`;
+    if (editorPane.dataset.key === key) {
+      paintEditorHead();
+      return;
+    }
+    editorPane.dataset.key = key;
+    const lang = fileLang(tab.path);
+    const tools =
+      view === "ready"
+        ? '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
           '<button type="button" class="btn primary" data-edit="save" disabled>Saved</button>'
-      ) +
-      // The leading newline is eaten by the parser, so a file that starts with
-      // a blank line keeps it.
-      `<textarea class="chat-files-edit" spellcheck="false" aria-label="File contents">\n${TabbyUI.escapeHtml(text)}</textarea>` +
-      '<p class="muted chat-files-note"></p>';
-    paintEditorState();
+        : "";
+    editorPane.innerHTML =
+      '<div class="chat-editor-head">' +
+      `<strong>${TabbyUI.escapeHtml(tab.path)}</strong>` +
+      '<span class="chat-editor-size"></span>' +
+      (lang ? `<span class="chat-editor-lang">${TabbyUI.escapeHtml(lang)}</span>` : "") +
+      '<span class="spacer"></span>' +
+      '<button type="button" class="btn ghost chat-icon" data-edit="download" aria-label="Download file" title="Download">↓</button>' +
+      tools +
+      "</div>" +
+      editorBodyHtml(tab, view) +
+      '<p class="muted chat-editor-note"></p>';
+    const box = editorBox();
+    if (box) {
+      box.value = tab.text;
+      paintHighlight();
+      if (tab.caret) box.setSelectionRange(tab.caret[0], tab.caret[1]);
+      box.scrollTop = tab.scrollTop || 0;
+      box.scrollLeft = tab.scrollLeft || 0;
+      syncEditorScroll();
+    }
+    paintEditorHead();
   }
 
-  function renderStaticPreview(row, html) {
-    if (!filesPreview) return;
-    previewPath = row.path;
-    previewChat = store.activeId;
-    previewSize = Number(row.size) || 0;
-    previewOriginal = null;
-    previewDirty = false;
-    filesPreview.classList.remove("is-editing");
-    filesPreview.innerHTML = previewHeadHtml(row, "") + html;
+  function syncEditorScroll() {
+    const box = editorBox();
+    if (!box) return;
+    const pre = editorPane.querySelector(".code-hl");
+    const gutter = editorPane.querySelector(".code-edit-gutter");
+    if (pre) {
+      pre.scrollTop = box.scrollTop;
+      pre.scrollLeft = box.scrollLeft;
+    }
+    if (gutter) gutter.scrollTop = box.scrollTop;
   }
 
-  function paintPreview() {
-    if (!filesPreview) return;
-    const row = selectedRow();
-    if (!row) {
-      previewPath = "";
-      previewChat = "";
-      previewOriginal = null;
-      previewDirty = false;
-      filesPreview.classList.remove("is-editing");
-      filesPreview.innerHTML = filesListing.length
-        ? '<p class="muted">Select a file to view or edit it.</p>'
-        : '<p class="muted">Nothing to preview yet.</p>';
+  function paintHighlight() {
+    const tab = activeTabRow();
+    const box = editorBox();
+    if (!tab || !box) return;
+    const wrap = editorPane.querySelector(".code-edit");
+    const text = box.value;
+    const gutter = editorPane.querySelector(".code-edit-gutter");
+    if (gutter) {
+      const lines = text.split("\n").length;
+      if (gutter.dataset.lines !== String(lines)) {
+        gutter.dataset.lines = String(lines);
+        let acc = "";
+        for (let n = 1; n <= lines; n += 1) acc += `${n}\n`;
+        gutter.textContent = acc;
+      }
+    }
+    const code = editorPane.querySelector(".code-hl code");
+    if (code && wrap && !wrap.classList.contains("is-plain")) {
+      // The trailing newline keeps the overlay as tall as the textarea.
+      code.innerHTML = `${fileHighlight(tab.path, text)}\n`;
+    }
+    syncEditorScroll();
+  }
+
+  let highlightFrame = 0;
+
+  function queueHighlight() {
+    if (highlightFrame) return;
+    highlightFrame = requestAnimationFrame(() => {
+      highlightFrame = 0;
+      paintHighlight();
+    });
+  }
+
+  function ensureTabLoaded(tab) {
+    if (!tab || tab.state !== "loading" || tab.loading) return;
+    if (tab.kind === "image") {
+      tab.state = "image";
       return;
     }
-    const shown = row.path === previewPath && previewChat === store.activeId;
-    // A code turn writing files must not wipe out unsaved edits.
-    if (shown && (previewDirty || previewBusy)) {
-      paintEditorState();
+    if (!tab.editable) {
+      tab.state = "binary";
       return;
     }
-    // Same file, same size: nothing new to load. A rewrite changes the size.
-    if (shown && (Number(row.size) || 0) === previewSize) return;
     const chatId = store.activeId;
-    if (row.kind === "image") {
-      const src = `${fileUrl(chatId, row.path)}&v=${Number(row.size) || 0}`;
-      renderStaticPreview(row, `<img alt="" src="${TabbyUI.escapeHtml(src)}" />`);
-      return;
-    }
-    if (!row.editable) {
-      renderStaticPreview(row, '<p class="muted">Download this file to open it.</p>');
-      return;
-    }
-    fetch(fileUrl(chatId, row.path), { credentials: "same-origin" })
-      .then((res) => (res.ok ? res.text() : Promise.reject(new Error("Could not read file"))))
+    tab.loading = true;
+    fetch(fileUrl(chatId, tab.path), { credentials: "same-origin" })
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error("read"))))
       .then((text) => {
-        if (filesSelected !== row.path || chatId !== store.activeId) return;
-        renderEditor(row, text);
+        tab.loading = false;
+        if (chatId !== store.activeId || !findTab(tab.path)) return;
+        tab.original = text;
+        tab.text = text;
+        tab.dirty = false;
+        tab.state = "ready";
+        tab.rev += 1;
+        tab.caret = null;
+        tab.scrollTop = 0;
+        tab.scrollLeft = 0;
+        if (activeTab === tab.path) renderEditorPane();
+        paintTabs();
       })
       .catch(() => {
-        if (filesSelected !== row.path || chatId !== store.activeId) return;
-        renderStaticPreview(row, '<p class="muted">Could not read this file.</p>');
+        tab.loading = false;
+        if (chatId !== store.activeId || !findTab(tab.path)) return;
+        tab.state = "error";
+        tab.rev += 1;
+        if (activeTab === tab.path) renderEditorPane();
       });
   }
 
-  function paintFiles() {
-    paintFilesHead();
-    paintFilesTree();
-    paintPreview();
-  }
-
-  async function savePreview() {
-    const row = selectedRow();
-    const editor = filesPreview && filesPreview.querySelector(".chat-files-edit");
-    if (!row || !editor || !previewDirty || previewBusy) return;
-    const chatId = store.activeId;
-    const contents = editor.value;
-    previewBusy = true;
-    paintEditorState();
-    setPreviewNote("");
-    try {
-      const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(row.path)}`,
-        { method: "PUT", body: { contents } }
-      );
-      previewBusy = false;
-      if (chatId !== store.activeId) return;
-      filesListing = Array.isArray(data.files) ? data.files : filesListing;
-      filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
-      previewOriginal = contents;
-      previewDirty = false;
-      const saved = filesListing.find((item) => item.path === row.path);
-      previewSize = saved ? Number(saved.size) || 0 : previewSize;
-      paintFilesHead();
-      paintFilesTree();
-      paintEditorState();
-      setPreviewNote("Saved.");
-    } catch (err) {
-      previewBusy = false;
-      paintEditorState();
-      setPreviewNote(err.message);
+  function paintView() {
+    const tab = activeTabRow();
+    if (activeTab && !tab) activeTab = "";
+    const showEditor = Boolean(tab);
+    const wasEditor = Boolean(logWrap && logWrap.hidden);
+    if (!wasEditor && showEditor) logScroll = log.scrollTop;
+    if (logWrap) logWrap.hidden = showEditor;
+    if (editorPane) editorPane.hidden = !showEditor;
+    if (showEditor) {
+      ensureTabLoaded(tab);
+      renderEditorPane();
+      return;
+    }
+    if (editorPane) editorPane.dataset.key = "";
+    // display:none drops the scroll offset, so put the log back where it was.
+    if (wasEditor) {
+      log.scrollTop = followLog ? log.scrollHeight : logScroll;
+      paintJump();
     }
   }
 
-  function revertPreview() {
-    const editor = filesPreview && filesPreview.querySelector(".chat-files-edit");
-    if (!editor || previewOriginal === null) return;
-    editor.value = previewOriginal;
-    previewDirty = false;
-    paintEditorState();
-    setPreviewNote("");
+  function paintTabsAndFiles() {
+    paintFilesHead();
+    paintFilesTree();
+    paintTabs();
+    paintView();
+  }
+
+  function activateTab(path) {
+    if (activeTab === path) return;
+    stashEditor();
+    activeTab = path;
+    filesSelected = path;
+    paintTabsAndFiles();
+  }
+
+  function openFileTab(path) {
+    const row = filesListing.find((item) => item.path === path);
+    if (!row) return;
+    stashEditor();
+    if (!findTab(path)) {
+      openTabs.push({
+        path,
+        size: Number(row.size) || 0,
+        kind: row.kind,
+        editable: Boolean(row.editable),
+        state: "loading",
+        rev: 0,
+        original: "",
+        text: "",
+        dirty: false,
+        busy: false,
+        note: "",
+        gone: false,
+        caret: null,
+        scrollTop: 0,
+        scrollLeft: 0,
+      });
+    }
+    activeTab = path;
+    filesSelected = path;
+    paintTabsAndFiles();
+    // On a phone the files pane covers the chat column the tab just opened in.
+    if (narrowChat.matches && filesOpen) setFilesOpen(false);
+  }
+
+  async function closeTab(path) {
+    const tab = findTab(path);
+    if (!tab) return;
+    if (activeTab === path) stashEditor();
+    if (tab.dirty && !(await confirmDropEdits(tab.path))) return;
+    const at = openTabs.indexOf(tab);
+    if (at < 0) return;
+    openTabs.splice(at, 1);
+    if (activeTab === path) {
+      const next = openTabs[at] || openTabs[at - 1] || null;
+      activeTab = next ? next.path : "";
+      filesSelected = activeTab;
+      if (editorPane) editorPane.dataset.key = "";
+    }
+    paintTabsAndFiles();
+  }
+
+  function resetTabs() {
+    openTabs = [];
+    activeTab = "";
+    if (editorPane) editorPane.dataset.key = "";
+  }
+
+  /** Fold a fresh listing into the open tabs: drop gone files, reload rewrites. */
+  function syncTabs() {
+    for (let i = openTabs.length - 1; i >= 0; i -= 1) {
+      const tab = openTabs[i];
+      const row = filesListing.find((item) => item.path === tab.path);
+      if (!row) {
+        if (tab.dirty) tab.gone = true;
+        else openTabs.splice(i, 1);
+        continue;
+      }
+      tab.gone = false;
+      tab.kind = row.kind;
+      tab.editable = Boolean(row.editable);
+      const size = Number(row.size) || 0;
+      if (size === tab.size) continue;
+      tab.size = size;
+      // A code turn rewrote the file. Unsaved edits win until the user decides.
+      if (!tab.dirty && !tab.busy) tab.state = "loading";
+    }
+    if (activeTab && !findTab(activeTab)) activeTab = "";
+    // The tree highlights whichever file the open tab is showing.
+    filesSelected = activeTab;
+  }
+
+  function paintFiles() {
+    syncTabs();
+    paintTabsAndFiles();
+  }
+
+  async function saveTab() {
+    const tab = activeTabRow();
+    const box = editorBox();
+    if (!tab || !box || !tab.dirty || tab.busy) return;
+    const chatId = store.activeId;
+    const contents = box.value;
+    tab.busy = true;
+    tab.note = "";
+    paintEditorHead();
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(tab.path)}`,
+        { method: "PUT", body: { contents } }
+      );
+      tab.busy = false;
+      if (chatId !== store.activeId || !findTab(tab.path)) return;
+      filesListing = Array.isArray(data.files) ? data.files : filesListing;
+      filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
+      tab.original = contents;
+      tab.text = contents;
+      tab.dirty = false;
+      tab.gone = false;
+      tab.note = "Saved.";
+      const saved = filesListing.find((item) => item.path === tab.path);
+      tab.size = saved ? Number(saved.size) || 0 : tab.size;
+      paintFilesHead();
+      paintFilesTree();
+      paintTabs();
+      paintEditorHead();
+    } catch (err) {
+      tab.busy = false;
+      tab.note = err.message;
+      paintEditorHead();
+    }
+  }
+
+  function revertTab() {
+    const tab = activeTabRow();
+    if (!tab || !tab.dirty) return;
+    tab.dirty = false;
+    tab.note = "";
+    tab.caret = null;
+    // Read the file again: a code turn may have rewritten it while we edited,
+    // and the buffer we started from is then no longer what is on disk.
+    tab.state = "loading";
+    paintTabs();
+    paintView();
   }
 
   async function openSite() {
@@ -784,10 +1052,16 @@ function mountChat(root) {
 
   async function refreshFiles() {
     const chatId = store.activeId;
+    // Tabs belong to one chat's project; another chat starts from Chat again.
+    if (tabsChat !== chatId) {
+      tabsChat = chatId;
+      resetTabs();
+    }
     if (activeMode() !== "code" || !chatId) {
       filesListing = [];
       filesSelected = "";
       filesEntry = "";
+      resetTabs();
       paintFiles();
       return;
     }
@@ -1273,6 +1547,7 @@ function mountChat(root) {
         "<li><span>Search chats</span><kbd>Ctrl</kbd>+<kbd>K</kbd></li>" +
         "<li><span>New chat</span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></li>" +
         "<li><span>Slash commands</span><kbd>/</kbd></li>" +
+        "<li><span>Save the open file</span><kbd>Ctrl</kbd>+<kbd>S</kbd></li>" +
         "</ul>",
     });
   }
@@ -2755,6 +3030,8 @@ function mountChat(root) {
     input.value = "";
     resizeInput();
     hideMenu();
+    // The reply lands in the log, so bring it back into view.
+    activateTab("");
     runLoop(text).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
@@ -2994,13 +3271,7 @@ function mountChat(root) {
       const path = row && row.dataset.path;
       if (!path) return;
       if (btn.dataset.file === "open") {
-        if (path === filesSelected) return;
-        if (previewDirty && !(await confirmDropEdits())) return;
-        filesSelected = path;
-        previewPath = "";
-        previewOriginal = null;
-        previewDirty = false;
-        paintFiles();
+        openFileTab(path);
         return;
       }
       if (btn.dataset.file === "download") {
@@ -3015,12 +3286,9 @@ function mountChat(root) {
           );
           filesListing = Array.isArray(data.files) ? data.files : [];
           filesEntry = typeof data.entry === "string" ? data.entry : "";
-          if (filesSelected === path) {
-            filesSelected = "";
-            previewPath = "";
-            previewOriginal = null;
-            previewDirty = false;
-          }
+          const open = findTab(path);
+          if (open) open.dirty = false;
+          if (filesSelected === path) filesSelected = "";
           paintFiles();
         } catch (err) {
           addBubble("assistant", `Error: ${err.message}`);
@@ -3028,20 +3296,42 @@ function mountChat(root) {
       }
     });
   }
-  if (filesPreview) {
-    filesPreview.addEventListener("input", (event) => {
-      if (!event.target.classList.contains("chat-files-edit")) return;
-      const next = previewOriginal !== null && event.target.value !== previewOriginal;
-      if (next === previewDirty) return;
-      previewDirty = next;
-      paintEditorState();
-      setPreviewNote("");
+  if (tabsBar) {
+    tabsBar.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-tab]");
+      if (!item) return;
+      if (event.target.closest("[data-tab-close]")) {
+        closeTab(item.dataset.tab);
+        return;
+      }
+      activateTab(item.dataset.tab);
     });
-    filesPreview.addEventListener("keydown", (event) => {
+  }
+  if (editorPane) {
+    editorPane.addEventListener("input", (event) => {
+      if (!event.target.classList.contains("chat-files-edit")) return;
+      const tab = activeTabRow();
+      if (!tab) return;
+      tab.text = event.target.value;
+      queueHighlight();
+      const next = tab.text !== tab.original;
+      if (next === tab.dirty) return;
+      tab.dirty = next;
+      tab.note = "";
+      paintEditorHead();
+      paintTabs();
+    });
+    // A textarea's scroll event does not bubble, so catch it on the way down.
+    editorPane.addEventListener("scroll", (event) => {
+      if (event.target.classList && event.target.classList.contains("chat-files-edit")) {
+        syncEditorScroll();
+      }
+    }, true);
+    editorPane.addEventListener("keydown", (event) => {
       if (!event.target.classList.contains("chat-files-edit")) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        savePreview();
+        saveTab();
         return;
       }
       // Tab indents code instead of leaving the box; Shift+Tab still moves focus out.
@@ -3059,11 +3349,15 @@ function mountChat(root) {
         box.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
-    filesPreview.addEventListener("click", (event) => {
+    editorPane.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-edit]");
       if (!btn) return;
-      if (btn.dataset.edit === "save") savePreview();
-      if (btn.dataset.edit === "revert") revertPreview();
+      const tab = activeTabRow();
+      if (btn.dataset.edit === "save") saveTab();
+      if (btn.dataset.edit === "revert") revertTab();
+      if (btn.dataset.edit === "download" && tab) {
+        saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file");
+      }
     });
   }
   if (filesSiteBtn) {
@@ -3115,7 +3409,7 @@ function mountChat(root) {
         filesListing = [];
         filesSelected = "";
         filesEntry = "";
-        previewDirty = false;
+        resetTabs();
         paintFiles();
       } catch (err) {
         addBubble("assistant", `Error: ${err.message}`);
@@ -3257,6 +3551,7 @@ function mountChat(root) {
       abortSession("stop");
       stopLoadingClock();
       if (filesRefreshTimer) clearTimeout(filesRefreshTimer);
+      if (highlightFrame) cancelAnimationFrame(highlightFrame);
       persist();
       hideHistoryMenu();
       hideMoreMenu();

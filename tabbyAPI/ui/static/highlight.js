@@ -34,6 +34,19 @@
     "docker", "test", "read", "eval", "exec", "trap", "wait", "kill", "sleep", "date",
     "basename", "dirname", "realpath", "which", "command", "type", "hash", "set", "unset",
   ]);
+  const PY_KW = new Set([
+    "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in",
+    "is", "lambda", "match", "case", "nonlocal", "not", "or", "pass", "raise", "return",
+    "try", "while", "with", "yield", "True", "False", "None", "self", "cls",
+  ]);
+  const PY_BUILTIN = new Set([
+    "abs", "all", "any", "bool", "bytes", "callable", "dict", "dir", "enumerate", "eval",
+    "filter", "float", "format", "frozenset", "getattr", "hasattr", "hash", "id", "input",
+    "int", "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min", "next",
+    "object", "open", "ord", "print", "range", "repr", "reversed", "round", "set",
+    "setattr", "sorted", "str", "sum", "super", "tuple", "type", "vars", "zip",
+  ]);
 
   const LANGS = {
     js: "javascript",
@@ -42,6 +55,11 @@
     mjs: "javascript",
     cjs: "javascript",
     node: "javascript",
+    ts: "javascript",
+    tsx: "javascript",
+    mts: "javascript",
+    cts: "javascript",
+    typescript: "javascript",
     html: "html",
     htm: "html",
     xml: "html",
@@ -54,6 +72,18 @@
     shell: "shell",
     console: "shell",
     terminal: "shell",
+    json: "json",
+    jsonc: "json",
+    py: "python",
+    python: "python",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "ini",
+    ini: "ini",
+    cfg: "ini",
+    conf: "ini",
+    md: "markdown",
+    markdown: "markdown",
   };
 
   function escapeHtml(value) {
@@ -652,9 +682,264 @@
     return out.join("");
   }
 
+  function highlightJson(src) {
+    const out = [];
+    const end = src.length;
+    let i = 0;
+    while (i < end) {
+      const ch = src[i];
+      if (/\s/.test(ch)) {
+        const j = skipWs(src, i, end);
+        out.push(escapeHtml(src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      if (src.startsWith("//", i)) {
+        const nl = src.indexOf("\n", i);
+        const j = nl < 0 ? end : nl;
+        out.push(span("comment", src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      if (src.startsWith("/*", i)) {
+        const close = src.indexOf("*/", i + 2);
+        const j = close < 0 ? end : close + 2;
+        out.push(span("comment", src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      if (ch === '"') {
+        const j = quotedEnd(src, i, end, '"', { newlines: true });
+        // A string that a colon follows is an object key, not a value.
+        const after = skipWs(src, j, end);
+        out.push(span(src[after] === ":" ? "attr" : "string", src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      if (/\d/.test(ch) || (ch === "-" && /\d/.test(src[i + 1] || ""))) {
+        const m = /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/i.exec(src.slice(i, end));
+        const tok = m ? m[0] : ch;
+        out.push(span("number", tok));
+        i += tok.length;
+        continue;
+      }
+      if (/[A-Za-z_]/.test(ch)) {
+        const word = readIdent(src, i, end);
+        out.push(span(/^(?:true|false|null)$/.test(word) ? "keyword" : "", word));
+        i += word.length;
+        continue;
+      }
+      out.push(span("punct", ch));
+      i += 1;
+    }
+    return out.join("");
+  }
+
+  /** End index of a Python string literal at `i`, or 0 when there is none. */
+  function pyStringEnd(src, i, end) {
+    let j = i;
+    let prefix = 0;
+    while (j < end && prefix < 3 && /[rRbBuUfF]/.test(src[j])) {
+      j += 1;
+      prefix += 1;
+    }
+    const q = src[j];
+    if (q !== "'" && q !== '"') return 0;
+    const fence = q.repeat(3);
+    if (src.startsWith(fence, j)) {
+      const close = src.indexOf(fence, j + 3);
+      return close < 0 ? end : Math.min(close + 3, end);
+    }
+    return quotedEnd(src, j, end, q);
+  }
+
+  function highlightPython(src) {
+    const out = [];
+    const end = src.length;
+    let i = 0;
+    let prev = "";
+    while (i < end) {
+      const ch = src[i];
+      if (/\s/.test(ch)) {
+        const j = skipWs(src, i, end);
+        out.push(escapeHtml(src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      if (ch === "#") {
+        const nl = src.indexOf("\n", i);
+        const j = nl < 0 ? end : nl;
+        out.push(span("comment", src.slice(i, j)));
+        i = j;
+        continue;
+      }
+      const strEnd = pyStringEnd(src, i, end);
+      if (strEnd) {
+        out.push(span("string", src.slice(i, strEnd)));
+        prev = "string";
+        i = strEnd;
+        continue;
+      }
+      if (ch === "@" && /[A-Za-z_]/.test(src[i + 1] || "")) {
+        const word = readIdent(src, i + 1, end, ".");
+        out.push(span("attr", `@${word}`));
+        prev = "decorator";
+        i += 1 + word.length;
+        continue;
+      }
+      if (/\d/.test(ch) || (ch === "." && /\d/.test(src[i + 1] || ""))) {
+        const m = /^(0x[\da-fA-F_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:e[+-]?\d+)?j?)/i.exec(
+          src.slice(i, end)
+        );
+        const tok = m ? m[0] : ch;
+        out.push(span("number", tok));
+        prev = "number";
+        i += tok.length;
+        continue;
+      }
+      if (/[A-Za-z_]/.test(ch)) {
+        const word = readIdent(src, i, end);
+        let type = "";
+        if (PY_KW.has(word)) type = "keyword";
+        else if (prev === "def" || prev === "class") type = "fn";
+        else if (PY_BUILTIN.has(word)) type = "fn";
+        else if (src[skipWs(src, i + word.length, end)] === "(") type = "fn";
+        out.push(span(type, word));
+        prev = word;
+        i += word.length;
+        continue;
+      }
+      out.push(span("punct", ch));
+      prev = ch;
+      i += 1;
+    }
+    return out.join("");
+  }
+
+  function scalarType(text) {
+    if (/^(['"]).*\1$/s.test(text)) return "string";
+    if (/^-?\d+(?:\.\d+)?$/.test(text)) return "number";
+    if (/^(?:true|false|null|yes|no|on|off|~)$/i.test(text)) return "keyword";
+    return "";
+  }
+
+  function highlightScalar(raw) {
+    const text = String(raw);
+    const trimmed = text.trim();
+    if (!trimmed) return escapeHtml(text);
+    const lead = text.slice(0, text.indexOf(trimmed));
+    const tail = text.slice(lead.length + trimmed.length);
+    return escapeHtml(lead) + span(scalarType(trimmed), trimmed) + escapeHtml(tail);
+  }
+
+  function highlightYamlLine(line) {
+    const indent = /^\s*/.exec(line)[0];
+    let rest = line.slice(indent.length);
+    if (!rest) return escapeHtml(line);
+    if (rest.startsWith("#")) return escapeHtml(indent) + span("comment", rest);
+    let out = escapeHtml(indent);
+    const dash = /^-(?:\s+|$)/.exec(rest);
+    if (dash) {
+      out += span("punct", "-") + escapeHtml(dash[0].slice(1));
+      rest = rest.slice(dash[0].length);
+    }
+    const key = /^([^:#]+):(\s|$)/.exec(rest);
+    if (key) {
+      out += span("attr", key[1]) + span("punct", ":") + escapeHtml(key[2]);
+      rest = rest.slice(key[0].length);
+    }
+    // Only " #" starts a comment; a bare # can live inside a URL fragment.
+    const hash = rest.indexOf(" #");
+    if (hash >= 0) return out + highlightScalar(rest.slice(0, hash)) + span("comment", rest.slice(hash));
+    return out + highlightScalar(rest);
+  }
+
+  function highlightYaml(src) {
+    return src.split("\n").map(highlightYamlLine).join("\n");
+  }
+
+  function highlightIni(src) {
+    return src
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return escapeHtml(line);
+        if (/^[#;]/.test(trimmed)) return span("comment", line);
+        if (/^\[.*\]$/.test(trimmed)) return span("tag", line);
+        const eq = line.indexOf("=");
+        if (eq < 0) return escapeHtml(line);
+        return (
+          span("attr", line.slice(0, eq)) + span("punct", "=") + highlightScalar(line.slice(eq + 1))
+        );
+      })
+      .join("\n");
+  }
+
+  const MD_INLINE = /(`+)([^`]*?)\1|(\*\*|__)([^]+?)\3|(\[[^\]]*\])(\([^)]*\))/g;
+
+  function highlightMarkdownInline(line) {
+    const bullet = /^(\s*)([-*+]|\d+[.)])(\s+)/.exec(line);
+    let out = "";
+    let rest = line;
+    if (bullet) {
+      out += escapeHtml(bullet[1]) + span("punct", bullet[2]) + escapeHtml(bullet[3]);
+      rest = line.slice(bullet[0].length);
+    }
+    let last = 0;
+    MD_INLINE.lastIndex = 0;
+    let m = MD_INLINE.exec(rest);
+    while (m) {
+      if (m.index > last) out += escapeHtml(rest.slice(last, m.index));
+      if (m[1]) out += span("string", m[0]);
+      else if (m[3]) out += span("keyword", m[0]);
+      else out += span("fn", m[5]) + span("attr", m[6]);
+      last = m.index + m[0].length;
+      m = MD_INLINE.exec(rest);
+    }
+    return out + escapeHtml(rest.slice(last));
+  }
+
+  function highlightMarkdown(src) {
+    const out = [];
+    let fence = "";
+    src.split("\n").forEach((line) => {
+      const open = /^\s*(```+|~~~+)(.*)$/.exec(line);
+      if (fence) {
+        if (open && line.trim().startsWith(fence)) {
+          fence = "";
+          out.push(span("keyword", line));
+        } else {
+          out.push(span("string", line));
+        }
+        return;
+      }
+      if (open) {
+        fence = open[1];
+        out.push(span("keyword", line.slice(0, line.length - open[2].length)) + span("attr", open[2]));
+        return;
+      }
+      if (/^\s{0,3}#{1,6}\s/.test(line) || /^[=-]{3,}\s*$/.test(line)) {
+        out.push(span("tag", line));
+        return;
+      }
+      if (/^\s{0,3}>/.test(line)) {
+        out.push(span("comment", line));
+        return;
+      }
+      out.push(highlightMarkdownInline(line));
+    });
+    return out.join("\n");
+  }
+
   function normalizeLang(lang) {
     const key = String(lang || "").trim().toLowerCase().replace(/^language-/, "");
     return LANGS[key] || "";
+  }
+
+  function pathLanguage(path) {
+    const name = String(path || "").split("/").pop() || "";
+    const dot = name.lastIndexOf(".");
+    return dot > 0 ? normalizeLang(name.slice(dot + 1)) : "";
   }
 
   function highlight(lang, code) {
@@ -667,11 +952,16 @@
       if (kind === "html") return highlightHtml(src);
       if (kind === "php") return highlightPhp(src);
       if (kind === "shell") return highlightShell(src);
+      if (kind === "json") return highlightJson(src);
+      if (kind === "python") return highlightPython(src);
+      if (kind === "yaml") return highlightYaml(src);
+      if (kind === "ini") return highlightIni(src);
+      if (kind === "markdown") return highlightMarkdown(src);
     } catch (_err) {
       return escapeHtml(src);
     }
     return escapeHtml(src);
   }
 
-  window.TabbyHighlight = { highlight, language: normalizeLang };
+  window.TabbyHighlight = { highlight, language: normalizeLang, pathLanguage };
 })();
