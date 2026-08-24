@@ -2232,22 +2232,32 @@ function mountChat(root) {
     });
   }
 
+  function shortcutRow(label, keysHtml) {
+    return "<li><span>" + label + '</span><span class="shortcut-keys">' + keysHtml + "</span></li>";
+  }
+
   function showShortcuts() {
     return showDialog({
       title: "Keyboard shortcuts",
       html:
-        '<ul class="shortcuts-list">' +
-        "<li><span>Send</span><kbd>Enter</kbd></li>" +
-        "<li><span>New line</span><kbd>Shift</kbd>+<kbd>Enter</kbd></li>" +
-        "<li><span>Stop / close menus</span><kbd>Esc</kbd></li>" +
-        "<li><span>Cycle chats</span><kbd>Tab</kbd></li>" +
-        "<li><span>Recall sent text</span><kbd>↑</kbd> <kbd>↓</kbd></li>" +
-        "<li><span>Search chats</span><kbd>Ctrl</kbd>+<kbd>K</kbd></li>" +
-        "<li><span>New chat</span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></li>" +
-        "<li><span>Slash commands</span><kbd>/</kbd></li>" +
-        "<li><span>Save the open file</span><kbd>Ctrl</kbd>+<kbd>S</kbd></li>" +
-        "<li><span>More actions</span><kbd>Right-click</kbd></li>" +
-        "</ul>",
+        '<div class="shortcuts">' +
+        '<section><h3>Composer</h3><ul class="shortcuts-list">' +
+        shortcutRow("Send", "<kbd>Enter</kbd>") +
+        shortcutRow("New line", "<kbd>Shift</kbd>+<kbd>Enter</kbd>") +
+        shortcutRow("Slash commands", "<kbd>/</kbd>") +
+        shortcutRow("Recall sent text", "<kbd>↑</kbd><kbd>↓</kbd>") +
+        "</ul></section>" +
+        '<section><h3>Chats</h3><ul class="shortcuts-list">' +
+        shortcutRow("Cycle chats", "<kbd>Tab</kbd>") +
+        shortcutRow("Search chats", "<kbd>Ctrl</kbd>+<kbd>K</kbd>") +
+        shortcutRow("New chat", "<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>") +
+        shortcutRow("Stop or close", "<kbd>Esc</kbd>") +
+        "</ul></section>" +
+        '<section><h3>Workspace</h3><ul class="shortcuts-list">' +
+        shortcutRow("Save file", "<kbd>Ctrl</kbd>+<kbd>S</kbd>") +
+        shortcutRow("More actions", "<kbd>Right-click</kbd>") +
+        "</ul></section>" +
+        "</div>",
     });
   }
 
