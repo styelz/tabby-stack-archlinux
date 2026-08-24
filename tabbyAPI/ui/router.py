@@ -327,6 +327,16 @@ async def ui_chats_put(request: Request, _user: str = Depends(require_ui_user)):
     return save_store(_user, body)
 
 
+@router.get("/workspaces", include_in_schema=False)
+async def ui_workspaces(_user: str = Depends(require_ui_user)):
+    """Chats that own project files, so the chat list can badge them in any mode."""
+    from ui.chats import load_store
+    from ui.workspace import chats_with_files
+
+    ids = [str(chat.get("id") or "") for chat in load_store(_user).get("chats") or []]
+    return {"code": chats_with_files(_user, ids)}
+
+
 def _workspace_chat_id(chat_id: str) -> str:
     from ui.workspace import safe_name
 

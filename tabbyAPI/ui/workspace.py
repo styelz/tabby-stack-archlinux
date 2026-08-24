@@ -126,6 +126,32 @@ def _stats(root: Path) -> tuple[int, int]:
     return len(files), sum(path.stat().st_size for path in files)
 
 
+def has_files(username: str, chat_id: str) -> bool:
+    """True as soon as one file turns up, so a badge check stays cheap."""
+    root = workspace_root(username, chat_id, create=False)
+    if not root.is_dir():
+        return False
+    pending = [root]
+    while pending:
+        try:
+            entries = list(os.scandir(pending.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_file():
+                return True
+            if entry.is_dir():
+                pending.append(Path(entry.path))
+    return False
+
+
+def chats_with_files(username: str, chat_ids: list[str]) -> list[str]:
+    """Which of these chats own a project folder that is not empty."""
+    return [str(cid) for cid in chat_ids if str(cid).strip() and has_files(username, str(cid))]
+
+
 def _check_caps(root: Path, *, extra_bytes: int = 0, extra_files: int = 0) -> None:
     count, total = _stats(root)
     if count + extra_files > MAX_FILES:

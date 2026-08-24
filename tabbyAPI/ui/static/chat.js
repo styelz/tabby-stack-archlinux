@@ -192,6 +192,9 @@ function mountChat(root) {
   let activeTab = "";
   let tabsChat = "";
   let logScroll = 0;
+  // Chat ids the server says own project files. Drives the sidebar badge in
+  // both modes, so it survives a reload and covers chats not opened yet.
+  let codeChats = new Set();
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
@@ -512,7 +515,14 @@ function mountChat(root) {
       btn.dataset.id = item.id;
       btn.setAttribute("role", "button");
       btn.tabIndex = 0;
-      const tag = chatMode(item) === "code" ? '<span class="chat-nav-tag">Code</span>' : "";
+      // A chat keeps its badge once it owns files, even after the toggle goes
+      // back to Chat, so the list still shows where a project lives.
+      const tag =
+        chatMode(item) === "code"
+          ? '<span class="chat-nav-tag" title="Code mode">Code</span>'
+          : codeChats.has(item.id)
+            ? '<span class="chat-nav-tag is-quiet" title="Has project files">Code</span>'
+            : "";
       btn.innerHTML =
         `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>` +
         `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span>` +
@@ -554,8 +564,29 @@ function mountChat(root) {
     }
   }
 
+  async function refreshCodeChats() {
+    try {
+      const data = await TabbyUI.api("workspaces");
+      const next = new Set(Array.isArray(data.code) ? data.code.map(String) : []);
+      if (next.size === codeChats.size && [...next].every((id) => codeChats.has(id))) return;
+      codeChats = next;
+      renderSidebar();
+    } catch {
+      /* the badge is cosmetic; leave what we already know */
+    }
+  }
+
+  /** A listing we just fetched is authoritative for that one chat. */
+  function noteChatFiles(chatId, hasFiles) {
+    if (!chatId || codeChats.has(chatId) === Boolean(hasFiles)) return;
+    if (hasFiles) codeChats.add(chatId);
+    else codeChats.delete(chatId);
+    renderSidebar();
+  }
+
   function dropWorkspace(chatId) {
     if (!chatId) return;
+    codeChats.delete(chatId);
     TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
   }
 
@@ -995,6 +1026,7 @@ function mountChat(root) {
       if (chatId !== store.activeId || !findTab(tab.path)) return;
       filesListing = Array.isArray(data.files) ? data.files : filesListing;
       filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
+      noteChatFiles(chatId, filesListing.length > 0);
       tab.original = contents;
       tab.text = contents;
       tab.dirty = false;
@@ -1070,6 +1102,7 @@ function mountChat(root) {
       if (chatId !== store.activeId) return;
       filesListing = Array.isArray(data.files) ? data.files : [];
       filesEntry = typeof data.entry === "string" ? data.entry : "";
+      noteChatFiles(chatId, filesListing.length > 0);
       if (filesSelected && !filesListing.some((row) => row.path === filesSelected)) {
         filesSelected = "";
       }
@@ -3286,6 +3319,7 @@ function mountChat(root) {
           );
           filesListing = Array.isArray(data.files) ? data.files : [];
           filesEntry = typeof data.entry === "string" ? data.entry : "";
+          noteChatFiles(store.activeId, filesListing.length > 0);
           const open = findTab(path);
           if (open) open.dirty = false;
           if (filesSelected === path) filesSelected = "";
@@ -3410,6 +3444,7 @@ function mountChat(root) {
         filesSelected = "";
         filesEntry = "";
         resetTabs();
+        noteChatFiles(store.activeId, false);
         paintFiles();
       } catch (err) {
         addBubble("assistant", `Error: ${err.message}`);
@@ -3534,6 +3569,7 @@ function mountChat(root) {
     paintCompose();
     resizeInput();
     refreshFiles();
+    refreshCodeChats();
     syncModelGate();
   }
   loadStore();
@@ -3546,6 +3582,7 @@ function mountChat(root) {
     resume() {
       syncModelGate();
       refreshFiles();
+      refreshCodeChats();
     },
     destroy() {
       abortSession("stop");
