@@ -230,10 +230,11 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-shell.is-sidebar-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
-.chat-shell.is-code {
+/* Only an open pane adds a column, so closing it hands the width back. */
+.chat-shell.is-code.is-files-open {
   grid-template-columns: 268px minmax(0, 1fr) minmax(220px, 300px);
 }
-.chat-shell.is-sidebar-hidden.is-code {
+.chat-shell.is-sidebar-hidden.is-code.is-files-open {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
 }
 .chat-shell.is-sidebar-hidden .chat-sidebar {
@@ -427,6 +428,15 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   background: rgba(122, 162, 255, 0.2);
   color: var(--text);
 }
+#chat-files-toggle {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+#chat-files-toggle.is-active {
+  background: rgba(122, 162, 255, 0.18);
+  border-color: rgba(122, 162, 255, 0.35);
+  color: var(--text);
+}
 .chat-files {
   display: flex;
   flex-direction: column;
@@ -445,6 +455,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   font-weight: 600;
   flex: 0 0 auto;
 }
+.chat-files-close { display: none; }
 .chat-files-count {
   color: var(--muted);
   font-size: 11px;
@@ -1656,18 +1667,12 @@ figure.shot .open { display: block; }
   .chart-card canvas { height: 200px; flex: none; }
 }
 @media (max-width: 1100px) {
-  .chat-shell.is-code,
-  .chat-shell.is-sidebar-hidden.is-code {
-    grid-template-columns: 268px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(200px, 34vh);
+  /* Less room for the pane, but the chat keeps a usable column. */
+  .chat-shell.is-code.is-files-open {
+    grid-template-columns: 268px minmax(0, 1fr) minmax(200px, 250px);
   }
-  .chat-shell.is-sidebar-hidden.is-code {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .chat-shell.is-code .chat-files {
-    grid-column: 1 / -1;
-    border-left: 0;
-    border-top: 1px solid var(--line);
+  .chat-shell.is-sidebar-hidden.is-code.is-files-open {
+    grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
   }
 }
 @media (max-width: 900px) {
@@ -1676,9 +1681,23 @@ figure.shot .open { display: block; }
   #chat-hint { display: none; }
   .chat-shell { grid-template-columns: minmax(0, 1fr); }
   .chat-shell.is-code,
-  .chat-shell.is-sidebar-hidden.is-code {
+  .chat-shell.is-code.is-files-open,
+  .chat-shell.is-sidebar-hidden.is-code,
+  .chat-shell.is-sidebar-hidden.is-code.is-files-open {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Out of the grid and over the chat: one narrow column cannot hold both, and
+     a full-height pane leaves room to actually edit a file. The chat list
+     overlay still sits above this. */
+  .chat-shell.is-code .chat-files {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    border-left: 0;
+    background: var(--bg-elev);
+  }
+  .chat-files-tree { flex: 0 1 38%; }
+  .chat-files-close { display: inline-grid; }
   #chat-sidebar-toggle { display: inline-grid; }
   .chat-sidebar {
     position: absolute;

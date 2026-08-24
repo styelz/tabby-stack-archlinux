@@ -51,6 +51,7 @@ function mountChat(root) {
             <button type="button" class="chat-mode-btn is-active" data-mode="chat">Chat</button>
             <button type="button" class="chat-mode-btn" data-mode="code">Code</button>
           </div>
+          <button class="btn ghost" type="button" id="chat-files-toggle" hidden aria-expanded="true" aria-controls="chat-files">Files</button>
           <span class="spacer"></span>
           <span class="muted" id="chat-hint">Tab chats · ↑↓ recall · Enter send</span>
           <div class="chat-more">
@@ -132,6 +133,7 @@ function mountChat(root) {
           <button class="btn" type="button" id="chat-files-site">Open site</button>
           <button class="btn ghost" type="button" id="chat-files-zip">Zip</button>
           <button class="btn ghost" type="button" id="chat-files-clear">Clear</button>
+          <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-preview" id="chat-files-preview">
@@ -175,6 +177,8 @@ function mountChat(root) {
   const filesRefreshBtn = root.querySelector("#chat-files-refresh");
   const filesCountEl = root.querySelector("#chat-files-count");
   const filesSiteBtn = root.querySelector("#chat-files-site");
+  const filesToggleBtn = root.querySelector("#chat-files-toggle");
+  const filesCloseBtn = root.querySelector("#chat-files-close");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   let filesListing = [];
   let filesSelected = "";
@@ -193,7 +197,20 @@ function mountChat(root) {
   const STORAGE_KEY = "tabby-ui-chat-store";
   const SETTINGS_KEY = "tabby-ui-chat-settings";
   const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
+  const FILES_KEY = "tabby-ui-chat-files";
   const MAX_CHATS = 50;
+  const narrowChat = window.matchMedia("(max-width: 900px)");
+  // Below 900px the pane is a bottom sheet over the chat, so it starts closed
+  // there no matter what the desktop preference says.
+  let filesOpen = narrowChat.matches ? false : readFilesOpen();
+
+  function readFilesOpen() {
+    try {
+      return localStorage.getItem(FILES_KEY) !== "closed";
+    } catch {
+      return true;
+    }
+  }
 
   function newId() {
     if (globalThis.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -421,19 +438,47 @@ function mountChat(root) {
 
   function paintMode() {
     const mode = activeMode();
-    shell.classList.toggle("is-code", mode === "code");
+    const code = mode === "code";
+    shell.classList.toggle("is-code", code);
+    shell.classList.toggle("is-files-open", code && filesOpen);
     root.querySelectorAll(".chat-mode-btn").forEach((btn) => {
       const on = btn.dataset.mode === mode;
       btn.classList.toggle("is-active", on);
       btn.setAttribute("aria-pressed", on ? "true" : "false");
     });
-    if (filesPane) filesPane.hidden = mode !== "code";
+    if (filesPane) filesPane.hidden = !code || !filesOpen;
+    paintFilesToggle();
     const hint = root.querySelector("#chat-hint");
     if (hint) {
       hint.textContent = mode === "code"
         ? "Code mode · files stay on this host · zip from Files"
         : "Tab chats · ↑↓ recall · Enter send";
     }
+  }
+
+  function paintFilesToggle() {
+    if (!filesToggleBtn) return;
+    const code = activeMode() === "code";
+    filesToggleBtn.hidden = !code;
+    if (!code) return;
+    filesToggleBtn.textContent = filesListing.length ? `Files · ${filesListing.length}` : "Files";
+    filesToggleBtn.classList.toggle("is-active", filesOpen);
+    filesToggleBtn.setAttribute("aria-expanded", filesOpen ? "true" : "false");
+    filesToggleBtn.title = filesOpen ? "Hide the files pane" : "Show the files pane";
+  }
+
+  function setFilesOpen(open) {
+    filesOpen = !!open;
+    // A phone visit should not overwrite the desktop choice.
+    if (!narrowChat.matches) {
+      try {
+        localStorage.setItem(FILES_KEY, filesOpen ? "open" : "closed");
+      } catch {
+        /* ignore */
+      }
+    }
+    paintMode();
+    if (filesOpen) refreshFiles();
   }
 
   function setChatMode(mode) {
@@ -518,6 +563,7 @@ function mountChat(root) {
   }
 
   function paintFilesHead() {
+    paintFilesToggle();
     const total = filesListing.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
       filesCountEl.textContent = filesListing.length
@@ -3001,6 +3047,18 @@ function mountChat(root) {
   if (filesSiteBtn) {
     filesSiteBtn.addEventListener("click", () => openSite());
   }
+  if (filesToggleBtn) {
+    filesToggleBtn.addEventListener("click", () => setFilesOpen(!filesOpen));
+  }
+  if (filesCloseBtn) {
+    filesCloseBtn.addEventListener("click", () => setFilesOpen(false));
+  }
+  // Crossing the breakpoint flips the pane between a column and a bottom sheet,
+  // so pick the sensible default for the new shape.
+  narrowChat.addEventListener("change", (event) => {
+    setFilesOpen(event.matches ? false : readFilesOpen());
+    paintToolbar();
+  });
   if (filesRefreshBtn) {
     filesRefreshBtn.addEventListener("click", () => refreshFiles());
   }
