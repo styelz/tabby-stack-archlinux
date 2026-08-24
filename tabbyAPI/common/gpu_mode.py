@@ -178,6 +178,46 @@ def free_comfy() -> bool:
         return False
 
 
+def stop_comfy_via_systemd() -> bool:
+    """Stop the user unit so Flux cannot keep the GPU."""
+    if os.name == "nt":
+        return False
+    if not comfy_user_unit_path().is_file():
+        return False
+    result = subprocess.run(
+        ["systemctl", "--user", "stop", "comfyui"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        print(f"  systemctl --user stop comfyui failed: {err}")
+        return False
+    print("  Stopped ComfyUI via systemd")
+    return True
+
+
+def stop_comfy(timeout: float = 30) -> None:
+    """Give the GPU back before an LLM load.
+
+    `/free` is not enough: Comfy stays up and can still hold VRAM
+    (RAM-pressure cache). Stop the unit, then wait until it is gone.
+    """
+    if comfy_up():
+        free_comfy()
+    stopped = stop_comfy_via_systemd()
+    if not comfy_up() and not stopped:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not comfy_up():
+            print("  ComfyUI is down")
+            time.sleep(1)
+            return
+        time.sleep(0.4)
+    print("  ComfyUI still answering after stop; LLM load may hit VRAM")
+
+
 def nvidia_lib_dirs(comfy_dir: Optional[Path] = None) -> list[str]:
     """venv nvidia/*/lib folders so torchaudio can find libcudart."""
 

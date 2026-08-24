@@ -15,8 +15,8 @@ from common.gpu_mode import (
     COMFY_DIR,
     COMFY_PYTHON,
     GPU_ALIASES,
-    free_comfy,
     start_comfy_if_needed,
+    stop_comfy,
     write_mode,
 )
 
@@ -232,6 +232,7 @@ def recover_after_vram(base: str, name: str, model_name: str, model_cfg: dict, p
         unload_tabby(base)
     except SystemExit:
         pass
+    stop_comfy()
     time.sleep(2)
     try:
         load_model(base, model_name, model_cfg)
@@ -314,7 +315,7 @@ def switch_to_llm(
         return {"ready_s": 0.0, "already": False, "loaded": None, "profile": name, "offline": True}
 
     started = time.time()
-    free_comfy()
+    stop_comfy()
     write_mode("llm", profile=name)
     loaded = current_model(base)
     already = loaded == model_name and not force

@@ -772,7 +772,7 @@ def switch_reply_text(name: str) -> str:
         )
     if name == "llm":
         return (
-            "Freeing ComfyUI and reloading the last TabbyAPI model. "
+            "Stopping ComfyUI and reloading the last TabbyAPI model. "
             f"{hint}, then keep using gpt-4o."
         )
     entry = profile_map().get(name, {})
@@ -785,7 +785,7 @@ def switch_reply_text(name: str) -> str:
             "If the load fails, switch to qwen."
         )
     return (
-        f"Switching TabbyAPI to {pretty} (ComfyUI weights will be unloaded). "
+        f"Switching TabbyAPI to {pretty} (ComfyUI will be stopped). "
         f"{hint}, then keep using gpt-4o. "
         f"The next message will use the new model.{extra}"
     )

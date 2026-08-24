@@ -22,12 +22,13 @@ from uuid import uuid4
 from common import model
 from common.gpu_mode import (
     comfy_up,
-    free_comfy,
     generate_image,
     save_generated_image,
     start_comfy_if_needed,
+    stop_comfy,
     write_mode,
 )
+from common.vram_recover import is_vram_error
 from common.tabby_config import config
 from endpoints.core.types.model import ModelLoadRequest
 from endpoints.core.utils.model import stream_model_load
@@ -166,7 +167,7 @@ async def reload_last_llm(name: Optional[str] = None) -> str:
     if not profile_name:
         raise RuntimeError("No TabbyAPI profile is installed")
 
-    await asyncio.to_thread(free_comfy)
+    await asyncio.to_thread(stop_comfy)
     try:
         profile = apply_profile(profile_name)
     except SystemExit as exc:
@@ -183,16 +184,28 @@ async def reload_last_llm(name: Optional[str] = None) -> str:
 
     from common.phrase_switch import clear_switch_lock, set_switch_lock
 
-    set_switch_lock(profile_name)
-    try:
+    async def _load() -> None:
         load_data = ModelLoadRequest(model_name=model_name)
         for key in LOAD_FIELDS:
             if key in model_cfg and model_cfg[key] is not None:
                 setattr(load_data, key, model_cfg[key])
-
         async for event in stream_model_load(load_data, model_path):
             if _is_load_error(event):
                 raise RuntimeError(event)
+
+    set_switch_lock(profile_name)
+    try:
+        try:
+            await _load()
+        except RuntimeError as exc:
+            if not is_vram_error(exc):
+                raise
+            print("  LLM load hit leftover VRAM; stopping Comfy and retrying")
+            await asyncio.to_thread(stop_comfy)
+            if loaded_tabby_name():
+                await model.unload_model(skip_wait=True)
+            await asyncio.sleep(2)
+            await _load()
 
         write_mode("llm", profile=profile_name)
         return profile_name
