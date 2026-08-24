@@ -8,12 +8,14 @@ a bad ctypes conversation used to abort TabbyAPI with free(): invalid size.
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import secrets
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Cookie, HTTPException, Request, Response
@@ -23,12 +25,76 @@ SESSION_TTL_S = 24 * 60 * 60
 LOGIN_WINDOW_S = 60
 LOGIN_MAX_ATTEMPTS = 5
 PAM_CHECK_TIMEOUT_S = 15
+SESSION_SAVE_INTERVAL_S = 5 * 60
 
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
+_sessions_loaded = False
 _login_hits: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
 _AUTHENTICATE = None
+
+ROOT = Path(__file__).resolve().parent.parent
+SESSIONS_PATH = ROOT / "ui_sessions.json"
+
+
+def _load_sessions_locked() -> None:
+    global _sessions_loaded
+    if _sessions_loaded:
+        return
+    _sessions_loaded = True
+    try:
+        data = json.loads(SESSIONS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    rows = data.get("sessions") if isinstance(data, dict) else None
+    if not isinstance(rows, dict):
+        return
+    now = time.time()
+    for token, session in rows.items():
+        if not isinstance(token, str) or not isinstance(session, dict):
+            continue
+        username = str(session.get("username") or "")
+        try:
+            created_at = float(session.get("created_at"))
+            last_activity = float(session.get("last_activity"))
+        except (TypeError, ValueError):
+            continue
+        if not username or now - last_activity > SESSION_TTL_S:
+            continue
+        _sessions[token] = {
+            "username": username,
+            "is_admin": bool(session.get("is_admin")),
+            "created_at": created_at,
+            "last_activity": last_activity,
+            "saved_activity": last_activity,
+        }
+
+
+def _save_sessions_locked() -> None:
+    SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SESSIONS_PATH.with_suffix(".json.tmp")
+    rows = {
+        token: {
+            "username": session["username"],
+            "is_admin": bool(session.get("is_admin")),
+            "created_at": session["created_at"],
+            "last_activity": session["last_activity"],
+        }
+        for token, session in _sessions.items()
+    }
+    payload = json.dumps({"sessions": rows}, separators=(",", ":")) + "\n"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, SESSIONS_PATH)
+    try:
+        os.chmod(SESSIONS_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def stack_username() -> str:
@@ -84,12 +150,15 @@ def create_session(username: str) -> str:
     token = secrets.token_urlsafe(32)
     now = time.time()
     with _sessions_lock:
+        _load_sessions_locked()
         _sessions[token] = {
             "username": username,
             "is_admin": is_admin_username(username),
             "created_at": now,
             "last_activity": now,
+            "saved_activity": now,
         }
+        _save_sessions_locked()
     return token
 
 
@@ -98,33 +167,51 @@ def validate_session(token: str, max_age: int = SESSION_TTL_S) -> Optional[str]:
         return None
     now = time.time()
     with _sessions_lock:
+        _load_sessions_locked()
         session = _sessions.get(token)
         if not session:
             return None
         if now - session["last_activity"] > max_age:
             _sessions.pop(token, None)
+            _save_sessions_locked()
             return None
         session["last_activity"] = now
+        if now - session.get("saved_activity", 0) >= SESSION_SAVE_INTERVAL_S:
+            session["saved_activity"] = now
+            _save_sessions_locked()
         return session["username"]
 
 
 def destroy_session(token: str) -> None:
     with _sessions_lock:
-        _sessions.pop(token, None)
+        _load_sessions_locked()
+        if _sessions.pop(token, None) is not None:
+            _save_sessions_locked()
 
 
 def destroy_sessions_for_user(username: str) -> None:
     if not username:
         return
     with _sessions_lock:
+        _load_sessions_locked()
         dead = [token for token, session in _sessions.items() if session.get("username") == username]
         for token in dead:
             _sessions.pop(token, None)
+        if dead:
+            _save_sessions_locked()
 
 
 def clear_sessions() -> None:
+    global _sessions_loaded
     with _sessions_lock:
         _sessions.clear()
+        _sessions_loaded = True
+        try:
+            SESSIONS_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
     with _login_lock:
         _login_hits.clear()
 

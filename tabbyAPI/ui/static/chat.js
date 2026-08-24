@@ -3537,7 +3537,9 @@ function mountChat(root) {
         note: loadingHint(kind, target),
       });
     }
-    while (Date.now() < deadline) {
+    // An API restart has no useful client-side timeout: keep the composer
+    // locked and the reconnecting message visible until status answers again.
+    while (kind === "restart" || Date.now() < deadline) {
       try {
         const data = await TabbyUI.api("status");
         rememberGpu(data);
@@ -3604,7 +3606,9 @@ function mountChat(root) {
       const kind = data.restarting ? "restart" : "switch";
       await ensureModelWait(null, { kind, target });
     } catch {
-      /* status unavailable */
+      // The process may disappear before status reports its restart lock.
+      // Treat an unreachable API as a restart and hold chat until it returns.
+      await ensureModelWait(null, { kind: "restart", target: "restart" });
     }
   }
 
