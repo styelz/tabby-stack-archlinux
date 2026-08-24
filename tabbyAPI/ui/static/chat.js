@@ -2073,6 +2073,9 @@ function mountChat(root) {
         stopWorking();
         turn.remove();
       },
+      isLive() {
+        return Boolean(live && !finished);
+      },
     };
   }
 
@@ -2086,13 +2089,21 @@ function mountChat(root) {
       if (item.role === "user") addBubble("user", item.content, false, null, idx, item);
       else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx, item);
     });
+    if (inFlight && store.activeId === flightChatId && flightWorking && flightWorking.isLive()) {
+      log.appendChild(flightWorking.node);
+    }
     paintEmpty();
     if (stickToEnd !== false) stickLog(true);
     else paintJump();
   }
 
   function loadChat(id, stickToEnd) {
-    abortSession("stop");
+    if (id === store.activeId) {
+      if (stickToEnd !== false) stickLog(true);
+      input.focus();
+      setSidebarOpen(false);
+      return;
+    }
     persist();
     const chat = store.chats.find((item) => item.id === id);
     if (!chat) return;
@@ -2573,6 +2584,7 @@ function mountChat(root) {
   let stopKind = "";
   let loopBusy = false;
   let flightChatId = "";
+  let flightWorking = null;
   let gpuMode = "";
   let comfyUp = false;
   let modelLoading = false;
@@ -2903,6 +2915,7 @@ function mountChat(root) {
     }
     const activity = activityFromPrompt(outboundText);
     const working = addWorkingReply(activity);
+    flightWorking = working;
     const poll = startStatusPoll(working, activity.kind);
     let assembled = "";
     let reasoning = "";
@@ -3004,6 +3017,7 @@ function mountChat(root) {
     } else if (store.activeId === chatId) {
       persist();
     }
+    if (flightWorking === working) flightWorking = null;
     if (chatMode(store.chats.find((item) => item.id === chatId)) === "code") {
       refreshFiles();
     }
