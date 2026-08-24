@@ -72,6 +72,11 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("working.discard()", self.src)
         self.assertIn("function abortSession(kind)", self.src)
 
+    def test_finished_reply_keeps_elapsed_time(self):
+        self.assertIn("item.elapsed_s = elapsedSec", self.src)
+        self.assertIn("Replied in ${elapsed}", self.src)
+        self.assertIn("Thought for ${elapsed}", self.src)
+
 
 if __name__ == "__main__":
     unittest.main()

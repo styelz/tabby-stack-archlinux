@@ -147,6 +147,10 @@ function mountChat(root) {
       if (out.role === "assistant" && item.reasoning) {
         out.reasoning = String(item.reasoning);
       }
+      if (out.role === "assistant") {
+        const elapsed = Number(item.elapsed_s);
+        if (Number.isFinite(elapsed) && elapsed > 0) out.elapsed_s = Math.round(elapsed);
+      }
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
         out.imageData = String(item.imageData);
@@ -855,6 +859,7 @@ function mountChat(root) {
         reasoning,
         live: false,
         activity: isImage ? { kind: "image" } : undefined,
+        elapsed_s: extra && extra.elapsed_s,
       });
       attachMsgActions(turn.node, "assistant", idx, text);
       if (stick !== false) stickLog(true);
@@ -974,7 +979,7 @@ function mountChat(root) {
     return "";
   }
 
-  function addAssistantTurn({ content, reasoning, live, activity }) {
+  function addAssistantTurn({ content, reasoning, live, activity, elapsed_s }) {
     const turn = document.createElement("div");
     turn.className = live ? "chat-turn assistant is-working" : "chat-turn assistant";
     turn.setAttribute("aria-live", live ? "polite" : "off");
@@ -1043,6 +1048,10 @@ function mountChat(root) {
     const kind = (activity && activity.kind) || "";
     let statusNotes = [];
     let lastNote = "";
+    const storedElapsed = Number(elapsed_s);
+    let elapsedSec = Number.isFinite(storedElapsed) && storedElapsed > 0
+      ? Math.max(1, Math.round(storedElapsed))
+      : null;
 
     function setProcessing(on) {
       processing = Boolean(on);
@@ -1095,12 +1104,19 @@ function mountChat(root) {
         clearInterval(ticker);
         ticker = null;
       }
+      if (seconds != null) elapsedSec = seconds;
       head.hidden = false;
-      chevron.hidden = false;
-      head.classList.add("is-clickable");
-      if (head.tagName !== "BUTTON") {
-        head.setAttribute("role", "button");
-        head.tabIndex = 0;
+      const canExpand = Boolean(reasoningText);
+      chevron.hidden = !canExpand;
+      head.classList.toggle("is-clickable", canExpand);
+      if (canExpand) {
+        if (head.tagName !== "BUTTON") {
+          head.setAttribute("role", "button");
+          head.tabIndex = 0;
+        }
+      } else {
+        head.removeAttribute("role");
+        head.removeAttribute("tabindex");
       }
       if (kind === "image") {
         icon.hidden = false;
@@ -1110,13 +1126,10 @@ function mountChat(root) {
         icon.hidden = true;
         icon.classList.remove("is-done");
       }
-      const doneWord = kind === "image" ? "Generated" : "Thought";
-      if (seconds != null) {
-        const elapsed = TabbyUI.formatDuration(seconds);
-        label.textContent = kind === "image" ? `Generated in ${elapsed}` : `Thought for ${elapsed}`;
-      } else {
-        label.textContent = doneWord;
-      }
+      const elapsed = seconds != null ? TabbyUI.formatDuration(seconds) : "";
+      if (kind === "image") label.textContent = elapsed ? `Generated in ${elapsed}` : "Generated";
+      else if (reasoningText) label.textContent = elapsed ? `Thought for ${elapsed}` : "Thought";
+      else label.textContent = elapsed ? `Replied in ${elapsed}` : "Replied";
       timeEl.textContent = "";
       thought.hidden = true;
       expanded = false;
@@ -1130,8 +1143,8 @@ function mountChat(root) {
         const s = Math.floor((Date.now() - started) / 1000);
         if (s >= 1) timeEl.textContent = TabbyUI.formatDuration(s);
       }, 250);
-    } else if (reasoningText) {
-      settleThought();
+    } else if (reasoningText || elapsedSec) {
+      settleThought(elapsedSec);
       paintThought();
     } else {
       head.hidden = true;
@@ -1187,15 +1200,11 @@ function mountChat(root) {
           paintThought();
         } else if (reasoningText || statusNotes.length) {
           thought.hidden = true;
-        } else {
-          // Real answer tokens replace the working status line.
-          stopWorking();
-          head.hidden = true;
         }
         stickLog();
       },
       finish({ content: finalContent, reasoning: finalReasoning } = {}) {
-        if (finished && !live) return { reasoning: reasoningText };
+        if (finished && !live) return { reasoning: reasoningText, elapsed_s: elapsedSec };
         const alreadySettled = finished;
         finished = true;
         if (ticker) {
@@ -1211,30 +1220,26 @@ function mountChat(root) {
           foldNotesIntoThought();
         }
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
+        if (!alreadySettled) elapsedSec = seconds;
         const answer = visibleAnswerText(finalContent);
         if (answer) {
           showAnswer(displayAnswer(finalContent));
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
           showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
-        if (kind === "image" || reasoningText) {
-          if (!alreadySettled) {
-            settleThought(seconds);
-            paintThought();
-          } else if (kind === "image") {
-            icon.hidden = false;
-            icon.classList.remove("is-processing");
-            icon.classList.add("is-done");
-          } else {
-            icon.hidden = true;
-            icon.classList.remove("is-processing");
-          }
+        if (!alreadySettled) {
+          settleThought(seconds);
+          paintThought();
+        } else if (kind === "image") {
+          icon.hidden = false;
+          icon.classList.remove("is-processing");
+          icon.classList.add("is-done");
         } else {
-          head.hidden = true;
-          thought.hidden = true;
+          icon.hidden = true;
+          icon.classList.remove("is-processing");
         }
         stickLog();
-        return { reasoning: reasoningText };
+        return { reasoning: reasoningText, elapsed_s: elapsedSec };
       },
       stopClock() {
         if (ticker) {
@@ -1262,7 +1267,7 @@ function mountChat(root) {
     log.replaceChildren();
     messages.forEach((item, idx) => {
       if (item.role === "user") addBubble("user", item.content, false, null, idx, item);
-      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx);
+      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx, item);
     });
     paintEmpty();
     if (stickToEnd !== false) stickLog(true);
@@ -1828,6 +1833,7 @@ function mountChat(root) {
     const poll = startStatusPoll(working, activity.kind);
     let assembled = "";
     let reasoning = "";
+    let elapsedSec = null;
     const outbound = outboundMessages();
     const body = { messages: outbound, stream: true };
     if (settings.temperature != null) body.temperature = settings.temperature;
@@ -1898,10 +1904,12 @@ function mountChat(root) {
     } else {
       const done = working.finish({ content: assembled, reasoning });
       if (done && done.reasoning) reasoning = done.reasoning;
+      if (done && done.elapsed_s) elapsedSec = done.elapsed_s;
     }
     if (String(assembled || "").trim() || reasoning) {
       const item = { role: "assistant", content: assembled, createdAt: Date.now() };
       if (reasoning) item.reasoning = reasoning;
+      if (elapsedSec) item.elapsed_s = elapsedSec;
       appendAssistantToChat(chatId, item);
       if (store.activeId === chatId && !stoppedEmpty) {
         attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
