@@ -13,6 +13,7 @@ function mountChat(root) {
       <aside class="chat-sidebar" id="chat-sidebar">
         <div class="chat-side-head">
           <button class="btn primary" type="button" id="chat-new">New chat</button>
+          <button class="btn ghost chat-icon" type="button" id="chat-sidebar-collapse" aria-label="Hide sidebar" title="Hide sidebar">‹</button>
         </div>
         <div class="chat-side-search">
           <input id="chat-search" type="search" placeholder="Search chats" autocomplete="off" />
@@ -311,6 +312,12 @@ function mountChat(root) {
     if (sideBtn) {
       sideBtn.textContent = shell.classList.contains("is-sidebar-hidden") ? "Show sidebar" : "Hide sidebar";
     }
+    const toggleBtn = root.querySelector("#chat-sidebar-toggle");
+    if (toggleBtn) {
+      const showLabel = shell.classList.contains("is-sidebar-hidden") && !isNarrowChat();
+      toggleBtn.setAttribute("aria-label", showLabel ? "Show sidebar" : "Chats");
+      toggleBtn.title = showLabel ? "Show sidebar" : "Chats";
+    }
     paintEmpty();
   }
 
@@ -386,6 +393,20 @@ function mountChat(root) {
     shell.classList.toggle("is-sidebar-open", open);
     const backdrop = root.querySelector("#chat-backdrop");
     if (backdrop) backdrop.hidden = !open;
+  }
+
+  function isNarrowChat() {
+    return window.matchMedia("(max-width: 900px)").matches;
+  }
+
+  function setSidebarHidden(hidden) {
+    shell.classList.toggle("is-sidebar-hidden", hidden);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, hidden ? "hidden" : "shown");
+    } catch {
+      /* ignore */
+    }
+    paintToolbar();
   }
 
   function copyText(text, btn) {
@@ -2110,8 +2131,19 @@ function mountChat(root) {
     });
   }
   titleEl.addEventListener("click", () => beginRename());
+  root.querySelector("#chat-sidebar-collapse").addEventListener("click", () => {
+    if (isNarrowChat()) {
+      setSidebarOpen(false);
+      return;
+    }
+    setSidebarHidden(true);
+  });
   root.querySelector("#chat-sidebar-toggle").addEventListener("click", () => {
-    setSidebarOpen(!shell.classList.contains("is-sidebar-open"));
+    if (isNarrowChat()) {
+      setSidebarOpen(!shell.classList.contains("is-sidebar-open"));
+      return;
+    }
+    setSidebarHidden(false);
   });
   root.querySelector("#chat-backdrop").addEventListener("click", () => setSidebarOpen(false));
   if (searchEl) {
@@ -2162,13 +2194,7 @@ function mountChat(root) {
     if (act === "settings") showSettings();
     if (act === "keys") showShortcuts();
     if (act === "sidebar") {
-      shell.classList.toggle("is-sidebar-hidden");
-      try {
-        localStorage.setItem(SIDEBAR_KEY, shell.classList.contains("is-sidebar-hidden") ? "hidden" : "shown");
-      } catch {
-        /* ignore */
-      }
-      paintToolbar();
+      setSidebarHidden(!shell.classList.contains("is-sidebar-hidden"));
     }
     if (act === "delete") deleteChat(store.activeId);
   });

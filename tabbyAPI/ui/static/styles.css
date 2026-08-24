@@ -186,6 +186,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .chat-backdrop { display: none; }
 #chat-sidebar-toggle { display: none; }
+.chat-shell.is-sidebar-hidden #chat-sidebar-toggle { display: inline-grid; }
 .toolbar {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   margin-bottom: 12px;
@@ -241,8 +242,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   gap: 8px;
   padding: 12px 12px 8px;
   flex: 0 0 auto;
+  align-items: center;
 }
-.chat-side-head .btn { width: 100%; }
+.chat-side-head .btn.primary {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
 .chat-side-search {
   margin: 0 12px 8px;
   flex: 0 0 auto;
