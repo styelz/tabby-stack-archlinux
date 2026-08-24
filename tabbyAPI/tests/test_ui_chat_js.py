@@ -74,8 +74,9 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
 
     def test_finished_reply_keeps_elapsed_time(self):
         self.assertIn("item.elapsed_s = elapsedSec", self.src)
-        self.assertIn("Replied in ${elapsed}", self.src)
-        self.assertIn("Thought for ${elapsed}", self.src)
+        self.assertIn("item.status_label = statusLabel", self.src)
+        self.assertNotIn("Replied in ${elapsed}", self.src)
+        self.assertIn("timeEl.textContent = seconds != null ? TabbyUI.formatDuration(seconds) : \"\"", self.src)
 
 
 if __name__ == "__main__":

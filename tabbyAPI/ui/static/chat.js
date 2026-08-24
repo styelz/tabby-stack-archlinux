@@ -150,6 +150,7 @@ function mountChat(root) {
       if (out.role === "assistant") {
         const elapsed = Number(item.elapsed_s);
         if (Number.isFinite(elapsed) && elapsed > 0) out.elapsed_s = Math.round(elapsed);
+        if (item.status_label) out.status_label = String(item.status_label);
       }
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
@@ -860,6 +861,7 @@ function mountChat(root) {
         live: false,
         activity: isImage ? { kind: "image" } : undefined,
         elapsed_s: extra && extra.elapsed_s,
+        status_label: extra && extra.status_label,
       });
       attachMsgActions(turn.node, "assistant", idx, text);
       if (stick !== false) stickLog(true);
@@ -979,7 +981,7 @@ function mountChat(root) {
     return "";
   }
 
-  function addAssistantTurn({ content, reasoning, live, activity, elapsed_s }) {
+  function addAssistantTurn({ content, reasoning, live, activity, elapsed_s, status_label }) {
     const turn = document.createElement("div");
     turn.className = live ? "chat-turn assistant is-working" : "chat-turn assistant";
     turn.setAttribute("aria-live", live ? "polite" : "off");
@@ -1004,7 +1006,7 @@ function mountChat(root) {
     chevron.setAttribute("aria-hidden", "true");
     const label = document.createElement("span");
     label.className = "think-label";
-    label.textContent = (activity && activity.label) || "Thinking";
+    label.textContent = String(status_label || (activity && activity.label) || "Thinking");
     const timeEl = document.createElement("span");
     timeEl.className = "think-time";
     head.append(icon, chevron, label, timeEl);
@@ -1126,11 +1128,7 @@ function mountChat(root) {
         icon.hidden = true;
         icon.classList.remove("is-done");
       }
-      const elapsed = seconds != null ? TabbyUI.formatDuration(seconds) : "";
-      if (kind === "image") label.textContent = elapsed ? `Generated in ${elapsed}` : "Generated";
-      else if (reasoningText) label.textContent = elapsed ? `Thought for ${elapsed}` : "Thought";
-      else label.textContent = elapsed ? `Replied in ${elapsed}` : "Replied";
-      timeEl.textContent = "";
+      timeEl.textContent = seconds != null ? TabbyUI.formatDuration(seconds) : "";
       thought.hidden = true;
       expanded = false;
       head.classList.remove("is-open");
@@ -1204,7 +1202,9 @@ function mountChat(root) {
         stickLog();
       },
       finish({ content: finalContent, reasoning: finalReasoning } = {}) {
-        if (finished && !live) return { reasoning: reasoningText, elapsed_s: elapsedSec };
+        if (finished && !live) {
+          return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
+        }
         const alreadySettled = finished;
         finished = true;
         if (ticker) {
@@ -1239,7 +1239,7 @@ function mountChat(root) {
           icon.classList.remove("is-processing");
         }
         stickLog();
-        return { reasoning: reasoningText, elapsed_s: elapsedSec };
+        return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
       },
       stopClock() {
         if (ticker) {
@@ -1834,6 +1834,7 @@ function mountChat(root) {
     let assembled = "";
     let reasoning = "";
     let elapsedSec = null;
+    let statusLabel = "";
     const outbound = outboundMessages();
     const body = { messages: outbound, stream: true };
     if (settings.temperature != null) body.temperature = settings.temperature;
@@ -1905,11 +1906,13 @@ function mountChat(root) {
       const done = working.finish({ content: assembled, reasoning });
       if (done && done.reasoning) reasoning = done.reasoning;
       if (done && done.elapsed_s) elapsedSec = done.elapsed_s;
+      if (done && done.status_label) statusLabel = done.status_label;
     }
     if (String(assembled || "").trim() || reasoning) {
       const item = { role: "assistant", content: assembled, createdAt: Date.now() };
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
+      if (statusLabel) item.status_label = statusLabel;
       appendAssistantToChat(chatId, item);
       if (store.activeId === chatId && !stoppedEmpty) {
         attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
