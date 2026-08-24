@@ -304,6 +304,26 @@ def delete_file(username: str, chat_id: str, rel: str) -> None:
         parent = parent.parent
 
 
+def rename_file(username: str, chat_id: str, src: str, dest: str) -> str:
+    root = workspace_root(username, chat_id, create=False)
+    src_path = resolve_rel(root, src)
+    dest_path = resolve_rel(root, dest)
+    if not src_path.is_file():
+        raise FileNotFoundError(src)
+    if dest_path == src_path:
+        return src_path.relative_to(root.resolve()).as_posix()
+    if dest_path.exists():
+        raise ValueError(f"{dest} already exists.")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    src_path.rename(dest_path)
+    parent = src_path.parent
+    base = root.resolve()
+    while parent != base and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+    return dest_path.relative_to(root.resolve()).as_posix()
+
+
 def copy_bytes(username: str, chat_id: str, rel: str, data: bytes) -> str:
     raw = data if isinstance(data, (bytes, bytearray)) else bytes(data or b"")
     root = workspace_root(username, chat_id, create=True)

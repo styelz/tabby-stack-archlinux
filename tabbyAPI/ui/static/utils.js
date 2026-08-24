@@ -361,6 +361,253 @@
     return html;
   }
 
+  function copyText(text) {
+    const value = String(text || "");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(value);
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  function selectedText() {
+    const sel = window.getSelection();
+    return sel ? String(sel).trim() : "";
+  }
+
+  function selectionIn(node) {
+    if (!node) return "";
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !String(sel).trim()) return "";
+    const range = sel.getRangeAt(0);
+    if (!node.contains(range.commonAncestorContainer)) return "";
+    return String(sel).trim();
+  }
+
+  function editCut(el) {
+    if (!el || el.readOnly || el.disabled) return Promise.resolve();
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    if (start === end) return Promise.resolve();
+    return copyText(el.value.slice(start, end)).then(() => {
+      el.setRangeText("", start, end, "end");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function editPaste(el) {
+    if (!el || el.readOnly || el.disabled) return Promise.resolve();
+    const apply = (text) => {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      el.setRangeText(String(text || ""), start, end, "end");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      return navigator.clipboard.readText().then(apply);
+    }
+    return Promise.reject(new Error("Clipboard paste is not available"));
+  }
+
+  function inputMenuItems(el, extras) {
+    if (!el) return extras || [];
+    const start = el.selectionStart == null ? 0 : el.selectionStart;
+    const end = el.selectionEnd == null ? 0 : el.selectionEnd;
+    const hasSel = start !== end;
+    const hasVal = Boolean(el.value);
+    const locked = Boolean(el.readOnly || el.disabled);
+    const items = [
+      {
+        label: "Cut",
+        disabled: locked || !hasSel,
+        kbd: "Ctrl+X",
+        run: () => editCut(el),
+      },
+      {
+        label: "Copy",
+        disabled: !hasSel,
+        kbd: "Ctrl+C",
+        run: () => copyText(el.value.slice(start, end)),
+      },
+      {
+        label: "Paste",
+        disabled: locked,
+        kbd: "Ctrl+V",
+        run: () => editPaste(el).catch(() => {}),
+      },
+      {
+        label: "Select all",
+        disabled: !hasVal,
+        kbd: "Ctrl+A",
+        run: () => {
+          el.focus();
+          el.select();
+        },
+      },
+    ];
+    if (extras && extras.length) items.push({ sep: true }, ...extras);
+    return items;
+  }
+
+  let ctxMenu = null;
+  let ctxCleanup = null;
+
+  function hideContextMenu() {
+    if (ctxCleanup) {
+      ctxCleanup();
+      ctxCleanup = null;
+    }
+    if (ctxMenu) {
+      ctxMenu.remove();
+      ctxMenu = null;
+    }
+  }
+
+  function normalizeMenuItems(items) {
+    const out = [];
+    (items || []).forEach((item) => {
+      if (!item) return;
+      if (item === "—" || item === "-" || item.sep) {
+        if (out.length && !out[out.length - 1].sep) out.push({ sep: true });
+        return;
+      }
+      out.push(item);
+    });
+    while (out.length && out[out.length - 1].sep) out.pop();
+    return out;
+  }
+
+  function showContextMenu(event, items) {
+    const list = normalizeMenuItems(items);
+    if (!list.length) return false;
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    hideContextMenu();
+    const menu = document.createElement("div");
+    menu.className = "ctx-menu";
+    menu.setAttribute("role", "menu");
+    const buttons = [];
+    list.forEach((item) => {
+      if (item.sep) {
+        const hr = document.createElement("div");
+        hr.className = "ctx-sep";
+        hr.setAttribute("role", "separator");
+        menu.appendChild(hr);
+        return;
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("role", "menuitem");
+      btn.className = "ctx-item" + (item.danger ? " is-danger" : "");
+      btn.disabled = Boolean(item.disabled);
+      const label = document.createElement("span");
+      label.textContent = item.label || "";
+      btn.appendChild(label);
+      if (item.kbd) {
+        const kbd = document.createElement("kbd");
+        kbd.textContent = item.kbd;
+        btn.appendChild(kbd);
+      }
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (btn.disabled) return;
+        hideContextMenu();
+        if (typeof item.run === "function") item.run();
+      });
+      menu.appendChild(btn);
+      buttons.push(btn);
+    });
+    if (!buttons.length) return false;
+    document.body.appendChild(menu);
+    const x = event && event.clientX != null ? event.clientX : 8;
+    const y = event && event.clientY != null ? event.clientY : 8;
+    const rect = menu.getBoundingClientRect();
+    const pad = 8;
+    let left = x;
+    let top = y;
+    if (left + rect.width > window.innerWidth - pad) left = window.innerWidth - rect.width - pad;
+    if (top + rect.height > window.innerHeight - pad) top = Math.max(pad, y - rect.height);
+    if (left < pad) left = pad;
+    if (top < pad) top = pad;
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+
+    let index = buttons.findIndex((btn) => !btn.disabled);
+    const focusAt = (next) => {
+      if (!buttons.length) return;
+      index = (next + buttons.length) % buttons.length;
+      let guard = 0;
+      while (buttons[index].disabled && guard < buttons.length) {
+        index = (index + 1) % buttons.length;
+        guard += 1;
+      }
+      buttons[index].focus();
+    };
+    if (index >= 0) buttons[index].focus();
+
+    const onKey = (ev) => {
+      if (!ctxMenu) return;
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideContextMenu();
+        return;
+      }
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        focusAt(index + 1);
+      }
+      if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        focusAt(index - 1);
+      }
+      if (ev.key === "Home") {
+        ev.preventDefault();
+        focusAt(0);
+      }
+      if (ev.key === "End") {
+        ev.preventDefault();
+        focusAt(buttons.length - 1);
+      }
+    };
+    const onPointer = (ev) => {
+      if (ctxMenu && ctxMenu.contains(ev.target)) return;
+      hideContextMenu();
+    };
+    const onReposition = () => hideContextMenu();
+    const timer = setTimeout(() => {
+      document.addEventListener("pointerdown", onPointer, true);
+      document.addEventListener("keydown", onKey, true);
+      window.addEventListener("resize", onReposition);
+      window.addEventListener("scroll", onReposition, true);
+    }, 0);
+    ctxCleanup = () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", onPointer, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+    ctxMenu = menu;
+    return true;
+  }
+
   function confirmModal({ title, text, yes = "Restart", no = "Skip" } = {}) {
     return new Promise((resolve) => {
       const wrap = document.createElement("div");
@@ -480,6 +727,14 @@
     api,
     $,
     $all,
+    copyText,
+    selectedText,
+    selectionIn,
+    editCut,
+    editPaste,
+    inputMenuItems,
+    hideContextMenu,
+    showContextMenu,
     confirmModal,
     promptModal,
     escapeHtml,

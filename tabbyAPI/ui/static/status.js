@@ -79,7 +79,8 @@ function mountStatus(root) {
 
   function fact(title, value, extra = "") {
     const sub = extra ? `<span class="fact-x">${TabbyUI.escapeHtml(extra)}</span>` : "";
-    return `<div class="status-fact"><span class="fact-k">${TabbyUI.escapeHtml(title)}</span><span class="fact-v">${value}</span>${sub}</div>`;
+    const plain = `${title}: ${String(value).replace(/<[^>]+>/g, "")}${extra ? ` (${extra})` : ""}`;
+    return `<div class="status-fact" data-copy="${TabbyUI.escapeHtml(plain)}"><span class="fact-k">${TabbyUI.escapeHtml(title)}</span><span class="fact-v">${value}</span>${sub}</div>`;
   }
 
   function syncCustomFields() {
@@ -420,6 +421,20 @@ function mountStatus(root) {
     });
   };
   window.addEventListener("resize", onResize);
+
+  cards.addEventListener("contextmenu", (event) => {
+    const factEl = event.target.closest(".status-fact");
+    if (!factEl || !cards.contains(factEl)) return;
+    const one = factEl.dataset.copy || factEl.innerText || "";
+    const all = Array.from(cards.querySelectorAll(".status-fact"))
+      .map((node) => node.dataset.copy || node.innerText || "")
+      .filter(Boolean)
+      .join("\n");
+    TabbyUI.showContextMenu(event, [
+      { label: "Copy", run: () => TabbyUI.copyText(one) },
+      { label: "Copy all facts", run: () => TabbyUI.copyText(all) },
+    ]);
+  });
 
   setActivePreset();
   refresh().catch((err) => {

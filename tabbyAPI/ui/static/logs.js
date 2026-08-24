@@ -268,11 +268,69 @@ function mountLogs(root) {
     };
   }
 
+  function visibleLogText() {
+    return filterQ
+      ? buffer.filter((line) => line.toLowerCase().includes(filterQ)).join("\n")
+      : buffer.join("\n");
+  }
+
+  function lineFromEvent(event) {
+    const node = event.target.closest("span");
+    if (node && view.contains(node)) return node.textContent || "";
+    return TabbyUI.selectedText();
+  }
+
+  function setPaused(next) {
+    paused = Boolean(next);
+    const btn = root.querySelector("#log-pause");
+    if (btn) btn.textContent = paused ? "Resume" : "Pause";
+    if (paused) {
+      disconnect();
+      state.textContent = "paused";
+    } else {
+      connect();
+      renderFull();
+    }
+  }
+
+  function clearLogs() {
+    buffer = [];
+    pending = [];
+    seenCatchUp.clear();
+    view.replaceChildren();
+  }
+
+  view.addEventListener("contextmenu", (event) => {
+    const line = lineFromEvent(event);
+    const picked = TabbyUI.selectionIn(view) || TabbyUI.selectedText();
+    TabbyUI.showContextMenu(event, [
+      picked ? { label: "Copy selection", run: () => TabbyUI.copyText(picked) } : null,
+      line ? { label: "Copy line", run: () => TabbyUI.copyText(line) } : null,
+      { label: "Copy all", disabled: !buffer.length, run: () => TabbyUI.copyText(visibleLogText()) },
+      { sep: true },
+      { label: paused ? "Resume" : "Pause", run: () => setPaused(!paused) },
+      { label: "Jump to latest", run: () => {
+        stick = true;
+        view.scrollTop = view.scrollHeight;
+      } },
+      { label: "Clear", danger: true, run: () => clearLogs() },
+    ]);
+  });
+
   view.addEventListener("scroll", () => {
     stick = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
   }, { passive: true });
 
   let filterTimer = 0;
+  filter.addEventListener("contextmenu", (event) => {
+    TabbyUI.showContextMenu(event, TabbyUI.inputMenuItems(filter, [
+      { label: "Clear filter", disabled: !filter.value, run: () => {
+        filter.value = "";
+        filter.dispatchEvent(new Event("input", { bubbles: true }));
+        filter.focus();
+      } },
+    ]));
+  });
   filter.addEventListener("input", () => {
     filterQ = (filter.value || "").toLowerCase();
     if (filterTimer) clearTimeout(filterTimer);
@@ -282,22 +340,11 @@ function mountLogs(root) {
     }, 120);
   });
 
-  root.querySelector("#log-pause").addEventListener("click", (event) => {
-    paused = !paused;
-    event.currentTarget.textContent = paused ? "Resume" : "Pause";
-    if (paused) {
-      disconnect();
-      state.textContent = "paused";
-    } else {
-      connect();
-      renderFull();
-    }
+  root.querySelector("#log-pause").addEventListener("click", () => {
+    setPaused(!paused);
   });
   root.querySelector("#log-clear").addEventListener("click", () => {
-    buffer = [];
-    pending = [];
-    seenCatchUp.clear();
-    view.replaceChildren();
+    clearLogs();
   });
   root.querySelector("#log-latest").addEventListener("click", () => {
     stick = true;

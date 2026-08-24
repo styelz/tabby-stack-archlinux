@@ -16,6 +16,7 @@
   }
 
   function show(name) {
+    if (window.TabbyUI && TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
     const key = pages[name] ? name : "chat";
     Object.entries(pages).forEach(([id, page]) => {
       const on = id === key;
@@ -33,6 +34,25 @@
     });
     const title = document.getElementById("header-title");
     if (title) title.textContent = pages[key].title;
+  }
+
+  const gpuChip = document.getElementById("gpu-chip");
+  if (gpuChip) {
+    gpuChip.addEventListener("contextmenu", (event) => {
+      TabbyUI.showContextMenu(event, [
+        { label: "Copy status", run: () => TabbyUI.copyText(gpuChip.textContent || "") },
+      ]);
+    });
+  }
+  const userChip = document.getElementById("user-chip");
+  if (userChip) {
+    userChip.addEventListener("contextmenu", (event) => {
+      const name = userChip.textContent || "";
+      if (!name) return;
+      TabbyUI.showContextMenu(event, [
+        { label: "Copy username", run: () => TabbyUI.copyText(name) },
+      ]);
+    });
   }
 
   document.getElementById("logout-btn").addEventListener("click", async () => {

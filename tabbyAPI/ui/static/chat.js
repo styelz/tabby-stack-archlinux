@@ -1306,6 +1306,7 @@ function mountChat(root) {
   function hidePopovers() {
     hideMoreMenu();
     hideAttachMenu();
+    if (TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
   }
 
   function setSidebarOpen(open) {
@@ -1347,21 +1348,75 @@ function mountChat(root) {
         btn.textContent = prev;
       }, 1200);
     };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(value).then(done).catch(fail);
-      return;
+    TabbyUI.copyText(value).then(done).catch(fail);
+  }
+
+  function chatMessages(id) {
+    const want = id || store.activeId;
+    if (want === store.activeId) return messages;
+    const chat = store.chats.find((item) => item.id === want);
+    return chat ? chat.messages : [];
+  }
+
+  function insertCompose(text, { replace = false } = {}) {
+    const chunk = String(text || "");
+    if (!chunk) return;
+    const cur = input.value;
+    setCompose(replace ? chunk : cur ? `${cur.replace(/\s+$/, "")}\n\n${chunk}` : chunk);
+    input.focus();
+  }
+
+  function quoteCompose(text) {
+    const quoted = String(text || "")
+      .trim()
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+    insertCompose(quoted);
+  }
+
+  function messagePlain(idx) {
+    const item = messages[idx];
+    if (!item) return "";
+    if (item.role === "assistant" && TabbyUI.formatAssistantContent) {
+      return TabbyUI.formatAssistantContent(item.content);
     }
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = value;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      done();
-    } catch {
-      fail();
-    }
+    return String(item.content || "");
+  }
+
+  function langExt(lang) {
+    const key = String(lang || "").trim().toLowerCase();
+    const map = {
+      html: ".html",
+      htm: ".html",
+      css: ".css",
+      js: ".js",
+      javascript: ".js",
+      mjs: ".mjs",
+      json: ".json",
+      jsx: ".jsx",
+      ts: ".ts",
+      typescript: ".ts",
+      tsx: ".tsx",
+      md: ".md",
+      markdown: ".md",
+      py: ".py",
+      python: ".py",
+      sh: ".sh",
+      bash: ".sh",
+      shell: ".sh",
+      yml: ".yml",
+      yaml: ".yaml",
+      svg: ".svg",
+      xml: ".xml",
+      csv: ".csv",
+      php: ".php",
+      toml: ".toml",
+      ini: ".ini",
+      conf: ".conf",
+      txt: ".txt",
+    };
+    return map[key] || ".txt";
   }
 
   function lastAssistantIndex() {
@@ -1523,8 +1578,8 @@ function mountChat(root) {
     });
   }
 
-  function conversationMarkdown() {
-    return messages
+  function conversationMarkdown(id) {
+    return chatMessages(id)
       .filter((item) => item.role === "user" || item.role === "assistant")
       .map((item) => {
         const who = item.role === "user" ? "You" : "Assistant";
@@ -1552,10 +1607,13 @@ function mountChat(root) {
     return title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "chat";
   }
 
-  function exportChat() {
-    const blob = new Blob([conversationMarkdown()], { type: "text/markdown;charset=utf-8" });
+  function exportChat(id) {
+    const chat = store.chats.find((item) => item.id === (id || store.activeId));
+    const title = (chat && chat.title) || "chat";
+    const stem = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "chat";
+    const blob = new Blob([conversationMarkdown(id)], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    saveUrl(url, `${downloadStem()}.md`);
+    saveUrl(url, `${stem}.md`);
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 
@@ -1819,6 +1877,208 @@ function mountChat(root) {
     }
   }
 
+  function retargetPath(from, to) {
+    if (!from || !to || from === to) return;
+    const tab = findTab(from);
+    if (tab) {
+      tab.path = to;
+      if (activeTab === from) activeTab = to;
+      if (editorPane && editorPane.dataset.key === from) editorPane.dataset.key = to;
+    }
+    if (filesSelected === from) filesSelected = to;
+    pendingFiles.forEach((file) => {
+      if (file.path === from) file.path = to;
+    });
+  }
+
+  function nextCopyPath(path) {
+    const slash = String(path || "").lastIndexOf("/");
+    const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? path.slice(slash + 1) : path;
+    const at = name.lastIndexOf(".");
+    const stem = at > 0 ? name.slice(0, at) : name;
+    const ext = at > 0 ? name.slice(at) : "";
+    const names = new Set(filesListing.map((row) => row.path));
+    for (let i = 1; i < 100; i += 1) {
+      const dest = `${dir}${stem}-copy${i === 1 ? "" : `-${i}`}${ext}`;
+      if (!names.has(dest)) return dest;
+    }
+    return `${dir}${stem}-copy-${Date.now()}${ext}`;
+  }
+
+  async function renameProjectFile(path) {
+    const raw = await TabbyUI.promptModal({
+      title: "Rename file",
+      text: "Relative path in this chat's project.",
+      label: "Path",
+      yes: "Rename",
+      value: path,
+    });
+    if (raw == null) return;
+    const dest = String(raw).trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!dest || dest === path) return;
+    if (dest.includes("..") || dest.startsWith("~")) {
+      addBubble("assistant", "Error: Enter a relative path such as styles.css.");
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/rename`,
+        { method: "POST", body: { path, to: dest } }
+      );
+      retargetPath(path, data.path || dest);
+      applyListing(data);
+      paintAttach();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function duplicateProjectFile(path) {
+    const dest = nextCopyPath(path);
+    try {
+      const response = await fetch(fileUrl(store.activeId, path), { credentials: "same-origin" });
+      if (!response.ok) throw new Error("Could not read that file.");
+      const bytesB64 = await blobToBase64(await response.blob());
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/file`,
+        { method: "POST", body: { path: dest, bytes_b64: bytesB64 } }
+      );
+      applyListing(data);
+      const written = data.path || dest;
+      if (TEXT_SUFFIXES.has(fileSuffix(written))) openFileTab(written);
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function deleteProjectFile(path) {
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete file",
+      text: `Delete “${path}”? This cannot be undone.`,
+      yes: "Delete",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
+        { method: "DELETE" }
+      );
+      filesListing = Array.isArray(data.files) ? data.files : [];
+      filesEntry = typeof data.entry === "string" ? data.entry : "";
+      noteChatFiles(store.activeId, filesListing.length > 0);
+      const open = findTab(path);
+      if (open) open.dirty = false;
+      if (filesSelected === path) filesSelected = "";
+      pendingFiles = pendingFiles.filter((file) => file.path !== path);
+      paintAttach();
+      paintFiles();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function saveCodeAsFile(code, lang) {
+    const ext = langExt(lang);
+    const suggested = defaultNewPath().replace(/untitled(?:-\d+)?\.txt$/, `snippet${ext}`);
+    const raw = await TabbyUI.promptModal({
+      title: "Save as file",
+      text: "Relative path in this chat's project.",
+      label: "Path",
+      yes: "Save",
+      value: suggested.endsWith(ext) ? suggested : `snippet${ext}`,
+      placeholder: `snippet${ext}`,
+    });
+    if (raw == null) return;
+    let path = String(raw).trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!path || path.includes("..") || path.startsWith("~")) {
+      addBubble("assistant", "Error: Enter a relative path such as snippet.js.");
+      return;
+    }
+    if (!fileSuffix(path)) path = `${path}${ext}`;
+    if (!TEXT_SUFFIXES.has(fileSuffix(path))) {
+      addBubble("assistant", "Error: Use a text file type such as .html, .css, .js, or .txt.");
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
+        { method: "PUT", body: { contents: String(code || "") } }
+      );
+      applyListing(data);
+      openFileTab(data.path || path);
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function closeOtherTabs(path) {
+    const keep = path || activeTab;
+    const drop = openTabs.filter((tab) => tab.path !== keep).map((tab) => tab.path);
+    for (const item of drop) {
+      await closeTab(item);
+    }
+  }
+
+  async function closeAllTabs() {
+    const drop = openTabs.map((tab) => tab.path);
+    for (const item of drop) {
+      await closeTab(item);
+    }
+  }
+
+  function downloadZip() {
+    if (!filesListing.length) return;
+    fetch(TabbyUI.path(`workspace/${encodeURIComponent(store.activeId)}/zip`), {
+      credentials: "same-origin",
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Could not download the zip.");
+        return response.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        saveUrl(url, `${downloadStem()}.zip`);
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      })
+      .catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
+  }
+
+  async function clearProjectFiles() {
+    const yes = await TabbyUI.confirmModal({
+      title: "Clear files",
+      text: "Delete every file in this chat's project?",
+      yes: "Clear",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    try {
+      await TabbyUI.api(`workspace/${encodeURIComponent(store.activeId)}`, { method: "DELETE" });
+      filesListing = [];
+      filesSelected = "";
+      filesEntry = "";
+      pendingFiles = [];
+      resetTabs();
+      noteChatFiles(store.activeId, false);
+      paintAttach();
+      paintFiles();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function pasteCompose() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) insertCompose(text);
+    } catch {
+      /* clipboard permission denied */
+    }
+  }
+
   async function uploadLocalFiles(fileList, { attach = false, open = false } = {}) {
     const chatId = store.activeId;
     const files = Array.from(fileList || []).filter(Boolean);
@@ -1986,6 +2246,7 @@ function mountChat(root) {
         "<li><span>New chat</span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></li>" +
         "<li><span>Slash commands</span><kbd>/</kbd></li>" +
         "<li><span>Save the open file</span><kbd>Ctrl</kbd>+<kbd>S</kbd></li>" +
+        "<li><span>More actions</span><kbd>Right-click</kbd></li>" +
         "</ul>",
     });
   }
@@ -2048,6 +2309,7 @@ function mountChat(root) {
         elapsed_s: extra && extra.elapsed_s,
         status_label: extra && extra.status_label,
       });
+      if (idx != null && idx >= 0) turn.node.dataset.msgIdx = String(idx);
       attachSwitchLlm(turn.bubble || turn.node, text);
       attachMsgActions(turn.node, "assistant", idx, text);
       if (stick !== false) stickLog(true);
@@ -2055,6 +2317,7 @@ function mountChat(root) {
     }
     const row = document.createElement("div");
     row.className = "chat-row";
+    if (idx != null && idx >= 0) row.dataset.msgIdx = String(idx);
     const node = document.createElement("div");
     node.className = `bubble ${role}`;
     node.innerHTML = TabbyUI.renderMarkdown(text);
@@ -3784,6 +4047,307 @@ function mountChat(root) {
     }
   });
 
+  function openCtx(event, items) {
+    hideMoreMenu();
+    hideAttachMenu();
+    hideHistoryMenu();
+    hideMenu();
+    return TabbyUI.showContextMenu(event, items);
+  }
+
+  function busyLocked() {
+    return Boolean(inFlight || modelLoading);
+  }
+
+  function navMenuItems(id) {
+    const chat = store.chats.find((item) => item.id === id);
+    if (!chat) return [];
+    return [
+      { label: "Open", run: () => loadChat(id) },
+      { label: "Rename", run: () => { loadChat(id); beginRename(id); } },
+      { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) },
+      { sep: true },
+      { label: "Copy conversation", run: () => copyText(conversationMarkdown(id)) },
+      { label: "Export markdown", run: () => exportChat(id) },
+      { sep: true },
+      { label: "Delete chat", danger: true, run: () => deleteChat(id) },
+    ];
+  }
+
+  function messageMenuItems(idx, extra) {
+    const item = messages[idx];
+    if (!item) return extra || [];
+    const text = messagePlain(idx);
+    const items = [];
+    const picked = extra && extra.picked;
+    if (picked) items.push({ label: "Copy selection", run: () => copyText(picked) });
+    items.push({ label: picked ? "Copy message" : "Copy", run: () => copyText(text) });
+    if (text) items.push({ label: "Quote in compose", run: () => quoteCompose(text) });
+    if (item.role === "user") {
+      items.push(
+        { label: "Edit", disabled: busyLocked(), run: () => beginEdit(idx) },
+        { label: "Delete turn", danger: true, disabled: busyLocked(), run: () => deleteTurn(idx) }
+      );
+    } else {
+      if (idx === lastAssistantIndex()) {
+        items.push({ label: "Regenerate", disabled: busyLocked(), run: () => regenerateLast() });
+      }
+      if (/^Error:/i.test(String(item.content || ""))) {
+        items.push({ label: "Retry", disabled: busyLocked(), run: () => regenerateLast() });
+      }
+    }
+    if (canSplit(idx)) {
+      items.push({ label: "Split to new chat", disabled: busyLocked(), run: () => splitAfterTurn(idx) });
+    }
+    if (extra && extra.after) items.push({ sep: true }, ...extra.after);
+    return items;
+  }
+
+  function fileMenuItems(path) {
+    const attached = isPendingFile(path);
+    const row = filesListing.find((item) => item.path === path);
+    return [
+      { label: "Open", run: () => openFileTab(path) },
+      { label: attached ? "Remove from chat" : "Add to chat", run: () => {
+        attachProjectFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { sep: true },
+      { label: "Copy path", run: () => copyText(path) },
+      { label: "Insert path", run: () => insertCompose(path) },
+      { label: "Download", run: () => saveUrl(fileUrl(store.activeId, path), path.split("/").pop() || "file") },
+      { sep: true },
+      { label: "Rename", run: () => renameProjectFile(path) },
+      { label: "Duplicate", run: () => duplicateProjectFile(path) },
+      { label: "Delete", danger: true, run: () => deleteProjectFile(path) },
+      row && row.page ? { sep: true } : null,
+      row && row.page ? { label: "Open in site", run: () => openSite() } : null,
+    ];
+  }
+
+  function filesPaneMenuItems() {
+    return [
+      { label: "New file", run: () => {
+        createUserFile().catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { label: "Upload files", run: () => {
+        uploadWantsAttach = false;
+        if (uploadInput) uploadInput.click();
+      } },
+      { label: "Refresh", run: () => refreshFiles() },
+      { sep: true },
+      { label: "Download zip", disabled: !filesListing.length, run: () => downloadZip() },
+      { label: "Clear files", danger: true, disabled: !filesListing.length, run: () => clearProjectFiles() },
+    ];
+  }
+
+  function tabMenuItems(path) {
+    if (!path) {
+      return [
+        { label: "Show chat", run: () => activateTab("") },
+        openTabs.length ? { label: "Close all files", run: () => closeAllTabs() } : null,
+      ];
+    }
+    const tab = findTab(path);
+    return [
+      { label: "Open", run: () => activateTab(path) },
+      { label: "Close", run: () => closeTab(path) },
+      { label: "Close others", disabled: openTabs.length < 2, run: () => closeOtherTabs(path) },
+      { label: "Close all", run: () => closeAllTabs() },
+      { sep: true },
+      { label: "Copy path", run: () => copyText(path) },
+      { label: "Download", run: () => saveUrl(fileUrl(store.activeId, path), path.split("/").pop() || "file") },
+      tab && tab.dirty ? { label: "Revert", run: () => { activateTab(path); revertTab(); } } : null,
+    ];
+  }
+
+  function composeExtras() {
+    return [
+      { label: "Clear", disabled: !input.value, run: () => { setCompose(""); input.focus(); } },
+      { label: "Attach image", run: () => { if (fileInput) fileInput.click(); } },
+      activeMode() === "code"
+        ? { label: "Attach project file", run: () => toggleAttachMenu() }
+        : null,
+    ];
+  }
+
+  function onChatContextMenu(event) {
+    if (event.target.closest(".dialog-modal, .chat-title-edit, .ctx-menu")) return;
+
+    const field = event.target.closest("textarea, input");
+    if (field && field.closest(".chat-compose")) {
+      openCtx(event, TabbyUI.inputMenuItems(field, composeExtras()));
+      return;
+    }
+    if (field && field.id === "chat-search") {
+      openCtx(event, TabbyUI.inputMenuItems(field, [
+        { label: "Clear", disabled: !field.value, run: () => { field.value = ""; renderSidebar(); field.focus(); } },
+      ]));
+      return;
+    }
+    if (field && field.classList.contains("chat-files-edit")) {
+      const tab = activeTabRow();
+      openCtx(event, TabbyUI.inputMenuItems(field, [
+        { label: "Save", disabled: !tab || !tab.dirty || tab.busy, kbd: "Ctrl+S", run: () => saveTab() },
+        { label: "Revert", disabled: !tab || !tab.dirty, run: () => revertTab() },
+        tab ? { label: "Copy path", run: () => copyText(tab.path) } : null,
+        tab ? { label: "Download", run: () => saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file") } : null,
+      ]));
+      return;
+    }
+    if (field) return;
+
+    const chip = event.target.closest(".chat-attach-chip");
+    if (chip && chip.dataset.key) {
+      openCtx(event, [
+        { label: "Remove attachment", run: () => {
+          detachPending(chip.dataset.key);
+          input.focus();
+        } },
+      ]);
+      return;
+    }
+
+    const nav = event.target.closest(".chat-nav");
+    if (nav && navList.contains(nav) && nav.dataset.id) {
+      openCtx(event, navMenuItems(nav.dataset.id));
+      return;
+    }
+    if (event.target.closest("#chat-nav-list, #chat-sidebar")) {
+      openCtx(event, [
+        { label: "New chat", run: () => startNewChat() },
+        { label: "Search chats", kbd: "Ctrl+K", run: () => { if (searchEl) { searchEl.focus(); searchEl.select(); } } },
+        { label: "Clear history", danger: true, run: () => clearHistory() },
+      ]);
+      return;
+    }
+
+    const fileRow = event.target.closest(".chat-file");
+    if (fileRow && filesTree && filesTree.contains(fileRow) && fileRow.dataset.path) {
+      filesSelected = fileRow.dataset.path;
+      paintFilesTree();
+      openCtx(event, fileMenuItems(fileRow.dataset.path));
+      return;
+    }
+    if (event.target.closest("#chat-files")) {
+      openCtx(event, filesPaneMenuItems());
+      return;
+    }
+
+    const tabEl = event.target.closest("[data-tab]");
+    if (tabEl && tabsBar && tabsBar.contains(tabEl)) {
+      openCtx(event, tabMenuItems(tabEl.dataset.tab));
+      return;
+    }
+
+    const code = event.target.closest(".md-code");
+    if (code && log.contains(code)) {
+      const body = code.querySelector("code");
+      const text = body ? body.textContent || "" : "";
+      const lang = ((code.querySelector(".md-code-lang") || {}).textContent || "").trim();
+      const picked = TabbyUI.selectionIn(code);
+      openCtx(event, [
+        picked ? { label: "Copy selection", run: () => copyText(picked) } : null,
+        { label: "Copy code", run: () => copyText(text) },
+        { label: "Copy as markdown", run: () => copyText("```" + lang + "\n" + text.replace(/\n$/, "") + "\n```") },
+        { label: "Insert into compose", run: () => insertCompose(text) },
+        activeMode() === "code" ? { label: "Save as file", run: () => saveCodeAsFile(text, lang) } : null,
+      ]);
+      return;
+    }
+
+    const img = event.target.closest("img");
+    if (img && log.contains(img) && img.src) {
+      const href = img.src;
+      const name = (img.alt && img.alt !== "Attached image") ? img.alt : "image.png";
+      openCtx(event, [
+        { label: "Open image", run: () => window.open(href, "_blank", "noreferrer") },
+        { label: "Copy image URL", run: () => copyText(href) },
+        { label: "Download", run: () => saveUrl(href, name.split("/").pop() || "image.png") },
+      ]);
+      return;
+    }
+
+    const link = event.target.closest("a[href]");
+    if (link && log.contains(link)) {
+      const href = link.href;
+      openCtx(event, [
+        { label: "Open link", run: () => window.open(href, "_blank", "noreferrer") },
+        { label: "Copy URL", run: () => copyText(href) },
+      ]);
+      return;
+    }
+
+    const working = event.target.closest(".chat-turn.is-working");
+    if (working && log.contains(working)) {
+      const bubble = working.querySelector(".bubble");
+      const text = bubble ? bubble.innerText || "" : "";
+      openCtx(event, [
+        { label: "Stop", danger: true, run: () => abortSession("stop") },
+        text ? { label: "Copy", run: () => copyText(text) } : null,
+      ]);
+      return;
+    }
+
+    const msg = event.target.closest("[data-msg-idx]");
+    if (msg && log.contains(msg)) {
+      const idx = Number(msg.dataset.msgIdx);
+      const picked = TabbyUI.selectionIn(msg);
+      openCtx(event, messageMenuItems(idx, { picked }));
+      return;
+    }
+
+    if (event.target.closest("#chat-title")) {
+      const chat = activeChat();
+      openCtx(event, [
+        { label: "Rename", run: () => beginRename() },
+        chat ? { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin() } : null,
+        { label: "Copy conversation", run: () => copyText(conversationMarkdown()) },
+        { label: "Export markdown", run: () => exportChat() },
+        { sep: true },
+        { label: "Delete this chat", danger: true, run: () => deleteChat(store.activeId) },
+      ]);
+      return;
+    }
+
+    if (event.target.closest("#chat-queue")) {
+      openCtx(event, [
+        { label: "Steer now", disabled: !(inFlight && queuedText), run: () => {
+          if (steerBtn) steerBtn.click();
+        } },
+        { label: "Clear queue", run: () => {
+          queuedText = "";
+          paintCompose();
+        } },
+      ]);
+      return;
+    }
+
+    if (event.target.closest("#chat-editor")) {
+      const tab = activeTabRow();
+      openCtx(event, [
+        tab ? { label: "Save", disabled: !tab.dirty || tab.busy, kbd: "Ctrl+S", run: () => saveTab() } : null,
+        tab ? { label: "Revert", disabled: !tab.dirty, run: () => revertTab() } : null,
+        tab ? { label: "Copy path", run: () => copyText(tab.path) } : null,
+        tab ? { label: "Download", run: () => saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file") } : null,
+        { sep: true },
+        { label: "Close file", disabled: !tab, run: () => closeTab(activeTab) },
+      ]);
+      return;
+    }
+
+    if (event.target.closest("#chat-log-wrap, #chat-empty")) {
+      const picked = TabbyUI.selectedText();
+      openCtx(event, [
+        picked ? { label: "Copy selection", run: () => copyText(picked) } : null,
+        { label: "Paste into compose", run: () => pasteCompose() },
+        { label: "New chat", kbd: "Ctrl+Shift+O", run: () => startNewChat() },
+        { label: "Keyboard shortcuts", run: () => showShortcuts() },
+      ]);
+    }
+  }
+
+  shell.addEventListener("contextmenu", onChatContextMenu);
+
   log.addEventListener("click", (event) => {
     const actBtn = event.target.closest("[data-act]");
     if (actBtn && log.contains(actBtn)) {
@@ -3918,28 +4482,7 @@ function mountChat(root) {
         return;
       }
       if (btn.dataset.file === "delete") {
-        const yes = await TabbyUI.confirmModal({
-          title: "Delete file",
-          text: `Delete “${path}”? This cannot be undone.`,
-          yes: "Delete",
-          no: "Cancel",
-        });
-        if (!yes) return;
-        try {
-          const data = await TabbyUI.api(
-            `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
-            { method: "DELETE" }
-          );
-          filesListing = Array.isArray(data.files) ? data.files : [];
-          filesEntry = typeof data.entry === "string" ? data.entry : "";
-          noteChatFiles(store.activeId, filesListing.length > 0);
-          const open = findTab(path);
-          if (open) open.dirty = false;
-          if (filesSelected === path) filesSelected = "";
-          paintFiles();
-        } catch (err) {
-          addBubble("assistant", `Error: ${err.message}`);
-        }
+        deleteProjectFile(path);
       }
     });
   }
@@ -4039,43 +4582,10 @@ function mountChat(root) {
     filesRefreshBtn.addEventListener("click", () => refreshFiles());
   }
   if (filesZipBtn) {
-    filesZipBtn.addEventListener("click", async () => {
-      if (!filesListing.length) return;
-      try {
-        const response = await fetch(TabbyUI.path(`workspace/${encodeURIComponent(store.activeId)}/zip`), {
-          credentials: "same-origin",
-        });
-        if (!response.ok) throw new Error("Could not download the zip.");
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        saveUrl(url, `${downloadStem()}.zip`);
-        setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      } catch (err) {
-        addBubble("assistant", `Error: ${err.message}`);
-      }
-    });
+    filesZipBtn.addEventListener("click", () => downloadZip());
   }
   if (filesClearBtn) {
-    filesClearBtn.addEventListener("click", async () => {
-      const yes = await TabbyUI.confirmModal({
-        title: "Clear files",
-        text: "Delete every file in this chat's project?",
-        yes: "Clear",
-        no: "Cancel",
-      });
-      if (!yes) return;
-      try {
-        await TabbyUI.api(`workspace/${encodeURIComponent(store.activeId)}`, { method: "DELETE" });
-        filesListing = [];
-        filesSelected = "";
-        filesEntry = "";
-        resetTabs();
-        noteChatFiles(store.activeId, false);
-        paintFiles();
-      } catch (err) {
-        addBubble("assistant", `Error: ${err.message}`);
-      }
-    });
+    filesClearBtn.addEventListener("click", () => clearProjectFiles());
   }
   emptyEl.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-suggest]");

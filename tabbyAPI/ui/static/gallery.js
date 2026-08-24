@@ -155,6 +155,82 @@ function mountGallery(root) {
     modalImg.removeAttribute("src");
   }
 
+  function imageUrl(fig) {
+    const link = fig && fig.querySelector("a.open");
+    return (link && (link.dataset.full || link.href)) || "";
+  }
+
+  function downloadNamed(url, name) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name || "image.png";
+    link.rel = "noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function deleteNames(names) {
+    if (!names.length) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete images",
+      text: `Delete ${names.length} image(s)?`,
+      yes: "Delete",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    try {
+      await TabbyUI.api("gallery/delete", { method: "POST", body: { names } });
+      await load(page);
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  grid.addEventListener("contextmenu", (event) => {
+    const fig = event.target.closest("figure.shot");
+    if (!fig || !grid.contains(fig)) return;
+    const name = fig.dataset.name || "";
+    const url = imageUrl(fig);
+    const box = fig.querySelector(".pick input");
+    const on = Boolean(box && box.checked);
+    TabbyUI.showContextMenu(event, [
+      { label: "Open", run: () => {
+        modalImg.src = url;
+        modalName.textContent = name;
+        modalOpen.href = url;
+        modal.classList.add("is-open");
+      } },
+      { label: "Open original", run: () => window.open(url, "_blank", "noreferrer") },
+      { label: "Copy URL", run: () => TabbyUI.copyText(url) },
+      { label: "Copy name", run: () => TabbyUI.copyText(name) },
+      { label: "Download", run: () => downloadNamed(url, name) },
+      { sep: true },
+      { label: on ? "Deselect" : "Select", run: () => {
+        if (!box) return;
+        box.checked = !on;
+        lastIndex = Number(fig.dataset.index) || lastIndex;
+        paint();
+      } },
+      { label: "Delete", danger: true, run: () => deleteNames([name]) },
+    ]);
+  });
+
+  modal.addEventListener("contextmenu", (event) => {
+    if (!modal.classList.contains("is-open")) return;
+    const name = modalName.textContent || "";
+    const url = modalImg.getAttribute("src") || modalOpen.href || "";
+    if (!url) return;
+    TabbyUI.showContextMenu(event, [
+      { label: "Open original", run: () => window.open(url, "_blank", "noreferrer") },
+      { label: "Copy URL", run: () => TabbyUI.copyText(url) },
+      { label: "Copy name", run: () => TabbyUI.copyText(name) },
+      { label: "Download", run: () => downloadNamed(url, name) },
+      { sep: true },
+      { label: "Close", run: () => closeModal() },
+    ]);
+  });
+
   grid.addEventListener("click", (event) => {
     if (event.target.closest(".pick")) return;
     const link = event.target.closest("a.open");

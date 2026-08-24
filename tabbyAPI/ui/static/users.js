@@ -100,40 +100,55 @@ function mountUsers(root) {
     }
   });
 
+  async function resetPassword(username) {
+    const password = await TabbyUI.promptModal({
+      title: "Reset password",
+      text: `New password for ${username}.`,
+      label: "Password",
+      type: "password",
+      minlength: 8,
+      yes: "Save",
+      no: "Cancel",
+    });
+    if (!password) return;
+    await TabbyUI.api(`users/${encodeURIComponent(username)}/password`, {
+      method: "POST",
+      body: { password },
+    });
+    showOk(`Password updated for ${username}.`);
+  }
+
+  async function deleteUser(username) {
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete account",
+      text: `Delete ${username}? Their chats are removed. Gallery files stay for admin.`,
+      yes: "Delete",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    await TabbyUI.api(`users/${encodeURIComponent(username)}`, { method: "DELETE" });
+    showOk(`Deleted ${username}.`);
+    await load();
+  }
+
+  body.addEventListener("contextmenu", (event) => {
+    const row = event.target.closest("tr[data-name]");
+    if (!row || !body.contains(row)) return;
+    const username = row.dataset.name || "";
+    const admin = Boolean(row.querySelector(".users-actions .muted"));
+    TabbyUI.showContextMenu(event, [
+      { label: "Copy username", run: () => TabbyUI.copyText(username) },
+      admin ? null : { label: "Reset password", run: () => resetPassword(username).catch((exc) => showError(exc.message || "Request failed.")) },
+      admin ? null : { label: "Delete", danger: true, run: () => deleteUser(username).catch((exc) => showError(exc.message || "Request failed.")) },
+    ]);
+  });
+
   body.addEventListener("click", async (event) => {
     const reset = event.target.closest("[data-reset]");
     const del = event.target.closest("[data-del]");
     try {
-      if (reset) {
-        const username = reset.dataset.reset;
-        const password = await TabbyUI.promptModal({
-          title: "Reset password",
-          text: `New password for ${username}.`,
-          label: "Password",
-          type: "password",
-          minlength: 8,
-          yes: "Save",
-          no: "Cancel",
-        });
-        if (!password) return;
-        await TabbyUI.api(`users/${encodeURIComponent(username)}/password`, {
-          method: "POST",
-          body: { password },
-        });
-        showOk(`Password updated for ${username}.`);
-      } else if (del) {
-        const username = del.dataset.del;
-        const yes = await TabbyUI.confirmModal({
-          title: "Delete account",
-          text: `Delete ${username}? Their chats are removed. Gallery files stay for admin.`,
-          yes: "Delete",
-          no: "Cancel",
-        });
-        if (!yes) return;
-        await TabbyUI.api(`users/${encodeURIComponent(username)}`, { method: "DELETE" });
-        showOk(`Deleted ${username}.`);
-        await load();
-      }
+      if (reset) await resetPassword(reset.dataset.reset);
+      else if (del) await deleteUser(del.dataset.del);
     } catch (exc) {
       showError(exc.message || "Request failed.");
     }

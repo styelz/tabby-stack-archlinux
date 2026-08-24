@@ -138,7 +138,7 @@ async def ui_status(request: Request, _user: str = Depends(require_ui_user)):
     from ui.metrics import ensure_metrics_sampler
 
     ensure_metrics_sampler()
-    return await stack_status(request)
+    return await stack_status(request, username=_user)
 
 
 @router.get("/metrics", include_in_schema=False)
@@ -446,6 +446,32 @@ async def ui_workspace_delete_file(
     except FileNotFoundError as exc:
         raise HTTPException(404, "File not found.") from exc
     return {"ok": True, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
+@router.post("/workspace/{chat_id}/rename", include_in_schema=False)
+async def ui_workspace_rename_file(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, rename_file, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    dest = str(body.get("to") or "")
+    if not path or not dest:
+        raise HTTPException(400, "path and to are required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        written = rename_file(_user, cid, path, dest)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
 @router.post("/workspace/{chat_id}/preview", include_in_schema=False)
