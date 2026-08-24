@@ -57,7 +57,6 @@ function mountChat(root) {
             <button type="button" class="chat-mode-btn" data-mode="code">Code</button>
           </div>
           <span class="spacer"></span>
-          <span class="muted" id="chat-hint">Tab chats · ↑↓ recall · Enter send</span>
           <div class="chat-more">
             <button class="btn ghost" type="button" id="chat-more" aria-haspopup="true" aria-expanded="false">More</button>
             <div class="chat-more-menu" id="chat-more-menu" hidden>
@@ -462,8 +461,6 @@ function mountChat(root) {
     if (filesPane) filesPane.hidden = !code || !filesOpen;
     paintTabs();
     paintFilesToggle();
-    const hint = root.querySelector("#chat-hint");
-    if (hint) hint.hidden = mode === "code";
   }
 
   function paintFilesToggle() {

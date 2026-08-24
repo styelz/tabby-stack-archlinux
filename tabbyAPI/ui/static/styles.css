@@ -784,13 +784,6 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .code-hl .tok-attr { color: #7dcfff; }
 .code-hl .tok-var { color: #f7768e; }
 .code-hl .tok-punct { color: #89b4fa; }
-/* Shrink before the toolbar wraps; Code mode leaves this column narrow. */
-#chat-hint {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .chat-log-wrap {
   position: relative;
   min-height: 0;
@@ -1901,7 +1894,6 @@ figure.shot .open { display: block; }
 @media (max-width: 900px) {
   .app-header { flex-wrap: wrap; }
   .tabs { order: 3; flex: 1 1 100%; }
-  #chat-hint { display: none; }
   .chat-shell { grid-template-columns: minmax(0, 1fr); }
   .chat-shell.is-code,
   .chat-shell.is-code.is-files-open,
