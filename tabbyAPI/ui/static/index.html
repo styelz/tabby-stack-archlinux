@@ -1,9 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="ui-loading">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tabby Stack</title>
+  <style>
+    html { background: #0b0d12; color-scheme: dark; }
+    body { margin: 0; background: #0b0d12; color: #e8ecf4; }
+    html.ui-loading body { visibility: hidden; }
+  </style>
   <script>
     window.TABBY_UI_BASE = (function () {
       var p = location.pathname || "";
@@ -17,6 +22,9 @@
       var link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V;
+      link.onload = link.onerror = function () {
+        document.documentElement.classList.remove("ui-loading");
+      };
       document.head.appendChild(link);
     });
   </script>
