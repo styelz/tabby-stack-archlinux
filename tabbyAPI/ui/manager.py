@@ -228,12 +228,13 @@ def _model_card() -> dict[str, Any]:
     }
 
 
-async def stack_status(request=None) -> dict[str, Any]:
+async def stack_status(request=None, username: str = "") -> dict[str, Any]:
     from common.gpu_mode import comfy_up, public_api_base, read_mode
     from common.health import HealthManager
     from common.phrase_switch import last_llm_profile_name, switch_lock_held, switch_lock_name
     from images.jobs import active_mcp_image_job, loaded_tabby_name
     from select_model import available_profiles, last_profile
+    from ui.occupancy import snapshot as stack_queue_snapshot
 
     mode = read_mode()
     tabby = loaded_tabby_name()
@@ -294,6 +295,7 @@ async def stack_status(request=None) -> dict[str, Any]:
         "switch_target": lock_name or ("comfy" if comfy_booting else None),
         "user": os.environ.get("USER") or "",
         "now": datetime.now(timezone.utc).isoformat(),
+        "stack_queue": stack_queue_snapshot(username),
     }
 
 

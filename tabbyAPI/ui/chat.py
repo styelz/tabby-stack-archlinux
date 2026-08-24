@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -36,6 +37,7 @@ from endpoints.OAI.utils.chat_completion import (
 from common.pasted_images import materialize_pasted_images
 from images.chat import STATUS_MARK, handle as handle_image_chat
 from ui.manager import sanitize_chat_payload, sanitize_code_payload
+from ui.occupancy import StackGate, queue_comment, wait_tick
 
 
 def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
@@ -93,25 +95,41 @@ async def stream_code_only(
     return text_response(sync, final_code_text(text, written))
 
 
-async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
-    code = is_code_request(body)
+def _completion_text(result: Any) -> str:
+    choices = getattr(result, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    return str(getattr(message, "content", None) or "")
+
+
+async def _iter_sse(response) -> Any:
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        return
     try:
-        payload = sanitize_code_payload(body) if code else sanitize_chat_payload(body)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        async for item in iterator:
+            yield item
+    finally:
+        closer = getattr(iterator, "aclose", None)
+        if closer is not None:
+            try:
+                await closer()
+            except Exception:
+                pass
 
-    chat_id = str(payload.get("chat_id") or "") if code else ""
-    data = completion_request_from_payload(payload)
-    saved_images = materialize_pasted_images(data)
-    api_base = public_api_base(request)
-    switched = handle_if_requested(data, api_base=api_base)
-    if switched is not None:
-        return switched
-    if switch_lock_held():
-        return await llm_not_ready_response(data, console=True)
 
+async def _run_console_work(
+    request: Request,
+    data: ChatCompletionRequest,
+    username: str,
+    chat_id: str,
+    code: bool,
+    saved_images: list,
+    api_base: str,
+    disconnect_handler,
+):
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
-    disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
     await disconnect_handler.poll()
     image_response = await handle_image_chat(
         data,
@@ -170,6 +188,126 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         raise
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+async def _stream_held_result(gate: StackGate, result):
+    try:
+        async for item in _iter_sse(result):
+            yield item
+    finally:
+        await gate.release()
+
+
+async def _queued_console_events(
+    request: Request,
+    data: ChatCompletionRequest,
+    username: str,
+    chat_id: str,
+    code: bool,
+    saved_images: list,
+    api_base: str,
+    disconnect_handler,
+    gate: StackGate,
+    first_info: dict[str, Any],
+):
+    try:
+        info: dict[str, Any] | None = first_info
+        while info is not None:
+            yield ServerSentEvent(comment=queue_comment(info))
+            await wait_tick(1.0)
+            info = await gate.step(disconnect_handler)
+        result = await _run_console_work(
+            request, data, username, chat_id, code, saved_images, api_base, disconnect_handler
+        )
+        if isinstance(result, EventSourceResponse):
+            async for item in _iter_sse(result):
+                yield item
+            return
+        text = _completion_text(result)
+        if text:
+            async for chunk in stream_text(data, text):
+                yield chunk
+    except HTTPException as exc:
+        yield ServerSentEvent(data=json.dumps({"error": {"message": str(exc.detail)}}))
+    finally:
+        await gate.release()
+
+
+def _sse(content):
+    return EventSourceResponse(
+        content,
+        ping=get_sse_ping_interval(),
+        sep="\n",
+    )
+
+
+async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
+    code = is_code_request(body)
+    try:
+        payload = sanitize_code_payload(body) if code else sanitize_chat_payload(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    chat_id = str(payload.get("chat_id") or "") if code else ""
+    data = completion_request_from_payload(payload)
+    saved_images = materialize_pasted_images(data)
+    api_base = public_api_base(request)
+    switched = handle_if_requested(data, api_base=api_base)
+    if switched is not None:
+        return switched
+    if switch_lock_held():
+        return await llm_not_ready_response(data, console=True)
+
+    disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
+    gate = StackGate(username, kind="code" if code else "chat")
+    info = await gate.step(disconnect_handler)
+    if info is None:
+        try:
+            result = await _run_console_work(
+                request,
+                data,
+                username,
+                chat_id,
+                code,
+                saved_images,
+                api_base,
+                disconnect_handler,
+            )
+        except Exception:
+            await gate.release()
+            raise
+        if isinstance(result, EventSourceResponse) and data.stream:
+            return _sse(_stream_held_result(gate, result))
+        await gate.release()
+        return result
+
+    if data.stream:
+        return _sse(
+            _queued_console_events(
+                request,
+                data,
+                username,
+                chat_id,
+                code,
+                saved_images,
+                api_base,
+                disconnect_handler,
+                gate,
+                info,
+            )
+        )
+
+    try:
+        while True:
+            info = await gate.step(disconnect_handler)
+            if info is None:
+                break
+            await wait_tick(1.0)
+        return await _run_console_work(
+            request, data, username, chat_id, code, saved_images, api_base, disconnect_handler
+        )
+    finally:
+        await gate.release()
 
 
 run_console_chat = run_console_chat
