@@ -81,13 +81,11 @@ function mountChat(root) {
             <div class="chat-form-actions">
               <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-label="Attach image" title="Attach image">📎</button>
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
+              <span id="chat-count"></span>
+              <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
               <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
             </div>
           </form>
-          <div class="chat-compose-meta">
-            <span id="chat-count"></span>
-            <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
-          </div>
         </div>
       </div>
     </div>

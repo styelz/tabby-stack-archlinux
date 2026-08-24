@@ -834,10 +834,22 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   align-items: center;
   gap: 6px;
 }
+.chat-form-actions #chat-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-keys {
+  margin-left: auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .chat-send {
   min-width: 4.25rem;
   flex: 0 0 auto;
-  margin-left: auto;
 }
 .chat-send.is-stop .chat-stop-icon,
 .chat-stop-icon {
@@ -953,14 +965,6 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   outline: 2px dashed var(--accent);
   outline-offset: 4px;
   border-radius: 12px;
-}
-.chat-compose-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 12px;
 }
 .chat-keys kbd {
   font-family: var(--mono);
