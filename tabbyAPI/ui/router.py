@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from urllib.parse import quote
 
@@ -393,6 +394,35 @@ async def ui_workspace_write_file(
         raise HTTPException(400, "Only text files can be edited here.")
     try:
         written = write_text(_user, cid, path, contents)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
+@router.post("/workspace/{chat_id}/file", include_in_schema=False)
+async def ui_workspace_upload_file(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    """Add a user-picked file to the Code-mode project."""
+    from ui.workspace import add_upload, listing, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    raw_b64 = body.get("bytes_b64")
+    if not isinstance(raw_b64, str) or not raw_b64.strip():
+        raise HTTPException(400, "bytes_b64 is required")
+    try:
+        data = base64.b64decode(raw_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(400, "bytes_b64 must be base64") from exc
+    cid = _workspace_chat_id(chat_id)
+    try:
+        written = add_upload(_user, cid, path, data, filename=path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except OSError as exc:

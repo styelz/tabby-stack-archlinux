@@ -99,9 +99,7 @@ function mountChat(root) {
             <button class="btn ghost" type="button" id="chat-edit-cancel">Cancel</button>
           </div>
           <div class="chat-attach" id="chat-attach" hidden>
-            <img id="chat-attach-img" alt="" />
-            <span class="chat-attach-name" id="chat-attach-name"></span>
-            <button class="btn ghost chat-queue-clear" type="button" id="chat-attach-clear" aria-label="Remove image">×</button>
+            <div class="chat-attach-list" id="chat-attach-list"></div>
           </div>
           <div class="chat-queue" id="chat-queue" hidden>
             <span class="chat-queue-mark">Queued</span>
@@ -122,8 +120,12 @@ function mountChat(root) {
           <form class="chat-form" id="chat-form">
             <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
             <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <input id="chat-upload" type="file" multiple accept=".html,.htm,.css,.js,.mjs,.json,.jsx,.ts,.tsx,.md,.txt,.svg,.xml,.yml,.yaml,.csv,.py,.sh,.php,.toml,.ini,.conf,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif,text/plain,text/html,text/css,text/javascript,application/json" hidden />
             <div class="chat-form-actions">
-              <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-label="Attach image" title="Attach image">📎</button>
+              <div class="chat-attach-wrap">
+                <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-haspopup="true" aria-expanded="false" aria-label="Attach image" title="Attach image">📎</button>
+                <div class="chat-attach-menu" id="chat-attach-menu" hidden></div>
+              </div>
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
               <span id="chat-count"></span>
               <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
@@ -137,6 +139,8 @@ function mountChat(root) {
           <span>Files</span>
           <span class="chat-files-count" id="chat-files-count"></span>
           <span class="spacer"></span>
+          <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
+          <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
           <button class="btn ghost chat-icon" type="button" id="chat-files-refresh" aria-label="Refresh files" title="Refresh files">⟳</button>
           <button class="btn" type="button" id="chat-files-site">Open site</button>
           <button class="btn ghost" type="button" id="chat-files-zip">Zip</button>
@@ -164,9 +168,11 @@ function mountChat(root) {
   const moreMenu = root.querySelector("#chat-more-menu");
   const editBar = root.querySelector("#chat-edit-bar");
   const attachBar = root.querySelector("#chat-attach");
-  const attachImg = root.querySelector("#chat-attach-img");
-  const attachName = root.querySelector("#chat-attach-name");
+  const attachList = root.querySelector("#chat-attach-list");
+  const attachBtn = root.querySelector("#chat-attach-btn");
+  const attachMenu = root.querySelector("#chat-attach-menu");
   const fileInput = root.querySelector("#chat-file");
+  const uploadInput = root.querySelector("#chat-upload");
   const micBtn = root.querySelector("#chat-mic");
   const countEl = root.querySelector("#chat-count");
   const loadingBar = root.querySelector("#chat-loading");
@@ -181,6 +187,8 @@ function mountChat(root) {
   const editorPane = root.querySelector("#chat-editor");
   const filesZipBtn = root.querySelector("#chat-files-zip");
   const filesClearBtn = root.querySelector("#chat-files-clear");
+  const filesNewBtn = root.querySelector("#chat-files-new");
+  const filesUploadBtn = root.querySelector("#chat-files-upload");
   const filesRefreshBtn = root.querySelector("#chat-files-refresh");
   const filesCountEl = root.querySelector("#chat-files-count");
   const filesSiteBtn = root.querySelector("#chat-files-site");
@@ -203,7 +211,15 @@ function mountChat(root) {
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
   const SYSTEM = { role: "system", content: "Console chat. No file tools." };
-  const CODE_PLACEHOLDER = "Describe the page or files to create. They land in Files; download a zip when you want a copy.";
+  const CODE_PLACEHOLDER = "Describe the page or files to create, or attach files from the Files pane.";
+  const TEXT_SUFFIXES = new Set([
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".jsx", ".ts", ".tsx",
+    ".md", ".txt", ".svg", ".xml", ".yml", ".yaml", ".csv", ".py", ".sh",
+    ".php", ".toml", ".ini", ".conf",
+  ]);
+  const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+  const ATTACH_TEXT_LIMIT = 80_000;
+  const MAX_ATTACH = 12;
   const STORAGE_KEY = "tabby-ui-chat-store";
   const SETTINGS_KEY = "tabby-ui-chat-settings";
   const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
@@ -267,18 +283,47 @@ function mountChat(root) {
       }
       if (item.imagePreview) out.imagePreview = String(item.imagePreview);
       if (item.imageName) out.imageName = String(item.imageName);
+      if (Array.isArray(item.attachedFiles) && item.attachedFiles.length) {
+        out.attachedFiles = item.attachedFiles.slice(0, MAX_ATTACH).map((file) => {
+          const path = String((file && file.path) || "").slice(0, 240);
+          const kind = file && file.kind === "image" ? "image" : "text";
+          const row = { path, kind };
+          if (kind === "text" && typeof file.text === "string") {
+            row.text = file.text.length > ATTACH_TEXT_LIMIT
+              ? `${file.text.slice(0, ATTACH_TEXT_LIMIT)}\n…(truncated)`
+              : file.text;
+          }
+          if (kind === "image") {
+            if (file.dataUrl && String(file.dataUrl).startsWith("data:image")) {
+              row.dataUrl = String(file.dataUrl);
+            }
+            if (file.preview) row.preview = String(file.preview);
+          }
+          return row;
+        }).filter((file) => file.path);
+      }
       return out;
     });
   }
 
   function titleFromMessages(list) {
-    const first = (list || []).find((item) => item.role === "user" && String(item.content || "").trim());
+    const first = (list || []).find((item) => item.role === "user" && userTurnHasContent(item));
     if (!first) return "New chat";
-    return String(first.content).replace(/\s+/g, " ").trim().slice(0, 56);
+    const text = String(first.content || "").replace(/\s+/g, " ").trim();
+    if (text) return text.slice(0, 56);
+    const names = (first.attachedFiles || []).map((file) => file.path).filter(Boolean);
+    return names.length ? names.join(", ").slice(0, 56) : "New chat";
+  }
+
+  function userTurnHasContent(item) {
+    if (!item || item.role !== "user") return false;
+    if (String(item.content || "").trim()) return true;
+    if (item.imageData) return true;
+    return Array.isArray(item.attachedFiles) && item.attachedFiles.length > 0;
   }
 
   function hasUserTurn(chat) {
-    return (chat.messages || []).some((item) => item.role === "user" && String(item.content || "").trim());
+    return (chat.messages || []).some((item) => userTurnHasContent(item));
   }
 
   function normalizeStore(raw) {
@@ -321,6 +366,8 @@ function mountChat(root) {
   let messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
   let pendingEditIndex = -1;
   let pendingImage = null;
+  let pendingFiles = [];
+  let uploadWantsAttach = false;
   let renaming = false;
   let settings = { temperature: null };
   try {
@@ -459,6 +506,10 @@ function mountChat(root) {
       btn.setAttribute("aria-pressed", on ? "true" : "false");
     });
     if (filesPane) filesPane.hidden = !code || !filesOpen;
+    if (attachBtn) {
+      attachBtn.setAttribute("aria-label", code ? "Attach files" : "Attach image");
+      attachBtn.title = code ? "Attach image or project files" : "Attach image";
+    }
     paintTabs();
     paintFilesToggle();
   }
@@ -544,7 +595,7 @@ function mountChat(root) {
 
   function paintEmpty() {
     if (!emptyEl) return;
-    const empty = !messages.some((item) => item.role !== "system" && String(item.content || "").trim());
+    const empty = !messages.some((item) => item.role === "assistant" || userTurnHasContent(item));
     emptyEl.hidden = !empty;
     if (!empty) return;
     const code = activeMode() === "code";
@@ -554,7 +605,7 @@ function mountChat(root) {
     if (title) title.textContent = code ? "Code mode" : "Console chat";
     if (copy) {
       copy.textContent = code
-        ? "Ask for a page, logo, or set of files. The model writes them into this chat's Files pane. Images also show in Gallery. Download a zip when you want a copy."
+        ? "Ask for a page, logo, or set of files. Create or upload files in the Files pane, attach them to a message, or let the model write them. Images also show in Gallery."
         : "Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.";
     }
     if (suggests) {
@@ -599,6 +650,23 @@ function mountChat(root) {
     return TabbyUI.path(`workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(path)}`);
   }
 
+  function fileSuffix(path) {
+    const name = String(path || "").split("/").pop() || "";
+    const at = name.lastIndexOf(".");
+    return at >= 0 ? name.slice(at).toLowerCase() : "";
+  }
+
+  function isPendingFile(path) {
+    return pendingFiles.some((file) => file.path === path);
+  }
+
+  function applyListing(data) {
+    filesListing = Array.isArray(data.files) ? data.files : filesListing;
+    filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
+    noteChatFiles(store.activeId, filesListing.length > 0);
+    paintFiles();
+  }
+
   function selectedRow() {
     return filesListing.find((row) => row.path === filesSelected) || null;
   }
@@ -625,7 +693,7 @@ function mountChat(root) {
     if (!filesTree) return;
     if (!filesListing.length) {
       filesTree.innerHTML =
-        '<p class="muted chat-files-empty">No files yet. Ask for a page and they land here.</p>';
+        '<p class="muted chat-files-empty">No files yet. Create one, upload, or ask for a page.</p>';
       return;
     }
     const frag = document.createDocumentFragment();
@@ -634,11 +702,13 @@ function mountChat(root) {
       item.className =
         "chat-file" +
         (row.path === filesSelected ? " is-active" : "") +
-        (findTab(row.path) ? " is-open" : "");
+        (findTab(row.path) ? " is-open" : "") +
+        (isPendingFile(row.path) ? " is-attached" : "");
       item.dataset.path = row.path;
       item.innerHTML =
         `<button type="button" class="chat-file-open" data-file="open" title="${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
         `<span class="chat-file-size">${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.size))}</span>` +
+        `<button type="button" class="btn ghost chat-icon${isPendingFile(row.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
         `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
         `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>`;
       frag.appendChild(item);
@@ -1162,6 +1232,11 @@ function mountChat(root) {
     moreBtn.setAttribute("aria-expanded", "false");
   }
 
+  function hidePopovers() {
+    hideMoreMenu();
+    hideAttachMenu();
+  }
+
   function setSidebarOpen(open) {
     shell.classList.toggle("is-sidebar-open", open);
     const backdrop = root.querySelector("#chat-backdrop");
@@ -1290,10 +1365,14 @@ function mountChat(root) {
         dataUrl: item.imageData,
         preview: item.imagePreview || item.imageData,
       };
-      paintAttach();
     } else {
-      clearPendingImage();
+      pendingImage = null;
+      if (fileInput) fileInput.value = "";
     }
+    pendingFiles = Array.isArray(item.attachedFiles)
+      ? item.attachedFiles.map((file) => ({ ...file }))
+      : [];
+    paintAttach();
     if (editBar) editBar.hidden = false;
     resizeInput();
     paintCompose();
@@ -1453,16 +1532,252 @@ function mountChat(root) {
   }
 
   function paintAttach() {
-    const on = Boolean(pendingImage);
+    const on = Boolean(pendingImage || pendingFiles.length);
     if (attachBar) attachBar.hidden = !on;
-    if (attachImg) attachImg.src = (pendingImage && (pendingImage.preview || pendingImage.dataUrl)) || "";
-    if (attachName) attachName.textContent = (pendingImage && pendingImage.name) || "";
+    if (!attachList) return;
+    const frag = document.createDocumentFragment();
+    if (pendingImage) {
+      frag.appendChild(attachChip({
+        key: "image",
+        kind: "image",
+        name: pendingImage.name || "image",
+        preview: pendingImage.preview || pendingImage.dataUrl,
+      }));
+    }
+    pendingFiles.forEach((file) => {
+      frag.appendChild(attachChip({
+        key: file.path,
+        kind: file.kind,
+        name: file.path,
+        preview: file.preview,
+      }));
+    });
+    attachList.replaceChildren(frag);
+    paintFilesTree();
+  }
+
+  function attachChip(item) {
+    const chip = document.createElement("div");
+    chip.className = "chat-attach-chip";
+    chip.dataset.key = item.key;
+    if (item.kind === "image" && item.preview) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = item.preview;
+      chip.appendChild(img);
+    }
+    const name = document.createElement("span");
+    name.className = "chat-attach-name";
+    name.textContent = item.name;
+    chip.appendChild(name);
+    const clear = document.createElement("button");
+    clear.className = "btn ghost chat-queue-clear";
+    clear.type = "button";
+    clear.dataset.detach = item.key;
+    clear.setAttribute("aria-label", `Remove ${item.name}`);
+    clear.textContent = "×";
+    chip.appendChild(clear);
+    return chip;
+  }
+
+  function hideAttachMenu() {
+    if (!attachMenu || !attachBtn) return;
+    attachMenu.hidden = true;
+    attachBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function paintAttachMenu() {
+    if (!attachMenu) return;
+    const frag = document.createDocumentFragment();
+    const add = (key, label, extra) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.attach = key;
+      if (extra) Object.assign(btn.dataset, extra);
+      btn.textContent = label;
+      frag.appendChild(btn);
+    };
+    add("image", "Attach image");
+    add("upload", "Upload files to project");
+    if (filesListing.length) {
+      const mark = document.createElement("div");
+      mark.className = "chat-attach-label";
+      mark.textContent = "Project files";
+      frag.appendChild(mark);
+      filesListing.forEach((row) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.attach = "file";
+        btn.dataset.path = row.path;
+        btn.className = isPendingFile(row.path) ? "is-on" : "";
+        btn.textContent = row.path;
+        frag.appendChild(btn);
+      });
+    }
+    attachMenu.replaceChildren(frag);
+  }
+
+  function toggleAttachMenu() {
+    if (modelLoading) return;
+    if (activeMode() !== "code") {
+      hideAttachMenu();
+      if (fileInput) fileInput.click();
+      return;
+    }
+    const open = Boolean(attachMenu && attachMenu.hidden);
+    hideMoreMenu();
+    if (!open) {
+      hideAttachMenu();
+      return;
+    }
+    paintAttachMenu();
+    attachMenu.hidden = false;
+    if (attachBtn) attachBtn.setAttribute("aria-expanded", "true");
   }
 
   function clearPendingImage() {
     pendingImage = null;
+    pendingFiles = [];
     if (fileInput) fileInput.value = "";
+    if (uploadInput) uploadInput.value = "";
     paintAttach();
+  }
+
+  function detachPending(key) {
+    if (key === "image") {
+      pendingImage = null;
+      if (fileInput) fileInput.value = "";
+    } else {
+      pendingFiles = pendingFiles.filter((file) => file.path !== key);
+    }
+    paintAttach();
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read file."));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function blobToBase64(blob) {
+    const dataUrl = await blobToDataUrl(blob);
+    const at = dataUrl.indexOf(",");
+    return at >= 0 ? dataUrl.slice(at + 1) : dataUrl;
+  }
+
+  async function attachProjectFile(path, opts) {
+    const row = filesListing.find((item) => item.path === path);
+    if (!row) return;
+    if (isPendingFile(path)) {
+      if (!opts || opts.toggle !== false) detachPending(path);
+      return;
+    }
+    if (pendingFiles.length >= MAX_ATTACH) {
+      addBubble("assistant", "Error: Too many attached files.");
+      return;
+    }
+    if (row.kind === "image") {
+      const res = await fetch(fileUrl(store.activeId, path), { credentials: "same-origin" });
+      if (!res.ok) throw new Error("Could not read that file.");
+      const dataUrl = await blobToDataUrl(await res.blob());
+      const preview = await resizeDataUrl(dataUrl, 320, 0.72);
+      pendingFiles.push({ path, kind: "image", dataUrl, preview });
+    } else if (row.editable) {
+      const tab = findTab(path);
+      let text = tab && tab.state === "ready" ? String(tab.text || "") : "";
+      if (!(tab && tab.state === "ready")) {
+        const res = await fetch(fileUrl(store.activeId, path), { credentials: "same-origin" });
+        if (!res.ok) throw new Error("Could not read that file.");
+        text = await res.text();
+      }
+      if (text.length > ATTACH_TEXT_LIMIT) text = `${text.slice(0, ATTACH_TEXT_LIMIT)}\n…(truncated)`;
+      pendingFiles.push({ path, kind: "text", text });
+    } else {
+      addBubble("assistant", "Error: That file cannot be attached.");
+      return;
+    }
+    paintAttach();
+  }
+
+  function defaultNewPath() {
+    const names = new Set(filesListing.map((row) => row.path));
+    if (!names.has("untitled.txt")) return "untitled.txt";
+    for (let i = 2; i < 100; i += 1) {
+      const name = `untitled-${i}.txt`;
+      if (!names.has(name)) return name;
+    }
+    return `untitled-${Date.now()}.txt`;
+  }
+
+  async function createUserFile() {
+    const raw = await TabbyUI.promptModal({
+      title: "New file",
+      text: "Relative path in this chat's project.",
+      label: "Path",
+      yes: "Create",
+      value: defaultNewPath(),
+      placeholder: "index.html",
+    });
+    if (raw == null) return;
+    let path = String(raw).trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!path || path.includes("..") || path.startsWith("~")) {
+      addBubble("assistant", "Error: Enter a relative path such as index.html.");
+      return;
+    }
+    if (!fileSuffix(path)) path = `${path}.txt`;
+    if (!TEXT_SUFFIXES.has(fileSuffix(path))) {
+      addBubble("assistant", "Error: Use a text file type such as .html, .css, .js, or .txt.");
+      return;
+    }
+    if (filesListing.some((row) => row.path === path)) {
+      openFileTab(path);
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
+        { method: "PUT", body: { contents: "" } }
+      );
+      applyListing(data);
+      openFileTab(data.path || path);
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function uploadLocalFiles(fileList, { attach = false, open = false } = {}) {
+    const chatId = store.activeId;
+    const files = Array.from(fileList || []).filter(Boolean);
+    let lastText = "";
+    for (const file of files) {
+      const name = String(file.name || "file").split(/[/\\]/).pop();
+      const suffix = fileSuffix(name);
+      if (!TEXT_SUFFIXES.has(suffix) && !IMAGE_SUFFIXES.has(suffix)) {
+        addBubble("assistant", `Error: ${name} is not a text or image file.`);
+        continue;
+      }
+      if (TEXT_SUFFIXES.has(suffix) && file.size > 1 * 1024 * 1024) {
+        addBubble("assistant", `Error: ${name} is larger than 1 MB.`);
+        continue;
+      }
+      if (IMAGE_SUFFIXES.has(suffix) && file.size > 8 * 1024 * 1024) {
+        addBubble("assistant", `Error: ${name} must be under 8 MB.`);
+        continue;
+      }
+      const bytesB64 = await blobToBase64(file);
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/file`,
+        { method: "POST", body: { path: name, bytes_b64: bytesB64 } }
+      );
+      applyListing(data);
+      const path = data.path || name;
+      if (attach) await attachProjectFile(path, { toggle: false });
+      if (TEXT_SUFFIXES.has(fileSuffix(path))) lastText = path;
+    }
+    if (open && lastText && files.length === 1) openFileTab(lastText);
   }
 
   function resizeDataUrl(dataUrl, maxEdge, quality) {
@@ -1513,20 +1828,34 @@ function mountChat(root) {
     paintAttach();
   }
 
+  function outboundUserText(item) {
+    let text = String(item.content || "");
+    const files = Array.isArray(item.attachedFiles) ? item.attachedFiles : [];
+    const blocks = files
+      .filter((file) => file.kind !== "image" && file.path && typeof file.text === "string")
+      .map((file) => `Attached file \`${file.path}\`:\n\`\`\`\n${file.text}\n\`\`\``);
+    if (blocks.length) text = text ? `${text}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n");
+    return text;
+  }
+
   function outboundMessages() {
     return messages
       .filter((item) => item.role !== "system")
       .map((item) => {
-        if (item.role === "user" && item.imageData) {
-          return {
-            role: "user",
-            content: [
-              { type: "text", text: String(item.content || "") },
-              { type: "image_url", image_url: { url: item.imageData } },
-            ],
-          };
-        }
-        return { role: item.role, content: item.content };
+        if (item.role !== "user") return { role: item.role, content: item.content };
+        const text = outboundUserText(item);
+        const images = [];
+        if (item.imageData) images.push(item.imageData);
+        (item.attachedFiles || []).forEach((file) => {
+          if (file.kind === "image" && file.dataUrl && !images.includes(file.dataUrl)) {
+            images.push(file.dataUrl);
+          }
+        });
+        if (!images.length) return { role: "user", content: text };
+        const content = [];
+        if (text) content.push({ type: "text", text });
+        images.forEach((url) => content.push({ type: "image_url", image_url: { url } }));
+        return { role: "user", content };
       });
   }
 
@@ -1665,6 +1994,26 @@ function mountChat(root) {
       img.src = preview;
       img.alt = (extra && extra.imageName) || "Attached image";
       node.appendChild(img);
+    }
+    const attached = extra && Array.isArray(extra.attachedFiles) ? extra.attachedFiles : [];
+    if (attached.length) {
+      const rowFiles = document.createElement("div");
+      rowFiles.className = "chat-msg-files";
+      attached.forEach((file) => {
+        if (file.kind === "image" && file.preview) {
+          const img = document.createElement("img");
+          img.className = "chat-thumb";
+          img.src = file.preview;
+          img.alt = file.path || "Attached image";
+          node.appendChild(img);
+          return;
+        }
+        const chip = document.createElement("span");
+        chip.className = "chat-msg-file";
+        chip.textContent = file.path || "file";
+        rowFiles.appendChild(chip);
+      });
+      if (rowFiles.childNodes.length) node.appendChild(rowFiles);
     }
     row.appendChild(node);
     attachMsgActions(row, "user", idx, text);
@@ -2104,6 +2453,7 @@ function mountChat(root) {
     messages = cloneMessages(chat.messages);
     if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
     cancelEdit();
+    clearPendingImage();
     persist();
     resetRecall();
     renderLog(stickToEnd !== false);
@@ -2254,6 +2604,15 @@ function mountChat(root) {
     if (moreMenu && moreBtn && !moreMenu.hidden && !moreMenu.contains(target) && !moreBtn.contains(target)) {
       hideMoreMenu();
     }
+    if (
+      attachMenu &&
+      attachBtn &&
+      !attachMenu.hidden &&
+      !attachMenu.contains(target) &&
+      !attachBtn.contains(target)
+    ) {
+      hideAttachMenu();
+    }
   }
 
   function onGlobalKey(event) {
@@ -2263,7 +2622,7 @@ function mountChat(root) {
         event.preventDefault();
         return;
       }
-      hideMoreMenu();
+      hidePopovers();
       hideHistoryMenu();
       hideMenu();
       if (pendingEditIndex >= 0) {
@@ -2926,6 +3285,9 @@ function mountChat(root) {
         userItem.imagePreview = pendingImage.preview || pendingImage.dataUrl;
         userItem.imageName = pendingImage.name;
       }
+      if (pendingFiles.length) {
+        userItem.attachedFiles = pendingFiles.map((file) => ({ ...file }));
+      }
       messages.push(userItem);
       clearPendingImage();
       touchActive();
@@ -3106,7 +3468,7 @@ function mountChat(root) {
       }
       return;
     }
-    if (!text && !pendingImage) return;
+    if (!text && !pendingImage && !pendingFiles.length) return;
     resetRecall();
     input.value = "";
     resizeInput();
@@ -3319,6 +3681,7 @@ function mountChat(root) {
   moreBtn.addEventListener("click", () => {
     const open = moreMenu.hidden;
     hideHistoryMenu();
+    hideAttachMenu();
     moreMenu.hidden = !open;
     moreBtn.setAttribute("aria-expanded", open ? "true" : "false");
   });
@@ -3353,6 +3716,12 @@ function mountChat(root) {
       if (!path) return;
       if (btn.dataset.file === "open") {
         openFileTab(path);
+        return;
+      }
+      if (btn.dataset.file === "attach") {
+        attachProjectFile(path).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
         return;
       }
       if (btn.dataset.file === "download") {
@@ -3464,6 +3833,19 @@ function mountChat(root) {
     setFilesOpen(event.matches ? false : readFilesOpen());
     paintToolbar();
   });
+  if (filesNewBtn) {
+    filesNewBtn.addEventListener("click", () => {
+      createUserFile().catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
+    });
+  }
+  if (filesUploadBtn) {
+    filesUploadBtn.addEventListener("click", () => {
+      uploadWantsAttach = false;
+      if (uploadInput) uploadInput.click();
+    });
+  }
   if (filesRefreshBtn) {
     filesRefreshBtn.addEventListener("click", () => refreshFiles());
   }
@@ -3514,20 +3896,58 @@ function mountChat(root) {
     form.requestSubmit();
   });
   root.querySelector("#chat-edit-cancel").addEventListener("click", cancelEdit);
-  root.querySelector("#chat-attach-btn").addEventListener("click", () => {
-    if (modelLoading) return;
-    if (fileInput) fileInput.click();
+  attachBtn.addEventListener("click", () => {
+    toggleAttachMenu();
   });
-  root.querySelector("#chat-attach-clear").addEventListener("click", () => {
-    clearPendingImage();
-    input.focus();
-  });
+  if (attachMenu) {
+    attachMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-attach]");
+      if (!btn) return;
+      hideAttachMenu();
+      if (btn.dataset.attach === "image") {
+        if (fileInput) fileInput.click();
+        return;
+      }
+      if (btn.dataset.attach === "upload") {
+        uploadWantsAttach = true;
+        if (uploadInput) uploadInput.click();
+        return;
+      }
+      if (btn.dataset.attach === "file" && btn.dataset.path) {
+        attachProjectFile(btn.dataset.path).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+      }
+    });
+  }
+  if (attachList) {
+    attachList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-detach]");
+      if (!btn) return;
+      detachPending(btn.dataset.detach);
+      input.focus();
+    });
+  }
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
     setPendingImageFromFile(file).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
     });
   });
+  if (uploadInput) {
+    uploadInput.addEventListener("change", () => {
+      const files = uploadInput.files;
+      const attach = uploadWantsAttach;
+      uploadWantsAttach = false;
+      uploadLocalFiles(files, { attach, open: !attach && files.length === 1 })
+        .catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        })
+        .finally(() => {
+          uploadInput.value = "";
+        });
+    });
+  }
   input.addEventListener("paste", (event) => {
     const items = event.clipboardData && event.clipboardData.items;
     if (!items) return;
@@ -3551,8 +3971,15 @@ function mountChat(root) {
   form.addEventListener("drop", (event) => {
     event.preventDefault();
     form.classList.remove("is-drop");
-    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-    setPendingImageFromFile(file).catch((err) => {
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (!files || !files.length) return;
+    if (activeMode() === "code") {
+      uploadLocalFiles(files, { attach: true, open: files.length === 1 }).catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
+      return;
+    }
+    setPendingImageFromFile(files[0]).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
     });
   });

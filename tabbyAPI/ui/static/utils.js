@@ -407,6 +407,8 @@
     type = "text",
     minlength = 0,
     autocomplete = "off",
+    value = "",
+    placeholder = "",
   } = {}) {
     return new Promise((resolve) => {
       const wrap = document.createElement("div");
@@ -433,6 +435,8 @@
       const input = wrap.querySelector(".dialog-input");
       input.type = type === "password" ? "password" : "text";
       input.autocomplete = autocomplete || "off";
+      if (placeholder) input.placeholder = placeholder;
+      if (value) input.value = String(value);
       const min = Number(minlength) || 0;
       if (min) {
         input.minLength = min;
@@ -465,6 +469,7 @@
       document.addEventListener("keydown", onKey);
       document.body.appendChild(wrap);
       input.focus();
+      if (input.value) input.select();
     });
   }
 

@@ -13,10 +13,11 @@ from ui import workspace
 MAX_CODE_TURNS = 16
 CODE_SYSTEM = (
     "You are coding in a per-chat project folder on this Tabby Stack host. "
-    "Use the file tools (Write, StrReplace, Read, Delete, List) to create and "
-    "edit files. Do not dump whole files in chat. Do not use a shell and do "
-    "not try to run the site. Point img src at the planned local paths. "
-    "When you are done, give a short summary of what you wrote."
+    "The user can create, upload, and attach files; attached files are included "
+    "in their message. Use the file tools (Write, StrReplace, Read, Delete, List) "
+    "to create and edit files. Do not dump whole files in chat. Do not use a "
+    "shell and do not try to run the site. Point img src at the planned local "
+    "paths. When you are done, give a short summary of what you wrote."
 )
 
 _WRITE_NAMES = (

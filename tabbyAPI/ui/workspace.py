@@ -164,6 +164,45 @@ def is_text_path(rel: str) -> bool:
     return Path(str(rel or "")).suffix.lower() in TEXT_SUFFIXES
 
 
+def is_image_path(rel: str) -> bool:
+    return Path(str(rel or "")).suffix.lower() in IMAGE_SUFFIXES
+
+
+def upload_name(rel: str, filename: str = "") -> str:
+    """Keep a user-supplied relative path, or fall back to the upload's name."""
+    text = str(rel or "").strip().replace("\\", "/")
+    if not text:
+        text = Path(str(filename or "").strip().replace("\\", "/")).name
+    if not text or text.startswith("/") or text.startswith("~"):
+        raise ValueError("Invalid path")
+    path = Path(text)
+    if path.is_absolute() or any(part == ".." for part in path.parts):
+        raise ValueError("Invalid path")
+    # Drive-prefixed names from a desktop picker, e.g. C:/Users/a.html
+    if path.parts and ":" in path.parts[0]:
+        text = path.name
+    if not text or text in (".", ".."):
+        raise ValueError("Invalid path")
+    return text
+
+
+def add_upload(username: str, chat_id: str, rel: str, data: bytes, filename: str = "") -> str:
+    """Write a user-picked text or image file into this chat's project."""
+    raw = data if isinstance(data, (bytes, bytearray)) else bytes(data or b"")
+    name = upload_name(rel, filename)
+    if is_image_path(name):
+        if len(raw) > 8 * 1024 * 1024:
+            raise ValueError("Image must be under 8 MB.")
+        return copy_bytes(username, chat_id, name, raw)
+    if is_text_path(name):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("File is not UTF-8 text.") from exc
+        return write_text(username, chat_id, name, text)
+    raise ValueError("Only text and image files can be added.")
+
+
 def list_files(username: str, chat_id: str) -> list[dict[str, Any]]:
     root = workspace_root(username, chat_id, create=False)
     rows: list[dict[str, Any]] = []
