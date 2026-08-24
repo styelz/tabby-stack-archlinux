@@ -76,13 +76,13 @@ function mountChat(root) {
             <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
           </div>
           <form class="chat-form" id="chat-form">
-            <div class="chat-input-wrap">
+            <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
+            <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <div class="chat-form-actions">
               <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-label="Attach image" title="Attach image">📎</button>
-              <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
-              <textarea id="chat-input" rows="1" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
+              <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
             </div>
-            <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
           </form>
           <div class="chat-compose-meta">
             <span id="chat-count"></span>
@@ -370,7 +370,8 @@ function mountChat(root) {
 
   function resizeInput() {
     input.style.height = "auto";
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, 36), 180)}px`;
+    const minH = parseFloat(getComputedStyle(input).minHeight) || 0;
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), 180)}px`;
     if (countEl) {
       const n = input.value.length;
       countEl.textContent = n >= 400 ? `${n.toLocaleString()} chars` : "";

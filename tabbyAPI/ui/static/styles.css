@@ -814,11 +814,30 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-width: 0;
   flex: 1;
 }
-.chat-form { display: flex; gap: 8px; flex: 0 0 auto; align-items: flex-end; }
-.chat-form textarea { min-height: 36px; resize: none; font-size: 13px; }
+.chat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.chat-form textarea {
+  min-height: calc(13px * 1.45 * 3 + 22px);
+  min-height: calc(3lh + 22px);
+  max-height: 180px;
+  resize: none;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.chat-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .chat-send {
   min-width: 4.25rem;
   flex: 0 0 auto;
+  margin-left: auto;
 }
 .chat-send.is-stop .chat-stop-icon,
 .chat-stop-icon {
@@ -934,20 +953,6 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   outline: 2px dashed var(--accent);
   outline-offset: 4px;
   border-radius: 12px;
-}
-.chat-input-wrap {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-.chat-input-wrap textarea {
-  min-height: 36px;
-  max-height: 180px;
-  resize: none;
-  overflow-y: auto;
-  font-size: 13px;
 }
 .chat-compose-meta {
   display: flex;
