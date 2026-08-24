@@ -75,6 +75,8 @@ def normalize_store(raw: Any) -> dict[str, Any]:
                 "id": chat_id,
                 "title": str(item.get("title") or "New chat"),
                 "updatedAt": int(item.get("updatedAt") or 0),
+                "pinned": bool(item.get("pinned")),
+                "titleLocked": bool(item.get("titleLocked")),
                 "messages": messages,
             }
         )

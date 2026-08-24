@@ -466,15 +466,35 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
         content = raw.get("content")
         if isinstance(content, list):
             texts = []
+            images = []
             for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image = part.get("image_url")
+                    url = ""
+                    if isinstance(image, dict):
+                        url = str(image.get("url") or "")
+                    elif isinstance(image, str):
+                        url = image
+                    if url.startswith("data:image") and 32 < len(url) < 12_000_000:
+                        images.append({"type": "image_url", "image_url": {"url": url}})
+                elif isinstance(part, dict) and part.get("type") == "text":
                     texts.append(str(part.get("text") or ""))
                 elif isinstance(part, str):
                     texts.append(part)
-            content = "\n".join(texts)
+            text = "\n".join(texts)
+            if images:
+                parts: list[dict[str, Any]] = []
+                if text:
+                    parts.append({"type": "text", "text": text})
+                parts.extend(images)
+                content = parts
+            else:
+                content = text
         if content is None:
             content = ""
-        clean_messages.append({"role": role, "content": str(content)})
+        if not isinstance(content, list):
+            content = str(content)
+        clean_messages.append({"role": role, "content": content})
     if not any(item["role"] == "system" for item in clean_messages):
         clean_messages.insert(0, {"role": "system", "content": CONSOLE_SYSTEM})
     payload = {

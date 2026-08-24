@@ -27,6 +27,7 @@ from endpoints.OAI.utils.chat_completion import (
     generate_chat_completion,
     stream_generate_chat_completion,
 )
+from common.pasted_images import materialize_pasted_images
 from images.chat import handle as handle_image_chat
 from ui.manager import sanitize_chat_payload
 
@@ -51,6 +52,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         raise HTTPException(400, str(exc)) from exc
 
     data = completion_request_from_payload(payload)
+    saved_images = materialize_pasted_images(data)
     api_base = public_api_base(request)
     switched = handle_if_requested(data, api_base=api_base)
     if switched is not None:
@@ -62,7 +64,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     image_response = await handle_image_chat(
         data,
         api_base,
-        source_image=None,
+        source_image=saved_images[-1] if saved_images else None,
         llm_ready=llm_ready,
         gpu_is_comfy=gpu_is_comfy(),
         disconnect_handler=disconnect_handler,

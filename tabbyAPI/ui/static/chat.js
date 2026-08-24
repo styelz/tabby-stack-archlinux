@@ -8,32 +8,94 @@ function tabbyChatComposeAction(inFlight, typed, queued) {
 
 function mountChat(root) {
   root.innerHTML = `
-    <div class="chat-wrap">
-      <div class="toolbar chat-toolbar">
-        <button class="btn" type="button" id="chat-new">New chat</button>
-        <button class="btn danger" type="button" id="chat-clear">Clear history</button>
-        <span class="chat-title" id="chat-title">New chat</span>
-        <span class="spacer"></span>
-        <span class="muted" id="chat-hint">Tab chats · ↑↓ recall</span>
-      </div>
-      <div class="chat-log" id="chat-log"></div>
-      <div class="chat-compose">
-        <ul class="slash-menu" id="history-menu" hidden></ul>
-        <ul class="slash-menu" id="slash-menu" hidden></ul>
-        <div class="chat-queue" id="chat-queue" hidden>
-          <span class="chat-queue-mark">Queued</span>
-          <span class="chat-queue-text" id="chat-queue-text"></span>
-          <button class="btn" type="button" id="chat-steer" hidden>Steer</button>
-          <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
+    <div class="chat-shell" id="chat-shell">
+      <button type="button" class="chat-backdrop" id="chat-backdrop" hidden aria-label="Close chats"></button>
+      <aside class="chat-sidebar" id="chat-sidebar">
+        <div class="chat-side-head">
+          <button class="btn primary" type="button" id="chat-new">New chat</button>
         </div>
-        <form class="chat-form" id="chat-form">
-          <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
-          <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
-        </form>
+        <div class="chat-side-search">
+          <input id="chat-search" type="search" placeholder="Search chats" autocomplete="off" />
+        </div>
+        <div class="chat-nav-list" id="chat-nav-list"></div>
+        <div class="chat-side-foot">
+          <button class="btn danger" type="button" id="chat-clear">Clear history</button>
+        </div>
+      </aside>
+      <div class="chat-wrap">
+        <div class="toolbar chat-toolbar">
+          <button class="btn ghost chat-icon" type="button" id="chat-sidebar-toggle" aria-label="Chats">☰</button>
+          <span class="chat-title" id="chat-title">New chat</span>
+          <span class="spacer"></span>
+          <span class="muted" id="chat-hint">Tab chats · ↑↓ recall · Enter send</span>
+          <div class="chat-more">
+            <button class="btn ghost" type="button" id="chat-more" aria-haspopup="true" aria-expanded="false">More</button>
+            <div class="chat-more-menu" id="chat-more-menu" hidden>
+              <button type="button" data-more="rename">Rename</button>
+              <button type="button" data-more="pin">Pin</button>
+              <button type="button" data-more="export">Export markdown</button>
+              <button type="button" data-more="copy">Copy conversation</button>
+              <button type="button" data-more="regen">Regenerate last reply</button>
+              <button type="button" data-more="settings">Sampling</button>
+              <button type="button" data-more="keys">Keyboard shortcuts</button>
+              <button type="button" data-more="sidebar">Hide sidebar</button>
+              <button type="button" data-more="delete">Delete this chat</button>
+            </div>
+          </div>
+        </div>
+        <div class="chat-log-wrap">
+          <div class="chat-empty" id="chat-empty" hidden>
+            <h2>Console chat</h2>
+            <p>Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
+            <div class="chat-suggests">
+              <button type="button" data-suggest="help">Usage guide</button>
+              <button type="button" data-suggest="list models">List models</button>
+              <button type="button" data-suggest="What model is loaded?">What's loaded?</button>
+              <button type="button" data-suggest="generate an image of a harbor at dusk">Harbor at dusk</button>
+            </div>
+          </div>
+          <div class="chat-log" id="chat-log"></div>
+          <button class="btn chat-jump" type="button" id="chat-jump" hidden>Jump to latest</button>
+        </div>
+        <div class="chat-compose">
+          <ul class="slash-menu" id="history-menu" hidden></ul>
+          <ul class="slash-menu" id="slash-menu" hidden></ul>
+          <div class="chat-edit-bar" id="chat-edit-bar" hidden>
+            <span>Editing a sent message. Send replaces that turn.</span>
+            <button class="btn ghost" type="button" id="chat-edit-cancel">Cancel</button>
+          </div>
+          <div class="chat-attach" id="chat-attach" hidden>
+            <img id="chat-attach-img" alt="" />
+            <span class="chat-attach-name" id="chat-attach-name"></span>
+            <button class="btn ghost chat-queue-clear" type="button" id="chat-attach-clear" aria-label="Remove image">×</button>
+          </div>
+          <div class="chat-queue" id="chat-queue" hidden>
+            <span class="chat-queue-mark">Queued</span>
+            <span class="chat-queue-text" id="chat-queue-text"></span>
+            <button class="btn" type="button" id="chat-steer" hidden>Steer</button>
+            <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
+          </div>
+          <form class="chat-form" id="chat-form">
+            <div class="chat-input-wrap">
+              <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-label="Attach image" title="Attach image">📎</button>
+              <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+              <textarea id="chat-input" rows="1" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
+              <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
+            </div>
+            <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
+          </form>
+          <div class="chat-compose-meta">
+            <span id="chat-count"></span>
+            <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
+          </div>
+        </div>
       </div>
     </div>
   `;
+  const shell = root.querySelector("#chat-shell");
   const log = root.querySelector("#chat-log");
+  const emptyEl = root.querySelector("#chat-empty");
+  const jumpBtn = root.querySelector("#chat-jump");
   const form = root.querySelector("#chat-form");
   const input = root.querySelector("#chat-input");
   const sendBtn = root.querySelector("#chat-send");
@@ -41,12 +103,25 @@ function mountChat(root) {
   const queueTextEl = root.querySelector("#chat-queue-text");
   const steerBtn = root.querySelector("#chat-steer");
   const queueClearBtn = root.querySelector("#chat-queue-clear");
+  const navList = root.querySelector("#chat-nav-list");
+  const searchEl = root.querySelector("#chat-search");
+  const moreBtn = root.querySelector("#chat-more");
+  const moreMenu = root.querySelector("#chat-more-menu");
+  const editBar = root.querySelector("#chat-edit-bar");
+  const attachBar = root.querySelector("#chat-attach");
+  const attachImg = root.querySelector("#chat-attach-img");
+  const attachName = root.querySelector("#chat-attach-name");
+  const fileInput = root.querySelector("#chat-file");
+  const micBtn = root.querySelector("#chat-mic");
+  const countEl = root.querySelector("#chat-count");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
   const SYSTEM = { role: "system", content: "Console chat. No file tools." };
   const STORAGE_KEY = "tabby-ui-chat-store";
+  const SETTINGS_KEY = "tabby-ui-chat-settings";
+  const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
   const MAX_CHATS = 50;
 
   function newId() {
@@ -59,6 +134,8 @@ function mountChat(root) {
       id: newId(),
       title: "New chat",
       updatedAt: Date.now(),
+      pinned: false,
+      titleLocked: false,
       messages: [{ ...SYSTEM }],
     };
   }
@@ -72,6 +149,12 @@ function mountChat(root) {
       if (out.role === "assistant" && item.reasoning) {
         out.reasoning = String(item.reasoning);
       }
+      if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
+      if (item.imageData && String(item.imageData).startsWith("data:image")) {
+        out.imageData = String(item.imageData);
+      }
+      if (item.imagePreview) out.imagePreview = String(item.imagePreview);
+      if (item.imageName) out.imageName = String(item.imageName);
       return out;
     });
   }
@@ -101,6 +184,8 @@ function mountChat(root) {
         id,
         title: String(item.title || titleFromMessages(messages) || "New chat"),
         updatedAt: Number(item.updatedAt) || Date.now(),
+        pinned: Boolean(item.pinned),
+        titleLocked: Boolean(item.titleLocked),
         messages,
       });
     });
@@ -121,6 +206,25 @@ function mountChat(root) {
   let persistReady = false;
   let store = normalizeStore(null);
   let messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
+  let pendingEditIndex = -1;
+  let pendingImage = null;
+  let renaming = false;
+  let settings = { temperature: null };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+    if (raw && typeof raw === "object" && (raw.temperature == null || Number.isFinite(Number(raw.temperature)))) {
+      settings.temperature = raw.temperature == null ? null : Number(raw.temperature);
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (localStorage.getItem(SIDEBAR_KEY) === "hidden") {
+      shell.classList.add("is-sidebar-hidden");
+    }
+  } catch {
+    /* ignore */
+  }
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
     { slash: "/list models", send: "list models", hint: "Installed profiles" },
@@ -156,27 +260,37 @@ function mountChat(root) {
   }
 
   function listedChats() {
-    const ordered = store.chats
+    const q = String((searchEl && searchEl.value) || "").trim().toLowerCase();
+    return store.chats
       .filter((chat) => chat.id === store.activeId || hasUserTurn(chat))
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    return ordered;
+      .filter((chat) => {
+        if (!q) return true;
+        if (String(chat.title || "").toLowerCase().includes(q)) return true;
+        return (chat.messages || []).some((msg) => String(msg.content || "").toLowerCase().includes(q));
+      })
+      .sort((a, b) => {
+        const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+        if (pin) return pin;
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
   }
 
   function persist() {
     const chat = activeChat();
     if (chat) {
       chat.messages = cloneMessages(messages);
-      chat.title = titleFromMessages(chat.messages);
+      if (!chat.titleLocked) chat.title = titleFromMessages(chat.messages);
     }
-    store.chats = store.chats.filter((item) => item.id === store.activeId || hasUserTurn(item));
+    store.chats = store.chats.filter((item) => item.id === store.activeId || hasUserTurn(item) || item.pinned);
     if (store.chats.length > MAX_CHATS) {
       const extras = store.chats
-        .filter((item) => item.id !== store.activeId)
+        .filter((item) => item.id !== store.activeId && !item.pinned)
         .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
       const drop = new Set(extras.slice(0, store.chats.length - MAX_CHATS).map((item) => item.id));
       store.chats = store.chats.filter((item) => !drop.has(item.id));
     }
     paintToolbar();
+    renderSidebar();
     if (!persistReady) return;
     TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
   }
@@ -188,14 +302,469 @@ function mountChat(root) {
 
   function paintToolbar() {
     const chat = activeChat();
-    const list = listedChats();
-    const idx = Math.max(0, list.findIndex((item) => item.id === store.activeId));
     const title = (chat && chat.title) || "New chat";
-    titleEl.textContent = list.length > 1 ? `${idx + 1}/${list.length} · ${title}` : title;
-    titleEl.title = title;
+    if (!renaming) {
+      titleEl.textContent = title;
+      titleEl.title = "Click to rename";
+    }
+    const pinBtn = moreMenu && moreMenu.querySelector('[data-more="pin"]');
+    if (pinBtn) pinBtn.textContent = chat && chat.pinned ? "Unpin" : "Pin";
+    const sideBtn = moreMenu && moreMenu.querySelector('[data-more="sidebar"]');
+    if (sideBtn) {
+      sideBtn.textContent = shell.classList.contains("is-sidebar-hidden") ? "Show sidebar" : "Hide sidebar";
+    }
+    paintEmpty();
   }
 
-  function addBubble(role, text, stick, reasoning) {
+  function renderSidebar() {
+    if (!navList) return;
+    const list = listedChats();
+    if (!list.length) {
+      navList.innerHTML = '<div class="chat-nav-empty">No chats match.</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    list.forEach((item) => {
+      const btn = document.createElement("div");
+      btn.className = "chat-nav" + (item.id === store.activeId ? " is-active" : "") + (item.pinned ? " is-pinned" : "");
+      btn.dataset.id = item.id;
+      btn.setAttribute("role", "button");
+      btn.tabIndex = 0;
+      btn.innerHTML =
+        `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>` +
+        `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span>` +
+        `<span class="chat-nav-when">${TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>` +
+        `<span class="chat-nav-tools">` +
+        `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${item.pinned ? "Unpin" : "Pin"}">★</button>` +
+        `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename">✎</button>` +
+        `<button type="button" class="btn ghost chat-icon danger" data-nav="delete" aria-label="Delete chat">×</button>` +
+        `</span>`;
+      frag.appendChild(btn);
+    });
+    navList.replaceChildren(frag);
+  }
+
+  function paintEmpty() {
+    if (!emptyEl) return;
+    const empty = !messages.some((item) => item.role !== "system" && String(item.content || "").trim());
+    emptyEl.hidden = !empty;
+  }
+
+  function nearBottom() {
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+  }
+
+  function paintJump() {
+    if (!jumpBtn) return;
+    jumpBtn.hidden = nearBottom() || log.scrollHeight <= log.clientHeight + 8;
+  }
+
+  function stickLog(force) {
+    if (force || nearBottom()) log.scrollTop = log.scrollHeight;
+    paintJump();
+  }
+
+  function resizeInput() {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 46), 200)}px`;
+    if (countEl) {
+      const n = input.value.length;
+      countEl.textContent = n >= 400 ? `${n.toLocaleString()} chars` : "";
+    }
+  }
+
+  function hideMoreMenu() {
+    if (!moreMenu || !moreBtn) return;
+    moreMenu.hidden = true;
+    moreBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function setSidebarOpen(open) {
+    shell.classList.toggle("is-sidebar-open", open);
+    const backdrop = root.querySelector("#chat-backdrop");
+    if (backdrop) backdrop.hidden = !open;
+  }
+
+  function copyText(text, btn) {
+    const value = String(text || "");
+    const done = () => {
+      if (!btn) return;
+      const prev = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 1200);
+    };
+    const fail = () => {
+      if (!btn) return;
+      const prev = btn.textContent;
+      btn.textContent = "Copy failed";
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(done).catch(fail);
+      return;
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      done();
+    } catch {
+      fail();
+    }
+  }
+
+  function lastAssistantIndex() {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "assistant") return i;
+    }
+    return -1;
+  }
+
+  function stampLabel(ts) {
+    if (!ts) return "";
+    try {
+      return new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  }
+
+  function attachMsgActions(host, role, idx, text) {
+    if (!host || idx == null || idx < 0) return;
+    host.querySelectorAll(".chat-actions, .chat-stamp").forEach((node) => node.remove());
+    const actions = document.createElement("div");
+    actions.className = "chat-actions";
+    const add = (act, label) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn ghost chat-icon";
+      btn.dataset.act = act;
+      btn.dataset.idx = String(idx);
+      btn.textContent = label;
+      btn.setAttribute("aria-label", label);
+      actions.appendChild(btn);
+    };
+    add("copy", "Copy");
+    if (role === "user") {
+      add("edit", "Edit");
+      add("delete", "Delete");
+    } else {
+      if (idx === lastAssistantIndex()) add("regen", "Regen");
+      if (/^Error:/i.test(String(text || ""))) add("retry", "Retry");
+    }
+    host.appendChild(actions);
+    const item = messages[idx];
+    if (item && item.createdAt) {
+      const stamp = document.createElement("span");
+      stamp.className = "chat-stamp";
+      stamp.textContent = stampLabel(item.createdAt);
+      host.appendChild(stamp);
+    }
+  }
+
+  function cancelEdit() {
+    pendingEditIndex = -1;
+    if (editBar) editBar.hidden = true;
+    paintCompose();
+  }
+
+  function beginEdit(idx) {
+    if (inFlight) return;
+    const item = messages[idx];
+    if (!item || item.role !== "user") return;
+    pendingEditIndex = idx;
+    setCompose(item.content);
+    if (item.imageData) {
+      pendingImage = {
+        name: item.imageName || "image",
+        dataUrl: item.imageData,
+        preview: item.imagePreview || item.imageData,
+      };
+      paintAttach();
+    }
+    if (editBar) editBar.hidden = false;
+    resizeInput();
+    paintCompose();
+    input.focus();
+  }
+
+  function deleteTurn(idx) {
+    if (inFlight) return;
+    const item = messages[idx];
+    if (!item || item.role !== "user") return;
+    const next = messages[idx + 1];
+    const drop = next && next.role === "assistant" ? 2 : 1;
+    messages.splice(idx, drop);
+    persist();
+    renderLog();
+  }
+
+  function regenerateLast() {
+    if (inFlight) return;
+    if (messages.length && messages[messages.length - 1].role === "assistant") {
+      messages.pop();
+    }
+    const lastUser = [...messages].reverse().find((item) => item.role === "user");
+    if (!lastUser) return;
+    persist();
+    renderLog();
+    runLoop(lastUser.content, { replay: true }).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+      persist();
+    });
+  }
+
+  function conversationMarkdown() {
+    return messages
+      .filter((item) => item.role === "user" || item.role === "assistant")
+      .map((item) => {
+        const who = item.role === "user" ? "You" : "Assistant";
+        const body = item.role === "assistant" && TabbyUI.formatAssistantContent
+          ? TabbyUI.formatAssistantContent(item.content)
+          : item.content;
+        return `## ${who}\n\n${String(body || "").trim()}\n`;
+      })
+      .join("\n");
+  }
+
+  function exportChat() {
+    const chat = activeChat();
+    const title = (chat && chat.title) || "chat";
+    const safe = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "chat";
+    const blob = new Blob([conversationMarkdown()], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${safe}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function beginRename(id) {
+    const chat = store.chats.find((item) => item.id === (id || store.activeId));
+    if (!chat || renaming) return;
+    renaming = true;
+    const field = document.createElement("input");
+    field.className = "chat-title-edit";
+    field.value = chat.title || "New chat";
+    field.setAttribute("aria-label", "Chat title");
+    titleEl.replaceWith(field);
+    field.focus();
+    field.select();
+    const finish = (save) => {
+      if (!renaming) return;
+      renaming = false;
+      const next = String(field.value || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (save && next) {
+        chat.title = next;
+        chat.titleLocked = true;
+        persist();
+      }
+      field.replaceWith(titleEl);
+      paintToolbar();
+    };
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    field.addEventListener("blur", () => finish(true));
+  }
+
+  function togglePin(id) {
+    const chat = store.chats.find((item) => item.id === (id || store.activeId));
+    if (!chat) return;
+    chat.pinned = !chat.pinned;
+    persist();
+  }
+
+  function paintAttach() {
+    const on = Boolean(pendingImage);
+    if (attachBar) attachBar.hidden = !on;
+    if (attachImg) attachImg.src = (pendingImage && (pendingImage.preview || pendingImage.dataUrl)) || "";
+    if (attachName) attachName.textContent = (pendingImage && pendingImage.name) || "";
+  }
+
+  function clearPendingImage() {
+    pendingImage = null;
+    if (fileInput) fileInput.value = "";
+    paintAttach();
+  }
+
+  function resizeDataUrl(dataUrl, maxEdge, quality) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width;
+        let h = img.height;
+        const edge = Math.max(w, h) || 1;
+        if (edge > maxEdge) {
+          const scale = maxEdge / edge;
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#111318";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
+  async function setPendingImageFromFile(file) {
+    if (!file) return;
+    if (!/^image\//.test(file.type || "")) {
+      addBubble("assistant", "Error: Attach a PNG, JPEG, WebP, or GIF.");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      addBubble("assistant", "Error: Image must be under 8 MB.");
+      return;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read image."));
+      reader.readAsDataURL(file);
+    });
+    const preview = await resizeDataUrl(dataUrl, 320, 0.72);
+    const compact = await resizeDataUrl(dataUrl, 1280, 0.82);
+    pendingImage = { name: file.name || "image", dataUrl: compact, preview };
+    paintAttach();
+  }
+
+  function outboundMessages() {
+    return messages
+      .filter((item) => item.role !== "system")
+      .map((item) => {
+        if (item.role === "user" && item.imageData) {
+          return {
+            role: "user",
+            content: [
+              { type: "text", text: String(item.content || "") },
+              { type: "image_url", image_url: { url: item.imageData } },
+            ],
+          };
+        }
+        return { role: item.role, content: item.content };
+      });
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function showDialog({ title, html, yes = "Close" }) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "dialog-modal";
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-modal", "true");
+      wrap.innerHTML =
+        '<div class="dialog-card">' +
+        "<h2></h2>" +
+        '<div class="dialog-body"></div>' +
+        '<div class="dialog-actions">' +
+        '<button type="button" class="btn primary dialog-yes"></button>' +
+        "</div></div>";
+      wrap.querySelector("h2").textContent = title || "";
+      wrap.querySelector(".dialog-body").innerHTML = html || "";
+      wrap.querySelector(".dialog-yes").textContent = yes;
+      const finish = () => {
+        document.removeEventListener("keydown", onKey);
+        wrap.remove();
+        resolve();
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") finish();
+      };
+      wrap.querySelector(".dialog-yes").addEventListener("click", finish);
+      wrap.addEventListener("click", (ev) => {
+        if (ev.target === wrap) finish();
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(wrap);
+      wrap.querySelector(".dialog-yes").focus();
+    });
+  }
+
+  function showShortcuts() {
+    return showDialog({
+      title: "Keyboard shortcuts",
+      html:
+        '<ul class="shortcuts-list">' +
+        "<li><span>Send</span><kbd>Enter</kbd></li>" +
+        "<li><span>New line</span><kbd>Shift</kbd>+<kbd>Enter</kbd></li>" +
+        "<li><span>Stop / close menus</span><kbd>Esc</kbd></li>" +
+        "<li><span>Cycle chats</span><kbd>Tab</kbd></li>" +
+        "<li><span>Recall sent text</span><kbd>↑</kbd> <kbd>↓</kbd></li>" +
+        "<li><span>Search chats</span><kbd>Ctrl</kbd>+<kbd>K</kbd></li>" +
+        "<li><span>New chat</span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></li>" +
+        "<li><span>Slash commands</span><kbd>/</kbd></li>" +
+        "</ul>",
+    });
+  }
+
+  function showSettings() {
+    const current = settings.temperature;
+    const value = current == null ? 0.7 : current;
+    const wrap = document.createElement("div");
+    wrap.className = "dialog-modal";
+    wrap.setAttribute("role", "dialog");
+    wrap.innerHTML =
+      '<div class="dialog-card"><h2>Sampling</h2>' +
+      '<label>Temperature <strong id="chat-temp-val"></strong><input id="chat-temp" type="range" min="0" max="2" step="0.1" /></label>' +
+      '<p class="muted">Leave at model default unless you want a fixed value for this browser.</p>' +
+      '<div class="dialog-actions">' +
+      '<button type="button" class="btn" id="chat-temp-default">Model default</button>' +
+      '<button type="button" class="btn primary" id="chat-temp-save">Save</button>' +
+      "</div></div>";
+    const range = wrap.querySelector("#chat-temp");
+    const label = wrap.querySelector("#chat-temp-val");
+    range.value = String(value);
+    label.textContent = settings.temperature == null ? "default" : String(settings.temperature);
+    range.addEventListener("input", () => {
+      label.textContent = range.value;
+    });
+    const close = () => wrap.remove();
+    wrap.querySelector("#chat-temp-default").addEventListener("click", () => {
+      settings.temperature = null;
+      saveSettings();
+      close();
+    });
+    wrap.querySelector("#chat-temp-save").addEventListener("click", () => {
+      settings.temperature = Number(range.value);
+      saveSettings();
+      close();
+    });
+    wrap.addEventListener("click", (ev) => {
+      if (ev.target === wrap) close();
+    });
+    document.body.appendChild(wrap);
+  }
+
+  function addBubble(role, text, stick, reasoning, idx, extra) {
     if (role === "assistant") {
       const cleaned = TabbyUI.formatAssistantContent ? TabbyUI.formatAssistantContent(text) : text;
       const isImage = looksLikeImageReply(cleaned);
@@ -205,15 +774,28 @@ function mountChat(root) {
         live: false,
         activity: isImage ? { kind: "image" } : undefined,
       });
-      if (stick !== false) log.scrollTop = log.scrollHeight;
+      attachMsgActions(turn.node, "assistant", idx, text);
+      if (stick !== false) stickLog(true);
       return turn.node;
     }
+    const row = document.createElement("div");
+    row.className = "chat-row";
     const node = document.createElement("div");
     node.className = `bubble ${role}`;
     node.innerHTML = TabbyUI.renderMarkdown(text);
-    log.appendChild(node);
-    if (stick !== false) log.scrollTop = log.scrollHeight;
-    return node;
+    const preview = extra && (extra.imagePreview || extra.imageData);
+    if (preview) {
+      const img = document.createElement("img");
+      img.className = "chat-thumb";
+      img.src = preview;
+      img.alt = (extra && extra.imageName) || "Attached image";
+      node.appendChild(img);
+    }
+    row.appendChild(node);
+    attachMsgActions(row, "user", idx, text);
+    log.appendChild(row);
+    if (stick !== false) stickLog(true);
+    return row;
   }
 
   function activityFromPrompt(text) {
@@ -404,7 +986,7 @@ function mountChat(root) {
       reasoningText = line;
       paintThought();
       thought.hidden = false;
-      log.scrollTop = log.scrollHeight;
+      stickLog();
     }
 
     function foldNotesIntoThought() {
@@ -509,7 +1091,7 @@ function mountChat(root) {
           setProcessing(false);
         }
         paintThought();
-        log.scrollTop = log.scrollHeight;
+        stickLog();
       },
       setAnswer(text) {
         const value = visibleAnswerText(text);
@@ -528,7 +1110,7 @@ function mountChat(root) {
           stopWorking();
           head.hidden = true;
         }
-        log.scrollTop = log.scrollHeight;
+        stickLog();
       },
       finish({ content: finalContent, reasoning: finalReasoning } = {}) {
         if (finished && !live) return { reasoning: reasoningText };
@@ -569,7 +1151,7 @@ function mountChat(root) {
           head.hidden = true;
           thought.hidden = true;
         }
-        log.scrollTop = log.scrollHeight;
+        stickLog();
         return { reasoning: reasoningText };
       },
       stopClock() {
@@ -596,11 +1178,13 @@ function mountChat(root) {
 
   function renderLog(stickToEnd) {
     log.replaceChildren();
-    messages.forEach((item) => {
-      if (item.role === "user") addBubble("user", item.content, false);
-      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning);
+    messages.forEach((item, idx) => {
+      if (item.role === "user") addBubble("user", item.content, false, null, idx, item);
+      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx);
     });
-    if (stickToEnd !== false) log.scrollTop = log.scrollHeight;
+    paintEmpty();
+    if (stickToEnd !== false) stickLog(true);
+    else paintJump();
   }
 
   function loadChat(id, stickToEnd) {
@@ -611,14 +1195,17 @@ function mountChat(root) {
     store.activeId = id;
     messages = cloneMessages(chat.messages);
     if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+    cancelEdit();
     persist();
     resetRecall();
     renderLog(stickToEnd !== false);
     input.focus();
+    setSidebarOpen(false);
   }
 
   function deleteChat(id) {
     if (id === store.activeId || id === flightChatId) abortSession("stop");
+    if (id === store.activeId) cancelEdit();
     persist();
     store.chats = store.chats.filter((item) => item.id !== id);
     if (!store.chats.length) {
@@ -641,6 +1228,8 @@ function mountChat(root) {
   function startNewChat() {
     abortSession("stop");
     persist();
+    cancelEdit();
+    clearPendingImage();
     if (!hasUserTurn({ messages })) {
       resetRecall();
       renderLog();
@@ -663,6 +1252,8 @@ function mountChat(root) {
       if (!window.confirm("Delete all saved console chats for this account?")) return;
     }
     abortSession("stop");
+    cancelEdit();
+    clearPendingImage();
     const chat = emptyChat();
     store = { version: 1, activeId: chat.id, chats: [chat] };
     messages = cloneMessages(chat.messages);
@@ -723,10 +1314,48 @@ function mountChat(root) {
   }
 
   function onPointerDownAway(event) {
-    if (historyMenu.hidden) return;
     const target = event.target;
-    if (target instanceof Node && historyMenu.contains(target)) return;
-    hideHistoryMenu();
+    if (!(target instanceof Node)) return;
+    if (!historyMenu.hidden && !historyMenu.contains(target)) hideHistoryMenu();
+    if (moreMenu && moreBtn && !moreMenu.hidden && !moreMenu.contains(target) && !moreBtn.contains(target)) {
+      hideMoreMenu();
+    }
+  }
+
+  function onGlobalKey(event) {
+    if (event.key === "Escape") {
+      if (shell.classList.contains("is-sidebar-open")) {
+        setSidebarOpen(false);
+        event.preventDefault();
+        return;
+      }
+      hideMoreMenu();
+      hideHistoryMenu();
+      hideMenu();
+      if (pendingEditIndex >= 0) {
+        cancelEdit();
+        event.preventDefault();
+        return;
+      }
+      if (inFlight && !input.value.trim()) {
+        abortSession("stop");
+        event.preventDefault();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (searchEl) {
+        setSidebarOpen(true);
+        searchEl.focus();
+        searchEl.select();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      startNewChat();
+    }
   }
 
   function timeLabel(ts) {
@@ -1046,6 +1675,7 @@ function mountChat(root) {
         ? "Session running. Steer the queued message or type a replacement."
         : "Session running. Type a follow-up to queue it."
       : DEFAULT_PLACEHOLDER;
+    if (editBar) editBar.hidden = pendingEditIndex < 0;
   }
 
   function appendAssistantToChat(chatId, item) {
@@ -1063,27 +1693,49 @@ function mountChat(root) {
     if (persistReady) TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
   }
 
-  async function send(text) {
+  async function send(text, opts) {
+    const replay = Boolean(opts && opts.replay);
     const chatId = store.activeId;
     flightChatId = chatId;
     abortController = new AbortController();
     const outboundText = expandSlash(text);
-    messages.push({ role: "user", content: outboundText });
-    touchActive();
-    persist();
-    addBubble("user", outboundText);
+    if (!replay) {
+      if (pendingEditIndex >= 0) {
+        const idx = pendingEditIndex;
+        pendingEditIndex = -1;
+        if (editBar) editBar.hidden = true;
+        messages = messages.slice(0, idx);
+        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+      }
+      const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
+      if (pendingImage) {
+        userItem.imageData = pendingImage.dataUrl;
+        userItem.imagePreview = pendingImage.preview || pendingImage.dataUrl;
+        userItem.imageName = pendingImage.name;
+      }
+      messages.push(userItem);
+      clearPendingImage();
+      touchActive();
+      persist();
+      renderLog();
+    } else {
+      persist();
+      renderLog();
+    }
     const activity = activityFromPrompt(outboundText);
     const working = addWorkingReply(activity);
     const poll = startStatusPoll(working, activity.kind);
     let assembled = "";
     let reasoning = "";
-    const outbound = messages.filter((m) => m.role !== "system");
+    const outbound = outboundMessages();
+    const body = { messages: outbound, stream: true };
+    if (settings.temperature != null) body.temperature = settings.temperature;
     try {
       const response = await fetch(TabbyUI.path("chat"), {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
-        body: JSON.stringify({ messages: outbound, stream: true }),
+        body: JSON.stringify(body),
         signal: abortController.signal,
       });
       if (response.status === 401) {
@@ -1136,28 +1788,31 @@ function mountChat(root) {
       } else {
         assembled = assembled || `Error: ${err.message}`;
       }
-    } finally {
-      poll.stop();
-      const stoppedEmpty = Boolean(stopKind) && !String(assembled || "").trim() && !reasoning;
-      if (stoppedEmpty) {
-        working.discard();
-      } else {
-        const done = working.finish({ content: assembled, reasoning });
-        if (done && done.reasoning) reasoning = done.reasoning;
-      }
+    }
+    let stoppedEmpty = false;
+    poll.stop();
+    stoppedEmpty = Boolean(stopKind) && !String(assembled || "").trim() && !reasoning;
+    if (stoppedEmpty) {
+      working.discard();
+    } else {
+      const done = working.finish({ content: assembled, reasoning });
+      if (done && done.reasoning) reasoning = done.reasoning;
     }
     if (String(assembled || "").trim() || reasoning) {
-      const item = { role: "assistant", content: assembled };
+      const item = { role: "assistant", content: assembled, createdAt: Date.now() };
       if (reasoning) item.reasoning = reasoning;
       appendAssistantToChat(chatId, item);
+      if (store.activeId === chatId && !stoppedEmpty) {
+        attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
+      }
     } else if (store.activeId === chatId) {
       persist();
     }
   }
 
-  async function runLoop(firstText) {
+  async function runLoop(firstText, opts) {
     if (loopBusy) {
-      if (firstText) queueFollowup(firstText);
+      if (firstText && !(opts && opts.replay)) queueFollowup(firstText);
       return;
     }
     loopBusy = true;
@@ -1165,9 +1820,11 @@ function mountChat(root) {
     paintCompose();
     try {
       let next = firstText;
+      let sendOpts = opts;
       while (next) {
         stopKind = "";
-        await send(next);
+        await send(next, sendOpts);
+        sendOpts = undefined;
         if (stopKind === "steer") {
           next = takeQueue();
           continue;
@@ -1211,9 +1868,10 @@ function mountChat(root) {
       }
       return;
     }
-    if (!text) return;
+    if (!text && !pendingImage) return;
     resetRecall();
     input.value = "";
+    resizeInput();
     hideMenu();
     runLoop(text).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
@@ -1244,6 +1902,7 @@ function mountChat(root) {
       if (!historyMenu.hidden && input.value) hideHistoryMenu();
     }
     paintCompose();
+    resizeInput();
   });
   input.addEventListener("keydown", (event) => {
     if (!menu.hidden && menuItems.length) {
@@ -1318,6 +1977,8 @@ function mountChat(root) {
     if (event.key === "Escape") {
       hideHistoryMenu();
       hideMenu();
+      hideMoreMenu();
+      if (pendingEditIndex >= 0) cancelEdit();
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -1327,49 +1988,191 @@ function mountChat(root) {
   });
 
   log.addEventListener("click", (event) => {
+    const actBtn = event.target.closest("[data-act]");
+    if (actBtn && log.contains(actBtn)) {
+      event.preventDefault();
+      const act = actBtn.dataset.act;
+      const idx = Number(actBtn.dataset.idx);
+      const item = messages[idx];
+      if (act === "copy" && item) {
+        const text = item.role === "assistant" && TabbyUI.formatAssistantContent
+          ? TabbyUI.formatAssistantContent(item.content)
+          : item.content;
+        copyText(text, actBtn);
+        return;
+      }
+      if (act === "edit") beginEdit(idx);
+      if (act === "delete") deleteTurn(idx);
+      if (act === "regen" || act === "retry") regenerateLast();
+      return;
+    }
     const btn = event.target.closest(".md-code-copy");
     if (!btn || !log.contains(btn)) return;
     event.preventDefault();
     const block = btn.closest(".md-code");
     const code = block && block.querySelector("code");
     if (!code) return;
-    const text = code.textContent || "";
-    const done = () => {
-      btn.textContent = "Copied";
-      setTimeout(() => {
-        btn.textContent = "Copy";
-      }, 1200);
-    };
-    const fail = () => {
-      btn.textContent = "Copy failed";
-      setTimeout(() => {
-        btn.textContent = "Copy";
-      }, 1200);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(fail);
-      return;
-    }
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      done();
-    } catch {
-      fail();
-    }
+    copyText(code.textContent || "", btn);
   });
-  log.addEventListener("mouseup", () => {
+  log.addEventListener("mouseup", (event) => {
+    if (event.target.closest("button, a, textarea, input")) return;
     const sel = window.getSelection();
     if (sel && String(sel).trim()) return;
     input.focus();
   });
+  log.addEventListener("scroll", paintJump, { passive: true });
+  if (jumpBtn) jumpBtn.addEventListener("click", () => stickLog(true));
+  titleEl.addEventListener("click", () => beginRename());
+  root.querySelector("#chat-sidebar-toggle").addEventListener("click", () => {
+    setSidebarOpen(!shell.classList.contains("is-sidebar-open"));
+  });
+  root.querySelector("#chat-backdrop").addEventListener("click", () => setSidebarOpen(false));
+  if (searchEl) {
+    searchEl.addEventListener("input", () => renderSidebar());
+  }
+  navList.addEventListener("click", (event) => {
+    const tool = event.target.closest("[data-nav]");
+    const row = event.target.closest(".chat-nav");
+    if (!row) return;
+    const id = row.dataset.id;
+    if (tool) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (tool.dataset.nav === "pin") togglePin(id);
+      if (tool.dataset.nav === "rename") {
+        loadChat(id);
+        beginRename(id);
+      }
+      if (tool.dataset.nav === "delete") deleteChat(id);
+      return;
+    }
+    loadChat(id);
+  });
+  navList.addEventListener("keydown", (event) => {
+    const row = event.target.closest(".chat-nav");
+    if (!row || event.target.closest("[data-nav]")) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      loadChat(row.dataset.id);
+    }
+  });
+  moreBtn.addEventListener("click", () => {
+    const open = moreMenu.hidden;
+    hideHistoryMenu();
+    moreMenu.hidden = !open;
+    moreBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  moreMenu.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-more]");
+    if (!btn) return;
+    hideMoreMenu();
+    const act = btn.dataset.more;
+    if (act === "rename") beginRename();
+    if (act === "pin") togglePin();
+    if (act === "export") exportChat();
+    if (act === "copy") copyText(conversationMarkdown(), btn);
+    if (act === "regen") regenerateLast();
+    if (act === "settings") showSettings();
+    if (act === "keys") showShortcuts();
+    if (act === "sidebar") {
+      shell.classList.toggle("is-sidebar-hidden");
+      try {
+        localStorage.setItem(SIDEBAR_KEY, shell.classList.contains("is-sidebar-hidden") ? "hidden" : "shown");
+      } catch {
+        /* ignore */
+      }
+      paintToolbar();
+    }
+    if (act === "delete") deleteChat(store.activeId);
+  });
+  emptyEl.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-suggest]");
+    if (!btn) return;
+    input.value = btn.dataset.suggest || "";
+    resizeInput();
+    form.requestSubmit();
+  });
+  root.querySelector("#chat-edit-cancel").addEventListener("click", cancelEdit);
+  root.querySelector("#chat-attach-btn").addEventListener("click", () => fileInput && fileInput.click());
+  root.querySelector("#chat-attach-clear").addEventListener("click", () => {
+    clearPendingImage();
+    input.focus();
+  });
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    setPendingImageFromFile(file).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+    });
+  });
+  input.addEventListener("paste", (event) => {
+    const items = event.clipboardData && event.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === "file" && /^image\//.test(item.type)) {
+        event.preventDefault();
+        setPendingImageFromFile(item.getAsFile()).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
+    }
+  });
+  form.addEventListener("dragover", (event) => {
+    if (Array.from(event.dataTransfer.types || []).includes("Files")) {
+      event.preventDefault();
+      form.classList.add("is-drop");
+    }
+  });
+  form.addEventListener("dragleave", () => form.classList.remove("is-drop"));
+  form.addEventListener("drop", (event) => {
+    event.preventDefault();
+    form.classList.remove("is-drop");
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    setPendingImageFromFile(file).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+    });
+  });
+  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (Speech && micBtn) {
+    micBtn.hidden = false;
+    let rec = null;
+    micBtn.addEventListener("click", () => {
+      if (rec) {
+        rec.stop();
+        rec = null;
+        micBtn.classList.remove("is-live");
+        return;
+      }
+      rec = new Speech();
+      rec.lang = navigator.language || "en-US";
+      rec.interimResults = true;
+      rec.onresult = (ev) => {
+        let spoken = "";
+        for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+          spoken += ev.results[i][0].transcript;
+        }
+        if (spoken) {
+          input.value = input.value ? `${input.value.trim()} ${spoken}` : spoken;
+          resizeInput();
+          paintCompose();
+        }
+      };
+      rec.onend = () => {
+        rec = null;
+        micBtn.classList.remove("is-live");
+      };
+      rec.onerror = () => {
+        rec = null;
+        micBtn.classList.remove("is-live");
+      };
+      rec.start();
+      micBtn.classList.add("is-live");
+    });
+  }
 
   window.addEventListener("beforeunload", persist);
   document.addEventListener("pointerdown", onPointerDownAway);
+  document.addEventListener("keydown", onGlobalKey);
   async function loadStore() {
     let incoming = null;
     try {
@@ -1393,18 +2196,24 @@ function mountChat(root) {
     persist();
     renderLog();
     paintToolbar();
+    renderSidebar();
     paintCompose();
+    resizeInput();
   }
   loadStore();
   return {
     pause() {
       hideHistoryMenu();
+      hideMoreMenu();
+      setSidebarOpen(false);
     },
     destroy() {
       abortSession("stop");
       persist();
       hideHistoryMenu();
+      hideMoreMenu();
       document.removeEventListener("pointerdown", onPointerDownAway);
+      document.removeEventListener("keydown", onGlobalKey);
       window.removeEventListener("beforeunload", persist);
     },
   };
