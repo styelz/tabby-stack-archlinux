@@ -573,8 +573,55 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-width: 0;
   flex: 1;
 }
-.chat-form { display: flex; gap: 8px; flex: 0 0 auto; }
+.chat-form { display: flex; gap: 8px; flex: 0 0 auto; align-items: stretch; }
 .chat-form textarea { min-height: 46px; resize: vertical; }
+.chat-send {
+  min-width: 5.75rem;
+  flex: 0 0 auto;
+}
+.chat-send.is-stop .chat-stop-icon,
+.chat-stop-icon {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 2px;
+  background: currentColor;
+  vertical-align: -1px;
+}
+.chat-queue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elev);
+}
+.chat-queue[hidden] { display: none; }
+.chat-queue-mark {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.chat-queue-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.chat-queue .btn { padding: 6px 10px; }
+.chat-queue-clear {
+  width: 28px;
+  padding: 6px 0;
+  color: var(--muted);
+}
 
 .cards {
   display: grid;

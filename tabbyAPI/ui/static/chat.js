@@ -1,3 +1,11 @@
+function tabbyChatComposeAction(inFlight, typed, queued) {
+  const text = String(typed || "").trim();
+  const hasQueue = Boolean(String(queued || "").trim());
+  if (!inFlight) return { mode: "send", label: "Send", showSteer: false };
+  if (text) return { mode: "queue", label: "Queue", showSteer: hasQueue };
+  return { mode: "stop", label: "Stop", showSteer: hasQueue };
+}
+
 function mountChat(root) {
   root.innerHTML = `
     <div class="chat-wrap">
@@ -12,9 +20,15 @@ function mountChat(root) {
       <div class="chat-compose">
         <ul class="slash-menu" id="history-menu" hidden></ul>
         <ul class="slash-menu" id="slash-menu" hidden></ul>
+        <div class="chat-queue" id="chat-queue" hidden>
+          <span class="chat-queue-mark">Queued</span>
+          <span class="chat-queue-text" id="chat-queue-text"></span>
+          <button class="btn" type="button" id="chat-steer" hidden>Steer</button>
+          <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
+        </div>
         <form class="chat-form" id="chat-form">
           <textarea id="chat-input" rows="2" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
-          <button class="btn primary" type="submit">Send</button>
+          <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
         </form>
       </div>
     </div>
@@ -22,6 +36,12 @@ function mountChat(root) {
   const log = root.querySelector("#chat-log");
   const form = root.querySelector("#chat-form");
   const input = root.querySelector("#chat-input");
+  const sendBtn = root.querySelector("#chat-send");
+  const queueBar = root.querySelector("#chat-queue");
+  const queueTextEl = root.querySelector("#chat-queue-text");
+  const steerBtn = root.querySelector("#chat-steer");
+  const queueClearBtn = root.querySelector("#chat-queue-clear");
+  const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
@@ -558,6 +578,15 @@ function mountChat(root) {
           ticker = null;
         }
       },
+      discard() {
+        finished = true;
+        if (ticker) {
+          clearInterval(ticker);
+          ticker = null;
+        }
+        stopWorking();
+        turn.remove();
+      },
     };
   }
 
@@ -575,6 +604,7 @@ function mountChat(root) {
   }
 
   function loadChat(id, stickToEnd) {
+    abortSession("stop");
     persist();
     const chat = store.chats.find((item) => item.id === id);
     if (!chat) return;
@@ -588,6 +618,7 @@ function mountChat(root) {
   }
 
   function deleteChat(id) {
+    if (id === store.activeId || id === flightChatId) abortSession("stop");
     persist();
     store.chats = store.chats.filter((item) => item.id !== id);
     if (!store.chats.length) {
@@ -608,6 +639,7 @@ function mountChat(root) {
   }
 
   function startNewChat() {
+    abortSession("stop");
     persist();
     if (!hasUserTurn({ messages })) {
       resetRecall();
@@ -630,6 +662,7 @@ function mountChat(root) {
     if (store.chats.some(hasUserTurn) || hasUserTurn({ messages })) {
       if (!window.confirm("Delete all saved console chats for this account?")) return;
     }
+    abortSession("stop");
     const chat = emptyChat();
     store = { version: 1, activeId: chat.id, chats: [chat] };
     messages = cloneMessages(chat.messages);
@@ -965,7 +998,75 @@ function mountChat(root) {
     };
   }
 
+  let abortController = null;
+  let inFlight = false;
+  let queuedText = "";
+  let stopKind = "";
+  let loopBusy = false;
+  let flightChatId = "";
+
+  function abortSession(kind) {
+    stopKind = kind || "stop";
+    if (abortController) abortController.abort();
+  }
+
+  function takeQueue() {
+    const text = queuedText;
+    queuedText = "";
+    return text;
+  }
+
+  function queueFollowup(text) {
+    queuedText = String(text || "").trim();
+    paintCompose();
+  }
+
+  function paintCompose() {
+    const action = tabbyChatComposeAction(inFlight, input.value, queuedText);
+    const hasQueue = Boolean(queuedText);
+    if (queueBar) queueBar.hidden = !hasQueue;
+    if (queueTextEl) queueTextEl.textContent = queuedText;
+    if (steerBtn) {
+      steerBtn.hidden = !action.showSteer;
+      steerBtn.disabled = !(inFlight && hasQueue);
+    }
+    if (!sendBtn) return;
+    sendBtn.disabled = false;
+    sendBtn.classList.toggle("primary", action.mode !== "stop");
+    sendBtn.classList.toggle("danger", action.mode === "stop");
+    sendBtn.classList.toggle("is-stop", action.mode === "stop");
+    sendBtn.setAttribute("aria-label", action.label);
+    if (action.mode === "stop") {
+      sendBtn.innerHTML = `<span class="chat-stop-icon" aria-hidden="true"></span>${action.label}`;
+    } else {
+      sendBtn.textContent = action.label;
+    }
+    input.placeholder = inFlight
+      ? hasQueue
+        ? "Session running. Steer the queued message or type a replacement."
+        : "Session running. Type a follow-up to queue it."
+      : DEFAULT_PLACEHOLDER;
+  }
+
+  function appendAssistantToChat(chatId, item) {
+    if (store.activeId === chatId) {
+      messages.push(item);
+      persist();
+      return;
+    }
+    const chat = store.chats.find((c) => c.id === chatId);
+    if (!chat) return;
+    chat.messages = cloneMessages(chat.messages);
+    chat.messages.push(item);
+    chat.title = titleFromMessages(chat.messages);
+    chat.updatedAt = Date.now();
+    if (persistReady) TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
+  }
+
   async function send(text) {
+    const chatId = store.activeId;
+    flightChatId = chatId;
+    abortController = new AbortController();
     const outboundText = expandSlash(text);
     messages.push({ role: "user", content: outboundText });
     touchActive();
@@ -983,6 +1084,7 @@ function mountChat(root) {
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
         body: JSON.stringify({ messages: outbound, stream: true }),
+        signal: abortController.signal,
       });
       if (response.status === 401) {
         poll.stop();
@@ -1028,46 +1130,110 @@ function mountChat(root) {
         }
       }
     } catch (err) {
-      assembled = assembled || `Error: ${err.message}`;
+      const aborted = Boolean(err && err.name === "AbortError");
+      if (aborted) {
+        if (!stopKind) stopKind = "stop";
+      } else {
+        assembled = assembled || `Error: ${err.message}`;
+      }
     } finally {
       poll.stop();
-      const done = working.finish({ content: assembled, reasoning });
-      if (done && done.reasoning) reasoning = done.reasoning;
+      const stoppedEmpty = Boolean(stopKind) && !String(assembled || "").trim() && !reasoning;
+      if (stoppedEmpty) {
+        working.discard();
+      } else {
+        const done = working.finish({ content: assembled, reasoning });
+        if (done && done.reasoning) reasoning = done.reasoning;
+      }
     }
-    const item = { role: "assistant", content: assembled };
-    if (reasoning) item.reasoning = reasoning;
-    messages.push(item);
-    persist();
+    if (String(assembled || "").trim() || reasoning) {
+      const item = { role: "assistant", content: assembled };
+      if (reasoning) item.reasoning = reasoning;
+      appendAssistantToChat(chatId, item);
+    } else if (store.activeId === chatId) {
+      persist();
+    }
+  }
+
+  async function runLoop(firstText) {
+    if (loopBusy) {
+      if (firstText) queueFollowup(firstText);
+      return;
+    }
+    loopBusy = true;
+    inFlight = true;
+    paintCompose();
+    try {
+      let next = firstText;
+      while (next) {
+        stopKind = "";
+        await send(next);
+        if (stopKind === "steer") {
+          next = takeQueue();
+          continue;
+        }
+        if (stopKind === "stop") {
+          if (queuedText && store.activeId === flightChatId && !input.value.trim()) {
+            input.value = takeQueue();
+          } else {
+            queuedText = "";
+          }
+          break;
+        }
+        next = takeQueue();
+      }
+    } finally {
+      inFlight = false;
+      loopBusy = false;
+      abortController = null;
+      flightChatId = "";
+      paintCompose();
+      input.focus();
+    }
   }
 
   root.querySelector("#chat-new").addEventListener("click", startNewChat);
   root.querySelector("#chat-clear").addEventListener("click", clearHistory);
 
-  let inFlight = false;
-  form.addEventListener("submit", async (event) => {
+  form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (inFlight) return;
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
     }
     hideHistoryMenu();
     const text = input.value.trim();
+    if (inFlight) {
+      if (text) {
+        resetRecall();
+        input.value = "";
+        hideMenu();
+        queueFollowup(text);
+      }
+      return;
+    }
     if (!text) return;
     resetRecall();
     input.value = "";
     hideMenu();
-    inFlight = true;
-    const sendBtn = form.querySelector("button[type=submit]");
-    if (sendBtn) sendBtn.disabled = true;
-    try {
-      await send(text);
-    } catch (err) {
+    runLoop(text).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
-    } finally {
-      inFlight = false;
-      if (sendBtn) sendBtn.disabled = false;
-    }
+    });
+  });
+  sendBtn.addEventListener("click", (event) => {
+    if (!inFlight) return;
+    if (input.value.trim()) return;
+    event.preventDefault();
+    abortSession("stop");
+  });
+  steerBtn.addEventListener("click", () => {
+    if (!inFlight || !queuedText) return;
+    abortSession("steer");
+  });
+  queueClearBtn.addEventListener("click", () => {
+    queuedText = "";
+    paintCompose();
+    input.focus();
   });
   input.addEventListener("input", () => {
     if (input.value.startsWith("/")) {
@@ -1077,6 +1243,7 @@ function mountChat(root) {
       hideMenu();
       if (!historyMenu.hidden && input.value) hideHistoryMenu();
     }
+    paintCompose();
   });
   input.addEventListener("keydown", (event) => {
     if (!menu.hidden && menuItems.length) {
@@ -1226,6 +1393,7 @@ function mountChat(root) {
     persist();
     renderLog();
     paintToolbar();
+    paintCompose();
   }
   loadStore();
   return {
@@ -1233,6 +1401,7 @@ function mountChat(root) {
       hideHistoryMenu();
     },
     destroy() {
+      abortSession("stop");
       persist();
       hideHistoryMenu();
       document.removeEventListener("pointerdown", onPointerDownAway);
@@ -1242,3 +1411,4 @@ function mountChat(root) {
 }
 
 window.mountChat = mountChat;
+window.tabbyChatComposeAction = tabbyChatComposeAction;
