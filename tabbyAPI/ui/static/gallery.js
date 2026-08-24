@@ -8,16 +8,32 @@ function mountGallery(root) {
       <div class="pager" id="pager"></div>
     </div>
     <div class="grid" id="grid"></div>
+    <p class="error" id="gallery-error" hidden></p>
     <div class="modal" id="modal">
-      <img alt="" />
+      <div class="modal-inner">
+        <img alt="" />
+        <div class="modal-bar">
+          <span class="modal-name" id="modal-name"></span>
+          <a class="btn" id="modal-open" target="_blank" rel="noreferrer">Open original</a>
+          <span class="muted">Esc closes</span>
+        </div>
+      </div>
     </div>
   `;
   const grid = root.querySelector("#grid");
   const pager = root.querySelector("#pager");
   const count = root.querySelector("#sel-count");
   const delSel = root.querySelector("#del-sel");
+  const errorEl = root.querySelector("#gallery-error");
   const modal = root.querySelector("#modal");
   const modalImg = modal.querySelector("img");
+  const modalName = root.querySelector("#modal-name");
+  const modalOpen = root.querySelector("#modal-open");
+
+  function showError(message) {
+    errorEl.hidden = !message;
+    errorEl.textContent = message || "";
+  }
   let page = 1;
   let lastIndex = 0;
   let boxes = [];
@@ -90,8 +106,9 @@ function mountGallery(root) {
     const target = nextPage || 1;
     if (target !== page) lastIndex = 0;
     page = target;
+    showError("");
     const data = await TabbyUI.api(`gallery/list?page=${page}&per_page=24`);
-    if (!data.items.length) {
+    if (!Array.isArray(data.items) || !data.items.length) {
       grid.innerHTML = "<p class='muted'>No generated images yet.</p>";
       pager.innerHTML = "";
       boxes = [];
@@ -121,7 +138,7 @@ function mountGallery(root) {
     for (let n = 1; n <= data.pages; n += 1) {
       links.push(
         n === data.page
-          ? `<span class="btn" disabled>${n}</span>`
+          ? `<span class="btn is-current" aria-current="page">${n}</span>`
           : `<button type="button" class="btn" data-page="${n}">${n}</button>`
       );
     }
@@ -132,18 +149,32 @@ function mountGallery(root) {
     paint();
   }
 
+  function closeModal() {
+    if (!modal.classList.contains("is-open")) return;
+    modal.classList.remove("is-open");
+    modalImg.removeAttribute("src");
+  }
+
   grid.addEventListener("click", (event) => {
     if (event.target.closest(".pick")) return;
     const link = event.target.closest("a.open");
     if (!link) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
+    const name = link.closest("figure")?.dataset.name || "";
     modalImg.src = link.dataset.full;
+    modalName.textContent = name;
+    modalOpen.href = link.dataset.full;
     modal.classList.add("is-open");
   });
-  modal.addEventListener("click", () => {
-    modal.classList.remove("is-open");
-    modalImg.removeAttribute("src");
+  modal.addEventListener("click", (event) => {
+    if (event.target.closest("#modal-open")) return;
+    closeModal();
   });
+  function onKey(event) {
+    if (event.key === "Escape") closeModal();
+  }
+  document.addEventListener("keydown", onKey);
   delSel.addEventListener("click", async () => {
     const names = selected();
     if (!names.length) return;
@@ -154,8 +185,12 @@ function mountGallery(root) {
       no: "Cancel",
     });
     if (!yes) return;
-    await TabbyUI.api("gallery/delete", { method: "POST", body: { names } });
-    await load(page);
+    try {
+      await TabbyUI.api("gallery/delete", { method: "POST", body: { names } });
+      await load(page);
+    } catch (err) {
+      showError(err.message);
+    }
   });
   root.querySelector("#del-all").addEventListener("click", async () => {
     const yes = await TabbyUI.confirmModal({
@@ -165,18 +200,28 @@ function mountGallery(root) {
       no: "Cancel",
     });
     if (!yes) return;
-    await TabbyUI.api("gallery/delete", { method: "POST", body: { all: true } });
-    await load(1);
+    try {
+      await TabbyUI.api("gallery/delete", { method: "POST", body: { all: true } });
+      await load(1);
+    } catch (err) {
+      showError(err.message);
+    }
   });
 
   load(1).catch((err) => {
-    grid.innerHTML = `<p class="error">${TabbyUI.escapeHtml(err.message)}</p>`;
+    grid.innerHTML = "";
+    showError(err.message);
   });
   return {
-    resume() {
-      load(page).catch(() => {});
+    pause() {
+      closeModal();
     },
-    destroy() {},
+    resume() {
+      load(page).catch((err) => showError(err.message));
+    },
+    destroy() {
+      document.removeEventListener("keydown", onKey);
+    },
   };
 }
 

@@ -119,10 +119,12 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
     with _LOCK:
         _atomic_write(chat_path(username), payload)
     if dropped:
-        from ui.workspace import delete_workspace
+        from ui.preview import drop_chat
+        from ui.workspace import delete_workspace, safe_name
 
         for chat_id in dropped:
             delete_workspace(username, chat_id)
+            drop_chat(username, safe_name(chat_id))
     return store
 
 
@@ -150,6 +152,8 @@ def delete_store(username: str) -> None:
             path.unlink()
         except OSError:
             pass
+    from ui.preview import drop_user
     from ui.workspace import delete_user_workspaces
 
     delete_user_workspaces(username)
+    drop_user(username)

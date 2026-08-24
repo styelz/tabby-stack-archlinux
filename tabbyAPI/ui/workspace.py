@@ -13,6 +13,34 @@ from typing import Any, Optional
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+# Editing is limited to what the console can safely round-trip as UTF-8 text.
+TEXT_SUFFIXES = frozenset(
+    {
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".mjs",
+        ".json",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".md",
+        ".txt",
+        ".svg",
+        ".xml",
+        ".yml",
+        ".yaml",
+        ".csv",
+        ".py",
+        ".sh",
+        ".php",
+        ".toml",
+        ".ini",
+        ".conf",
+    }
+)
+PAGE_SUFFIXES = frozenset({".html", ".htm"})
 MAX_FILES = 200
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_TEXT_BYTES = 1 * 1024 * 1024
@@ -36,8 +64,12 @@ def set_workspaces_dir(path: Optional[Path]) -> None:
 
 
 def safe_name(raw: str) -> str:
-    name = SAFE_NAME_RE.sub("_", str(raw or "").strip()) or "user"
-    return name[:80]
+    # Dots survive the character filter, so a chat id of "." or ".." would
+    # otherwise land on the parent folder and reach another chat's files.
+    name = SAFE_NAME_RE.sub("_", str(raw or "").strip())[:80]
+    if not name or set(name) <= {"."}:
+        return "user"
+    return name
 
 
 def user_dir(username: str) -> Path:
@@ -102,6 +134,10 @@ def _check_caps(root: Path, *, extra_bytes: int = 0, extra_files: int = 0) -> No
         raise ValueError("This chat's project is too large.")
 
 
+def is_text_path(rel: str) -> bool:
+    return Path(str(rel or "")).suffix.lower() in TEXT_SUFFIXES
+
+
 def list_files(username: str, chat_id: str) -> list[dict[str, Any]]:
     root = workspace_root(username, chat_id, create=False)
     rows: list[dict[str, Any]] = []
@@ -113,9 +149,24 @@ def list_files(username: str, chat_id: str) -> list[dict[str, Any]]:
                 "path": rel,
                 "size": path.stat().st_size,
                 "kind": "image" if suffix in IMAGE_SUFFIXES else "text",
+                "editable": suffix in TEXT_SUFFIXES,
+                "page": suffix in PAGE_SUFFIXES,
             }
         )
     return rows
+
+
+def site_entry(username: str, chat_id: str, wanted: str = "") -> str:
+    """Pick the page a preview link should land on. Empty when there is none."""
+    pages = [row["path"] for row in list_files(username, chat_id) if row["page"]]
+    if not pages:
+        return ""
+    ask = str(wanted or "").strip().lstrip("/")
+    if ask in pages:
+        return ask
+    if "index.html" in pages:
+        return "index.html"
+    return sorted(pages, key=lambda page: (page.count("/"), page))[0]
 
 
 def listing(username: str, chat_id: str) -> dict[str, Any]:
@@ -127,11 +178,16 @@ def listing(username: str, chat_id: str) -> dict[str, Any]:
     }
 
 
-def read_bytes(username: str, chat_id: str, rel: str) -> tuple[Path, bytes]:
+def resolve_file(username: str, chat_id: str, rel: str) -> Path:
     root = workspace_root(username, chat_id, create=False)
     path = resolve_rel(root, rel)
     if not path.is_file() or path.is_symlink():
         raise FileNotFoundError(rel)
+    return path
+
+
+def read_bytes(username: str, chat_id: str, rel: str) -> tuple[Path, bytes]:
+    path = resolve_file(username, chat_id, rel)
     return path, path.read_bytes()
 
 
@@ -236,6 +292,13 @@ def zip_bytes(username: str, chat_id: str) -> bytes:
 def guess_media_type(path: Path) -> str:
     guessed, _enc = mimetypes.guess_type(path.name)
     if guessed:
+        # Files here are written as UTF-8; say so or a preview mangles accents.
+        if guessed.startswith("text/") or guessed in (
+            "application/javascript",
+            "application/json",
+            "image/svg+xml",
+        ):
+            return f"{guessed}; charset=utf-8"
         return guessed
     if path.suffix.lower() in IMAGE_SUFFIXES:
         return "application/octet-stream"

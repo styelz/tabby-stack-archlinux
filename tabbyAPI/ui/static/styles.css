@@ -27,6 +27,10 @@
 html {
   color-scheme: dark;
 }
+/* Author display rules outrank the UA sheet, so hidden needs to win here. */
+[hidden] {
+  display: none !important;
+}
 html, body {
   height: 100%;
   overflow: hidden;
@@ -190,7 +194,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   margin-bottom: 12px;
   flex: 0 0 auto;
 }
-.toolbar .spacer { flex: 1; }
+.spacer { flex: 1 1 auto; }
 .search {
   min-width: 220px;
   flex: 1 1 220px;
@@ -299,8 +303,21 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .chat-nav-when {
   grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--muted);
   font-size: 11px;
+}
+.chat-nav-tag {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(122, 162, 255, 0.16);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .chat-nav-tools {
   grid-column: 3;
@@ -420,12 +437,19 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .chat-files-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 10px 10px 8px;
   font-size: 12px;
   font-weight: 600;
   flex: 0 0 auto;
+}
+.chat-files-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 .chat-files-tree {
   flex: 0 1 42%;
@@ -439,12 +463,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-files-empty { padding: 8px; font-size: 12px; }
 .chat-file {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 4px;
   align-items: center;
   padding: 4px 4px 4px 8px;
   border-radius: 8px;
 }
+.chat-file:hover { background: rgba(122, 162, 255, 0.1); }
 .chat-file.is-active { background: rgba(122, 162, 255, 0.16); }
 .chat-file-open {
   border: 0;
@@ -457,15 +482,67 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   white-space: nowrap;
   padding: 0;
 }
+.chat-file-size {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.chat-file .chat-icon { opacity: 0; }
+.chat-file:hover .chat-icon,
+.chat-file:focus-within .chat-icon,
+.chat-file.is-active .chat-icon { opacity: 1; }
+@media (hover: none) {
+  .chat-file .chat-icon { opacity: 1; }
+}
 .chat-files-preview {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   border-top: 1px solid var(--line);
   padding: 10px;
+  display: flex;
+  flex-direction: column;
+}
+.chat-files-preview.is-editing { overflow: hidden; }
+.chat-files-preview > p { margin: 0; }
+.chat-files-edit {
+  flex: 1 1 auto;
+  min-height: 120px;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.chat-files-note {
+  flex: 0 0 auto;
+  margin: 6px 0 0;
+  font-size: 11px;
+  min-height: 1.1em;
+}
+.chat-files-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin: -2px 0 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.chat-files-name strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 550;
 }
 .chat-files-preview img {
   display: block;
+  flex: 0 0 auto;
   max-width: 100%;
   height: auto;
   border-radius: 8px;
@@ -478,7 +555,13 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   font-size: 11px;
   line-height: 1.45;
 }
-#chat-hint { white-space: nowrap; }
+/* Shrink before the toolbar wraps; Code mode leaves this column narrow. */
+#chat-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-log-wrap {
   position: relative;
   min-height: 0;
@@ -550,6 +633,12 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-turn {
   position: relative;
 }
+.chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
 .chat-actions {
   display: flex;
   gap: 2px;
@@ -567,6 +656,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   color: var(--muted);
   font-size: 11px;
   opacity: 0.75;
+  white-space: nowrap;
 }
 .chat-thumb {
   display: block;
@@ -1477,12 +1567,38 @@ figure.shot .open { display: block; }
 }
 
 .pager { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pager .btn.is-current {
+  background: rgba(122, 162, 255, 0.2);
+  border-color: rgba(122, 162, 255, 0.35);
+  cursor: default;
+}
 .modal {
   position: fixed; inset: 0; display: none; place-items: center;
   background: rgba(0,0,0,0.72); z-index: 40; padding: 24px;
 }
 .modal.is-open { display: grid; }
-.modal img { max-width: 96vw; max-height: 88vh; border-radius: 12px; }
+.modal-inner {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  max-width: 96vw;
+}
+.modal img { max-width: 96vw; max-height: 82vh; border-radius: 12px; }
+.modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+.modal-bar .modal-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
 
 .dialog-modal {
   position: fixed;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
@@ -337,21 +338,22 @@ def _workspace_chat_id(chat_id: str) -> str:
 
 @router.get("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user)):
-    from ui.workspace import listing
+    from ui.workspace import listing, site_entry
 
-    return listing(_user, _workspace_chat_id(chat_id))
+    cid = _workspace_chat_id(chat_id)
+    return {**listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
 @router.get("/workspace/{chat_id}/file", include_in_schema=False)
 async def ui_workspace_file(
     chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
 ):
-    from ui.workspace import guess_media_type, read_bytes
+    from ui.workspace import guess_media_type, resolve_file
 
     if not path:
         raise HTTPException(400, "path is required")
     try:
-        file_path, _data = read_bytes(_user, _workspace_chat_id(chat_id), path)
+        file_path = resolve_file(_user, _workspace_chat_id(chat_id), path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
@@ -361,21 +363,71 @@ async def ui_workspace_file(
     )
 
 
-@router.delete("/workspace/{chat_id}/file", include_in_schema=False)
-async def ui_workspace_delete_file(
-    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+@router.put("/workspace/{chat_id}/file", include_in_schema=False)
+async def ui_workspace_write_file(
+    chat_id: str, request: Request, path: str = "", _user: str = Depends(require_ui_user)
 ):
-    from ui.workspace import delete_file, listing
+    from ui.workspace import is_text_path, listing, site_entry, write_text
 
     if not path:
         raise HTTPException(400, "path is required")
     try:
-        delete_file(_user, _workspace_chat_id(chat_id), path)
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    contents = body.get("contents")
+    if not isinstance(contents, str):
+        raise HTTPException(400, "contents must be a string")
+    cid = _workspace_chat_id(chat_id)
+    if not is_text_path(path):
+        raise HTTPException(400, "Only text files can be edited here.")
+    try:
+        written = write_text(_user, cid, path, contents)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
+@router.delete("/workspace/{chat_id}/file", include_in_schema=False)
+async def ui_workspace_delete_file(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import delete_file, listing, site_entry
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        delete_file(_user, cid, path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(404, "File not found.") from exc
-    return {"ok": True, **listing(_user, _workspace_chat_id(chat_id))}
+    return {"ok": True, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
+@router.post("/workspace/{chat_id}/preview", include_in_schema=False)
+async def ui_workspace_preview(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    """Hand back a token URL the browser can open as a plain website."""
+    from ui.preview import mint
+    from ui.workspace import site_entry
+
+    cid = _workspace_chat_id(chat_id)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    wanted = str(body.get("path") or "")
+    entry = site_entry(_user, cid, wanted)
+    if not entry:
+        raise HTTPException(404, "No page to open yet. Ask for an HTML file first.")
+    token = mint(_user, cid)
+    base = f"code/{quote(_user, safe='')}/{quote(cid, safe='')}/{token}/"
+    return {"ok": True, "base": base, "path": entry, "url": base + quote(entry)}
 
 
 @router.get("/workspace/{chat_id}/zip", include_in_schema=False)
@@ -394,10 +446,58 @@ async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
 
 @router.delete("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.preview import drop_chat
     from ui.workspace import delete_workspace
 
-    delete_workspace(_user, _workspace_chat_id(chat_id))
+    cid = _workspace_chat_id(chat_id)
+    delete_workspace(_user, cid)
+    drop_chat(_user, cid)
     return {"ok": True, "files": [], "bytes": 0, "count": 0}
+
+
+@router.get("/code/{username}/{chat_id}/{token}/{path:path}", include_in_schema=False)
+async def ui_code_preview(
+    request: Request, username: str, chat_id: str, token: str, path: str = ""
+):
+    """Serve a Code-mode project as a site. The path token is the credential.
+
+    Deliberately not cookie-authenticated: the sandbox CSP gives this document
+    an opaque origin, and such a document does not send SameSite=Lax cookies
+    with its own subresource requests.
+    """
+    from ui.preview import SANDBOX_CSP, resolve
+    from ui.workspace import guess_media_type, resolve_file, safe_name, site_entry
+
+    owner = resolve(token)
+    if not owner or owner[0] != username or owner[1] != safe_name(chat_id):
+        raise HTTPException(404, "This preview link expired. Open the site again.")
+    user, cid = owner
+    rel = path or ""
+    # Starlette has already redirected a missing trailing slash, so an empty
+    # path here means the directory form.
+    if not rel or rel.endswith("/"):
+        rel = f"{rel}index.html"
+    try:
+        file_path = resolve_file(user, cid, rel)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        # Root of a project that keeps its page elsewhere, e.g. site/index.html.
+        entry = site_entry(user, cid) if rel == "index.html" else ""
+        if not entry:
+            raise HTTPException(404, "File not found.") from exc
+        return RedirectResponse(f"{request.url.path}{quote(entry)}", status_code=307)
+    return FileResponse(
+        file_path,
+        media_type=guess_media_type(file_path),
+        headers={
+            "Content-Security-Policy": SANDBOX_CSP,
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
+        },
+    )
+
 
 @router.get("/gallery/list", include_in_schema=False)
 async def ui_gallery_list(
