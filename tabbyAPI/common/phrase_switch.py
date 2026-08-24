@@ -1359,7 +1359,7 @@ async def llm_not_ready_response(
         await asyncio.sleep(LLM_NOT_READY_WAIT_S)
     if switch_in_progress():
         name = switch_lock_name() or last_llm_profile_name()
-        if name in GPU_ALIASES or name == "comfy":
+        if name in GPU_ALIASES or name == "comfy" or name == "flux":
             return text_response(data, comfy_starting_text())
         return text_response(data, llm_loading_text(name, console=console))
     try:

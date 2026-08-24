@@ -148,12 +148,22 @@ def _is_load_error(event) -> bool:
 
 async def ensure_comfy() -> None:
     """Unload any LLM and make sure ComfyUI owns the GPU."""
-    if loaded_tabby_name():
-        await model.unload_model(skip_wait=True)
-    await asyncio.to_thread(start_comfy_if_needed)
-    write_mode("comfy")
-    if not comfy_up():
-        raise RuntimeError("ComfyUI did not start")
+    from common.phrase_switch import clear_switch_lock, set_switch_lock
+
+    if comfy_up() and not loaded_tabby_name():
+        write_mode("comfy")
+        return
+
+    set_switch_lock("comfy")
+    try:
+        if loaded_tabby_name():
+            await model.unload_model(skip_wait=True)
+        write_mode("comfy")
+        await asyncio.to_thread(start_comfy_if_needed)
+        if not comfy_up():
+            raise RuntimeError("ComfyUI did not start")
+    finally:
+        clear_switch_lock()
 
 
 async def _load_profile(profile_name: str) -> None:

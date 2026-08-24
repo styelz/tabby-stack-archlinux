@@ -264,10 +264,16 @@ async def stack_status(request=None) -> dict[str, Any]:
             "prompt": getattr(job, "prompt", None),
             "started_at": getattr(job, "started_at", None),
         }
+    http_up = comfy_up()
+    comfy_unit = unit_active("comfyui")
+    job_phase = (job_info or {}).get("phase")
+    comfy_booting = (not http_up) and (bool(comfy_unit) or job_phase == "starting_comfy")
+    if comfy_booting and not restarting:
+        switching = True
     return {
         "ok": True,
         "gpu_mode": gpu_mode,
-        "comfy_up": comfy_up(),
+        "comfy_up": http_up,
         "tabby_model": tabby,
         "profile": last_llm_profile_name() or last_profile(),
         "profiles": available_profiles(),
@@ -275,7 +281,7 @@ async def stack_status(request=None) -> dict[str, Any]:
         "health": {"healthy": healthy, "issues": issue_text},
         "units": {
             "tabbyapi": unit_active("tabbyapi"),
-            "comfyui": unit_active("comfyui"),
+            "comfyui": comfy_unit,
         },
         "gpu": nvidia_stats(),
         "host": _host_live(),
@@ -284,8 +290,8 @@ async def stack_status(request=None) -> dict[str, Any]:
         "job": job_info,
         "switching": switching,
         "restarting": restarting,
-        "busy": lock_held,
-        "switch_target": lock_name or None,
+        "busy": lock_held or comfy_booting,
+        "switch_target": lock_name or ("comfy" if comfy_booting else None),
         "user": os.environ.get("USER") or "",
         "now": datetime.now(timezone.utc).isoformat(),
     }

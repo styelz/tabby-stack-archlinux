@@ -463,11 +463,7 @@ function mountChat(root) {
     paintTabs();
     paintFilesToggle();
     const hint = root.querySelector("#chat-hint");
-    if (hint) {
-      hint.textContent = mode === "code"
-        ? "Code mode · files stay on this host · zip from Files"
-        : "Tab chats · ↑↓ recall · Enter send";
-    }
+    if (hint) hint.hidden = mode === "code";
   }
 
   function paintFilesToggle() {
@@ -2592,6 +2588,7 @@ function mountChat(root) {
   let modelLoadStarted = 0;
   let modelLoadTicker = null;
   let loadingHintText = "";
+  let gateTicker = null;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2646,8 +2643,19 @@ function mountChat(root) {
     comfyHint.hidden = !show;
   }
 
+  function comfyIsStarting(data) {
+    if (!data || data.comfy_up) return false;
+    const target = String(data.switch_target || "").toLowerCase();
+    if (target === "comfy" || target === "flux") return true;
+    if (data.units && data.units.comfyui) return true;
+    const phase = data.job && String(data.job.phase || "");
+    return phase === "starting_comfy";
+  }
+
   function statusIsBusy(data) {
-    return Boolean(data && (data.switching || data.restarting || data.busy));
+    return Boolean(
+      data && (data.switching || data.restarting || data.busy || comfyIsStarting(data))
+    );
   }
 
   function loadingHint(kind, name) {
@@ -2655,6 +2663,10 @@ function mountChat(root) {
       return "Restarting. Chat is paused until the API is ready.";
     }
     const label = String(name || "").trim();
+    const key = label.toLowerCase();
+    if (key === "comfy" || key === "flux") {
+      return "Loading Comfy. Chat is paused until it is ready.";
+    }
     return label
       ? `Loading ${label}. Chat is paused until the model is ready.`
       : "The model is loading. Chat is paused until it is ready.";
@@ -2741,11 +2753,10 @@ function mountChat(root) {
               note: loadingHint(nextKind, name),
             });
           }
-        } else if (sawBusy) {
-          if (working) working.setActivity("Ready", { processing: false, note: "The model is ready." });
-          return true;
-        } else if (Date.now() - started > 2500 && modelLooksReady(data, activity)) {
-          if (working) working.setActivity("Ready", { processing: false, note: "The model is ready." });
+        } else if (modelLooksReady(data, activity) && (sawBusy || Date.now() - started > 2500)) {
+          const dest = String((activity && activity.target) || name || "").toLowerCase();
+          const readyNote = dest === "comfy" || dest === "flux" ? "Comfy is ready." : "The model is ready.";
+          if (working) working.setActivity("Ready", { processing: false, note: readyNote });
           return true;
         }
       } catch {
@@ -2790,12 +2801,26 @@ function mountChat(root) {
       rememberGpu(data);
       paintCompose();
       if (!statusIsBusy(data)) return;
-      const target = data.switch_target || "";
+      const target = data.switch_target || (comfyIsStarting(data) ? "comfy" : "");
       const kind = data.restarting ? "restart" : "switch";
       await ensureModelWait(null, { kind, target });
     } catch {
       /* status unavailable */
     }
+  }
+
+  function startGatePoll() {
+    if (gateTicker) return;
+    syncModelGate();
+    gateTicker = setInterval(() => {
+      if (!modelWait) syncModelGate();
+    }, 1500);
+  }
+
+  function stopGatePoll() {
+    if (!gateTicker) return;
+    clearInterval(gateTicker);
+    gateTicker = null;
   }
 
   function abortSession(kind) {
@@ -2831,7 +2856,7 @@ function mountChat(root) {
       sendBtn.setAttribute("aria-label", "Loading");
       sendBtn.textContent = "Loading";
       input.disabled = true;
-      input.placeholder = "The model is loading. Chat is paused until it is ready.";
+      input.placeholder = loadingHintText || "The model is loading. Chat is paused until it is ready.";
       if (editBar) editBar.hidden = pendingEditIndex < 0;
       return;
     }
@@ -3338,6 +3363,13 @@ function mountChat(root) {
         return;
       }
       if (btn.dataset.file === "delete") {
+        const yes = await TabbyUI.confirmModal({
+          title: "Delete file",
+          text: `Delete “${path}”? This cannot be undone.`,
+          yes: "Delete",
+          no: "Cancel",
+        });
+        if (!yes) return;
         try {
           const data = await TabbyUI.api(
             `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
@@ -3596,22 +3628,24 @@ function mountChat(root) {
     resizeInput();
     refreshFiles();
     refreshCodeChats();
-    syncModelGate();
+    startGatePoll();
   }
   loadStore();
   return {
     pause() {
+      stopGatePoll();
       hideHistoryMenu();
       hideMoreMenu();
       setSidebarOpen(false);
     },
     resume() {
-      syncModelGate();
+      startGatePoll();
       refreshFiles();
       refreshCodeChats();
     },
     destroy() {
       abortSession("stop");
+      stopGatePoll();
       stopLoadingClock();
       if (filesRefreshTimer) clearTimeout(filesRefreshTimer);
       if (highlightFrame) cancelAnimationFrame(highlightFrame);

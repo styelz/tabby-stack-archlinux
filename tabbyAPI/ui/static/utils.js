@@ -491,11 +491,15 @@
       }
       if (data.switching || data.restarting || data.busy) {
         const name = data.switch_target || data.profile || "model";
+        const key = String(name).toLowerCase();
+        const comfy = key === "comfy" || key === "flux";
         chip.textContent = data.restarting ? "RESTARTING" : `LOADING · ${name}`;
         chip.className = "chip warn";
         chip.title = data.restarting
           ? "API is restarting"
-          : `Loading ${name}. Chat is paused until the model is ready.`;
+          : comfy
+            ? "Loading Comfy. Chat is paused until it is ready."
+            : `Loading ${name}. Chat is paused until the model is ready.`;
         return;
       }
       const mode = data.gpu_mode || "gpu";
