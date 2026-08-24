@@ -501,7 +501,7 @@ def help_api_urls(
 
 
 def help_text(api_base: Optional[str] = None, request=None) -> str:
-    """Full usage guide for a chat line that is only ``help``."""
+    """Markdown user guide returned for a chat line that is only ``help``."""
     profiles = profile_map()
     loaded = current_folder()
     aliases = []
@@ -514,128 +514,148 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         aliases.append(alias)
 
     base, origin = help_api_urls(api_base, request)
-    if base:
-        api_lines = [
-            f"This API (as configured on this server): {base}",
-            "Talk to it over HTTP like OpenAI. Model name: gpt-4o (leave it).",
-        ]
-        if origin:
-            api_lines.append(f"Health: GET {origin}/health")
-        embed = f"POST {base}/embeddings"
-    else:
-        api_lines = [
-            "This API uses the /v1 URL configured in your IDE (external host or proxy).",
-            "Talk to it over HTTP like OpenAI. Model name: gpt-4o (leave it).",
-        ]
-        embed = "POST /v1/embeddings"
+    api_url = base or "your configured /v1 URL"
+    ui_url = f"{origin}/v1/ui" if origin else "/v1/ui on the same host"
+    health_url = f"{origin}/health" if origin else "/health on the same host"
+    embed = f"{base}/embeddings" if base else "/v1/embeddings"
+    images_post = f"{base}/images/generations" if base else "/v1/images/generations"
 
-    if origin:
-        ui_url = f"{origin}/v1/ui"
-    elif base:
-        ui_origin = base[:-3] if base.endswith("/v1") else base
-        ui_url = f"{ui_origin}/v1/ui"
-    else:
-        ui_url = "/v1/ui"
     lines = [
-        "Use gpt-4o as the model name in your editor, and leave it. "
-        "That is not ChatGPT — it is only a name. Many editors sandbox or block tools "
-        "unless they see a known OpenAI name. The GPU still runs the local model you switched to.",
+        "# Tabby Stack help",
         "",
-        "This is a TabbyAPI + ComfyUI stack on one NVIDIA GPU.",
-        "The coding workspace is a different computer from the GPU server.",
-        *api_lines,
-        f"Management UI (logs, console chat, GPU/status, gallery): {ui_url}",
-        "Sign in with the Linux account that runs the stack. Coding stays in your editor.",
+        "Use **`gpt-4o`** as the model name in your editor and leave it selected. "
+        "It is a compatibility label; the local profile shown by `list models` "
+        "still performs the inference.",
         "",
-        "The GPU is exclusive: LLM or Comfy, never both.",
-        f"Qwen3-Embedding-0.6B stays on CPU ({embed}). No switch needed for search.",
+        "## Choose where to work",
         "",
-        "Send a message that is only one of these phrases:",
+        "- **Editor:** your project stays on your computer and the editor supplies its own tools.",
+        "- **Browser Chat:** conversations, visual questions, model commands, and image generation.",
+        "- **Browser Code:** one private project folder per chat, with file tools, uploads, "
+        "an editor, site preview, and zip download. It does not provide a shell.",
+        "- **Status:** model switching, GPU mode, restart, updates, health, and resource graphs.",
+        "- **Gallery:** generated output images only.",
+        "- **Logs:** live and historical server output.",
         "",
-        "  help                 this guide",
-        "  list models          installed profiles and which is loaded",
-        "  restart              bounce the API; last model reloads",
-        "  switch to qwen       daily coding (9B, vision)",
-        "  switch to qwen35     long / hard agent work",
-        "  switch to qwen36     long / hard agent work",
-        "  switch to gemma      general",
-        "  switch to gemma26    stronger general",
-        f"  switch to glm        thinking (vision is off on {gpu_label()})"
-        if not (profiles.get("glm") or {}).get("vision", True)
-        else "  switch to glm        thinking / vision",
-        "  switch to comfy      unload the LLM; Flux / Qwen-Image",
-        "  switch to flux       same as comfy",
-        "  switch to llm        free Comfy; reload the last LLM",
+        "## Connection",
         "",
-        f"Wait times are warm switches on this {gpu_label()} (first boot can compile Triton longer):",
+        f"- API: `{api_url}`",
+        f"- Health: `GET {health_url}`",
+        f"- Browser UI: `{ui_url}`",
+        f"- CPU embeddings: `POST {embed}`",
+        "",
+        "The NVIDIA GPU runs either a language model or ComfyUI, never both at once. "
+        "CPU embeddings remain available in either mode.",
+        "",
+        "## Chat commands",
+        "",
+        "Send a command as the **whole message**:",
+        "",
+        "```tabby",
+        "help",
+        "list models",
+        "restart",
     ]
+    for alias in aliases:
+        entry = profiles.get(alias) or {}
+        mark = "  # loaded" if entry.get("folder") == loaded else ""
+        lines.append(f"switch to {alias}{mark}")
+    lines.extend(
+        [
+            "switch to comfy",
+            "switch to flux",
+            "switch to llm",
+            "```",
+            "",
+            "- `help` shows this guide.",
+            "- `list models` shows only installed profiles and marks the loaded one.",
+            "- `restart` restarts the API and restores the last language model.",
+            "- `switch to comfy` and `switch to flux` start image generation.",
+            "- `switch to llm` stops ComfyUI and restores the last language model.",
+            "",
+            f"### Model profiles on this {gpu_label()}",
+            "",
+        ]
+    )
     for alias in aliases:
         entry = profiles.get(alias) or {}
         pretty = entry.get("pretty") or alias
         ctx = _ctx_label(entry)
         wait = format_duration(ready_seconds(alias))
-        mark = "  [loaded]" if entry.get("folder") == loaded else ""
-        ctx_bit = f", {ctx} ctx" if ctx else ""
-        lines.append(f"  {alias}: {pretty}{ctx_bit} — about {wait}{mark}")
+        mark = " — **loaded**" if entry.get("folder") == loaded else ""
+        ctx_bit = f", {ctx} context" if ctx else ""
+        lines.append(
+            f"- **`{alias}`** — {pretty}{ctx_bit}; about {wait}{mark}"
+        )
     flux = extra_seconds("comfy", "flux_s")
     qwen_img = extra_seconds("comfy", "qwen_image_s")
     comfy_ready = format_duration(ready_seconds("comfy"))
     llm_ready = format_duration(ready_seconds("llm"))
-    lines.append(f"  comfy: process ready in about {comfy_ready}")
-    if flux:
-        lines.append(f"  first Flux draft: about {format_duration(flux)}")
-    if qwen_img:
-        lines.append(f"  first Qwen-Image (text / UI): about {format_duration(qwen_img)}")
-    lines.append(f"  switch to llm: about {llm_ready}")
-    images_post = f"POST {base}/images/generations" if base else "POST /v1/images/generations"
-    images_get = f"GET {base}/images/latest.png" if base else "GET /v1/images/latest.png"
     lines.extend(
         [
             "",
-            "Examples",
-            "  Chat (send as the whole message):",
-            "    help",
-            "    list models",
-            "    restart",
-            "    switch to qwen",
-            "    generate an image of a red bicycle",
-            "    qwen-image: a poster with the heading SALE",
+            "Warm estimates:",
             "",
-            "  Images (OpenAI-shaped):",
-            f"    {images_post}",
-            '    {"prompt": "qwen-image: login form with Submit"}',
-            f"    {images_get}",
+            f"- ComfyUI ready: about {comfy_ready}",
+            f"- First Flux image: about {format_duration(flux) if flux else 'a few minutes'}",
+            f"- First Qwen-Image: about {format_duration(qwen_img) if qwen_img else 'a few minutes'}",
+            f"- Language model restored: about {llm_ready}",
             "",
-            "Images (any IDE):",
-            "  1. Send switch to comfy and wait until Comfy is ready, then describe the image.",
-            "  2. Or one line: generate an image of a red bicycle",
-            "     (API hands the GPU to Comfy, returns a URL, reloads the last LLM).",
-            "  3. Flux Schnell is the default draft backend.",
-            "  4. Readable text / posters / UI: prefix qwen-image: or mention poster, button, logo. "
-            "Hero/header photos are Flux — describe a scene, not a website.",
-            "  5. Paste a photo in the same turn for Flux img2img.",
-            "  6. The reply includes a PNG URL on this same API host. The markdown preview is the picture.",
-            f"  7. Or {images_post} (returns b64_json + url). Works in every editor.",
-            "  8. Send switch to qwen when you want the coding model back.",
+            "A first boot may take longer while Triton compiles.",
             "",
-            "Coding plus images (same chat, any IDE):",
-            "  The API writes HTML/CSS/JS first (file tools) while the coding model stays loaded. "
-            "Apply those file tools. More file tools may follow. After the page is written, "
-            "the next reply holds until every PNG exists and returns one Shell curl of those "
-            "real URLs. Do not sleep/ls, do not invent generated-*.png timestamps, "
-            "and do not POST /v1/mcp for that batch.",
-            "  A chat dump is not a file.",
-            "  Do not fake images with SVG, CSS art, Pillow/PIL, emoji, placeholder URLs, or Unsplash.",
-            "  Point img src at the planned local PNG paths. Never use the browser.",
-            f"  Flux draft: about {format_duration(flux) if flux else 'a few minutes'} each. "
-            f"Qwen-Image (text / UI / logo): about {format_duration(qwen_img) if qwen_img else 'a few minutes'} each. "
-            f"The coding model reloads once at the end (about {llm_ready}).",
-            "  Write/StrReplace cannot save PNG bytes.",
+            "## Generate a new image",
             "",
-            "Daily work: stay on qwen. For a long agent job, switch to qwen35 or qwen36 first,",
-            "then continue in a new chat. Split big work: explore, stop, then a second chat that only edits.",
+            "For one image, ask directly while a language model is loaded:",
             "",
-            "Send list models for the short profile list.",
+            "```tabby",
+            "generate an image of a red bicycle on a city street",
+            "qwen-image: a poster with the heading SALE",
+            "```",
+            "",
+            "Tabby Stack hands the GPU to ComfyUI, returns the finished image, then "
+            "restores the previous language model. For several images, send "
+            "`switch to comfy`, submit each prompt, then send `switch to qwen`.",
+            "",
+            "- **Flux Schnell:** scenes, photos, drafts, and img2img.",
+            "- **Qwen-Image:** prefix `qwen-image:` for logos, posters, UI mockups, "
+            "and readable text.",
+            "- Describe hero and header art as a scene, not as a screenshot of the whole website.",
+            "",
+            "## Use an existing image",
+            "",
+            "- Attach or paste an image with a question to inspect it with a vision-capable profile.",
+            "- Attach a source image with an image-generation prompt to use Flux img2img.",
+            "- An attached source or reference image is **not** a generated result and is not "
+            "added to the Gallery.",
+            "",
+            "## Image library",
+            "",
+            "The **Gallery** is the library of images generated by Tabby Stack. Open it to "
+            "preview, download, or delete generated outputs. Regular users see their own "
+            "results; the administrator can see all users' generated images.",
+            "",
+            "## Build code with images",
+            "",
+            "- **Browser Code:** ask for the files and named PNGs together. The model writes "
+            "the project first, generates the images, and copies them into the Files pane.",
+            "- **Editor:** ask for the page and named image paths together. Apply the editor's "
+            "file tools; the API waits for the image batch and returns one download command.",
+            "",
+            "## Image API",
+            "",
+            f"`POST {images_post}`",
+            "",
+            "```json",
+            '{"prompt": "qwen-image: a logo that says Cafe"}',
+            "```",
+            "",
+            "The response includes `b64_json` and a URL on this server.",
+            "",
+            "## Recommended workflow",
+            "",
+            "Use **qwen** for everyday coding. Switch to **qwen35** or **qwen36** "
+            "before a long, difficult agent task. Send `list models` to see what is "
+            "installed on this server.",
         ]
     )
     return "\n".join(lines)

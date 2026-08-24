@@ -84,6 +84,7 @@
     conf: "ini",
     md: "markdown",
     markdown: "markdown",
+    tabby: "tabby",
   };
 
   function escapeHtml(value) {
@@ -931,6 +932,37 @@
     return out.join("\n");
   }
 
+  function highlightTabby(src) {
+    return src
+      .split("\n")
+      .map((line) => {
+        const commentAt = line.indexOf("#");
+        const command = commentAt >= 0 ? line.slice(0, commentAt).trimEnd() : line;
+        const comment = commentAt >= 0 ? line.slice(commentAt) : "";
+        let html = "";
+        const switchMatch = /^(switch)(\s+to)(\s+)([\w.-]+)$/.exec(command);
+        if (switchMatch) {
+          html =
+            span("keyword", switchMatch[1]) +
+            span("punct", switchMatch[2]) +
+            escapeHtml(switchMatch[3]) +
+            span("string", switchMatch[4]);
+        } else if (/^list models$/.test(command)) {
+          html = span("keyword", "list") + escapeHtml(" ") + span("string", "models");
+        } else if (/^(?:help|restart)$/.test(command)) {
+          html = span("keyword", command);
+        } else if (/^qwen-image:/.test(command)) {
+          html = span("tag", "qwen-image:") + escapeHtml(command.slice("qwen-image:".length));
+        } else {
+          const first = /^(\S+)(.*)$/.exec(command);
+          html = first ? span("fn", first[1]) + escapeHtml(first[2]) : "";
+        }
+        if (comment) html += (command ? escapeHtml("  ") : "") + span("comment", comment);
+        return html;
+      })
+      .join("\n");
+  }
+
   function normalizeLang(lang) {
     const key = String(lang || "").trim().toLowerCase().replace(/^language-/, "");
     return LANGS[key] || "";
@@ -957,6 +989,7 @@
       if (kind === "yaml") return highlightYaml(src);
       if (kind === "ini") return highlightIni(src);
       if (kind === "markdown") return highlightMarkdown(src);
+      if (kind === "tabby") return highlightTabby(src);
     } catch (_err) {
       return escapeHtml(src);
     }

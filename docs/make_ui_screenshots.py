@@ -360,6 +360,95 @@ def make_chat() -> Image.Image:
     return img
 
 
+def make_code() -> Image.Image:
+    """Show the current three-pane Code workspace."""
+    img = Image.new("RGB", (W, H), BG)
+    draw = header(img, "chat")
+
+    top, bottom = 80, H - 18
+    left = (18, top, 250, bottom)
+    center = (262, top, 914, bottom)
+    right = (926, top, W - 18, bottom)
+    for box in (left, center, right):
+        rr(draw, box, 14, fill=ELEV, outline=LINE)
+
+    # Chat history.
+    rr(draw, (32, 94, 236, 128), 9, fill=ACCENT)
+    draw.text((81, 103), "New code chat", fill=BG, font=font(13))
+    rr(draw, (32, 140, 236, 174), 9, fill=BG, outline=LINE)
+    draw.text((44, 149), "Search code chats", fill=MUTED, font=font(12))
+    chats = [
+        ("Harbor Cafe landing page", "now"),
+        ("Product card component", "1h"),
+        ("Portfolio refresh", "Tue"),
+    ]
+    y = 190
+    for i, (title, when) in enumerate(chats):
+        if i == 0:
+            rr(draw, (30, y - 6, 238, y + 38), 9, fill=ELEV2, outline=LINE)
+        draw.text((42, y), title[:26], fill=TEXT if i == 0 else MUTED, font=font(12))
+        draw.text((202, y + 20), when, fill=MUTED, font=font(10, mono=True))
+        y += 54
+
+    # Code toolbar and mode toggle.
+    draw.text((280, 99), "Harbor Cafe landing page", fill=TEXT, font=font(14))
+    rr(draw, (570, 92, 700, 124), 999, fill=BG, outline=LINE)
+    draw.text((587, 101), "Chat", fill=MUTED, font=font(12))
+    rr(draw, (632, 94, 697, 122), 999, fill=(40, 55, 90))
+    draw.text((648, 101), "Code", fill=TEXT, font=font(12))
+    draw.text((848, 101), "More", fill=MUTED, font=font(12))
+    draw.line((262, 138, 914, 138), fill=LINE)
+
+    # Open file tabs.
+    rr(draw, (278, 150, 394, 180), 8, fill=ELEV2, outline=LINE)
+    draw.text((292, 158), "index.html", fill=TEXT, font=font(12, mono=True))
+    rr(draw, (402, 150, 504, 180), 8, fill=BG, outline=LINE)
+    draw.text((416, 158), "styles.css", fill=MUTED, font=font(12, mono=True))
+
+    # Conversation.
+    rr(draw, (500, 198, 892, 254), 12, fill=(40, 55, 90))
+    draw.text((516, 212), "Build a responsive cafe landing page with a", fill=TEXT, font=font(13))
+    draw.text((516, 232), "header photo and a logo that says Harbor Cafe.", fill=TEXT, font=font(13))
+    rr(draw, (280, 274, 760, 382), 12, fill=ELEV2, outline=LINE)
+    draw.text((296, 288), "Writing index.html", fill=ACCENT, font=font(12, mono=True))
+    draw.text((296, 312), "Writing styles.css", fill=ACCENT, font=font(12, mono=True))
+    draw.text((296, 340), "Created the page and generated both image assets.", fill=TEXT, font=font(13))
+    draw.text((296, 362), "Use Open site to preview it or Zip to download.", fill=MUTED, font=font(12))
+
+    # Composer.
+    rr(draw, (278, bottom - 112, 898, bottom - 18), 12, fill=BG, outline=LINE)
+    draw.text((294, bottom - 94), "Ask for another change or attach project files…", fill=MUTED, font=font(13))
+    draw.text((294, bottom - 48), "📎", fill=MUTED, font=font(15))
+    draw.text((665, bottom - 45), "Enter send · Shift+Enter line", fill=MUTED, font=font(10))
+    rr(draw, (830, bottom - 60, 884, bottom - 28), 9, fill=ACCENT)
+    draw.text((842, bottom - 51), "Send", fill=BG, font=font(11))
+
+    # Files pane.
+    draw.text((942, 98), "Files", fill=TEXT, font=font(14))
+    draw.text((982, 100), "4", fill=MUTED, font=font(11))
+    controls = [("New", 1036), ("Upload", 1082), ("Open site", 1144)]
+    for label, x in controls:
+        width = 42 if label == "New" else 56 if label == "Upload" else 78
+        rr(draw, (x, 91, x + width, 122), 8, fill=ELEV2, outline=LINE)
+        draw.text((x + 8, 100), label, fill=TEXT, font=font(11))
+    draw.line((926, 138, W - 18, 138), fill=LINE)
+    files = [
+        ("▾  images", MUTED),
+        ("    header.png", TEXT),
+        ("    logo.png", TEXT),
+        ("index.html", ACCENT),
+        ("styles.css", TEXT),
+    ]
+    y = 158
+    for name, color in files:
+        if name == "index.html":
+            rr(draw, (938, y - 5, W - 30, y + 24), 7, fill=(34, 42, 62))
+        draw.text((950, y), name, fill=color, font=font(12, mono=True))
+        y += 34
+    draw.text((946, bottom - 42), "Open site   Zip   Clear", fill=MUTED, font=font(11))
+    return img
+
+
 def save_jpg(img: Image.Image, name: str) -> Path:
     path = OUT / name
     img = img.convert("RGB")
@@ -373,6 +462,7 @@ def main() -> None:
     save_jpg(make_logs(), "ui-logs.jpg")
     save_jpg(make_gallery(), "ui-gallery.jpg")
     save_jpg(make_chat(), "ui-chat.jpg")
+    save_jpg(make_code(), "ui-code.jpg")
 
 
 if __name__ == "__main__":
