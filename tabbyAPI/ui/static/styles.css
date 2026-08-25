@@ -3038,7 +3038,7 @@ button.chip {
 .status-side {
   min-height: 0;
   max-height: 100%;
-  overflow: hidden;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -3046,28 +3046,26 @@ button.chip {
 .status-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: repeat(4, minmax(0, 1fr));
-  gap: 0.5rem;
-  padding: 0.625rem;
-  flex: 1 1 auto;
+  gap: 0.375rem;
+  padding: 0.5rem;
+  flex: 0 0 auto;
   min-height: 0;
-  align-content: stretch;
-  overflow: hidden;
+  align-content: start;
+  overflow: auto;
 }
 .status-fact {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 0.25rem;
+  justify-content: flex-start;
+  gap: 0.125rem;
   min-width: 0;
-  min-height: 0;
-  padding: 0.75rem 0.875rem;
-  border-radius: 0.75rem;
+  padding: 0.4375rem 0.5625rem;
+  border-radius: 0.5rem;
   background: var(--hover-fill);
   border: 1px solid var(--line);
 }
 .fact-k {
-  font-size: 0.75rem;
+  font-size: 0.625rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: #b4bccb;
@@ -3075,16 +3073,16 @@ button.chip {
   font-weight: 600;
 }
 .fact-v {
-  font-size: 1.25rem;
+  font-size: 0.9375rem;
   font-weight: 650;
-  line-height: 1.15;
+  line-height: 1.2;
   word-break: break-word;
   color: var(--text);
 }
 .fact-x {
-  font-size: 0.78125rem;
+  font-size: 0.6875rem;
   color: #a8b0c0;
-  line-height: 1.35;
+  line-height: 1.3;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -3092,11 +3090,11 @@ button.chip {
 }
 .fact-pill {
   display: inline-block;
-  padding: 0.125rem 0.625rem;
+  padding: 0.0625rem 0.5rem;
   border-radius: 999px;
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
   font-weight: 650;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 .fact-pill.ok {
   color: var(--ok);
@@ -3107,11 +3105,11 @@ button.chip {
   background: rgba(255, 107, 122, 0.14);
 }
 .status-actions {
-  padding: 0.625rem 0.75rem;
+  padding: 0.5rem 0.625rem 0.5625rem;
   flex: 0 0 auto;
 }
 .status-actions h2 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.375rem;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -3158,21 +3156,31 @@ button.chip {
   font-size: 0.8125rem;
   color: var(--text);
   margin-right: 0.125rem;
+  line-height: 1.75rem;
 }
-.range-bar {
+.range-bar,
+.range-custom {
   display: inline-flex;
   align-items: stretch;
+  height: 1.75rem;
+  margin: 0;
+  gap: 0;
   border: 1px solid var(--line);
   border-radius: 0.625rem;
   overflow: hidden;
   background: var(--bg);
+  vertical-align: middle;
 }
 .range-seg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
   border: 0;
   border-right: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
-  padding: 0.375rem 0.625rem;
+  padding: 0 0.625rem;
   font-size: 0.75rem;
   line-height: 1;
   border-radius: 0;
@@ -3183,22 +3191,18 @@ button.chip {
   color: var(--text);
   background: rgba(var(--accent-rgb), 0.18);
 }
-.range-custom {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--line);
-  border-radius: 0.625rem;
-  overflow: hidden;
-  background: var(--bg);
-}
 .range-custom input,
 .range-custom select {
+  height: 100%;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0.375rem 0.5rem;
+  padding: 0 0.5rem;
+  font: inherit;
   font-size: 0.75rem;
+  line-height: 1;
   min-width: 0;
+  box-shadow: none;
 }
 .range-custom input {
   width: 3.6rem;
@@ -3210,10 +3214,17 @@ button.chip {
   color: var(--muted);
   padding-right: 0.125rem;
 }
+.range-custom input:focus,
+.range-custom select:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 0.125rem var(--focus-ring);
+}
 .range-go {
+  height: 100% !important;
+  min-height: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
-  padding: 0.375rem 0.625rem !important;
+  padding: 0 0.625rem !important;
   font-size: 0.75rem;
   background: rgba(var(--accent-rgb), 0.14);
 }
