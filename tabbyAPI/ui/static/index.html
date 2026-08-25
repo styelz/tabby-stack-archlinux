@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tabby Stack</title>
   <style>
-    html { background: #0b0d12; color-scheme: dark; }
-    body { margin: 0; background: #0b0d12; color: #e8ecf4; }
+    html { background: var(--boot-bg, #0b0d12); color-scheme: dark; }
+    body { margin: 0; background: var(--boot-bg, #0b0d12); color: #e8ecf4; }
     html.ui-loading body { visibility: hidden; }
     html.ui-loading::before {
       content: "";
       position: fixed;
       inset: 0;
-      background: #0b0d12;
+      background: var(--boot-bg, #0b0d12);
       z-index: 2147483647;
       pointer-events: none;
     }
@@ -34,8 +34,64 @@
       document.documentElement.classList.remove("ui-loading");
     };
     setTimeout(window.TABBY_REVEAL_UI, 8000);
+    (function () {
+      var THEME_KEY = "tabby-ui-theme";
+      var MODE_KEY = "tabby-ui-mode";
+      var FAMILIES = { midnight: 1, ember: 1, glacier: 1, moss: 1, contrast: 1 };
+      var MODES = { dark: 1, light: 1, system: 1 };
+      var BG = {
+        "midnight-dark": "#0b0d12",
+        "midnight-light": "#f4f6fb",
+        "ember-dark": "#140e0c",
+        "ember-light": "#faf4eb",
+        "glacier-dark": "#0a1218",
+        "glacier-light": "#f2f7fa",
+        "moss-dark": "#0e1410",
+        "moss-light": "#f3f6f1",
+        "contrast-dark": "#000000",
+        "contrast-light": "#ffffff"
+      };
+      function read(key, fallback, allowed) {
+        var v = "";
+        try { v = localStorage.getItem(key) || ""; } catch (e) {}
+        return allowed[v] ? v : fallback;
+      }
+      function family() { return read(THEME_KEY, "midnight", FAMILIES); }
+      function mode() { return read(MODE_KEY, "dark", MODES); }
+      function resolved() {
+        var m = mode();
+        if (m === "system") {
+          m = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+        }
+        return family() + "-" + m;
+      }
+      function apply(id) {
+        id = id || resolved();
+        var root = document.documentElement;
+        var bg = BG[id] || BG["midnight-dark"];
+        var light = /-light$/.test(id);
+        root.setAttribute("data-theme", id);
+        root.style.colorScheme = light ? "light" : "dark";
+        root.style.setProperty("--boot-bg", bg);
+        root.style.background = bg;
+      }
+      window.TABBY_THEME_BOOT = {
+        THEME_KEY: THEME_KEY,
+        MODE_KEY: MODE_KEY,
+        FAMILIES: ["midnight", "ember", "glacier", "moss", "contrast"],
+        LABELS: { midnight: "Midnight", ember: "Ember", glacier: "Glacier", moss: "Moss", contrast: "Contrast" },
+        MODES: ["dark", "light", "system"],
+        MODE_LABELS: { dark: "Dark", light: "Light", system: "System" },
+        BG: BG,
+        family: family,
+        mode: mode,
+        resolved: resolved,
+        apply: apply
+      };
+      apply();
+    })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260826-term-reconnect";
+    window.TABBY_UI_ASSET_V = "20260826-themes";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
@@ -60,8 +116,30 @@
     </nav>
     <div class="header-meta">
       <span id="gpu-chip" class="chip">GPU …</span>
-      <span id="user-chip" class="chip quiet"></span>
-      <button type="button" id="logout-btn" class="btn ghost">Log out</button>
+      <div class="user-menu" id="user-menu">
+        <button type="button" id="user-chip" class="chip quiet" aria-haspopup="menu" aria-expanded="false"></button>
+        <div class="user-menu-panel" id="user-menu-panel" hidden role="menu">
+          <div class="user-menu-sub">
+            <button type="button" class="user-menu-item" id="user-menu-theme" aria-haspopup="true" aria-expanded="false">
+              <span>Theme</span><kbd id="user-menu-theme-hint">Midnight</kbd>
+            </button>
+            <div class="user-menu-flyout" id="user-menu-theme-flyout" hidden role="menu"></div>
+          </div>
+          <div class="user-menu-sub">
+            <button type="button" class="user-menu-item" id="user-menu-mode" aria-haspopup="true" aria-expanded="false">
+              <span>Appearance</span><kbd id="user-menu-mode-hint">Dark</kbd>
+            </button>
+            <div class="user-menu-flyout" id="user-menu-mode-flyout" hidden role="menu"></div>
+          </div>
+          <div class="user-menu-sep"></div>
+          <button type="button" class="user-menu-item" data-user-act="keys">Keyboard shortcuts</button>
+          <button type="button" class="user-menu-item" data-user-act="copy">Copy username</button>
+          <button type="button" class="user-menu-item" data-user-act="fullscreen">Full screen</button>
+          <button type="button" class="user-menu-item" data-user-act="restart" id="user-menu-restart" hidden>Restart API</button>
+          <div class="user-menu-sep"></div>
+          <button type="button" class="user-menu-item is-danger" data-user-act="logout">Log out</button>
+        </div>
+      </div>
     </div>
   </header>
 

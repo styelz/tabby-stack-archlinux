@@ -54,6 +54,37 @@
     document.head.appendChild(link);
   }
 
+  function cssColor(name, fallback) {
+    const value =
+      window.TabbyUI && TabbyUI.cssVar
+        ? TabbyUI.cssVar(name)
+        : getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  function applyMonacoTheme() {
+    if (!window.monaco) return;
+    const id = document.documentElement.getAttribute("data-theme") || "midnight-dark";
+    const light = /-light$/.test(id);
+    window.monaco.editor.defineTheme("tabby", {
+      base: light ? "vs" : "vs-dark",
+      inherit: true,
+      rules: [],
+      colors: {
+        "editor.background": cssColor("--bg-elev", "#12151c"),
+        "editor.foreground": cssColor("--text", "#e8ecf4"),
+        "editorLineNumber.foreground": cssColor("--editor-muted", "#5a6379"),
+        "editorGutter.background": cssColor("--editor-gutter", "#0e1218"),
+        "editor.lineHighlightBackground": cssColor("--editor-line", "#1a2030"),
+        "diffEditor.insertedTextBackground": "#1c3d2a66",
+        "diffEditor.removedTextBackground": "#4a1f2466",
+        "diffEditor.insertedLineBackground": "#1c3d2a33",
+        "diffEditor.removedLineBackground": "#4a1f2433",
+      },
+    });
+    window.monaco.editor.setTheme("tabby");
+  }
+
   async function ensure() {
     if (window.monaco) return window.monaco;
     if (loadPromise) return loadPromise;
@@ -69,23 +100,7 @@
       installWorkers(vs);
       window.require.config({ paths: { vs } });
       await new Promise((resolve) => window.require(["vs/editor/editor.main"], resolve));
-      window.monaco.editor.defineTheme("tabby", {
-        base: "vs-dark",
-        inherit: true,
-        rules: [],
-        colors: {
-          "editor.background": "#12151c",
-          "editor.foreground": "#e8ecf4",
-          "editorLineNumber.foreground": "#5a6379",
-          "editorGutter.background": "#0e1218",
-          "editor.lineHighlightBackground": "#1a2030",
-          "diffEditor.insertedTextBackground": "#1c3d2a66",
-          "diffEditor.removedTextBackground": "#4a1f2466",
-          "diffEditor.insertedLineBackground": "#1c3d2a33",
-          "diffEditor.removedLineBackground": "#4a1f2433",
-        },
-      });
-      window.monaco.editor.setTheme("tabby");
+      applyMonacoTheme();
       return window.monaco;
     })();
     return loadPromise;
@@ -252,6 +267,8 @@
     modified.focus();
     if (window.TabbyLsp) window.TabbyLsp.attachMonaco(currentPath, modified);
   }
+
+  document.addEventListener("tabby-theme-change", applyMonacoTheme);
 
   window.TabbyMonaco = {
     ready: ensure,

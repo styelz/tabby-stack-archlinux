@@ -46,9 +46,9 @@ function mountStatus(root) {
             <figcaption>
               <strong>GPU</strong>
               <span class="legend">
-                <span class="swatch" style="--c:#7aa2ff"></span>util %
-                <span class="swatch" style="--c:#8b5cf6"></span>VRAM %
-                <span class="swatch" style="--c:#f5c542"></span>°C
+                <span class="swatch" style="--c:var(--accent)"></span>util %
+                <span class="swatch" style="--c:var(--accent-2)"></span>VRAM %
+                <span class="swatch" style="--c:var(--warn)"></span>°C
               </span>
             </figcaption>
             <canvas id="chart-gpu" width="900" height="240" aria-label="GPU chart"></canvas>
@@ -57,9 +57,9 @@ function mountStatus(root) {
             <figcaption>
               <strong>Host</strong>
               <span class="legend">
-                <span class="swatch" style="--c:#3dd68c"></span>CPU %
-                <span class="swatch" style="--c:#ff6b7a"></span>RAM %
-                <span class="swatch" style="--c:#9aa3b5"></span>load×10
+                <span class="swatch" style="--c:var(--ok)"></span>CPU %
+                <span class="swatch" style="--c:var(--bad)"></span>RAM %
+                <span class="swatch" style="--c:var(--muted)"></span>load×10
               </span>
             </figcaption>
             <canvas id="chart-host" width="900" height="240" aria-label="Host chart"></canvas>
@@ -76,6 +76,11 @@ function mountStatus(root) {
   const unitSelect = root.querySelector("#metrics-unit");
   let range = { hours: 24, days: null };
   let lastSeries = [];
+  let lastPayload = null;
+
+  function themeColor(name, fallback) {
+    return (TabbyUI.cssVar && TabbyUI.cssVar(name)) || fallback;
+  }
 
   function fact(title, value, extra = "") {
     const sub = extra ? `<span class="fact-x">${TabbyUI.escapeHtml(extra)}</span>` : "";
@@ -135,7 +140,7 @@ function mountStatus(root) {
     const pad = { l: 40, r: 10, t: 12, b: 26 };
     const w = cssW - pad.l - pad.r;
     const h = cssH - pad.t - pad.b;
-    ctx.fillStyle = "rgba(255,255,255,0.02)";
+    ctx.fillStyle = themeColor("--hover-fill", "rgba(255,255,255,0.02)");
     ctx.fillRect(pad.l, pad.t, w, h);
 
     let yMax = yMaxHint || 100;
@@ -149,8 +154,8 @@ function mountStatus(root) {
     }
     yMax = Math.max(1, Math.ceil(yMax / 10) * 10);
 
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
-    ctx.fillStyle = "#9aa3b5";
+    ctx.strokeStyle = themeColor("--line", "rgba(255,255,255,0.08)");
+    ctx.fillStyle = themeColor("--muted", "#9aa3b5");
     ctx.font = "11px ui-monospace, Menlo, Consolas, monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
@@ -166,7 +171,7 @@ function mountStatus(root) {
 
     if (!series.length) {
       ctx.textAlign = "center";
-      ctx.fillStyle = "#9aa3b5";
+      ctx.fillStyle = themeColor("--muted", "#9aa3b5");
       ctx.fillText("Collecting samples… wait ~30s", pad.l + w / 2, pad.t + h / 2);
       return;
     }
@@ -200,7 +205,7 @@ function mountStatus(root) {
 
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillStyle = "#9aa3b5";
+    ctx.fillStyle = themeColor("--muted", "#9aa3b5");
     const ticks = Math.min(5, series.length);
     for (let i = 0; i < ticks; i++) {
       const row = series[Math.round((i * (series.length - 1)) / Math.max(1, ticks - 1))];
@@ -211,14 +216,15 @@ function mountStatus(root) {
   function paintCharts(payload) {
     const series = payload.series || [];
     lastSeries = series;
+    lastPayload = payload;
     const windowS = payload.window_s || (range.days != null ? range.days * 86400 : range.hours * 3600);
     drawChart(
       root.querySelector("#chart-gpu"),
       series,
       [
-        { key: "gpu", color: "#7aa2ff" },
-        { key: "vram", color: "#8b5cf6" },
-        { key: "temp", color: "#f5c542" },
+        { key: "gpu", color: themeColor("--accent", "#7aa2ff") },
+        { key: "vram", color: themeColor("--accent-2", "#8b5cf6") },
+        { key: "temp", color: themeColor("--warn", "#f5c542") },
       ],
       100,
       windowS
@@ -227,9 +233,9 @@ function mountStatus(root) {
       root.querySelector("#chart-host"),
       series,
       [
-        { key: "cpu", color: "#3dd68c" },
-        { key: "ram", color: "#ff6b7a" },
-        { key: "load1", color: "#9aa3b5", scale: 10 },
+        { key: "cpu", color: themeColor("--ok", "#3dd68c") },
+        { key: "ram", color: themeColor("--bad", "#ff6b7a") },
+        { key: "load1", color: themeColor("--muted", "#9aa3b5"), scale: 10 },
       ],
       100,
       windowS
@@ -421,6 +427,10 @@ function mountStatus(root) {
     });
   };
   window.addEventListener("resize", onResize);
+  const onTheme = () => {
+    if (lastPayload) paintCharts(lastPayload);
+  };
+  document.addEventListener("tabby-theme-change", onTheme);
 
   cards.addEventListener("contextmenu", (event) => {
     const factEl = event.target.closest(".status-fact");
@@ -459,6 +469,7 @@ function mountStatus(root) {
       if (timer) clearInterval(timer);
       timer = 0;
       window.removeEventListener("resize", onResize);
+      document.removeEventListener("tabby-theme-change", onTheme);
     },
   };
 }

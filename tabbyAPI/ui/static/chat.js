@@ -2396,6 +2396,20 @@ function mountChat(root) {
     if (termNote) termNote.textContent = "";
   }
 
+  function termTheme() {
+    const css = window.TabbyUI && TabbyUI.cssVar ? TabbyUI.cssVar.bind(TabbyUI) : (name) =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return {
+      background: css("--bg") || "#0b0d12",
+      foreground: css("--text") || "#e8ecf4",
+      cursor: css("--accent") || "#7aa2ff",
+    };
+  }
+
+  document.addEventListener("tabby-theme-change", () => {
+    if (termTerm) termTerm.options.theme = termTheme();
+  });
+
   function connectTerm(chatId, gen, retries) {
     if (termGen !== gen || !termWanted || !chatId) return;
     if (typeof window.Terminal !== "function") {
@@ -2407,7 +2421,7 @@ function mountChat(root) {
       cursorBlink: true,
       fontSize: 12,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      theme: { background: "#0b0d12", foreground: "#e8ecf4", cursor: "#7aa2ff" },
+      theme: termTheme(),
     });
     if (window.FitAddon && window.FitAddon.FitAddon) {
       termFit = new window.FitAddon.FitAddon();
@@ -4344,34 +4358,8 @@ function mountChat(root) {
     });
   }
 
-  function shortcutRow(label, keysHtml) {
-    return "<li><span>" + label + '</span><span class="shortcut-keys">' + keysHtml + "</span></li>";
-  }
-
   function showShortcuts() {
-    return showDialog({
-      title: "Keyboard shortcuts",
-      html:
-        '<div class="shortcuts">' +
-        '<section><h3>Composer</h3><ul class="shortcuts-list">' +
-        shortcutRow("Send", "<kbd>Enter</kbd>") +
-        shortcutRow("New line", "<kbd>Shift</kbd>+<kbd>Enter</kbd>") +
-        shortcutRow("Slash commands", "<kbd>/</kbd>") +
-        shortcutRow("Recall sent text", "<kbd>↑</kbd><kbd>↓</kbd>") +
-        "</ul></section>" +
-        '<section><h3>Chats</h3><ul class="shortcuts-list">' +
-        shortcutRow("Cycle chats", "<kbd>Tab</kbd>") +
-        shortcutRow("Search chats", "<kbd>Ctrl</kbd>+<kbd>K</kbd>") +
-        shortcutRow("Find in chat", "<kbd>Ctrl</kbd>+<kbd>F</kbd>") +
-        shortcutRow("New chat", "<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>") +
-        shortcutRow("Stop or close", "<kbd>Esc</kbd>") +
-        "</ul></section>" +
-        '<section><h3>Workspace</h3><ul class="shortcuts-list">' +
-        shortcutRow("Save file", "<kbd>Ctrl</kbd>+<kbd>S</kbd>") +
-        shortcutRow("More actions", "<kbd>Right-click</kbd>") +
-        "</ul></section>" +
-        "</div>",
-    });
+    return TabbyUI.showShortcuts();
   }
 
   function showSettings() {

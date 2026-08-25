@@ -757,6 +757,134 @@
     });
   }
 
+  function shortcutRow(label, keysHtml) {
+    return "<li><span>" + label + '</span><span class="shortcut-keys">' + keysHtml + "</span></li>";
+  }
+
+  function showShortcuts() {
+    const existing = document.querySelector(".dialog-modal[data-shortcuts]");
+    if (existing) {
+      existing.querySelector(".dialog-yes") && existing.querySelector(".dialog-yes").focus();
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "dialog-modal";
+      wrap.dataset.shortcuts = "1";
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-modal", "true");
+      wrap.innerHTML =
+        '<div class="dialog-card">' +
+        "<h2>Keyboard shortcuts</h2>" +
+        '<div class="dialog-body"><div class="shortcuts">' +
+        '<section><h3>Composer</h3><ul class="shortcuts-list">' +
+        shortcutRow("Send", "<kbd>Enter</kbd>") +
+        shortcutRow("New line", "<kbd>Shift</kbd>+<kbd>Enter</kbd>") +
+        shortcutRow("Slash commands", "<kbd>/</kbd>") +
+        shortcutRow("Recall sent text", "<kbd>↑</kbd><kbd>↓</kbd>") +
+        "</ul></section>" +
+        '<section><h3>Chats</h3><ul class="shortcuts-list">' +
+        shortcutRow("Cycle chats", "<kbd>Tab</kbd>") +
+        shortcutRow("Search chats", "<kbd>Ctrl</kbd>+<kbd>K</kbd>") +
+        shortcutRow("Find in chat", "<kbd>Ctrl</kbd>+<kbd>F</kbd>") +
+        shortcutRow("New chat", "<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>") +
+        shortcutRow("Stop or close", "<kbd>Esc</kbd>") +
+        "</ul></section>" +
+        '<section><h3>Workspace</h3><ul class="shortcuts-list">' +
+        shortcutRow("Save file", "<kbd>Ctrl</kbd>+<kbd>S</kbd>") +
+        shortcutRow("More actions", "<kbd>Right-click</kbd>") +
+        "</ul></section>" +
+        "</div></div>" +
+        '<div class="dialog-actions">' +
+        '<button type="button" class="btn primary dialog-yes">Close</button>' +
+        "</div></div>";
+      const finish = () => {
+        document.removeEventListener("keydown", onKey);
+        wrap.remove();
+        resolve();
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          finish();
+        }
+      };
+      wrap.querySelector(".dialog-yes").addEventListener("click", finish);
+      wrap.addEventListener("click", (ev) => {
+        if (ev.target === wrap) finish();
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(wrap);
+      wrap.querySelector(".dialog-yes").focus();
+    });
+  }
+
+  const THEME_BOOT = window.TABBY_THEME_BOOT || {};
+  const THEME_KEY = THEME_BOOT.THEME_KEY || "tabby-ui-theme";
+  const MODE_KEY = THEME_BOOT.MODE_KEY || "tabby-ui-mode";
+  const THEME_FAMILIES = THEME_BOOT.FAMILIES || ["midnight", "ember", "glacier", "moss", "contrast"];
+  const THEME_LABELS = THEME_BOOT.LABELS || {
+    midnight: "Midnight",
+    ember: "Ember",
+    glacier: "Glacier",
+    moss: "Moss",
+    contrast: "Contrast",
+  };
+  const THEME_MODES = THEME_BOOT.MODES || ["dark", "light", "system"];
+  const MODE_LABELS = THEME_BOOT.MODE_LABELS || { dark: "Dark", light: "Light", system: "System" };
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function getTheme() {
+    return THEME_BOOT.family ? THEME_BOOT.family() : "midnight";
+  }
+
+  function getMode() {
+    return THEME_BOOT.mode ? THEME_BOOT.mode() : "dark";
+  }
+
+  function resolvedTheme() {
+    return THEME_BOOT.resolved ? THEME_BOOT.resolved() : `${getTheme()}-dark`;
+  }
+
+  function applyTheme() {
+    const id = resolvedTheme();
+    if (THEME_BOOT.apply) THEME_BOOT.apply(id);
+    else document.documentElement.setAttribute("data-theme", id);
+    document.dispatchEvent(
+      new CustomEvent("tabby-theme-change", {
+        detail: { theme: getTheme(), mode: getMode(), resolved: id },
+      })
+    );
+  }
+
+  function setTheme(family) {
+    if (!THEME_FAMILIES.includes(family)) return;
+    try {
+      localStorage.setItem(THEME_KEY, family);
+    } catch (err) {}
+    applyTheme();
+  }
+
+  function setMode(mode) {
+    if (!THEME_MODES.includes(mode)) return;
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch (err) {}
+    applyTheme();
+  }
+
+  if (window.matchMedia) {
+    const schemeQuery = matchMedia("(prefers-color-scheme: dark)");
+    const onScheme = () => {
+      if (getMode() === "system") applyTheme();
+    };
+    if (schemeQuery.addEventListener) schemeQuery.addEventListener("change", onScheme);
+    else if (schemeQuery.addListener) schemeQuery.addListener(onScheme);
+  }
+
   window.TabbyUI = {
     base: uiBase,
     path: uiPath,
@@ -775,11 +903,23 @@
     showContextMenu,
     confirmModal,
     promptModal,
+    showShortcuts,
     escapeHtml,
     formatBytes,
     formatDuration,
     formatAssistantContent,
     renderMarkdown,
+    cssVar,
+    getTheme,
+    setTheme,
+    getMode,
+    setMode,
+    resolvedTheme,
+    applyTheme,
+    THEME_FAMILIES,
+    THEME_LABELS,
+    THEME_MODES,
+    MODE_LABELS,
     paintGpuChip(data) {
       const chip = document.getElementById("gpu-chip");
       if (!chip) return;
