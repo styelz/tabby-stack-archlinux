@@ -482,6 +482,65 @@ async def ui_workspace_rename_file(
     return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
+@router.get("/workspace/{chat_id}/history", include_in_schema=False)
+async def ui_workspace_history(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import list_history
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        versions = list_history(_user, cid, path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"path": path, "versions": versions}
+
+
+@router.get("/workspace/{chat_id}/history/rev", include_in_schema=False)
+async def ui_workspace_history_rev(
+    chat_id: str, path: str = "", id: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import history_revision
+
+    if not path or not id:
+        raise HTTPException(400, "path and id are required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        return history_revision(_user, cid, path, id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Revision not found.") from exc
+
+
+@router.post("/workspace/{chat_id}/history/restore", include_in_schema=False)
+async def ui_workspace_history_restore(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, restore_revision, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    rev_id = str(body.get("id") or "")
+    if not path or not rev_id:
+        raise HTTPException(400, "path and id are required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        written = restore_revision(_user, cid, path, rev_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Revision not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
 @router.post("/workspace/{chat_id}/preview", include_in_schema=False)
 async def ui_workspace_preview(
     chat_id: str, request: Request, _user: str = Depends(require_ui_user)

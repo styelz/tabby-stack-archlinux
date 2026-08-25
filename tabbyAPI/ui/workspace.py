@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import difflib
 import io
+import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
@@ -44,8 +49,11 @@ PAGE_SUFFIXES = frozenset({".html", ".htm"})
 MAX_FILES = 200
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_TEXT_BYTES = 1 * 1024 * 1024
+HISTORY_SUFFIX = ".file-history"
+MAX_HISTORY_VERSIONS = 40
 
 _WORK_DIR: Optional[Path] = None
+_HISTORY_LOCK = threading.Lock()
 
 
 def workspaces_dir() -> Path:
@@ -243,6 +251,191 @@ def listing(username: str, chat_id: str) -> dict[str, Any]:
     }
 
 
+def history_dir(username: str, chat_id: str) -> Path:
+    return user_dir(username) / f"{safe_name(chat_id)}{HISTORY_SUFFIX}"
+
+
+def drop_history(username: str, chat_id: str) -> None:
+    folder = history_dir(username, chat_id)
+    if folder.is_dir():
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _file_key(username: str, chat_id: str, rel: str) -> str:
+    root = workspace_root(username, chat_id, create=False)
+    path = resolve_rel(root, rel)
+    return path.relative_to(root.resolve()).as_posix()
+
+
+def _history_index_path(folder: Path) -> Path:
+    return folder / "index.json"
+
+
+def _history_blob(folder: Path, rev_id: str) -> Path:
+    return folder / "blobs" / rev_id
+
+
+def _load_history_index(folder: Path) -> dict[str, list[dict[str, Any]]]:
+    try:
+        raw = json.loads(_history_index_path(folder).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for key, rows in raw.items():
+        if not isinstance(key, str) or not isinstance(rows, list):
+            continue
+        clean: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rev_id = str(row.get("id") or "").strip()
+            if not rev_id or any(part in rev_id for part in ("/", "\\", "..")):
+                continue
+            try:
+                ts = int(row.get("ts") or 0)
+                nbytes = int(row.get("bytes") or 0)
+            except (TypeError, ValueError):
+                continue
+            clean.append({"id": rev_id, "ts": ts, "bytes": max(0, nbytes)})
+        if clean:
+            out[key] = clean
+    return out
+
+
+def _save_history_index(folder: Path, index: dict[str, list[dict[str, Any]]]) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = _history_index_path(folder)
+    tmp = dest.with_name("index.json.tmp")
+    tmp.write_text(json.dumps(index, separators=(",", ":")), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(dest)
+    os.chmod(dest, 0o600)
+
+
+def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
+    if not is_text_path(rel):
+        return
+    try:
+        data.decode("utf-8")
+        key = _file_key(username, chat_id, rel)
+    except (UnicodeDecodeError, ValueError):
+        return
+    folder = history_dir(username, chat_id)
+    with _HISTORY_LOCK:
+        index = _load_history_index(folder)
+        rows = list(index.get(key) or [])
+        if rows:
+            last = _history_blob(folder, str(rows[0].get("id") or ""))
+            try:
+                if last.is_file() and last.read_bytes() == data:
+                    return
+            except OSError:
+                pass
+        rev_id = secrets.token_hex(8)
+        blob = _history_blob(folder, rev_id)
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(data)
+        os.chmod(blob, 0o600)
+        rows.insert(0, {"id": rev_id, "ts": int(time.time() * 1000), "bytes": len(data)})
+        extra = rows[MAX_HISTORY_VERSIONS:]
+        rows = rows[:MAX_HISTORY_VERSIONS]
+        for old in extra:
+            try:
+                _history_blob(folder, str(old.get("id") or "")).unlink()
+            except OSError:
+                pass
+        index[key] = rows
+        _save_history_index(folder, index)
+
+
+def _move_history(username: str, chat_id: str, src: str, dest: str) -> None:
+    try:
+        src_key = _file_key(username, chat_id, src)
+        dest_key = _file_key(username, chat_id, dest)
+    except ValueError:
+        return
+    if src_key == dest_key:
+        return
+    folder = history_dir(username, chat_id)
+    with _HISTORY_LOCK:
+        index = _load_history_index(folder)
+        rows = index.pop(src_key, None)
+        if not rows:
+            return
+        index[dest_key] = rows
+        _save_history_index(folder, index)
+
+
+def list_history(username: str, chat_id: str, rel: str) -> list[dict[str, Any]]:
+    key = _file_key(username, chat_id, rel)
+    folder = history_dir(username, chat_id)
+    with _HISTORY_LOCK:
+        return list(_load_history_index(folder).get(key) or [])
+
+
+def _line_diff(latest: str, revision: str) -> list[dict[str, str]]:
+    old_lines = latest.splitlines()
+    new_lines = revision.splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    out: list[dict[str, str]] = []
+    for tag, i1, j1, i2, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            out.extend({"kind": "eq", "text": line} for line in old_lines[i1:j1])
+        elif tag == "delete":
+            out.extend({"kind": "del", "text": line} for line in old_lines[i1:j1])
+        elif tag == "insert":
+            out.extend({"kind": "add", "text": line} for line in new_lines[i2:j2])
+        else:
+            out.extend({"kind": "del", "text": line} for line in old_lines[i1:j1])
+            out.extend({"kind": "add", "text": line} for line in new_lines[i2:j2])
+    return out
+
+
+def history_revision(
+    username: str, chat_id: str, rel: str, rev_id: str
+) -> dict[str, Any]:
+    key = _file_key(username, chat_id, rel)
+    wanted = str(rev_id or "").strip()
+    if not wanted or any(part in wanted for part in ("/", "\\", "..")):
+        raise ValueError("Invalid revision")
+    folder = history_dir(username, chat_id)
+    with _HISTORY_LOCK:
+        rows = _load_history_index(folder).get(key) or []
+        meta = next((row for row in rows if row.get("id") == wanted), None)
+        if not meta:
+            raise FileNotFoundError(wanted)
+        blob = _history_blob(folder, wanted)
+        try:
+            contents = blob.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(wanted) from exc
+        except UnicodeDecodeError as exc:
+            raise ValueError("Revision is not UTF-8 text.") from exc
+    latest = ""
+    try:
+        latest = read_text(username, chat_id, rel)
+    except FileNotFoundError:
+        latest = ""
+    return {
+        "path": key,
+        "id": wanted,
+        "ts": int(meta.get("ts") or 0),
+        "bytes": int(meta.get("bytes") or len(contents.encode("utf-8"))),
+        "contents": contents,
+        "latest": latest,
+        "diff": _line_diff(latest, contents),
+    }
+
+
+def restore_revision(username: str, chat_id: str, rel: str, rev_id: str) -> str:
+    if not is_text_path(rel):
+        raise ValueError("Only text files can be restored.")
+    data = history_revision(username, chat_id, rel, rev_id)
+    return write_text(username, chat_id, rel, data["contents"])
+
+
 def resolve_file(username: str, chat_id: str, rel: str) -> Path:
     root = workspace_root(username, chat_id, create=False)
     path = resolve_rel(root, rel)
@@ -274,6 +467,13 @@ def write_text(username: str, chat_id: str, rel: str, contents: str) -> str:
     extra_files = 0 if path.is_file() else 1
     extra_bytes = len(data) - (path.stat().st_size if path.is_file() else 0)
     _check_caps(root, extra_bytes=max(0, extra_bytes), extra_files=extra_files)
+    if path.is_file():
+        try:
+            previous = path.read_bytes()
+        except OSError:
+            previous = None
+        if previous is not None and previous != data:
+            _record_history(username, chat_id, rel, previous)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     os.chmod(path, 0o600)
@@ -296,6 +496,11 @@ def delete_file(username: str, chat_id: str, rel: str) -> None:
     path = resolve_rel(root, rel)
     if not path.is_file():
         raise FileNotFoundError(rel)
+    if is_text_path(rel):
+        try:
+            _record_history(username, chat_id, rel, path.read_bytes())
+        except OSError:
+            pass
     path.unlink()
     parent = path.parent
     base = root.resolve()
@@ -321,7 +526,9 @@ def rename_file(username: str, chat_id: str, src: str, dest: str) -> str:
     while parent != base and parent.is_dir() and not any(parent.iterdir()):
         parent.rmdir()
         parent = parent.parent
-    return dest_path.relative_to(root.resolve()).as_posix()
+    written = dest_path.relative_to(root.resolve()).as_posix()
+    _move_history(username, chat_id, src, dest)
+    return written
 
 
 def copy_bytes(username: str, chat_id: str, rel: str, data: bytes) -> str:
@@ -553,6 +760,7 @@ def delete_workspace(username: str, chat_id: str) -> None:
     root = workspace_root(username, chat_id, create=False)
     if root.is_dir():
         shutil.rmtree(root, ignore_errors=True)
+    drop_history(username, chat_id)
     from ui.preview import drop_storage
 
     drop_storage(username, chat_id)

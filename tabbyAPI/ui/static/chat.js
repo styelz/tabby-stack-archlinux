@@ -167,6 +167,10 @@ function mountChat(root) {
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
+        <div class="chat-files-history" id="chat-files-history">
+          <div class="chat-files-history-head">History</div>
+          <div class="chat-files-history-list" id="chat-files-history-list"></div>
+        </div>
       </aside>
     </div>
   `;
@@ -204,6 +208,7 @@ function mountChat(root) {
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const filesPane = root.querySelector("#chat-files");
   const filesTree = root.querySelector("#chat-files-tree");
+  const filesHistoryList = root.querySelector("#chat-files-history-list");
   const tabsBar = root.querySelector("#chat-tabs");
   const logWrap = root.querySelector("#chat-log-wrap");
   const editorPane = root.querySelector("#chat-editor");
@@ -220,6 +225,9 @@ function mountChat(root) {
   let filesListing = [];
   let filesSelected = "";
   let filesEntry = "";
+  let filesHistory = [];
+  let filesHistoryPath = "";
+  let filesHistoryReq = 0;
   // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
   // its own buffer so switching away does not throw away unsaved edits.
   let openTabs = [];
@@ -787,6 +795,83 @@ function mountChat(root) {
     filesTree.replaceChildren(frag);
   }
 
+  function historyTabKey(path, id) {
+    return `__history__/${id}/${path}`;
+  }
+
+  function isHistoryTab(tab) {
+    return Boolean(tab && tab.kind === "diff");
+  }
+
+  function selectedPathFromTab(path) {
+    const tab = findTab(path);
+    if (isHistoryTab(tab)) return tab.filePath || "";
+    return path || "";
+  }
+
+  function activeHistoryId() {
+    const tab = activeTabRow();
+    return isHistoryTab(tab) ? tab.revId : "";
+  }
+
+  function paintFilesHistory() {
+    if (!filesHistoryList) return;
+    if (!filesSelected) {
+      filesHistoryList.innerHTML =
+        '<p class="muted chat-files-empty">Select a file to see its history.</p>';
+      return;
+    }
+    if (filesHistoryPath !== filesSelected) {
+      filesHistoryList.innerHTML = '<p class="muted chat-files-empty">Loading…</p>';
+      return;
+    }
+    if (!filesHistory.length) {
+      filesHistoryList.innerHTML =
+        '<p class="muted chat-files-empty">No history yet. Edits keep a version here.</p>';
+      return;
+    }
+    const openId = activeHistoryId();
+    const frag = document.createDocumentFragment();
+    filesHistory.forEach((row) => {
+      const item = document.createElement("div");
+      item.className = "chat-history" + (row.id === openId ? " is-active" : "");
+      item.dataset.id = row.id;
+      item.innerHTML =
+        `<button type="button" class="chat-history-open" data-history="open" title="Compare to the latest file">${TabbyUI.escapeHtml(timeLabel(row.ts))}</button>` +
+        `<span class="chat-file-size">${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.bytes))}</span>` +
+        `<span class="chat-file-tools">` +
+        `<button type="button" class="btn ghost chat-icon" data-history="restore" aria-label="Restore this version" title="Restore this version">↺</button>` +
+        `</span>`;
+      frag.appendChild(item);
+    });
+    filesHistoryList.replaceChildren(frag);
+  }
+
+  async function refreshHistory() {
+    const chatId = store.activeId;
+    const path = filesSelected;
+    if (!path || activeMode() !== "code" || !chatId) {
+      filesHistory = [];
+      filesHistoryPath = "";
+      paintFilesHistory();
+      return;
+    }
+    const req = (filesHistoryReq += 1);
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/history?path=${encodeURIComponent(path)}`
+      );
+      if (req !== filesHistoryReq || chatId !== store.activeId || filesSelected !== path) return;
+      filesHistory = Array.isArray(data.versions) ? data.versions : [];
+      filesHistoryPath = path;
+    } catch {
+      if (req !== filesHistoryReq || chatId !== store.activeId) return;
+      filesHistory = [];
+      filesHistoryPath = path;
+    }
+    paintFilesHistory();
+  }
+
   // Past this many characters the editor drops the highlight overlay; retinting
   // a huge file on every keystroke costs more than the colour is worth.
   const HIGHLIGHT_LIMIT = 120_000;
@@ -814,6 +899,10 @@ function mountChat(root) {
   }
 
   function tabLabel(tab) {
+    if (isHistoryTab(tab)) {
+      const base = (tab.filePath || tab.path).split("/").pop() || "file";
+      return `${base} · ${timeLabel(tab.revTs)}`;
+    }
     const base = tab.path.split("/").pop() || tab.path;
     const clash = openTabs.some((other) => other !== tab && (other.path.split("/").pop() || "") === base);
     return clash ? tab.path : base;
@@ -883,10 +972,31 @@ function mountChat(root) {
 
   /** A reload keeps showing the text it already has instead of flashing. */
   function tabView(tab) {
+    if (isHistoryTab(tab)) {
+      return tab.state === "loading" && tab.rev > 0 ? "diff" : tab.state;
+    }
     return tab.state === "loading" && tab.rev > 0 ? "ready" : tab.state;
   }
 
   function editorBodyHtml(tab, view) {
+    if (view === "diff") {
+      const rows = Array.isArray(tab.diff) ? tab.diff : [];
+      if (!rows.length) {
+        return '<div class="chat-editor-body"><p class="muted">This version matches the latest file.</p></div>';
+      }
+      let html = '<div class="chat-editor-body is-diff"><div class="code-diff">';
+      rows.forEach((row) => {
+        const kind = row.kind === "del" || row.kind === "add" ? row.kind : "eq";
+        const mark = kind === "del" ? "−" : kind === "add" ? "+" : " ";
+        html +=
+          `<div class="code-diff-line is-${kind}">` +
+          `<span class="code-diff-mark">${mark}</span>` +
+          `<span class="code-diff-text">${TabbyUI.escapeHtml(row.text || "")}</span>` +
+          "</div>";
+      });
+      html += "</div></div>";
+      return html;
+    }
     if (view === "image") {
       const src = `${fileUrl(store.activeId, tab.path)}&v=${tab.size}`;
       return `<div class="chat-editor-body is-image"><img alt="" src="${TabbyUI.escapeHtml(src)}" /></div>`;
@@ -924,19 +1034,24 @@ function mountChat(root) {
       return;
     }
     editorPane.dataset.key = key;
-    const lang = fileLang(tab.path);
+    const title = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
+    const lang = isHistoryTab(tab) ? "vs latest" : fileLang(tab.path);
     const tools =
       view === "ready"
         ? '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
           '<button type="button" class="btn primary" data-edit="save" disabled>Saved</button>'
-        : "";
+        : view === "diff"
+          ? '<button type="button" class="btn" data-edit="restore">Restore this version</button>'
+          : "";
     editorPane.innerHTML =
       '<div class="chat-editor-head">' +
-      `<strong>${TabbyUI.escapeHtml(tab.path)}</strong>` +
+      `<strong>${TabbyUI.escapeHtml(title)}</strong>` +
       '<span class="chat-editor-size"></span>' +
       (lang ? `<span class="chat-editor-lang">${TabbyUI.escapeHtml(lang)}</span>` : "") +
       '<span class="spacer"></span>' +
-      '<button type="button" class="btn ghost chat-icon" data-edit="download" aria-label="Download file" title="Download">↓</button>' +
+      (isHistoryTab(tab)
+        ? ""
+        : '<button type="button" class="btn ghost chat-icon" data-edit="download" aria-label="Download file" title="Download">↓</button>') +
       tools +
       "</div>" +
       editorBodyHtml(tab, view) +
@@ -1001,6 +1116,33 @@ function mountChat(root) {
 
   function ensureTabLoaded(tab) {
     if (!tab || tab.state !== "loading" || tab.loading) return;
+    if (isHistoryTab(tab)) {
+      const chatId = store.activeId;
+      tab.loading = true;
+      TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/history/rev?path=${encodeURIComponent(tab.filePath || "")}&id=${encodeURIComponent(tab.revId || "")}`
+      )
+        .then((data) => {
+          tab.loading = false;
+          if (chatId !== store.activeId || !findTab(tab.path)) return;
+          tab.diff = Array.isArray(data.diff) ? data.diff : [];
+          tab.size = Number(data.bytes) || tab.size;
+          tab.revTs = Number(data.ts) || tab.revTs;
+          tab.state = "diff";
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+          paintTabs();
+          paintFilesHistory();
+        })
+        .catch(() => {
+          tab.loading = false;
+          if (chatId !== store.activeId || !findTab(tab.path)) return;
+          tab.state = "error";
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+        });
+      return;
+    }
     if (tab.kind === "image") {
       tab.state = "image";
       return;
@@ -1060,6 +1202,7 @@ function mountChat(root) {
   function paintTabsAndFiles() {
     paintFilesHead();
     paintFilesTree();
+    paintFilesHistory();
     paintTabs();
     paintView();
   }
@@ -1068,8 +1211,9 @@ function mountChat(root) {
     if (activeTab === path) return;
     stashEditor();
     activeTab = path;
-    filesSelected = path;
+    filesSelected = selectedPathFromTab(path);
     paintTabsAndFiles();
+    refreshHistory();
   }
 
   function listingHas(path) {
@@ -1136,8 +1280,74 @@ function mountChat(root) {
     activeTab = path;
     filesSelected = path;
     paintTabsAndFiles();
+    refreshHistory();
     // On a phone the files pane covers the chat column the tab just opened in.
     if (narrowChat.matches && filesOpen) setFilesOpen(false);
+  }
+
+  function openHistoryTab(path, version) {
+    const key = historyTabKey(path, version.id);
+    stashEditor();
+    if (!findTab(key)) {
+      openTabs.push({
+        path: key,
+        filePath: path,
+        revId: version.id,
+        revTs: Number(version.ts) || 0,
+        size: Number(version.bytes) || 0,
+        kind: "diff",
+        editable: false,
+        state: "loading",
+        rev: 0,
+        original: "",
+        text: "",
+        diff: [],
+        dirty: false,
+        busy: false,
+        note: "",
+        gone: false,
+        caret: null,
+        scrollTop: 0,
+        scrollLeft: 0,
+      });
+    }
+    activeTab = key;
+    filesSelected = path;
+    paintTabsAndFiles();
+    if (narrowChat.matches && filesOpen) setFilesOpen(false);
+  }
+
+  async function restoreHistory(path, revId) {
+    if (!path || !revId) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Restore this version?",
+      text: `Replace “${path}” with this older version? The current file is kept in history.`,
+      yes: "Restore",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/history/restore`,
+        { method: "POST", body: { path, id: revId } }
+      );
+      const tab = findTab(path);
+      if (tab) {
+        tab.dirty = false;
+        tab.state = "loading";
+      }
+      openTabs.forEach((item) => {
+        if (isHistoryTab(item) && item.filePath === path) {
+          item.state = "loading";
+          item.rev += 1;
+        }
+      });
+      applyListing(data);
+      openFileTab(data.path || path);
+      refreshHistory();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
   }
 
   async function closeTab(path) {
@@ -1167,6 +1377,7 @@ function mountChat(root) {
   function syncTabs() {
     for (let i = openTabs.length - 1; i >= 0; i -= 1) {
       const tab = openTabs[i];
+      if (isHistoryTab(tab)) continue;
       const row = filesListing.find((item) => item.path === tab.path);
       if (!row) {
         if (tab.dirty) tab.gone = true;
@@ -1183,19 +1394,21 @@ function mountChat(root) {
       if (!tab.dirty && !tab.busy) tab.state = "loading";
     }
     if (activeTab && !findTab(activeTab)) activeTab = "";
-    // The tree highlights whichever file the open tab is showing.
-    filesSelected = activeTab;
+    // Keep a tree/history selection when Chat is showing so a deleted file
+    // can still be restored from History.
+    if (activeTab) filesSelected = selectedPathFromTab(activeTab);
   }
 
   function paintFiles() {
     syncTabs();
     paintTabsAndFiles();
+    refreshHistory();
   }
 
   async function saveTab() {
     const tab = activeTabRow();
     const box = editorBox();
-    if (!tab || !box || !tab.dirty || tab.busy) return;
+    if (!tab || isHistoryTab(tab) || !box || !tab.dirty || tab.busy) return;
     const chatId = store.activeId;
     const contents = box.value;
     tab.busy = true;
@@ -1222,6 +1435,7 @@ function mountChat(root) {
       paintFilesTree();
       paintTabs();
       paintEditorHead();
+      refreshHistory();
     } catch (err) {
       tab.busy = false;
       tab.note = err.message;
@@ -1231,7 +1445,7 @@ function mountChat(root) {
 
   function revertTab() {
     const tab = activeTabRow();
-    if (!tab || !tab.dirty) return;
+    if (!tab || isHistoryTab(tab) || !tab.dirty) return;
     tab.dirty = false;
     tab.note = "";
     tab.caret = null;
@@ -1929,6 +2143,13 @@ function mountChat(root) {
       if (activeTab === from) activeTab = to;
       if (editorPane && editorPane.dataset.key === from) editorPane.dataset.key = to;
     }
+    openTabs.forEach((item) => {
+      if (!isHistoryTab(item) || item.filePath !== from) return;
+      const next = historyTabKey(to, item.revId);
+      if (activeTab === item.path) activeTab = next;
+      item.filePath = to;
+      item.path = next;
+    });
     if (filesSelected === from) filesSelected = to;
     pendingFiles.forEach((file) => {
       if (file.path === from) file.path = to;
@@ -1999,7 +2220,7 @@ function mountChat(root) {
   async function deleteProjectFile(path) {
     const yes = await TabbyUI.confirmModal({
       title: "Delete file",
-      text: `Delete “${path}”? This cannot be undone.`,
+      text: `Delete “${path}”? The last version stays in History.`,
       yes: "Delete",
       no: "Cancel",
     });
@@ -2014,7 +2235,7 @@ function mountChat(root) {
       noteChatFiles(store.activeId, filesListing.length > 0);
       const open = findTab(path);
       if (open) open.dirty = false;
-      if (filesSelected === path) filesSelected = "";
+      filesSelected = path;
       pendingFiles = pendingFiles.filter((file) => file.path !== path);
       paintAttach();
       paintFiles();
@@ -4202,6 +4423,13 @@ function mountChat(root) {
     ];
   }
 
+  function historyMenuItems(path, version) {
+    return [
+      { label: "Compare to latest", run: () => openHistoryTab(path, version) },
+      { label: "Restore this version", run: () => restoreHistory(path, version.id) },
+    ];
+  }
+
   function tabMenuItems(path) {
     if (!path) {
       return [
@@ -4210,6 +4438,16 @@ function mountChat(root) {
       ];
     }
     const tab = findTab(path);
+    if (isHistoryTab(tab)) {
+      return [
+        { label: "Open", run: () => activateTab(path) },
+        { label: "Close", run: () => closeTab(path) },
+        { label: "Close others", disabled: openTabs.length < 2, run: () => closeOtherTabs(path) },
+        { label: "Close all", run: () => closeAllTabs() },
+        { sep: true },
+        { label: "Restore this version", run: () => restoreHistory(tab.filePath, tab.revId) },
+      ];
+    }
     return [
       { label: "Open", run: () => activateTab(path) },
       { label: "Close", run: () => closeTab(path) },
@@ -4245,6 +4483,16 @@ function mountChat(root) {
         { label: "Clear", disabled: !field.value, run: () => { field.value = ""; renderSidebar(); field.focus(); } },
       ]));
       return;
+    }
+    if (event.target.closest(".chat-editor-body.is-diff, .code-diff")) {
+      const tab = activeTabRow();
+      if (isHistoryTab(tab)) {
+        openCtx(event, [
+          { label: "Restore this version", run: () => restoreHistory(tab.filePath, tab.revId) },
+          { label: "Close", run: () => closeTab(tab.path) },
+        ]);
+        return;
+      }
     }
     if (field && field.classList.contains("chat-files-edit")) {
       const tab = activeTabRow();
@@ -4287,8 +4535,17 @@ function mountChat(root) {
     if (fileRow && filesTree && filesTree.contains(fileRow) && fileRow.dataset.path) {
       filesSelected = fileRow.dataset.path;
       paintFilesTree();
+      refreshHistory();
       openCtx(event, fileMenuItems(fileRow.dataset.path));
       return;
+    }
+    const historyRow = event.target.closest(".chat-history");
+    if (historyRow && filesHistoryList && filesHistoryList.contains(historyRow) && filesSelected) {
+      const version = filesHistory.find((row) => row.id === historyRow.dataset.id);
+      if (version) {
+        openCtx(event, historyMenuItems(filesSelected, version));
+        return;
+      }
     }
     if (event.target.closest("#chat-files")) {
       openCtx(event, filesPaneMenuItems());
@@ -4562,6 +4819,22 @@ function mountChat(root) {
       }
     });
   }
+  if (filesHistoryList) {
+    filesHistoryList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-history]");
+      if (!btn || !filesSelected) return;
+      const row = btn.closest(".chat-history");
+      const version = filesHistory.find((item) => item.id === (row && row.dataset.id));
+      if (!version) return;
+      if (btn.dataset.history === "open") {
+        openHistoryTab(filesSelected, version);
+        return;
+      }
+      if (btn.dataset.history === "restore") {
+        restoreHistory(filesSelected, version.id);
+      }
+    });
+  }
   if (tabsBar) {
     tabsBar.addEventListener("click", (event) => {
       const item = event.target.closest("[data-tab]");
@@ -4621,6 +4894,10 @@ function mountChat(root) {
       const tab = activeTabRow();
       if (btn.dataset.edit === "save") saveTab();
       if (btn.dataset.edit === "revert") revertTab();
+      if (btn.dataset.edit === "restore" && isHistoryTab(tab)) {
+        restoreHistory(tab.filePath, tab.revId);
+        return;
+      }
       if (btn.dataset.edit === "download" && tab) {
         saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file");
       }
