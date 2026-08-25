@@ -4,7 +4,7 @@ A self-hosted coding assistant, web workspace, and image generator for an Arch L
 
 Use it from Cursor, VS Code, Continue, Cline, another OpenAI-compatible client, or the built-in browser UI. Prompts, project files, and generated images stay on hardware you control.
 
-![An editor using Tabby Stack to build and preview a site](docs/ide-preview.jpg)
+<img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/1ef6e2a8-6ff7-4dd0-b5be-6e814e8b83e7" />
 
 ## What you get
 
@@ -66,7 +66,7 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 **Code** gives every conversation its own project folder. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
-![Code mode with chat, project files, and site controls](docs/ui-code.jpg)
+<img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/2556f7ac-379b-488f-8624-3056df940086" />
 
 Other pages:
 
@@ -77,9 +77,9 @@ Other pages:
 | **Logs** | Live and historical TabbyAPI and ComfyUI output |
 | **Users** | Administrator-only account creation, password reset, and deletion |
 
-![Status and resource history](docs/ui-status.jpg)
+<img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/1450953d-5e8a-4818-b6d9-adc1f83beb80" />
 
-![Generated image gallery](docs/ui-gallery.jpg)
+<img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/36f5395d-86ab-4a0c-8fa2-57e0cecb3e49" />
 
 ## Connect an editor
 
