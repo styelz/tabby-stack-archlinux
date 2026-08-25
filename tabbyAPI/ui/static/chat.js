@@ -66,11 +66,11 @@ function mountChat(root) {
         <div class="toolbar chat-toolbar">
           <button class="rail-toggle" type="button" id="chat-sidebar-toggle" aria-label="Hide sidebar" title="Hide sidebar">${CHEVRON_SVG}</button>
           <span class="chat-title" id="chat-title">New chat</span>
+          <span class="spacer"></span>
           <div class="chat-mode" id="chat-mode" role="group" aria-label="Chat mode">
             <button type="button" class="chat-mode-btn is-active" data-mode="chat">Chat</button>
             <button type="button" class="chat-mode-btn" data-mode="code">Code</button>
           </div>
-          <span class="spacer"></span>
           <div class="chat-more">
             <button class="btn ghost" type="button" id="chat-more" aria-haspopup="true" aria-expanded="false">More</button>
             <div class="chat-more-menu" id="chat-more-menu" hidden>
@@ -1462,7 +1462,6 @@ function mountChat(root) {
       if (/^Error:/i.test(String(text || ""))) add("retry", "Retry");
     }
     if (canSplit(idx)) add("split", "Split", "Move this turn and later messages to a new chat");
-    meta.appendChild(actions);
     const item = messages[idx];
     if (item && item.createdAt) {
       const stamp = document.createElement("span");
@@ -1470,6 +1469,7 @@ function mountChat(root) {
       stamp.textContent = stampLabel(item.createdAt);
       meta.appendChild(stamp);
     }
+    meta.appendChild(actions);
     host.appendChild(meta);
   }
 
