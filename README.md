@@ -77,7 +77,7 @@ Other pages:
 | **Logs** | Live and historical TabbyAPI and ComfyUI output |
 | **Users** | Administrator-only account creation, password reset, and deletion |
 
-<img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/1450953d-5e8a-4818-b6d9-adc1f83beb80" />
+<img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/1b7ab6fe-6a12-4947-b1bd-23bae0175447" />
 
 <img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/0975f116-f71f-4cca-8439-c78a64614ece" />
 
