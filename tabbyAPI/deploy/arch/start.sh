@@ -41,6 +41,14 @@ if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
   exec sg docker -c "exec \"$TABBY/venv/bin/python\" \"$TABBY/watch_api.py\""
 fi
 if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/null 2>&1; then
-  exec sudo -n -u "$USER" -g docker "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
+  # sudo env_reset drops sourced tabby.env. Re-inject stack settings so the
+  # reverse SSH tunnel and public URL still work.
+  args=()
+  names="$( { compgen -e TABBY_ || true; compgen -e COMFYUI_ || true; } )"
+  for name in $names; do
+    args+=("$name=${!name}")
+  done
+  exec sudo -n -u "$USER" -g docker /usr/bin/env "${args[@]}" \
+    "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
 fi
 exec "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
