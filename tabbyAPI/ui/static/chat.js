@@ -45,8 +45,6 @@ function tabbyLooksLikeChatNotImage(raw) {
 // or "expand" on whichever side they sit.
 const CHEVRON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 5-7 7 7 7" /></svg>';
-const TREE_TWIST_SVG =
-  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 4 6 4-6 4z" /></svg>';
 const TREE_FOLDER_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H7l1.2 1.5H12.5A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" /></svg>';
 const TREE_FILE_SVG =
@@ -917,7 +915,6 @@ function mountChat(root) {
           `<button type="button" class="chat-file-open" data-file="${action}" title="${TabbyUI.escapeHtml(node.path)}"${
             isDir ? ` aria-expanded="${expanded ? "true" : "false"}"` : ""
           }>` +
-          `<span class="chat-file-twist" aria-hidden="true">${isDir ? TREE_TWIST_SVG : ""}</span>` +
           `<span class="chat-file-icon" aria-hidden="true">${isDir ? TREE_FOLDER_SVG : TREE_FILE_SVG}</span>` +
           `<span class="chat-file-name">${TabbyUI.escapeHtml(node.name)}</span>` +
           `</button>` +
