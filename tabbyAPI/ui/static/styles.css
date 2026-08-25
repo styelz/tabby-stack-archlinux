@@ -1071,6 +1071,49 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   margin-top: 8px;
   cursor: zoom-in;
 }
+.md-image-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(460px, 100%);
+  min-height: 34px;
+  margin: 6px 0;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(122, 162, 255, 0.06);
+  color: var(--text);
+  text-decoration: none;
+}
+.md-image-link:hover {
+  border-color: rgba(122, 162, 255, 0.45);
+  background: rgba(122, 162, 255, 0.12);
+}
+.md-image-link-kind {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(122, 162, 255, 0.16);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.md-image-link-name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-image-link-open {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
 
 .chat-turn {
   display: flex;

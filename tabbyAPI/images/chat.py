@@ -359,8 +359,9 @@ def _console_ready_text(
     n = len(pairs)
     lead = "Here's the picture." if n == 1 else f"Here are the {n} pictures."
     lines = [lead, ""]
-    for url, _dest in pairs:
-        lines.append(f"![]({url})")
+    for url, dest in pairs:
+        label = dest if code and dest else ""
+        lines.append(f"![{label}]({url})")
         lines.append("")
     lines.append(image_job_done_text(job=job, count=max(1, n)))
     if code:

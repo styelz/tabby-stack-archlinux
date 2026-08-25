@@ -170,7 +170,20 @@
     const safeHref = escapeHtml(resolved);
     const safeAlt = escapeHtml(alt || "");
     if (inlineImages === false) {
-      return `<a href="${safeHref}" target="_blank" rel="noreferrer">${safeAlt || escapeHtml(href)}</a>`;
+      const cleanHref = String(href || "").split(/[?#]/, 1)[0];
+      const fallback = cleanHref.slice(cleanHref.lastIndexOf("/") + 1) || "Generated image";
+      let label = alt || fallback;
+      try {
+        label = decodeURIComponent(label);
+      } catch (_) {
+        // Keep the original label when a URL contains malformed escapes.
+      }
+      return (
+        `<a class="md-image-link" href="${safeHref}" target="_blank" rel="noreferrer">` +
+        `<span class="md-image-link-kind">Image</span>` +
+        `<span class="md-image-link-name">${escapeHtml(label)}</span>` +
+        `<span class="md-image-link-open">Open &#8599;</span></a>`
+      );
     }
     return `<a href="${safeHref}" target="_blank" rel="noreferrer"><img src="${safeHref}" alt="${safeAlt}"></a>`;
   }
