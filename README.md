@@ -81,6 +81,8 @@ Other pages:
 
 <img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/36f5395d-86ab-4a0c-8fa2-57e0cecb3e49" />
 
+<img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/db17067e-e5da-46ea-aec7-bfe4b1086a85" />
+
 ## Connect an editor
 
 Configure an OpenAI-compatible provider in your editor:
