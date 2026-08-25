@@ -377,13 +377,18 @@ def start_stack_restart() -> dict[str, Any]:
     }
 
 
-def _update_log_tail(limit: int = 40) -> str:
+def update_log_lines(limit: int = 400) -> list[str]:
     path = STACK_ROOT / "tabby-update.log"
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return ""
-    return "\n".join(lines[-max(1, limit) :])
+        return []
+    count = max(1, min(int(limit or 400), 5000))
+    return lines[-count:]
+
+
+def _update_log_tail(limit: int = 40) -> str:
+    return "\n".join(update_log_lines(limit))
 
 
 def load_update_prompt(path: Path | None = None) -> dict[str, Any] | None:
@@ -398,8 +403,9 @@ def load_update_prompt(path: Path | None = None) -> dict[str, Any] | None:
 
 
 def _prompt_response(prompt: dict[str, Any] | None, fallback: str) -> dict[str, Any]:
+    log = _update_log_tail(400)
     if not prompt:
-        return {"ok": True, "message": fallback, "ask_restart": False}
+        return {"ok": True, "message": fallback, "ask_restart": False, "log": log}
     summary = str(prompt.get("summary") or fallback)
     text = str(prompt.get("text") or "").strip()
     return {
@@ -411,6 +417,7 @@ def _prompt_response(prompt: dict[str, Any] | None, fallback: str) -> dict[str, 
         "restart_yes": str(prompt.get("yes_label") or "Restart"),
         "restart_no": str(prompt.get("no_label") or "Skip"),
         "pulled": bool(prompt.get("pulled")),
+        "log": log,
     }
 
 
@@ -433,9 +440,10 @@ def start_stack_update(*, full: bool = False) -> dict[str, Any]:
         return {
             "ok": True,
             "message": (
-                "Started full (git + deps) update. TabbyAPI will bounce when it finishes. "
-                "Watch Logs for progress."
+                "Started full (git + deps) update. TabbyAPI will bounce when it finishes."
             ),
+            "restarting": True,
+            "log": _update_log_tail(400),
         }
 
     prompt_path = STACK_ROOT / UPDATE_PROMPT_NAME
@@ -456,14 +464,20 @@ def start_stack_update(*, full: bool = False) -> dict[str, Any]:
             timeout=GIT_UPDATE_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "Git update timed out after 5 minutes."}
+        return {
+            "ok": False,
+            "message": "Git update timed out after 5 minutes.",
+            "log": _update_log_tail(400),
+        }
     except OSError as exc:
-        return {"ok": False, "message": str(exc)}
+        return {"ok": False, "message": str(exc), "log": _update_log_tail(400)}
     if proc.returncode != 0:
-        detail = _update_log_tail() or (proc.stderr or proc.stdout or "").strip()
+        log = _update_log_tail(400)
+        detail = log or (proc.stderr or proc.stdout or "").strip()
         return {
             "ok": False,
             "message": detail[:1500] if detail else "update.sh --git failed.",
+            "log": log,
         }
     return _prompt_response(load_update_prompt(prompt_path), "Git update finished.")
 

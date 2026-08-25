@@ -77,6 +77,7 @@ function mountStatus(root) {
   let range = { hours: 24, days: null };
   let lastSeries = [];
   let lastPayload = null;
+  let actionBusy = false;
 
   function themeColor(name, fallback) {
     return (TabbyUI.cssVar && TabbyUI.cssVar(name)) || fallback;
@@ -310,6 +311,34 @@ function mountStatus(root) {
     }
   }
 
+  function finishProgress(modal, { title, note, reloadPrimary = false } = {}) {
+    if (title) modal.setTitle(title);
+    if (note) modal.setNote(note);
+    modal.setBusy(false);
+    modal.stopJournal();
+    modal.stopUpdateLog();
+    const closeBtn = { label: "Close", run: () => modal.close() };
+    const reloadBtn = {
+      label: "Reload UI",
+      primary: reloadPrimary,
+      run: () => location.reload(),
+    };
+    modal.setActions(reloadPrimary ? [closeBtn, reloadBtn] : [reloadBtn, { ...closeBtn, primary: true }]);
+  }
+
+  async function runRestart(modal, { fromUpdate = false } = {}) {
+    msg.textContent = "Restarting…";
+    await TabbyUI.followRestart(modal);
+    msg.textContent = "API is back.";
+    await refresh().catch((err) => TabbyUI.paintApiDown(err));
+    finishProgress(modal, {
+      reloadPrimary: fromUpdate,
+      note: fromUpdate
+        ? "TabbyAPI is healthy again. Reload the UI to pick up updated pages."
+        : "TabbyAPI is healthy again.",
+    });
+  }
+
   function applyRange() {
     setActivePreset();
     refreshMetrics().catch((err) => {
@@ -338,6 +367,7 @@ function mountStatus(root) {
     })
     .catch(() => {});
   root.querySelector("#restart-btn").addEventListener("click", async () => {
+    if (actionBusy) return;
     const yes = await TabbyUI.confirmModal({
       title: "Restart API?",
       text: "Restart TabbyAPI now? The UI will drop for about a minute.",
@@ -345,45 +375,114 @@ function mountStatus(root) {
       no: "Cancel",
     });
     if (!yes) return;
-    act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
+    actionBusy = true;
+    const modal = TabbyUI.progressModal({
+      title: "Restarting",
+      note: "Restarting TabbyAPI. The UI will drop for about a minute.",
+    });
+    try {
+      await runRestart(modal);
+    } catch (err) {
+      msg.textContent = err.message;
+      finishProgress(modal, {
+        title: "Restart",
+        note: err.message || "Restart failed.",
+      });
+    } finally {
+      actionBusy = false;
+    }
   });
-  let gitBusy = false;
   root.querySelector("#update-git").addEventListener("click", async () => {
-    if (gitBusy) return;
-    gitBusy = true;
+    if (actionBusy) return;
+    actionBusy = true;
     msg.textContent = "Updating git…";
+    const modal = TabbyUI.progressModal({
+      title: "Updating git",
+      note: "Pulling the latest code. Log output appears below.",
+    });
+    modal.startUpdateLog();
     try {
       const result = await TabbyUI.api("update", { method: "POST", body: { full: false } });
+      modal.ingestText(result.log || "");
+      modal.stopUpdateLog();
       if (!result.ok) {
         msg.textContent = result.message || "Git update failed.";
+        finishProgress(modal, {
+          title: "Git update failed",
+          note: result.message || "Git update failed.",
+        });
         return;
       }
       msg.textContent = result.message || "Git update finished.";
       await refresh().catch(() => {});
-      if (!result.ask_restart) return;
-      const choice = await TabbyUI.confirmModal({
-        title: result.restart_title || "Restart API?",
-        text: result.restart_text || "",
-        yes: result.restart_yes || "Restart",
-        no: result.restart_no || "Skip",
-        other: "Reload",
-      });
-      if (choice === true) {
-        await act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
-      } else if (choice === "other") {
-        msg.textContent = "Reloading the UI…";
-        location.reload();
-      } else {
-        msg.textContent = `${result.message || "Git update finished."} The API was not restarted.`;
+      if (!result.ask_restart) {
+        finishProgress(modal, {
+          title: "Git update finished",
+          note: result.message || "Git update finished.",
+          reloadPrimary: true,
+        });
+        return;
       }
+      modal.setTitle(result.restart_title || "Restart API?");
+      modal.setNote(
+        [result.message, result.restart_text].filter(Boolean).join("\n\n") || "Restart TabbyAPI now?"
+      );
+      modal.setBusy(false);
+      await new Promise((resolve) => {
+        modal.setActions([
+          {
+            label: result.restart_no || "Skip",
+            run: () => {
+              msg.textContent = `${result.message || "Git update finished."} The API was not restarted.`;
+              finishProgress(modal, {
+                title: "Git update finished",
+                note: `${result.message || "Git update finished."} The API was not restarted.`,
+                reloadPrimary: true,
+              });
+              resolve();
+            },
+          },
+          {
+            label: "Reload",
+            run: () => {
+              msg.textContent = "Reloading the UI…";
+              location.reload();
+              resolve();
+            },
+          },
+          {
+            label: result.restart_yes || "Restart",
+            danger: true,
+            run: async () => {
+              modal.setBusy(true);
+              modal.setActions([]);
+              try {
+                await runRestart(modal, { fromUpdate: true });
+              } catch (err) {
+                msg.textContent = err.message;
+                finishProgress(modal, {
+                  title: "Restart",
+                  note: err.message || "Restart failed.",
+                });
+              }
+              resolve();
+            },
+          },
+        ]);
+      });
     } catch (err) {
       msg.textContent = err.message;
       TabbyUI.paintApiDown(err);
+      finishProgress(modal, {
+        title: "Git update failed",
+        note: err.message || "Git update failed.",
+      });
     } finally {
-      gitBusy = false;
+      actionBusy = false;
     }
   });
   root.querySelector("#update-all").addEventListener("click", async () => {
+    if (actionBusy) return;
     const yes = await TabbyUI.confirmModal({
       title: "Full update?",
       text: "Run a full update (git + deps) and restart?",
@@ -391,7 +490,37 @@ function mountStatus(root) {
       no: "Cancel",
     });
     if (!yes) return;
-    act(() => TabbyUI.api("update", { method: "POST", body: { full: true } }));
+    actionBusy = true;
+    msg.textContent = "Updating…";
+    const modal = TabbyUI.progressModal({
+      title: "Full update",
+      note: "Running git + deps. TabbyAPI will restart when that finishes.",
+    });
+    modal.startUpdateLog();
+    modal.startJournal();
+    try {
+      const result = await TabbyUI.api("update", { method: "POST", body: { full: true } });
+      modal.ingestText(result.log || "");
+      if (result.message) modal.setNote(result.message);
+      modal.setTitle("Updating, then restarting");
+      await modal.waitUntilReady({ requireDown: true });
+      msg.textContent = "API is back.";
+      await refresh().catch((err) => TabbyUI.paintApiDown(err));
+      finishProgress(modal, {
+        title: "API is back",
+        note: "Full update finished and TabbyAPI is healthy again. Reload the UI to pick up updated pages.",
+        reloadPrimary: true,
+      });
+    } catch (err) {
+      msg.textContent = err.message;
+      TabbyUI.paintApiDown(err);
+      finishProgress(modal, {
+        title: "Update failed",
+        note: err.message || "Full update failed.",
+      });
+    } finally {
+      actionBusy = false;
+    }
   });
 
   root.querySelectorAll(".range-seg").forEach((btn) => {

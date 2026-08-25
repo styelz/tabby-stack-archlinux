@@ -222,10 +222,21 @@
       no: "Cancel",
     });
     if (!yes) return;
+    const modal = TabbyUI.progressModal({
+      title: "Restarting",
+      note: "Restarting TabbyAPI. The UI will drop for about a minute.",
+    });
     try {
-      await TabbyUI.api("restart", { method: "POST", body: {} });
+      await TabbyUI.followRestart(modal);
+      modal.setActions([
+        { label: "Close", run: () => modal.close() },
+        { label: "Reload UI", primary: true, run: () => location.reload() },
+      ]);
     } catch (err) {
-      console.error(err);
+      modal.setBusy(false);
+      modal.setTitle("Restart");
+      modal.setNote((err && err.message) || "Restart failed.");
+      modal.setActions([{ label: "Close", primary: true, run: () => modal.close() }]);
     }
   }
 

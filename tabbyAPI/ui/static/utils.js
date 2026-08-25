@@ -645,6 +645,344 @@
     return true;
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function logLevelClass(line) {
+    if (/\b(ERROR|CRITICAL)\b/i.test(line)) return "lvl-error";
+    if (/\bWARN(ING)?\b/i.test(line)) return "lvl-warning";
+    if (/\bDEBUG\b/i.test(line)) return "lvl-debug";
+    return "lvl-info";
+  }
+
+  function progressModal({ title = "Working", note = "" } = {}) {
+    const existing = document.querySelector(".dialog-modal[data-progress]");
+    if (existing && existing._tabbyProgress && !existing._tabbyProgress.closed) {
+      const handle = existing._tabbyProgress;
+      if (handle.busy) return handle;
+      handle.close();
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "dialog-modal";
+    wrap.dataset.progress = "1";
+    wrap.setAttribute("role", "dialog");
+    wrap.setAttribute("aria-modal", "true");
+    wrap.innerHTML =
+      '<div class="dialog-card dialog-progress">' +
+      '<div class="progress-head"><h2></h2><span class="muted progress-elapsed">0s</span></div>' +
+      '<p class="progress-note"></p>' +
+      '<pre class="log-view progress-log" aria-live="polite"></pre>' +
+      '<div class="dialog-actions"></div></div>';
+    wrap.querySelector("h2").textContent = title;
+    wrap.querySelector(".progress-note").textContent = note || "Working…";
+    document.body.appendChild(wrap);
+
+    const view = wrap.querySelector(".progress-log");
+    const actionsEl = wrap.querySelector(".dialog-actions");
+    const noteEl = wrap.querySelector(".progress-note");
+    const elapsedEl = wrap.querySelector(".progress-elapsed");
+    const MAX_LINES = 800;
+    const handle = {};
+    wrap._tabbyProgress = handle;
+
+    let busy = true;
+    let closed = false;
+    let stick = true;
+    let buffer = [];
+    let journal = null;
+    let journalRetry = 0;
+    let updateTimer = 0;
+    let updateSeen = 0;
+    let clockTimer = 0;
+    const startedAt = Date.now();
+
+    function tickElapsed() {
+      elapsedEl.textContent = formatDuration((Date.now() - startedAt) / 1000);
+    }
+    clockTimer = setInterval(tickElapsed, 500);
+    tickElapsed();
+
+    function trimView() {
+      if (buffer.length <= MAX_LINES) return;
+      buffer = buffer.slice(-MAX_LINES);
+      renderAll();
+    }
+
+    function renderAll() {
+      const frag = document.createDocumentFragment();
+      for (const line of buffer) {
+        const span = document.createElement("span");
+        span.className = logLevelClass(line);
+        span.textContent = line;
+        frag.appendChild(span);
+        frag.appendChild(document.createTextNode("\n"));
+      }
+      view.replaceChildren(frag);
+      if (stick) view.scrollTop = view.scrollHeight;
+    }
+
+    function appendLine(line) {
+      const text = String(line || "").replace(/\r$/, "");
+      if (!text) return;
+      buffer.push(text);
+      if (buffer.length > MAX_LINES) {
+        trimView();
+        return;
+      }
+      const span = document.createElement("span");
+      span.className = logLevelClass(text);
+      span.textContent = text;
+      view.appendChild(span);
+      view.appendChild(document.createTextNode("\n"));
+      if (stick) view.scrollTop = view.scrollHeight;
+    }
+
+    function ingestText(text) {
+      const incoming = String(text || "").split(/\r?\n/).filter((line) => line !== "");
+      if (!incoming.length) return;
+      const last = buffer[buffer.length - 1];
+      const idx = last ? incoming.lastIndexOf(last) : -1;
+      const extra = idx >= 0 ? incoming.slice(idx + 1) : incoming;
+      extra.forEach(appendLine);
+    }
+
+    view.addEventListener("scroll", () => {
+      stick = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
+    }, { passive: true });
+
+    function stopJournal() {
+      if (journalRetry) {
+        clearTimeout(journalRetry);
+        journalRetry = 0;
+      }
+      if (journal) {
+        journal.close();
+        journal = null;
+      }
+    }
+
+    function extrasFromHistory(lines) {
+      const last = buffer[buffer.length - 1];
+      if (last == null) return lines.slice();
+      const idx = lines.lastIndexOf(last);
+      if (idx >= 0) return lines.slice(idx + 1);
+      const have = new Set(buffer.slice(-200));
+      return lines.filter((line) => !have.has(line));
+    }
+
+    function startJournal() {
+      if (closed || journal) return;
+      journal = new EventSource(uiPath("logs/stream"));
+      journal.addEventListener("log", (event) => {
+        try {
+          appendLine(JSON.parse(event.data).line || event.data);
+        } catch {
+          appendLine(event.data);
+        }
+      });
+      journal.onopen = () => {
+        api("logs/history?lines=120")
+          .then((data) => {
+            const lines = Array.isArray(data.lines) ? data.lines : [];
+            extrasFromHistory(lines).forEach(appendLine);
+          })
+          .catch(() => {});
+      };
+      journal.onerror = () => {
+        if (!journal || journal.readyState !== EventSource.CLOSED) return;
+        journal.close();
+        journal = null;
+        if (closed || !busy) return;
+        journalRetry = setTimeout(() => {
+          journalRetry = 0;
+          startJournal();
+        }, 800);
+      };
+    }
+
+    function stopUpdateLog() {
+      if (updateTimer) {
+        clearInterval(updateTimer);
+        updateTimer = 0;
+      }
+    }
+
+    async function pullUpdateLog() {
+      try {
+        const data = await api("update/log?lines=500");
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        if (lines.length < updateSeen) updateSeen = 0;
+        const extra = lines.slice(updateSeen);
+        updateSeen = lines.length;
+        extra.forEach(appendLine);
+      } catch {
+        /* API is down during restart; journal catch-up covers boot logs. */
+      }
+    }
+
+    function startUpdateLog() {
+      if (closed || updateTimer) return;
+      pullUpdateLog();
+      updateTimer = setInterval(pullUpdateLog, 800);
+    }
+
+    function looksReady(data) {
+      if (!data || data.ok === false) return false;
+      if (data.switching || data.restarting || data.busy) return false;
+      const health = data.health || {};
+      return Boolean(data.tabby_model || data.comfy_up || health.healthy);
+    }
+
+    async function waitUntilReady(opts = {}) {
+      const requireDown = Boolean(opts.requireDown);
+      let sawBusy = false;
+      const started = Date.now();
+      while (!closed) {
+        try {
+          const data = await api("status");
+          paintGpuFromStatus(data);
+          const name = (data && data.switch_target) || "";
+          if (data && (data.restarting || data.switching || data.busy)) {
+            sawBusy = true;
+            if (data.restarting) {
+              noteEl.textContent = "Restarting the API…";
+            } else {
+              noteEl.textContent = name ? `Loading ${name}…` : "Loading…";
+            }
+          } else if (looksReady(data) && sawBusy) {
+            paintGpuFromStatus(data);
+            return data;
+          } else if (looksReady(data) && !requireDown && Date.now() - started > 2500) {
+            paintGpuFromStatus(data);
+            return data;
+          } else if (
+            requireDown &&
+            looksReady(data) &&
+            /Git command failed|Failed to restart tabbyapi|did not become healthy|Update failed/i.test(buffer.join("\n"))
+          ) {
+            throw new Error("The update failed before a restart. See the log above.");
+          }
+        } catch (err) {
+          if (err && /failed before a restart/i.test(err.message || "")) throw err;
+          sawBusy = true;
+          if (window.TabbyUI && window.TabbyUI.paintApiDown) window.TabbyUI.paintApiDown(err);
+          noteEl.textContent = "API is down. Waiting for it to come back…";
+        }
+        await sleep(1500);
+      }
+      return null;
+    }
+
+    function setActions(items) {
+      actionsEl.replaceChildren();
+      (items || []).forEach((item) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn";
+        if (item.primary) btn.classList.add("primary");
+        if (item.danger) btn.classList.add("danger");
+        btn.textContent = item.label || "OK";
+        btn.addEventListener("click", () => {
+          if (typeof item.run === "function") item.run();
+        });
+        actionsEl.appendChild(btn);
+      });
+      const focusBtn =
+        actionsEl.querySelector(".btn.primary, .btn.danger") || actionsEl.querySelector(".btn");
+      if (focusBtn) focusBtn.focus();
+    }
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      busy = false;
+      stopJournal();
+      stopUpdateLog();
+      if (clockTimer) clearInterval(clockTimer);
+      document.removeEventListener("keydown", onKey);
+      wrap.remove();
+    }
+
+    const onKey = (ev) => {
+      if (ev.key !== "Escape") return;
+      if (busy) {
+        ev.preventDefault();
+        return;
+      }
+      close();
+    };
+    wrap.addEventListener("click", (ev) => {
+      if (ev.target !== wrap || busy) return;
+      close();
+    });
+    document.addEventListener("keydown", onKey);
+
+    Object.assign(handle, {
+      setTitle(value) {
+        wrap.querySelector("h2").textContent = value || "Working";
+      },
+      setNote(value) {
+        noteEl.textContent = value || "";
+      },
+      setBusy(value) {
+        busy = Boolean(value);
+      },
+      appendLine,
+      ingestText,
+      startJournal,
+      stopJournal,
+      startUpdateLog,
+      stopUpdateLog,
+      waitUntilReady,
+      setActions,
+      close,
+      get busy() {
+        return busy;
+      },
+      get closed() {
+        return closed;
+      },
+    });
+    return handle;
+  }
+
+  function paintGpuFromStatus(data) {
+    window.TabbyUI && window.TabbyUI.paintGpuChip(data);
+  }
+
+  async function followRestart(modal) {
+    const progress = modal || progressModal({
+      title: "Restarting",
+      note: "Restarting TabbyAPI. The UI will drop for about a minute.",
+    });
+    progress.setBusy(true);
+    progress.setTitle("Restarting");
+    progress.setNote("Restarting TabbyAPI. The UI will drop for about a minute.");
+    progress.setActions([]);
+    progress.startJournal();
+    try {
+      const result = await api("restart", { method: "POST", body: {} });
+      if (result && result.message) progress.setNote(result.message);
+      if (result && result.ok === false) {
+        progress.setBusy(false);
+        progress.stopJournal();
+        throw new Error(result.message || "Could not start a restart.");
+      }
+    } catch (err) {
+      if (err && /Could not start a restart/i.test(err.message || "")) throw err;
+      progress.appendLine(String((err && err.message) || err));
+    }
+    await progress.waitUntilReady({ requireDown: true });
+    progress.stopJournal();
+    progress.stopUpdateLog();
+    progress.setTitle("API is back");
+    progress.setNote("TabbyAPI is healthy again. Reload the UI if pages look stale.");
+    progress.setBusy(false);
+    return progress;
+  }
+
   function confirmModal({ title, text, yes = "Restart", no = "Skip", other = "" } = {}) {
     return new Promise((resolve) => {
       const wrap = document.createElement("div");
@@ -949,6 +1287,8 @@
     showContextMenu,
     confirmModal,
     promptModal,
+    progressModal,
+    followRestart,
     showShortcuts,
     escapeHtml,
     formatBytes,

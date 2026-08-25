@@ -38,6 +38,7 @@ class UiRoutePrefixTests(unittest.TestCase):
     def test_restart_and_update_require_admin(self):
         self.assertIn("require_ui_admin", self._dep_names("/v1/ui/restart"))
         self.assertIn("require_ui_admin", self._dep_names("/v1/ui/update"))
+        self.assertIn("require_ui_admin", self._dep_names("/v1/ui/update/log"))
         self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/gpu"))
         self.assertIn("require_ui_user", self._dep_names("/v1/ui/gpu"))
 

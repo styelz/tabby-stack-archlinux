@@ -2905,6 +2905,42 @@ button.chip {
   max-height: min(90vh, 720px);
   overflow: auto;
 }
+.dialog-card.dialog-progress {
+  width: min(760px, 100%);
+  max-height: min(90vh, 840px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+.progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+}
+.dialog-progress h2 { margin: 0; }
+.progress-elapsed {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  flex: none;
+}
+.progress-note {
+  margin: 0 0 0.75rem;
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text);
+  max-height: 8rem;
+  overflow: auto;
+}
+.progress-log {
+  min-height: 180px;
+  height: min(42vh, 420px);
+  flex: none;
+  margin: 0 0 1rem;
+}
+.dialog-progress .dialog-actions:empty { display: none; }
+.dialog-progress .dialog-actions { flex-wrap: wrap; }
 .dialog-body:has(.shortcuts) {
   margin: 0 0 0.75rem;
 }
@@ -3332,6 +3368,7 @@ figure.shot .open { display: block; }
   margin: 0 0 0.75rem;
   font-size: 1.1rem;
 }
+.dialog-card.dialog-progress h2 { margin: 0; }
 .dialog-card label { display: grid; gap: 0.5rem; }
 .dialog-card input[type="range"] { width: 100%; }
 .dialog-body { margin: 0 0 1rem; }
