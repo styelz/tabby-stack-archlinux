@@ -704,7 +704,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
                 with contextlib.suppress(Exception):
                     await websocket.send_json({"type": "exit"})
                     await websocket.close()
-            except (WebSocketDisconnect, RuntimeError):
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
                 return
 
         reader = asyncio.create_task(pump_out())
@@ -725,7 +725,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
                 continue
             if payload.get("type") == "resize":
                 session.resize(payload.get("cols") or 80, payload.get("rows") or 24)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
         if reader:

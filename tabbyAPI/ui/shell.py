@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
+import socket
 import time
 from typing import Optional
 
@@ -115,9 +115,9 @@ class ShellSession:
         self.exec_id = ""
         self._pending = b""
         if sock is not None:
-            with contextlib.suppress(OSError):
-                sock.shutdown(os.SHUT_RDWR)
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(Exception):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(Exception):
                 sock.close()
 
 
