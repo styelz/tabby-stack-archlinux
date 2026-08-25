@@ -54,6 +54,53 @@
     document.head.appendChild(link);
   }
 
+  function hexByte(n) {
+    return Math.max(0, Math.min(255, Math.round(Number(n) || 0)))
+      .toString(16)
+      .padStart(2, "0");
+  }
+
+  function channelByte(value) {
+    const raw = String(value || "").trim();
+    if (raw.endsWith("%")) return (parseFloat(raw) / 100) * 255;
+    return Number(raw);
+  }
+
+  function alphaByte(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return 255;
+    if (raw.endsWith("%")) return (parseFloat(raw) / 100) * 255;
+    const n = Number(raw);
+    return n <= 1 ? n * 255 : n;
+  }
+
+  // Monaco token colors must be #hex. getComputedStyle returns rgb()/rgba().
+  function toMonacoHex(value, fallback) {
+    const raw = String(value || "").trim();
+    if (!raw) return fallback;
+    if (/^#[0-9a-f]{3,8}$/i.test(raw)) {
+      if (raw.length === 4) {
+        return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+      }
+      if (raw.length === 5) {
+        return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}${raw[4]}${raw[4]}`.toLowerCase();
+      }
+      return raw.toLowerCase();
+    }
+    const rgb = raw.match(
+      /^rgba?\(\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i
+    );
+    if (rgb) {
+      const r = hexByte(channelByte(rgb[1]));
+      const g = hexByte(channelByte(rgb[2]));
+      const b = hexByte(channelByte(rgb[3]));
+      if (rgb[4] === undefined) return `#${r}${g}${b}`;
+      const a = hexByte(alphaByte(rgb[4]));
+      return a === "ff" ? `#${r}${g}${b}` : `#${r}${g}${b}${a}`;
+    }
+    return fallback;
+  }
+
   function cssColor(name, fallback) {
     const probe = document.createElement("span");
     probe.style.backgroundColor = `var(${name})`;
@@ -61,13 +108,13 @@
     const resolved = getComputedStyle(probe).backgroundColor;
     probe.remove();
     if (resolved && resolved !== "transparent" && resolved !== "rgba(0, 0, 0, 0)") {
-      return resolved;
+      return toMonacoHex(resolved, fallback);
     }
     const value =
       window.TabbyUI && TabbyUI.cssVar
         ? TabbyUI.cssVar(name)
         : getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return value || fallback;
+    return toMonacoHex(value, fallback);
   }
 
   function applyMonacoTheme() {
