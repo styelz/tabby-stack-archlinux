@@ -728,6 +728,9 @@ function mountChat(root) {
       });
   }
 
+  let persistTail = Promise.resolve();
+  let persistGen = 0;
+
   function persist() {
     rememberActiveMode();
     const chat = activeChat();
@@ -754,7 +757,13 @@ function mountChat(root) {
         forgetTabs(id);
       }
     });
-    TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
+    const gen = (persistGen += 1);
+    persistTail = persistTail
+      .then(() => {
+        if (gen !== persistGen) return;
+        return TabbyUI.api("chats", { method: "PUT", body: store });
+      })
+      .catch(() => {});
   }
 
   function touchActive() {
@@ -1073,6 +1082,10 @@ function mountChat(root) {
     rows.forEach((row) => {
       const path = String(row.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
       if (!path) return;
+      if (row.kind === "dir") {
+        ensureDir(path);
+        return;
+      }
       ensureDir(fileDir(path)).children.push({
         name: fileBase(path),
         path,
@@ -1098,7 +1111,12 @@ function mountChat(root) {
     const paths = rows.map((row) => String(row.path || ""));
     filesSeenPaths = new Set(paths);
     const live = new Set();
-    paths.forEach((path) => folderAncestors(path).forEach((dir) => live.add(dir)));
+    rows.forEach((row) => {
+      const path = String(row.path || "");
+      if (!path) return;
+      if (row.kind === "dir") live.add(path);
+      folderAncestors(path).forEach((dir) => live.add(dir));
+    });
     [...filesOpenFolders].forEach((dir) => {
       if (!live.has(dir)) filesOpenFolders.delete(dir);
     });
@@ -1124,7 +1142,9 @@ function mountChat(root) {
   }
 
   function expandAllFolders() {
-    filesSeenPaths.forEach((path) => {
+    filesListing.forEach((row) => {
+      const path = String(row.path || "");
+      if (row.kind === "dir" && path) filesOpenFolders.add(path);
       folderAncestors(path).forEach((dir) => filesOpenFolders.add(dir));
     });
     paintFilesTree();
@@ -1195,10 +1215,11 @@ function mountChat(root) {
     paintFilesToggle();
     paintHistoryPane();
     paintChangesPane();
-    const total = filesListing.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
+    const fileRows = filesListing.filter((row) => row.kind !== "dir");
+    const total = fileRows.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
-      filesCountEl.textContent = filesListing.length
-        ? `${filesListing.length} · ${TabbyUI.formatBytes(total)}`
+      filesCountEl.textContent = fileRows.length
+        ? `${fileRows.length} · ${TabbyUI.formatBytes(total)}`
         : "";
     }
     if (filesZipBtn) filesZipBtn.disabled = !filesListing.length;
@@ -1582,6 +1603,12 @@ function mountChat(root) {
     if (view !== "ready" && view !== "diff") {
       return `<div class="chat-editor-body is-loading">${editorSpinnerHtml()}</div>`;
     }
+    if (!window.TabbyMonaco) {
+      return (
+        '<div class="chat-editor-body"><p class="muted">Code editor failed to load.</p>' +
+        '<button type="button" class="btn" data-edit="retry-editor">Retry</button></div>'
+      );
+    }
     const spin = window.monaco ? "" : editorSpinnerHtml();
     return `<div class="chat-editor-body is-monaco"><div class="code-monaco">${spin}</div></div>`;
   }
@@ -1648,24 +1675,41 @@ function mountChat(root) {
     paintFilesChanges();
   }
 
+  function monacoLoadErrorHtml(message) {
+    const detail = message ? `<p class="muted">${TabbyUI.escapeHtml(message)}</p>` : "";
+    return (
+      `<div class="chat-editor-body"><p class="muted">Code editor failed to load.</p>${detail}` +
+      '<button type="button" class="btn" data-edit="retry-editor">Retry</button></div>'
+    );
+  }
+
+  function remountEditor() {
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
   function mountMonaco(tab, view) {
     const host = editorPane.querySelector(".code-monaco");
-    if (!host || !window.TabbyMonaco) return;
+    if (!host) return;
+    if (!window.TabbyMonaco) return;
     window.TabbyMonaco.onChange(onMonacoChange);
     window.TabbyMonaco.onSave(() => saveTab());
     const path = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
-    if (view === "diff") {
-      window.TabbyMonaco.showDiff(host, {
-        path,
-        original: tab.oldText || "",
-        modified: tab.text || tab.original || "",
-      });
-      return;
-    }
-    window.TabbyMonaco.showFile(host, {
-      path,
-      text: tab.text || "",
-      caret: tab.caret,
+    const pending =
+      view === "diff"
+        ? window.TabbyMonaco.showDiff(host, {
+            path,
+            original: tab.oldText || "",
+            modified: tab.text || tab.original || "",
+          })
+        : window.TabbyMonaco.showFile(host, {
+            path,
+            text: tab.text || "",
+            caret: tab.caret,
+          });
+    Promise.resolve(pending).catch((err) => {
+      const body = editorPane.querySelector(".chat-editor-body");
+      if (body) body.outerHTML = monacoLoadErrorHtml(err && err.message);
     });
   }
 
@@ -3647,12 +3691,13 @@ function mountChat(root) {
     add("image", "Attach image");
     add("upload", "Upload files to project");
     add("upload-folder", "Upload folder to project");
-    if (filesListing.length) {
+    const fileRows = filesListing.filter((row) => row.kind !== "dir");
+    if (fileRows.length) {
       const mark = document.createElement("div");
       mark.className = "chat-attach-label";
       mark.textContent = "Project files";
       frag.appendChild(mark);
-      filesListing.forEach((row) => {
+      fileRows.forEach((row) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.dataset.attach = "file";
@@ -3823,9 +3868,22 @@ function mountChat(root) {
       addBubble("assistant", "Error: Enter a relative folder such as css.");
       return;
     }
-    filesFocusDir = path;
     filesOpenFolders.add(path);
-    await createUserFile(path);
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/folder?path=${encodeURIComponent(path)}`,
+        { method: "PUT" }
+      );
+      applyListing(data);
+      const written = data.path || path;
+      filesFocusDir = written;
+      filesOpenFolders.add(written);
+      folderAncestors(written).forEach((dir) => filesOpenFolders.add(dir));
+      paintAttach();
+      paintFiles();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
   }
 
   function retargetPath(from, to) {
@@ -6147,7 +6205,7 @@ function mountChat(root) {
     chat.messages.push(item);
     chat.title = titleFromMessages(chat.messages);
     chat.updatedAt = Date.now();
-    if (persistReady) TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
+    persist();
   }
 
   async function send(text, opts) {
@@ -6213,9 +6271,24 @@ function mountChat(root) {
         return;
       }
       const type = response.headers.get("content-type") || "";
+      if (!response.ok) {
+        if (type.includes("application/json")) {
+          const data = await response.json().catch(() => ({}));
+          const detail = data.detail;
+          let msg = data.message || "Chat failed";
+          if (Array.isArray(detail) && detail.length) {
+            const first = detail[0];
+            msg = (first && (first.msg || first.message)) || String(first);
+          } else if (typeof detail === "string" && detail.trim()) {
+            msg = detail;
+          }
+          throw new Error(msg);
+        }
+        const text = await response.text().catch(() => "");
+        throw new Error(text.trim() || `Chat failed (${response.status})`);
+      }
       if (type.includes("application/json")) {
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Chat failed");
         assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
         reasoning = data.choices?.[0]?.message?.reasoning_content || "";
         if (reasoning) working.setReasoning(reasoning);
@@ -7255,6 +7328,7 @@ function mountChat(root) {
       if (btn.dataset.edit === "download" && tab) {
         saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file");
       }
+      if (btn.dataset.edit === "retry-editor") remountEditor();
     });
   }
   if (filesSiteBtn) {
@@ -7542,13 +7616,14 @@ function mountChat(root) {
       rec = new Speech();
       rec.lang = navigator.language || "en-US";
       rec.interimResults = true;
+      const baseline = input.value;
       rec.onresult = (ev) => {
         let spoken = "";
-        for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+        for (let i = 0; i < ev.results.length; i += 1) {
           spoken += ev.results[i][0].transcript;
         }
         if (spoken) {
-          input.value = input.value ? `${input.value.trim()} ${spoken}` : spoken;
+          input.value = baseline ? `${baseline.replace(/\s+$/, "")} ${spoken}` : spoken;
           resizeInput();
           paintCompose();
         }

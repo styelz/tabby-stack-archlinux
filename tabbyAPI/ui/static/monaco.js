@@ -104,19 +104,30 @@
     if (window.monaco) return window.monaco;
     if (loadPromise) return loadPromise;
     loadPromise = (async () => {
-      let vs = localVs();
       try {
-        await loadScript(`${vs}/loader.js`);
-      } catch {
-        vs = CDN;
-        await loadScript(`${vs}/loader.js`);
+        let vs = localVs();
+        try {
+          await loadScript(`${vs}/loader.js`);
+        } catch {
+          vs = CDN;
+          await loadScript(`${vs}/loader.js`);
+        }
+        loadCss(`${vs}/editor/editor.main.css`);
+        installWorkers(vs);
+        window.require.config({ paths: { vs } });
+        await new Promise((resolve, reject) => {
+          try {
+            window.require(["vs/editor/editor.main"], resolve);
+          } catch (err) {
+            reject(err);
+          }
+        });
+        applyMonacoTheme();
+        return window.monaco;
+      } catch (err) {
+        loadPromise = null;
+        throw err;
       }
-      loadCss(`${vs}/editor/editor.main.css`);
-      installWorkers(vs);
-      window.require.config({ paths: { vs } });
-      await new Promise((resolve) => window.require(["vs/editor/editor.main"], resolve));
-      applyMonacoTheme();
-      return window.monaco;
     })();
     return loadPromise;
   }

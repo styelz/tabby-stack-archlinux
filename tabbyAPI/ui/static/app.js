@@ -407,7 +407,13 @@
       if (!response.ok) throw new Error(`Logout failed (${response.status})`);
       TabbyUI.redirectToLogin();
     } catch (err) {
-      console.error(err);
+      closeUserMenu();
+      TabbyUI.confirmModal({
+        title: "Log out failed",
+        text: (err && err.message) || "Could not log out. Try again.",
+        yes: "OK",
+        no: "Close",
+      });
     }
   }
 
@@ -487,6 +493,7 @@
       if (!isAdmin && (location.hash || "").replace("#", "") === "users") {
         location.hash = "#chat";
       }
+      show(currentName());
     })
     .catch(() => {});
 

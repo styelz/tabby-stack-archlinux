@@ -77,7 +77,8 @@
       }
       apply();
     })();
-    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + '/assets/styles.css?v=20260826-scrollbars" />');
+    window.TABBY_UI_ASSET_V = "20260826-ui-sanity";
+    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
   </script>
 </head>
 <body class="login-body">
@@ -104,7 +105,7 @@
     </form>
   </main>
   <script>
-    document.write('<script src="' + TABBY_UI_BASE + '/assets/auth.js?v=20260826-boot"><\/script>');
+    document.write('<script src="' + TABBY_UI_BASE + "/assets/auth.js?v=" + TABBY_UI_ASSET_V + '"><\/script>');
   </script>
   <script>
     if (typeof TABBY_REVEAL_UI === "function") TABBY_REVEAL_UI();

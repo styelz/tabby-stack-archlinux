@@ -38,6 +38,12 @@ function mountGallery(root) {
   let lastIndex = 0;
   let boxes = [];
   let kept = new Set();
+  let isAdmin = false;
+  TabbyUI.api("auth/check")
+    .then((data) => {
+      isAdmin = Boolean(data.is_admin);
+    })
+    .catch(() => {});
 
   function selected() {
     return boxes
@@ -271,7 +277,7 @@ function mountGallery(root) {
   root.querySelector("#del-all").addEventListener("click", async () => {
     const yes = await TabbyUI.confirmModal({
       title: "Delete all images",
-      text: "Delete ALL generated images?",
+      text: isAdmin ? "Delete ALL generated images?" : "Delete all of your images?",
       yes: "Delete all",
       no: "Cancel",
     });

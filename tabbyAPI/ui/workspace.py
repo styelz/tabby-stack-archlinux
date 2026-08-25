@@ -139,13 +139,50 @@ def _iter_files(root: Path) -> list[Path]:
     return out
 
 
+def _iter_dirs(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        base = root.resolve()
+    except OSError:
+        return []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        if _is_inside(root, path):
+            try:
+                if path.resolve() == base:
+                    continue
+            except OSError:
+                continue
+            out.append(path)
+    return out
+
+
+def _prune_empty_parents(root: Path, start: Path) -> None:
+    parent = start
+    try:
+        base = root.resolve()
+    except OSError:
+        return
+    while parent != base and parent.is_dir():
+        try:
+            if any(parent.iterdir()):
+                break
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+
+
 def _stats(root: Path) -> tuple[int, int]:
     files = _iter_files(root)
     return len(files), sum(path.stat().st_size for path in files)
 
 
 def has_files(username: str, chat_id: str) -> bool:
-    """True as soon as one file turns up, so a badge check stays cheap."""
+    """True as soon as a file or folder turns up, so a badge check stays cheap."""
     root = workspace_root(username, chat_id, create=False)
     if not root.is_dir():
         return False
@@ -158,10 +195,8 @@ def has_files(username: str, chat_id: str) -> bool:
         for entry in entries:
             if entry.is_symlink():
                 continue
-            if entry.is_file():
+            if entry.is_file() or entry.is_dir():
                 return True
-            if entry.is_dir():
-                pending.append(Path(entry.path))
     return False
 
 
@@ -254,8 +289,24 @@ def site_entry(username: str, chat_id: str, wanted: str = "") -> str:
 
 def listing(username: str, chat_id: str) -> dict[str, Any]:
     files = list_files(username, chat_id)
+    root = workspace_root(username, chat_id, create=False)
+    dir_rows: list[dict[str, Any]] = []
+    for path in _iter_dirs(root):
+        try:
+            rel = path.relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            continue
+        dir_rows.append(
+            {
+                "path": rel,
+                "size": 0,
+                "kind": "dir",
+                "editable": False,
+                "page": False,
+            }
+        )
     return {
-        "files": files,
+        "files": files + dir_rows,
         "bytes": sum(int(row["size"]) for row in files),
         "count": len(files),
     }
@@ -512,11 +563,7 @@ def delete_file(username: str, chat_id: str, rel: str) -> None:
         except OSError:
             pass
     path.unlink()
-    parent = path.parent
-    base = root.resolve()
-    while parent != base and parent.is_dir() and not any(parent.iterdir()):
-        parent.rmdir()
-        parent = parent.parent
+    _prune_empty_parents(root, path.parent)
 
 
 def rename_file(username: str, chat_id: str, src: str, dest: str) -> str:
@@ -531,11 +578,7 @@ def rename_file(username: str, chat_id: str, src: str, dest: str) -> str:
         raise ValueError(f"{dest} already exists.")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     src_path.rename(dest_path)
-    parent = src_path.parent
-    base = root.resolve()
-    while parent != base and parent.is_dir() and not any(parent.iterdir()):
-        parent.rmdir()
-        parent = parent.parent
+    _prune_empty_parents(root, src_path.parent)
     written = dest_path.relative_to(root.resolve()).as_posix()
     _move_history(username, chat_id, src, dest)
     return written
@@ -560,31 +603,72 @@ def files_with_prefix(username: str, chat_id: str, prefix: str) -> list[str]:
     ]
 
 
+def mkdir(username: str, chat_id: str, rel: str) -> str:
+    text = _folder_prefix(rel)
+    root = workspace_root(username, chat_id, create=True)
+    path = resolve_rel(root, text)
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{text} already exists.")
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path.relative_to(root.resolve()).as_posix()
+
+
+def _copy_empty_dirs(src: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in sorted(src.rglob("*")):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        (dest / path.relative_to(src)).mkdir(parents=True, exist_ok=True)
+
+
 def delete_prefix(username: str, chat_id: str, prefix: str) -> list[str]:
-    paths = files_with_prefix(username, chat_id, prefix)
-    if not paths:
-        raise FileNotFoundError(_folder_prefix(prefix))
+    text = _folder_prefix(prefix)
+    root = workspace_root(username, chat_id, create=False)
+    folder = resolve_rel(root, text)
+    paths = files_with_prefix(username, chat_id, text)
+    if not folder.is_dir() and not paths:
+        raise FileNotFoundError(text)
     for rel in paths:
         delete_file(username, chat_id, rel)
+    if folder.is_dir():
+        shutil.rmtree(folder)
+        _prune_empty_parents(root, folder.parent)
     return paths
 
 
 def rename_prefix(username: str, chat_id: str, src: str, dest: str) -> list[tuple[str, str]]:
     source = _folder_prefix(src)
     target = _folder_prefix(dest)
+    root = workspace_root(username, chat_id, create=False)
+    src_path = resolve_rel(root, source)
+    dest_path = resolve_rel(root, target)
+    paths = files_with_prefix(username, chat_id, source)
+    if not src_path.is_dir() and not paths:
+        raise FileNotFoundError(source)
     if target == source:
-        return [(path, path) for path in files_with_prefix(username, chat_id, source)]
+        return [(path, path) for path in paths]
     if target.startswith(source + "/") or source.startswith(target + "/"):
         raise ValueError("Cannot move a folder into itself.")
-    paths = files_with_prefix(username, chat_id, source)
-    if not paths:
-        raise FileNotFoundError(source)
+    if dest_path.exists():
+        raise ValueError(f"{target} already exists.")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
     moved: list[tuple[str, str]] = []
     for rel in sorted(paths, key=len, reverse=True):
         suffix = rel[len(source) :].lstrip("/")
         new = target if not suffix else f"{target}/{suffix}"
         written = rename_file(username, chat_id, rel, new)
         moved.append((rel, written))
+    if src_path.is_dir():
+        if dest_path.exists():
+            _copy_empty_dirs(src_path, dest_path)
+            shutil.rmtree(src_path)
+        else:
+            src_path.rename(dest_path)
+        _prune_empty_parents(root, src_path.parent)
     return moved
 
 
@@ -938,9 +1022,17 @@ def zip_bytes(username: str, chat_id: str) -> bytes:
     files = _iter_files(root)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        file_arcs: list[str] = []
         for path in files:
             arc = path.relative_to(root.resolve()).as_posix()
             zf.write(path, arcname=arc)
+            file_arcs.append(arc)
+        for path in _iter_dirs(root):
+            rel = path.relative_to(root.resolve()).as_posix()
+            prefix = rel.rstrip("/") + "/"
+            if any(arc == rel or arc.startswith(prefix) for arc in file_arcs):
+                continue
+            zf.writestr(zipfile.ZipInfo(prefix), "")
     return buf.getvalue()
 
 

@@ -171,9 +171,36 @@
     return /\.(png|jpe?g|webp|gif)$/i.test(label) ? label : "";
   }
 
+  function markdownHrefAllowed(href) {
+    const value = String(href || "").trim();
+    if (!value) return false;
+    const lower = value.toLowerCase();
+    if (
+      lower.startsWith("javascript:") ||
+      lower.startsWith("data:") ||
+      lower.startsWith("vbscript:") ||
+      lower.startsWith("file:")
+    ) {
+      return false;
+    }
+    if (/^(https?:)?\/\//i.test(value) || lower.startsWith("http:") || lower.startsWith("https:")) {
+      try {
+        const parsed = new URL(value, window.location.href);
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }
+    if (value.startsWith("/v1/ui/") || value.startsWith("/v1/images/")) return true;
+    if (value.startsWith("/")) return false;
+    if (value.includes("..")) return false;
+    return true;
+  }
+
   function markdownImage(href, alt, inlineImages) {
     const resolved = resolveUiUrl(href);
-    const safeHref = escapeHtml(resolved);
+    const allowed = markdownHrefAllowed(resolved);
+    const safeHref = escapeHtml(allowed ? resolved : "#");
     const safeAlt = escapeHtml(alt || "");
     const cleanHref = String(href || "").split(/[?#]/, 1)[0];
     const fallback = cleanHref.slice(cleanHref.lastIndexOf("/") + 1) || "Generated image";
@@ -192,6 +219,9 @@
         `<span class="md-image-link-name">${escapeHtml(label)}</span>` +
         `<span class="md-image-link-open">Open</span></a>`
       );
+    }
+    if (!allowed) {
+      return `<span class="md-image-link-name">${escapeHtml(label)}</span>`;
     }
     return (
       `<figure class="md-image">` +

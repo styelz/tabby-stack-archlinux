@@ -85,18 +85,21 @@
     }
   }
 
+  const REQUEST_MS = 8000;
+
+  function settlePending(id, value) {
+    const resolve = state.pending[id];
+    if (!resolve) return;
+    delete state.pending[id];
+    resolve(value);
+  }
+
   function request(payload) {
     return new Promise((resolve) => {
       const id = (state.req += 1);
       state.pending[id] = resolve;
-      if (!send(Object.assign({ id }, payload))) {
-        setTimeout(() => {
-          if (state.pending[id]) {
-            delete state.pending[id];
-            resolve({ type: "unavailable" });
-          }
-        }, 8000);
-      }
+      send(Object.assign({ id }, payload));
+      setTimeout(() => settlePending(id, { type: "unavailable" }), REQUEST_MS);
     });
   }
 
@@ -145,7 +148,15 @@
       }
     }
     state.socket = null;
+    const pending = state.pending;
     state.pending = Object.create(null);
+    Object.keys(pending).forEach((id) => {
+      try {
+        pending[id]({ type: "unavailable" });
+      } catch {
+        /* ignore */
+      }
+    });
     state.queue = [];
     if (clearChat) state.chatId = "";
   }

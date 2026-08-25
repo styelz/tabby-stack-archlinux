@@ -103,9 +103,8 @@ function mountLogs(root) {
       return;
     }
     if (filterQ) {
-      // Filtering needs a full pass when the query is set; keep it cheap by
-      // only rebuilding when the user is watching.
-      appendVisible(batch);
+      if (drop) renderFull();
+      else appendVisible(batch);
       return;
     }
     trimView(drop);

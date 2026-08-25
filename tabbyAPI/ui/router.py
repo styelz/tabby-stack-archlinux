@@ -508,6 +508,24 @@ async def ui_workspace_rename_file(
     return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
+@router.put("/workspace/{chat_id}/folder", include_in_schema=False)
+async def ui_workspace_mkdir(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, mkdir, site_entry
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        written = mkdir(_user, cid, path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
 @router.delete("/workspace/{chat_id}/folder", include_in_schema=False)
 async def ui_workspace_delete_folder(
     chat_id: str, path: str = "", _user: str = Depends(require_ui_user)

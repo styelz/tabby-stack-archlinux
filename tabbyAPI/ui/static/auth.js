@@ -20,7 +20,17 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.detail || "Invalid username or password.");
+        let msg = "Invalid username or password.";
+        const detail = data.detail;
+        if (Array.isArray(detail) && detail.length) {
+          const first = detail[0];
+          msg = (first && (first.msg || first.message)) || String(first);
+        } else if (typeof detail === "string" && detail.trim()) {
+          msg = detail;
+        } else if (typeof data.message === "string" && data.message.trim()) {
+          msg = data.message;
+        }
+        throw new Error(msg);
       }
       window.location.href = `${base}/`;
     } catch (err) {
