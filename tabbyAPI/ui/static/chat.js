@@ -1602,10 +1602,19 @@ function mountChat(root) {
       tab.state = "image";
       return;
     }
-    if (!tab.editable) {
+    // Drafts restored after a reload omit listing metadata. A missing
+    // `editable` must not hide unsaved text behind the binary stub.
+    const suffix = fileSuffix(tab.path);
+    const editable =
+      tab.editable ||
+      TEXT_SUFFIXES.has(suffix) ||
+      (tab.dirty && typeof tab.text === "string");
+    if (!editable) {
       tab.state = "binary";
       return;
     }
+    tab.editable = true;
+    if (!tab.kind) tab.kind = "text";
     const chatId = store.activeId;
     tab.loading = true;
     fetch(fileUrl(chatId, tab.path), { credentials: "same-origin" })
@@ -1631,7 +1640,12 @@ function mountChat(root) {
       .catch(() => {
         tab.loading = false;
         if (chatId !== store.activeId || !findTab(tab.path)) return;
-        tab.state = "error";
+        if (tab.dirty && typeof tab.text === "string") {
+          tab.state = "ready";
+          tab.gone = true;
+        } else {
+          tab.state = "error";
+        }
         tab.rev += 1;
         if (activeTab === tab.path) renderEditorPane();
       });
@@ -2022,15 +2036,24 @@ function mountChat(root) {
         if (!TEXT_SUFFIXES.has(fileSuffix(draft.path))) return;
         let tab = findTab(draft.path);
         if (!tab) {
+          const row = filesListing.find((item) => item.path === draft.path);
           openTabs.push({
             path: draft.path,
             text: draft.text,
             original: "",
             dirty: true,
+            // rev > 0 keeps the draft on screen while the disk copy loads.
             state: "loading",
-            rev: 0,
-            size: 0,
+            rev: 1,
+            size: row ? Number(row.size) || 0 : 0,
+            kind: (row && row.kind) || "text",
+            editable: true,
+            busy: false,
+            note: "",
+            gone: !row,
             caret: Array.isArray(draft.caret) ? draft.caret : null,
+            scrollTop: 0,
+            scrollLeft: 0,
           });
           tab = findTab(draft.path);
         } else if (!tab.dirty) {
@@ -2041,8 +2064,8 @@ function mountChat(root) {
       });
       draftsChat = chatId;
       if (drafts.length) {
-        paintTabs();
-        paintView();
+        syncTabs();
+        paintTabsAndFiles();
       }
     } catch {
       /* drafts are optional */
