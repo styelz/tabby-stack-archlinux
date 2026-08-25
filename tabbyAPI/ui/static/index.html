@@ -99,7 +99,7 @@
       })();
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260826-zoom-user";
+    window.TABBY_UI_ASSET_V = "20260826-chat-focus";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
@@ -123,7 +123,12 @@
       <a href="#users" data-page="users" class="tab" id="tab-users" hidden>Users</a>
     </nav>
     <div class="header-meta">
-      <span id="gpu-chip" class="chip">GPU …</span>
+      <div class="gpu-menu" id="gpu-menu">
+        <button type="button" id="gpu-chip" class="chip" aria-haspopup="menu" aria-expanded="false" aria-label="GPU and model">
+          <span id="gpu-chip-label">GPU …</span>
+        </button>
+        <div class="user-menu-panel" id="gpu-menu-panel" hidden role="menu"></div>
+      </div>
       <div class="user-menu" id="user-menu">
         <button type="button" id="user-chip" class="chip quiet" aria-haspopup="menu" aria-expanded="false" aria-label="Account">
           <svg class="user-chip-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

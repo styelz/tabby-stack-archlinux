@@ -18,6 +18,7 @@
   function show(name) {
     if (window.TabbyUI && TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
     closeUserMenu();
+    closeGpuMenu();
     const key = pages[name] ? name : "chat";
     Object.entries(pages).forEach(([id, page]) => {
       const on = id === key;
@@ -38,13 +39,153 @@
   }
 
   const gpuChip = document.getElementById("gpu-chip");
+  const gpuMenu = document.getElementById("gpu-menu");
+  const gpuPanel = document.getElementById("gpu-menu-panel");
+  let gpuMenuOpen = false;
+  let gpuSwitchBusy = false;
+
+  function gpuChipText() {
+    const labelEl = document.getElementById("gpu-chip-label");
+    return (labelEl && labelEl.textContent) || (gpuChip && gpuChip.textContent) || "";
+  }
+
+  function currentGpuMode(data) {
+    if (!data || data.down) return "";
+    const mode = String(data.gpu_mode || "").toLowerCase();
+    if (mode && mode !== "llm") return "comfy";
+    if (data.comfy_up && !data.tabby_model) return "comfy";
+    return data.profile || "";
+  }
+
+  function gpuMenuBusy(data) {
+    if (gpuSwitchBusy) return true;
+    if (!data || data.down) return true;
+    return Boolean(data.switching || data.restarting || data.busy);
+  }
+
+  function makeGpuItem(label, mode, on, busy, hint) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "user-menu-item" + (on ? " is-on" : "");
+    btn.setAttribute("role", "menuitem");
+    btn.dataset.gpuMode = mode;
+    btn.disabled = Boolean(busy);
+    const name = document.createElement("span");
+    name.textContent = label;
+    const mark = document.createElement("kbd");
+    mark.textContent = on ? "✓" : hint || "";
+    btn.append(name, mark);
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (on) {
+        closeGpuMenu();
+        return;
+      }
+      switchGpu(mode);
+    });
+    return btn;
+  }
+
+  function fillGpuMenu(data) {
+    if (!gpuPanel) return;
+    gpuPanel.replaceChildren();
+    const busy = gpuMenuBusy(data);
+    const current = currentGpuMode(data);
+    const profiles = (data && data.profiles) || [];
+    if (profiles.length) {
+      profiles.forEach((name) => {
+        gpuPanel.appendChild(makeGpuItem(name, name, current === name, busy));
+      });
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "gpu-menu-empty";
+      empty.textContent = data && data.down ? "API unavailable" : "No profiles yet";
+      gpuPanel.appendChild(empty);
+    }
+    const sep = document.createElement("div");
+    sep.className = "user-menu-sep";
+    gpuPanel.appendChild(sep);
+    gpuPanel.appendChild(makeGpuItem("Comfy", "comfy", current === "comfy", busy, "Images"));
+    const copySep = document.createElement("div");
+    copySep.className = "user-menu-sep";
+    gpuPanel.appendChild(copySep);
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "user-menu-item";
+    copyBtn.setAttribute("role", "menuitem");
+    copyBtn.textContent = "Copy status";
+    copyBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      TabbyUI.copyText(gpuChipText());
+      closeGpuMenu();
+    });
+    gpuPanel.appendChild(copyBtn);
+  }
+
+  function closeGpuMenu() {
+    gpuMenuOpen = false;
+    if (gpuPanel) gpuPanel.hidden = true;
+    if (gpuChip) gpuChip.setAttribute("aria-expanded", "false");
+  }
+
+  async function openGpuMenu() {
+    closeUserMenu();
+    gpuMenuOpen = true;
+    if (gpuPanel) gpuPanel.hidden = false;
+    if (gpuChip) gpuChip.setAttribute("aria-expanded", "true");
+    fillGpuMenu(TabbyUI.lastGpuStatus);
+    if (TabbyUI.lastGpuStatus && (TabbyUI.lastGpuStatus.profiles || []).length) return;
+    try {
+      TabbyUI.paintGpuChip(await TabbyUI.api("status"));
+    } catch (err) {
+      TabbyUI.paintApiDown(err);
+    }
+  }
+
+  async function switchGpu(mode) {
+    const token = String(mode || "").trim().toLowerCase();
+    if (!token || gpuSwitchBusy) return;
+    const data = TabbyUI.lastGpuStatus || {};
+    if (gpuMenuBusy(data) || currentGpuMode(data) === token) {
+      closeGpuMenu();
+      return;
+    }
+    closeGpuMenu();
+    gpuSwitchBusy = true;
+    TabbyUI.paintGpuChip(
+      Object.assign({}, data, {
+        switching: true,
+        busy: true,
+        switch_target: token,
+        profile: token === "comfy" ? data.profile : token,
+      })
+    );
+    try {
+      await TabbyUI.api("gpu", { method: "POST", body: { mode: token } });
+      await refreshHeaderStatus();
+    } catch (err) {
+      TabbyUI.paintApiDown(err);
+    } finally {
+      gpuSwitchBusy = false;
+    }
+  }
+
   if (gpuChip) {
+    gpuChip.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (gpuMenuOpen) closeGpuMenu();
+      else openGpuMenu();
+    });
     gpuChip.addEventListener("contextmenu", (event) => {
       TabbyUI.showContextMenu(event, [
-        { label: "Copy status", run: () => TabbyUI.copyText(gpuChip.textContent || "") },
+        { label: "Copy status", run: () => TabbyUI.copyText(gpuChipText()) },
       ]);
     });
   }
+  window.addEventListener("tabby-gpu-status", () => {
+    if (gpuMenuOpen) fillGpuMenu(TabbyUI.lastGpuStatus);
+  });
 
   const userChip = document.getElementById("user-chip");
   const userMenu = document.getElementById("user-menu");
@@ -143,6 +284,7 @@
   }
 
   function openUserMenu() {
+    closeGpuMenu();
     userMenuOpen = true;
     if (userPanel) userPanel.hidden = false;
     if (userChip) userChip.setAttribute("aria-expanded", "true");
@@ -266,12 +408,13 @@
   }
 
   document.addEventListener("pointerdown", (event) => {
-    if (!userMenuOpen || !userMenu) return;
-    if (userMenu.contains(event.target)) return;
-    closeUserMenu();
+    if (userMenuOpen && userMenu && !userMenu.contains(event.target)) closeUserMenu();
+    if (gpuMenuOpen && gpuMenu && !gpuMenu.contains(event.target)) closeGpuMenu();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && userMenuOpen) closeUserMenu();
+    if (event.key !== "Escape") return;
+    if (gpuMenuOpen) closeGpuMenu();
+    if (userMenuOpen) closeUserMenu();
   });
 
   TabbyUI.api("auth/check")
@@ -304,7 +447,12 @@
       TabbyUI.paintApiDown(err);
     } finally {
       if (headerTimer) clearTimeout(headerTimer);
-      headerTimer = setTimeout(refreshHeaderStatus, headerFailing ? 3000 : 15000);
+      const data = TabbyUI.lastGpuStatus;
+      const switching = gpuSwitchBusy || (data && (data.switching || data.restarting || data.busy));
+      headerTimer = setTimeout(
+        refreshHeaderStatus,
+        headerFailing ? 3000 : switching ? 2000 : 15000
+      );
     }
   }
   refreshHeaderStatus();

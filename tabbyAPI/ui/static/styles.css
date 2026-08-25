@@ -670,6 +670,17 @@ input:focus, textarea:focus { outline: 0.125rem solid var(--focus-ring); border-
   border-color: var(--line);
 }
 .header-meta { display: flex; align-items: center; gap: 0.5rem; }
+.gpu-menu { position: relative; }
+.gpu-menu .user-menu-panel {
+  max-height: min(24rem, calc(100vh - 5rem));
+  overflow: auto;
+}
+.gpu-menu-empty {
+  margin: 0;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
 .user-menu { position: relative; }
 .user-menu-panel,
 .user-menu-flyout {
@@ -727,6 +738,14 @@ input:focus, textarea:focus { outline: 0.125rem solid var(--focus-ring); border-
 .user-menu-item[aria-expanded="true"] {
   background: rgba(var(--accent-rgb), 0.16);
   outline: none;
+}
+.user-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.user-menu-item:disabled:hover,
+.user-menu-item:disabled:focus-visible {
+  background: none;
 }
 .user-menu-item.is-danger { color: var(--bad); }
 .user-menu-item.is-danger:hover,
@@ -824,6 +843,22 @@ button.chip {
   font-size: inherit;
   line-height: inherit;
   margin: 0;
+  color: inherit;
+  cursor: pointer;
+}
+#gpu-chip::after {
+  content: "";
+  width: 0;
+  height: 0;
+  margin-left: 0.0625rem;
+  border-left: 0.28em solid transparent;
+  border-right: 0.28em solid transparent;
+  border-top: 0.32em solid currentColor;
+  opacity: 0.72;
+}
+#gpu-chip:hover,
+#gpu-chip[aria-expanded="true"] {
+  border-color: currentColor;
 }
 .chip.quiet { background: transparent; color: var(--muted); border-color: var(--line); }
 .chip.quiet:hover,

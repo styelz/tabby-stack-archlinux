@@ -1310,44 +1310,58 @@
     THEME_LABELS,
     THEME_MODES,
     MODE_LABELS,
+    lastGpuStatus: null,
     paintGpuChip(data) {
       const chip = document.getElementById("gpu-chip");
       if (!chip) return;
+      const labelEl = document.getElementById("gpu-chip-label") || chip;
       if (!data) {
         this.paintApiDown();
         return;
       }
+      this.lastGpuStatus = data;
       if (data.switching || data.restarting || data.busy) {
         const name = data.switch_target || data.profile || "model";
         const key = String(name).toLowerCase();
         const comfy = key === "comfy" || key === "flux";
-        chip.textContent = data.restarting ? "RESTARTING" : `LOADING · ${name}`;
+        const text = data.restarting ? "RESTARTING" : `LOADING · ${name}`;
+        labelEl.textContent = text;
         chip.className = "chip warn";
         chip.title = data.restarting
           ? "API is restarting"
           : comfy
             ? "Loading Comfy. Chat is paused until it is ready."
             : `Loading ${name}. Chat is paused until the model is ready.`;
+        chip.setAttribute("aria-label", text);
+        window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
         return;
       }
       const mode = data.gpu_mode || "gpu";
       const label = data.profile || data.tabby_model || "idle";
-      chip.textContent = `${String(mode).toUpperCase()} · ${label}`;
+      const text = `${String(mode).toUpperCase()} · ${label}`;
+      labelEl.textContent = text;
       chip.className = "chip" + (mode === "llm" ? " ok" : " warn");
-      chip.title = "";
+      chip.title = "Click to switch model";
+      chip.setAttribute("aria-label", `GPU and model: ${text}`);
+      window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
     },
     paintApiDown(err) {
       const chip = document.getElementById("gpu-chip");
       if (!chip) return;
+      const labelEl = document.getElementById("gpu-chip-label") || chip;
       const raw = (err && err.message) || "";
       let detail = "reconnecting";
       const status = raw.match(/\((\d{3})\)/);
       if (status) detail = status[1];
       else if (/unreachable/i.test(raw)) detail = "unreachable";
       else if (/restart/i.test(raw)) detail = "restarting";
-      chip.textContent = `DOWN · ${detail}`;
+      const text = `DOWN · ${detail}`;
+      labelEl.textContent = text;
       chip.className = "chip bad";
       chip.title = raw || "API unavailable";
+      chip.setAttribute("aria-label", text);
+      this.lastGpuStatus = Object.assign({}, this.lastGpuStatus || {}, { down: true });
+      window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: this.lastGpuStatus }));
     },
   };
 })();

@@ -352,7 +352,6 @@ function mountChat(root) {
   let filesHistoryPath = "";
   let filesHistoryReq = 0;
   let filesChanged = [];
-  let pendingOpenChange = "";
   // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
   // its own buffer so switching away does not throw away unsaved edits.
   let openTabs = [];
@@ -990,7 +989,6 @@ function mountChat(root) {
     resetFilesTreeState();
     draftsChat = "";
     filesChanged = [];
-    pendingOpenChange = "";
     closeTerm();
     blankPreviewFrame();
     previewOpen = Boolean(findTab(PREVIEW_TAB));
@@ -1285,7 +1283,8 @@ function mountChat(root) {
   function noteAgentWrite(path) {
     if (!path) return;
     noteChange(path, true);
-    if (TEXT_SUFFIXES.has(fileSuffix(path))) pendingOpenChange = path;
+    filesSelected = path;
+    filesFocusDir = fileDir(path);
   }
 
   function changeRows() {
@@ -2729,11 +2728,6 @@ function mountChat(root) {
     if (chatId && draftsChat !== chatId) loadDrafts(chatId);
     if (window.TabbyLsp && chatId) window.TabbyLsp.setChat(chatId);
     if (previewOpen) ensurePreviewLoaded();
-    if (pendingOpenChange && listingHas(pendingOpenChange)) {
-      const path = pendingOpenChange;
-      pendingOpenChange = "";
-      openChange(path);
-    }
   }
 
   /** Code turns stream one status per write, so coalesce the listing calls. */
