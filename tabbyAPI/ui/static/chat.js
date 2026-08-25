@@ -198,11 +198,6 @@ function mountChat(root) {
           <span>Files</span>
           <span class="chat-files-count" id="chat-files-count"></span>
           <span class="spacer"></span>
-          <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
-          <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
-          <button class="btn" type="button" id="chat-files-site">Open site</button>
-          <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
-          <button class="btn ghost" type="button" id="chat-files-term" title="Open a jailed project shell">Term</button>
           <div class="chat-more chat-files-more">
             <button class="btn ghost chat-icon" type="button" id="chat-files-more" aria-haspopup="true" aria-expanded="false" aria-label="More file actions" title="More">⋯</button>
             <div class="chat-more-menu" id="chat-files-more-menu" hidden>
@@ -212,6 +207,13 @@ function mountChat(root) {
             </div>
           </div>
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
+          <div class="chat-files-actions">
+            <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
+            <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
+            <button class="btn" type="button" id="chat-files-site">Open site</button>
+            <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
+            <button class="btn ghost" type="button" id="chat-files-term" title="Open a jailed project shell">Term</button>
+          </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-history" id="chat-files-history">

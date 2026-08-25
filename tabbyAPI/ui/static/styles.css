@@ -560,6 +560,21 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   font-weight: 600;
   flex: 0 0 auto;
 }
+.chat-files-head > .spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.chat-files-more,
+.chat-files-close {
+  flex: 0 0 auto;
+}
+.chat-files-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 100%;
+}
 .chat-files-close { display: none; }
 .chat-files-count {
   color: var(--muted);
