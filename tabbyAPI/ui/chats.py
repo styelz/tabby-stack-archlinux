@@ -149,10 +149,13 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
     with _LOCK:
         _atomic_write(chat_path(username), payload)
     if dropped:
+        from ui import lsp, shell
         from ui.preview import drop_chat
         from ui.workspace import delete_workspace, safe_name
 
         for chat_id in dropped:
+            shell.drop_chat(username, chat_id)
+            lsp.drop_chat(username, chat_id)
             delete_workspace(username, chat_id)
             drop_chat(username, safe_name(chat_id))
     return store

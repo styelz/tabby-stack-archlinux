@@ -1,24 +1,18 @@
 """Jailed project shell for UI Code mode.
 
-A PTY runs only inside bubblewrap, with the chat workspace bound at /work.
-No host bash. Missing bwrap is a hard error.
+A PTY is docker exec into this chat's container, with the workspace at /work.
+No host bash. Missing Docker is a hard error.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import os
-import shutil
-import signal
-import struct
-import termios
 import time
-from pathlib import Path
 from typing import Optional
 
-from ui.workspace import workspace_root
+from ui import codebox
 
 IDLE_S = 15 * 60
 MAX_SESSIONS = 8
@@ -32,128 +26,68 @@ class ShellError(RuntimeError):
     pass
 
 
-def bwrap_bin() -> str:
-    path = shutil.which("bwrap")
-    if not path:
-        raise ShellError("install bubblewrap")
-    return path
-
-
-def jail_command(workspace: Path) -> list[str]:
-    """bwrap argv that can only see this chat's project folder as /work."""
-    root = workspace.resolve()
-    if not root.is_dir():
-        root.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        bwrap_bin(),
-        "--die-with-parent",
-        "--unshare-pid",
-        "--unshare-uts",
-        "--hostname",
-        "tabby",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--tmpfs",
-        "/tmp",
-        "--bind",
-        str(root),
-        "/work",
-        "--chdir",
-        "/work",
-        "--setenv",
-        "HOME",
-        "/work",
-        "--setenv",
-        "PATH",
-        "/usr/bin:/bin",
-        "--setenv",
-        "TERM",
-        "xterm-256color",
-        "--setenv",
-        "PS1",
-        "\\W $ ",
-    ]
-    for host, dest in (
-        ("/usr", "/usr"),
-        ("/bin", "/bin"),
-        ("/lib", "/lib"),
-        ("/lib64", "/lib64"),
-        ("/etc/resolv.conf", "/etc/resolv.conf"),
-        ("/etc/ssl", "/etc/ssl"),
-        ("/etc/ca-certificates", "/etc/ca-certificates"),
-        ("/etc/nsswitch.conf", "/etc/nsswitch.conf"),
-        ("/etc/passwd", "/etc/passwd"),
-        ("/etc/group", "/etc/group"),
-    ):
-        if Path(host).exists():
-            cmd.extend(["--ro-bind", host, dest])
-    cmd.append(SHELL)
-    return cmd
-
-
-def _set_winsize(fd: int, cols: int, rows: int) -> None:
-    cols = max(20, min(int(cols or 80), 400))
-    rows = max(4, min(int(rows or 24), 120))
-    packed = struct.pack("HHHH", rows, cols, 0, 0)
+def docker_bin() -> str:
     try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
-    except OSError:
-        pass
+        return codebox.docker_bin()
+    except codebox.CodeboxError as exc:
+        raise ShellError(str(exc)) from exc
+
+
+def jail_command(username: str, chat_id: str, workspace) -> list[str]:
+    """docker run argv that can only see this chat's project folder as /work."""
+    from pathlib import Path
+
+    return codebox.run_args(username, chat_id, Path(workspace))
 
 
 class ShellSession:
     def __init__(self, username: str, chat_id: str) -> None:
         self.username = username
         self.chat_id = chat_id
-        self.master: Optional[int] = None
-        self.proc: Optional[asyncio.subprocess.Process] = None
+        self.sock = None
+        self.exec_id = ""
+        self._pending = b""
         self.last_io = time.time()
-        self.readers: list = []
 
     async def start(self) -> None:
-        root = workspace_root(self.username, self.chat_id, create=True)
-        cmd = jail_command(root)
-        master, slave = os.openpty()
         try:
-            self.proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                start_new_session=True,
-                close_fds=True,
+            await asyncio.to_thread(codebox.ensure_container, self.username, self.chat_id)
+            exec_id = await asyncio.to_thread(
+                codebox.create_exec, self.username, self.chat_id, [SHELL], True
             )
-        except FileNotFoundError as exc:
-            os.close(master)
-            os.close(slave)
-            raise ShellError("install bubblewrap") from exc
-        except OSError as exc:
-            os.close(master)
-            os.close(slave)
+            sock, pending = await asyncio.to_thread(codebox.start_exec_tty, exec_id)
+        except codebox.CodeboxError as exc:
             raise ShellError(str(exc)) from exc
-        os.close(slave)
-        os.set_blocking(master, False)
-        self.master = master
+        except FileNotFoundError as exc:
+            raise ShellError("install docker") from exc
+        except OSError as exc:
+            raise ShellError(str(exc)) from exc
+        self.exec_id = exec_id
+        self.sock = sock
+        self._pending = pending
         self.last_io = time.time()
 
     def write(self, data: bytes) -> None:
-        if self.master is None:
+        if self.sock is None:
             return
         try:
-            os.write(self.master, data)
+            self.sock.send(data)
             self.last_io = time.time()
         except OSError:
             pass
 
     def resize(self, cols: int, rows: int) -> None:
-        if self.master is None:
+        if not self.exec_id:
             return
-        _set_winsize(self.master, cols, rows)
+        codebox.resize_exec(self.exec_id, cols, rows)
 
     async def read(self, n: int = 4096) -> bytes:
-        if self.master is None:
+        if self._pending:
+            chunk = self._pending[:n]
+            self._pending = self._pending[n:]
+            self.last_io = time.time()
+            return chunk
+        if self.sock is None:
             return b""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bytes] = loop.create_future()
@@ -162,41 +96,39 @@ class ShellSession:
             if future.done():
                 return
             try:
-                chunk = os.read(self.master, n)
+                chunk = self.sock.recv(n)
             except BlockingIOError:
                 return
             except OSError:
                 chunk = b""
             future.set_result(chunk)
 
-        loop.add_reader(self.master, _ready)
+        loop.add_reader(self.sock.fileno(), _ready)
         try:
             chunk = await future
         finally:
             with contextlib.suppress(Exception):
-                loop.remove_reader(self.master)
+                loop.remove_reader(self.sock.fileno())
         if chunk:
             self.last_io = time.time()
         return chunk
 
     def alive(self) -> bool:
-        return bool(self.proc and self.proc.returncode is None and self.master is not None)
+        return self.sock is not None and bool(self.exec_id)
 
     def idle(self) -> bool:
         return time.time() - self.last_io > IDLE_S
 
     def close(self) -> None:
-        proc = self.proc
-        self.proc = None
-        if proc and proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGTERM)
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-        if self.master is not None:
+        sock = self.sock
+        self.sock = None
+        self.exec_id = ""
+        self._pending = b""
+        if sock is not None:
             with contextlib.suppress(OSError):
-                os.close(self.master)
-            self.master = None
+                sock.shutdown(os.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
 
 
 async def get_session(username: str, chat_id: str) -> ShellSession:
@@ -223,3 +155,4 @@ def drop_chat(username: str, chat_id: str) -> None:
     session = _sessions.pop((username, chat_id), None)
     if session:
         session.close()
+    codebox.drop_container(username, chat_id)

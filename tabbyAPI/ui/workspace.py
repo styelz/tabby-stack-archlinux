@@ -88,10 +88,16 @@ def user_dir(username: str) -> Path:
     return workspaces_dir() / safe_name(username)
 
 
-def workspace_root(username: str, chat_id: str, *, create: bool = False) -> Path:
+def workspace_root(
+    username: str, chat_id: str, *, create: bool = False, box: bool = True
+) -> Path:
     root = user_dir(username) / safe_name(chat_id)
     if create:
         root.mkdir(parents=True, exist_ok=True)
+        if box and _WORK_DIR is None:
+            from ui.codebox import try_ensure_container
+
+            try_ensure_container(username, chat_id)
     return root
 
 
@@ -905,7 +911,10 @@ def drop_drafts(username: str, chat_id: str) -> None:
 
 
 def delete_workspace(username: str, chat_id: str) -> None:
-    root = workspace_root(username, chat_id, create=False)
+    from ui.codebox import drop_container
+
+    drop_container(username, chat_id)
+    root = workspace_root(username, chat_id, create=False, box=False)
     if root.is_dir():
         shutil.rmtree(root, ignore_errors=True)
     drop_history(username, chat_id)
@@ -916,6 +925,9 @@ def delete_workspace(username: str, chat_id: str) -> None:
 
 
 def delete_user_workspaces(username: str) -> None:
+    from ui.codebox import drop_user_containers
+
+    drop_user_containers(username)
     folder = user_dir(username)
     if folder.is_dir():
         shutil.rmtree(folder, ignore_errors=True)

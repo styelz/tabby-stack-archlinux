@@ -506,6 +506,18 @@ finish_git_update() {
   printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]} restart=${RESTART_API:-auto}" >> "$UPDATE_LOG"
   write_restart_prompt_json
 
+  if [[ -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      docker build -t tabby-stack-code:local \
+        -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" \
+        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1 || \
+      sudo -n docker build -t tabby-stack-code:local \
+        -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" \
+        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1 || \
+      echo "WARNING: tabby-stack-code image build failed" >> "$UPDATE_LOG"
+    fi
+  fi
+
   progress 100 "Git update finished"
   trap - EXIT
   progress_stop

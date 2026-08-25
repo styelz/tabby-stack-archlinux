@@ -1299,6 +1299,7 @@ PACKAGES=(
   dialog
   nodejs
   npm
+  docker
 )
 
 ensure_sudo
@@ -1371,6 +1372,27 @@ else
 fi
 run_quiet nvidia-smi
 
+enable_docker() {
+  sudo -n systemctl enable --now docker >>"$INSTALL_LOG" 2>&1 || \
+    echo "WARNING: could not enable docker.service" >> "$INSTALL_LOG"
+  sudo -n usermod -aG docker "$USER" >>"$INSTALL_LOG" 2>&1 || true
+}
+
+build_codebox_image() {
+  local df="$DEST_TABBY/ui/codebox/Dockerfile"
+  local dir="$DEST_TABBY/ui/codebox"
+  [[ -f "$df" ]] || return 0
+  if sudo -n docker build -t tabby-stack-code:local -f "$df" "$dir" >>"$INSTALL_LOG" 2>&1; then
+    return 0
+  fi
+  if need_cmd docker && docker build -t tabby-stack-code:local -f "$df" "$dir" >>"$INSTALL_LOG" 2>&1; then
+    return 0
+  fi
+  echo "WARNING: tabby-stack-code image build failed" >> "$INSTALL_LOG"
+}
+
+enable_docker
+
 progress 16 "Checking Python 3.12"
 if ! ensure_python312 >>"$INSTALL_LOG" 2>&1; then
   progress_fail 1
@@ -1388,6 +1410,9 @@ if need_cmd dos2unix; then
 else
   run_quiet find "$DEST_TABBY" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 fi
+progress 24 "Building Code sandbox image"
+build_codebox_image
+chmod 755 "$DEST_TABBY/deploy/arch/run-api.sh" 2>/dev/null || true
 if [[ -d "$DEST_TABBY/venv/Scripts" ]]; then
   rm -rf "$DEST_TABBY/venv"
 fi

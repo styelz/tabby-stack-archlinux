@@ -221,7 +221,7 @@ function mountChat(root) {
             </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
             <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
-            <button class="btn ghost" type="button" id="chat-files-term" title="Open a jailed project shell">Term</button>
+            <button class="btn ghost" type="button" id="chat-files-term" title="Open this chat's project container">Term</button>
           </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
@@ -2360,8 +2360,8 @@ function mountChat(root) {
         try {
           const payload = JSON.parse(event.data);
           if (payload && payload.type === "error") {
-            if (termNote) termNote.textContent = payload.message || "install bubblewrap";
-            termTerm.write(`\r\n${payload.message || "install bubblewrap"}\r\n`);
+            if (termNote) termNote.textContent = payload.message || "install docker";
+            termTerm.write(`\r\n${payload.message || "install docker"}\r\n`);
           }
         } catch {
           termTerm.write(event.data);

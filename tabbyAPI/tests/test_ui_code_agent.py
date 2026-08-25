@@ -24,6 +24,7 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(code_agent._kind("rename_file"), "rename")
         self.assertEqual(code_agent._kind("delete_file"), "delete")
         self.assertEqual(code_agent._kind("optimize_image"), "optimize")
+        self.assertEqual(code_agent._kind("run_command"), "shell")
 
     def test_write_rename_delete(self):
         label, text = code_agent.execute_tool("u", "c", "Write", {"path": "a.txt", "contents": "hi"})
@@ -37,7 +38,7 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(workspace.list_files("u", "c"), [])
 
     def test_unknown_tool(self):
-        label, text = code_agent.execute_tool("u", "c", "Shell", {"path": "a.txt"})
+        label, text = code_agent.execute_tool("u", "c", "Nope", {"path": "a.txt"})
         self.assertEqual(label, "Tool error")
         self.assertIn("Unknown tool", text)
 

@@ -13,7 +13,7 @@ Type=simple
 WorkingDirectory=__TABBY_DIR__
 EnvironmentFile=-__TABBY_DIR__/deploy/arch/tabby.env
 Environment=TABBY_LOG_CONSOLE_WIDTH=256
-ExecStart=__TABBY_DIR__/venv/bin/python watch_api.py
+ExecStart=__TABBY_DIR__/deploy/arch/run-api.sh
 # on-failure, not always: a clean exit means someone asked it to stop.
 Restart=on-failure
 RestartSec=10

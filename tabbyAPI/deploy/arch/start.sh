@@ -28,4 +28,13 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 export TABBY_LOG_CONSOLE_WIDTH="${TABBY_LOG_CONSOLE_WIDTH:-256}"
+if [[ -w /var/run/docker.sock ]]; then
+  exec "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
+fi
+if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
+  exec sg docker -c "exec \"$TABBY/venv/bin/python\" \"$TABBY/watch_api.py\""
+fi
+if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/null 2>&1; then
+  exec sudo -n -u "$USER" -g docker "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
+fi
 exec "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"

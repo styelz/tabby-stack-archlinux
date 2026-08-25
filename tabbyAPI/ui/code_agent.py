@@ -1,4 +1,4 @@
-"""Server-side jailed project-tool loop for UI Code mode. No shell."""
+"""Server-side jailed project-tool loop for UI Code mode."""
 
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ CODE_SYSTEM = (
     "The user can create, upload, and attach files; attached files are included "
     "in their message. Use the file tools (Write, StrReplace, Read, Rename, "
     "Delete, List) to create and edit text files. Use OptimizeImage to compress, resize, or "
-    "convert project images. Do not create placeholder files when an attached "
+    "convert project images. Use Shell to run project commands in this chat's "
+    "container (cwd is /work). Do not create placeholder files when an attached "
     "project image can be processed with OptimizeImage. Do not dump whole files "
-    "in chat. Do not use a shell and do not try to run the site. Point img src "
+    "in chat. Do not try to run the site for the user; they have preview. Point img src "
     "at the planned local paths. Generated assets for an HTML website are "
     "automatically converted to web-optimized files and their code references "
     "are updated after rendering. When you are done, give a short summary of "
@@ -42,6 +43,7 @@ _DELETE_NAMES = ("delete", "delete_file", "remove_file")
 _RENAME_NAMES = ("rename", "rename_file", "move_file", "mv")
 _LIST_NAMES = ("list", "list_dir", "listdir", "list_files")
 _OPTIMIZE_NAMES = ("optimizeimage", "optimize_image", "compress_image", "resize_image")
+_SHELL_NAMES = ("shell", "bash", "run_command", "run_terminal_cmd")
 
 
 def code_tool_specs() -> list[ToolSpec]:
@@ -188,6 +190,26 @@ def code_tool_specs() -> list[ToolSpec]:
                 },
             ),
         ),
+        ToolSpec(
+            type="function",
+            function=Function(
+                name="Shell",
+                description=(
+                    "Run a command in this chat's project container. cwd is /work. "
+                    "Use for installs, builds, and checks. Prefer file tools for edits."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to run, e.g. python3 -m http.server --help",
+                        }
+                    },
+                    "required": ["command"],
+                },
+            ),
+        ),
     ]
 
 
@@ -253,6 +275,8 @@ def _kind(name: str) -> str:
         return "list"
     if match_tool_name([key], _OPTIMIZE_NAMES):
         return "optimize"
+    if match_tool_name([key], _SHELL_NAMES):
+        return "shell"
     return ""
 
 
@@ -260,6 +284,20 @@ def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[st
     """Run one tool. Returns (status_label, result_text)."""
     kind = _kind(name)
     rel = _arg_path(args)
+    if kind == "shell":
+        command = str(args.get("command") or args.get("cmd") or "").strip()
+        if not command:
+            return "Tool error", "command is required"
+        from ui import codebox
+
+        try:
+            code, output = codebox.run_shell(username, chat_id, command)
+        except codebox.CodeboxError as exc:
+            return "Tool error", str(exc)
+        text = output if output.strip() else "(no output)"
+        if code:
+            text = f"exit {code}\n{text}"
+        return "Running command", text
     if kind == "list":
         prefix = rel.rstrip("/")
         if prefix in (".",):
@@ -311,7 +349,7 @@ def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[st
         return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
     return (
         "Tool error",
-        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Rename, Delete, List, or OptimizeImage.",
+        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Rename, Delete, List, OptimizeImage, or Shell.",
     )
 
 

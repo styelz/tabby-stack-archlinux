@@ -1,7 +1,7 @@
-"""Host language-server proxy for UI Code mode.
+"""Language-server proxy for UI Code mode.
 
-One JSON-RPC process per (user, chat, language). Spawn only binaries already
-on PATH. cwd is the jailed chat workspace. Missing servers are a quiet skip.
+One JSON-RPC process per (user, chat, language), running inside that chat's
+container. cwd is /work. Missing servers are a quiet skip.
 """
 
 from __future__ import annotations
@@ -10,14 +10,16 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from ui import codebox
 from ui.workspace import is_text_path, resolve_rel, workspace_root
 
 IDLE_S = 10 * 60
 MAX_SERVERS = 16
+WORK_ROOT = "/work"
 
 _SUFFIX_LANG = {
     ".py": "python",
@@ -32,15 +34,6 @@ _SUFFIX_LANG = {
     ".json": "json",
 }
 
-_COMMANDS: dict[str, list[list[str]]] = {
-    "python": [["pylsp"], ["pyright-langserver", "--stdio"]],
-    "javascript": [["typescript-language-server", "--stdio"]],
-    "typescript": [["typescript-language-server", "--stdio"]],
-    "html": [["vscode-html-language-server", "--stdio"]],
-    "css": [["vscode-css-language-server", "--stdio"]],
-    "json": [["vscode-json-language-server", "--stdio"]],
-}
-
 _servers: dict[tuple[str, str, str], "LspServer"] = {}
 _lock = asyncio.Lock()
 
@@ -50,45 +43,29 @@ def language_for(path: str) -> str:
     return _SUFFIX_LANG.get(suffix, "")
 
 
-def _bin_search_path() -> str:
-    root = Path(__file__).resolve().parent.parent
-    extra = [
-        root / "venv" / "bin",
-        root / ".lsp-tools" / "node_modules" / ".bin",
-    ]
-    parts = [str(path) for path in extra if path.is_dir()]
-    parts.append(os.environ.get("PATH") or "")
-    return os.pathsep.join(parts)
-
-
-def which_bin(name: str) -> Optional[str]:
-    return shutil.which(name, path=_bin_search_path())
-
-
 def command_for(language: str) -> Optional[list[str]]:
-    for argv in _COMMANDS.get(language, []):
-        found = which_bin(argv[0]) if argv else None
-        if found:
-            return [found, *argv[1:]]
-    return None
+    return codebox.lsp_command(language)
 
 
-def file_uri(root: Path, rel: str) -> str:
-    dest = resolve_rel(root, rel)
-    return dest.resolve().as_uri()
+def file_uri(rel: str) -> str:
+    text = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not text:
+        return f"file://{WORK_ROOT}"
+    return f"file://{WORK_ROOT}/{text}"
 
 
-def uri_to_rel(root: Path, uri: str) -> str:
+def uri_to_rel(uri: str) -> str:
     text = str(uri or "")
     if text.startswith("file://"):
         text = text[7:]
-        if text.startswith("/") and os.name == "nt":
-            text = text.lstrip("/")
-    try:
-        path = Path(text)
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except (OSError, ValueError):
+    if text == WORK_ROOT:
         return ""
+    prefix = WORK_ROOT + "/"
+    if text.startswith(prefix):
+        rel = text[len(prefix) :]
+        if rel and not rel.startswith("/") and ".." not in Path(rel).parts:
+            return rel
+    return ""
 
 
 class LspServer:
@@ -109,15 +86,16 @@ class LspServer:
 
     async def start(self) -> None:
         self.root = workspace_root(self.username, self.chat_id, create=True)
+        await asyncio.to_thread(codebox.ensure_container, self.username, self.chat_id)
+        argv = codebox.exec_args(self.username, self.chat_id, self.argv)
         self.proc = await asyncio.create_subprocess_exec(
-            *self.argv,
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            cwd=str(self.root),
         )
         self._reader_task = asyncio.create_task(self._read_loop())
-        root_uri = self.root.resolve().as_uri()
+        root_uri = f"file://{WORK_ROOT}"
         result = await self.request(
             "initialize",
             {
@@ -226,7 +204,7 @@ class LspServer:
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if method == "textDocument/publishDiagnostics":
             uri = str(params.get("uri") or "")
-            rel = uri_to_rel(self.root, uri) if self.root else ""
+            rel = uri_to_rel(uri)
             items = params.get("diagnostics") if isinstance(params.get("diagnostics"), list) else []
             event = {"type": "diagnostics", "path": rel, "items": items}
             for listener in list(self.listeners):
@@ -303,13 +281,17 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
         }
     if not path or not is_text_path(path):
         return {"type": "error", "message": "Unsupported path."}
+    try:
+        resolve_rel(workspace_root(username, chat_id, create=True), path)
+    except ValueError:
+        return {"type": "error", "message": "Invalid path."}
     language = language_for(path)
     if not language:
         return {"type": "unavailable", "path": path, "language": ""}
     server = await get_server(username, chat_id, language)
     if not server or not server.root:
         return {"type": "unavailable", "path": path, "language": language}
-    uri = file_uri(server.root, path)
+    uri = file_uri(path)
     text = message.get("text") if isinstance(message.get("text"), str) else ""
     if kind == "didOpen":
         await server.notify(

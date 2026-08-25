@@ -64,7 +64,7 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 **Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running.
 
-**Code** gives every conversation its own project folder. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a jailed terminal, or download the project as a zip.
+**Code** gives every conversation its own project folder. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
 ![Code mode with chat, project files, and site controls](docs/ui-code.jpg)
 

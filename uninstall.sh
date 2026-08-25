@@ -294,6 +294,19 @@ else
   echo "  (none)"
 fi
 
+echo
+echo "Removing Code sandbox containers"
+if need_cmd docker; then
+  mapfile -t BOX_IDS < <(docker ps -aq --filter label=tabby.stack=code 2>/dev/null || true)
+  if ((${#BOX_IDS[@]})); then
+    run docker rm -f "${BOX_IDS[@]}"
+  else
+    echo "  (none)"
+  fi
+else
+  echo "  docker not installed; skipping"
+fi
+
 is_dest_pid() {
   local want="$1" pid
   for pid in ${DEST_PIDS+"${DEST_PIDS[@]}"}; do
