@@ -717,6 +717,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
         reader.cancel()
         with contextlib.suppress(Exception):
             await reader
+        await shell.release_session(user, cid, session)
 
 
 @router.post("/workspace/{chat_id}/lsp", include_in_schema=False)

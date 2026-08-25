@@ -94,10 +94,13 @@ class ShellSession:
         try:
             chunk = await loop.sock_recv(self.sock, n)
         except OSError:
+            self.close()
             return b""
         if chunk:
             self.last_io = time.time()
-        return chunk
+            return chunk
+        self.close()
+        return b""
 
     def alive(self) -> bool:
         return self.sock is not None and bool(self.exec_id)
@@ -118,16 +121,16 @@ class ShellSession:
 
 
 async def get_session(username: str, chat_id: str) -> ShellSession:
+    """Start a new PTY for this websocket. Closing the UI pane must not reuse a
+    half-dead exec: the new xterm would be blank and look broken."""
     key = (username, chat_id)
     async with _lock:
         dead = [item for item, session in _sessions.items() if not session.alive() or session.idle()]
         for item in dead:
             _sessions.pop(item).close()
-        session = _sessions.get(key)
-        if session and session.alive():
-            return session
-        if session:
-            session.close()
+        old = _sessions.pop(key, None)
+        if old:
+            old.close()
         if len(_sessions) >= MAX_SESSIONS:
             oldest = next(iter(_sessions))
             _sessions.pop(oldest).close()
@@ -135,6 +138,14 @@ async def get_session(username: str, chat_id: str) -> ShellSession:
         await session.start()
         _sessions[key] = session
         return session
+
+
+async def release_session(username: str, chat_id: str, session: ShellSession) -> None:
+    key = (username, chat_id)
+    async with _lock:
+        if _sessions.get(key) is session:
+            _sessions.pop(key, None)
+        session.close()
 
 
 def drop_chat(username: str, chat_id: str) -> None:

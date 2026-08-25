@@ -2298,17 +2298,19 @@ function mountChat(root) {
     }
   }
 
-  function closeTerm() {
-    termOpen = false;
-    if (termPane) termPane.hidden = true;
-    if (filesTermBtn) filesTermBtn.classList.remove("is-on");
-    if (termSocket) {
+  function disposeTermClient() {
+    const socket = termSocket;
+    termSocket = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
       try {
-        termSocket.close();
+        socket.close();
       } catch {
         /* ignore */
       }
-      termSocket = null;
     }
     if (termTerm) {
       try {
@@ -2320,6 +2322,13 @@ function mountChat(root) {
       termFit = null;
     }
     if (termHost) termHost.replaceChildren();
+  }
+
+  function closeTerm() {
+    termOpen = false;
+    if (termPane) termPane.hidden = true;
+    if (filesTermBtn) filesTermBtn.classList.remove("is-on");
+    disposeTermClient();
     if (termNote) termNote.textContent = "";
   }
 
@@ -2331,13 +2340,11 @@ function mountChat(root) {
       if (termPane) termPane.hidden = false;
       return;
     }
+    disposeTermClient();
     termOpen = true;
     if (termPane) termPane.hidden = false;
     if (filesTermBtn) filesTermBtn.classList.add("is-on");
-    if (termTerm) {
-      fitTerm();
-      return;
-    }
+    if (termNote) termNote.textContent = "";
     termTerm = new window.Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -2352,10 +2359,16 @@ function mountChat(root) {
     termTerm.onData((data) => {
       if (termSocket && termSocket.readyState === 1) termSocket.send(new TextEncoder().encode(data));
     });
-    termSocket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell`));
-    termSocket.binaryType = "arraybuffer";
-    termSocket.onopen = () => fitTerm();
-    termSocket.onmessage = (event) => {
+    const socket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell`));
+    termSocket = socket;
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      if (termSocket !== socket) return;
+      fitTerm();
+      if (termTerm) termTerm.focus();
+    };
+    socket.onmessage = (event) => {
+      if (termSocket !== socket || !termTerm) return;
       if (typeof event.data === "string") {
         try {
           const payload = JSON.parse(event.data);
@@ -2370,10 +2383,18 @@ function mountChat(root) {
       }
       termTerm.write(new Uint8Array(event.data));
     };
-    termSocket.onclose = () => {
+    socket.onclose = () => {
+      if (termSocket !== socket) return;
+      termSocket = null;
       if (termNote && !termNote.textContent) termNote.textContent = "Disconnected.";
     };
-    requestAnimationFrame(fitTerm);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (termSocket !== socket) return;
+        fitTerm();
+        if (termTerm) termTerm.focus();
+      });
+    });
   }
 
   function collectEditorFindHits(query) {
@@ -2678,11 +2699,17 @@ function mountChat(root) {
     setPaneWidth("sidebar", sidebarW, false);
     setPaneWidth("files", filesW, false);
     if (window.TabbyMonaco) window.TabbyMonaco.layout();
+    if (termOpen) fitTerm();
   });
   if (editorCol && window.ResizeObserver) {
     new ResizeObserver(() => {
       if (window.TabbyMonaco) window.TabbyMonaco.layout();
     }).observe(editorCol);
+  }
+  if (termHost && window.ResizeObserver) {
+    new ResizeObserver(() => {
+      if (termOpen) fitTerm();
+    }).observe(termHost);
   }
 
   function copyText(text, btn) {
