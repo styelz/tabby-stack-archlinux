@@ -58,6 +58,22 @@ class WorkspaceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 workspace.write_text("u", "c", "c.txt", "3")
 
+    def test_drafts_sidecar_stays_outside_project(self):
+        workspace.write_text("u", "c", "a.txt", "one")
+        saved = workspace.save_drafts("u", "c", [{"path": "a.txt", "text": "two", "caret": [1, 2]}])
+        self.assertEqual(saved[0]["path"], "a.txt")
+        self.assertEqual(saved[0]["text"], "two")
+        self.assertEqual(workspace.load_drafts("u", "c")[0]["text"], "two")
+        root = workspace.workspace_root("u", "c")
+        self.assertFalse((root / "a.txt.drafts.json").exists())
+        self.assertTrue(workspace.drafts_path("u", "c").is_file())
+        self.assertNotEqual(workspace.drafts_path("u", "c").parent, root)
+        workspace.drop_draft("u", "c", "a.txt")
+        self.assertEqual(workspace.load_drafts("u", "c"), [])
+        workspace.save_drafts("u", "c", [{"path": "a.txt", "text": "x"}])
+        workspace.delete_workspace("u", "c")
+        self.assertFalse(workspace.drafts_path("u", "c").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

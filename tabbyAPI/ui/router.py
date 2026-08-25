@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse
 from sse_starlette import EventSourceResponse
 
@@ -628,14 +629,148 @@ async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
     )
 
 
+@router.get("/workspace/{chat_id}/drafts", include_in_schema=False)
+async def ui_workspace_drafts(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.workspace import load_drafts
+
+    cid = _workspace_chat_id(chat_id)
+    return {"ok": True, "drafts": load_drafts(_user, cid)}
+
+
+@router.put("/workspace/{chat_id}/drafts", include_in_schema=False)
+async def ui_workspace_save_drafts(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import save_drafts
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    cid = _workspace_chat_id(chat_id)
+    try:
+        drafts = save_drafts(_user, cid, body.get("drafts"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "drafts": drafts}
+
+
+@router.websocket("/workspace/{chat_id}/shell")
+async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
+    from ui import shell
+
+    user = validate_session(websocket.cookies.get(COOKIE_NAME) or "")
+    if not user:
+        await websocket.close(code=4401)
+        return
+    try:
+        cid = _workspace_chat_id(chat_id)
+    except HTTPException:
+        await websocket.close(code=4400)
+        return
+    try:
+        session = await shell.get_session(user, cid)
+    except shell.ShellError as exc:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
+    await websocket.accept()
+    await websocket.send_json({"type": "ready"})
+
+    async def pump_out() -> None:
+        try:
+            while session.alive():
+                chunk = await session.read()
+                if not chunk:
+                    break
+                await websocket.send_bytes(chunk)
+        except (WebSocketDisconnect, RuntimeError):
+            return
+
+    reader = asyncio.create_task(pump_out())
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            data = message.get("bytes")
+            if data:
+                session.write(data)
+                continue
+            text = message.get("text")
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "resize":
+                session.resize(payload.get("cols") or 80, payload.get("rows") or 24)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader.cancel()
+        with contextlib.suppress(Exception):
+            await reader
+
+
+@router.websocket("/workspace/{chat_id}/lsp")
+async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
+    from ui import lsp
+
+    user = validate_session(websocket.cookies.get(COOKIE_NAME) or "")
+    if not user:
+        await websocket.close(code=4401)
+        return
+    try:
+        cid = _workspace_chat_id(chat_id)
+    except HTTPException:
+        await websocket.close(code=4400)
+        return
+    await websocket.accept()
+
+    def on_event(event: dict) -> None:
+        asyncio.create_task(websocket.send_json(event))
+
+    attached: list = []
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            reply = await lsp.handle_client(user, cid, message)
+            language = str((reply or {}).get("language") or "")
+            if language:
+                server = await lsp.get_server(user, cid, language)
+                if server and on_event not in server.listeners:
+                    server.listeners.append(on_event)
+                    attached.append(server)
+            if reply is not None:
+                await websocket.send_json(reply)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for server in attached:
+            if on_event in server.listeners:
+                server.listeners.remove(on_event)
+
+
 @router.delete("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui import lsp, shell
     from ui.preview import drop_chat
     from ui.workspace import delete_workspace
 
     cid = _workspace_chat_id(chat_id)
     delete_workspace(_user, cid)
     drop_chat(_user, cid)
+    shell.drop_chat(_user, cid)
+    lsp.drop_chat(_user, cid)
     return {"ok": True, "files": [], "bytes": 0, "count": 0}
 
 

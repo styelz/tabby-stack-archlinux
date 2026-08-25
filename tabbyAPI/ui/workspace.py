@@ -51,6 +51,10 @@ MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_TEXT_BYTES = 1 * 1024 * 1024
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
+DRAFTS_SUFFIX = ".drafts.json"
+DRAFTS_MAX_BYTES = 4 * 1024 * 1024
+MAX_DRAFTS = 40
+_DRAFTS_LOCK = threading.Lock()
 
 _WORK_DIR: Optional[Path] = None
 _HISTORY_LOCK = threading.Lock()
@@ -803,11 +807,109 @@ def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     return optimized
 
 
+def drafts_path(username: str, chat_id: str) -> Path:
+    return user_dir(username) / f"{safe_name(chat_id)}{DRAFTS_SUFFIX}"
+
+
+def load_drafts(username: str, chat_id: str) -> list[dict[str, Any]]:
+    path = drafts_path(username, chat_id)
+    with _DRAFTS_LOCK:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return []
+    rows = raw.get("drafts") if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("path") or "").strip()
+        text = item.get("text")
+        if not rel or not isinstance(text, str) or not is_text_path(rel):
+            continue
+        if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+            continue
+        row: dict[str, Any] = {"path": rel, "text": text}
+        caret = item.get("caret")
+        if isinstance(caret, list) and len(caret) == 2:
+            try:
+                row["caret"] = [int(caret[0]), int(caret[1])]
+            except (TypeError, ValueError):
+                pass
+        out.append(row)
+        if len(out) >= MAX_DRAFTS:
+            break
+    return out
+
+
+def save_drafts(username: str, chat_id: str, drafts: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in drafts if isinstance(drafts, list) else []:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("path") or "").strip().replace("\\", "/")
+        text = item.get("text")
+        if not rel or not isinstance(text, str) or not is_text_path(rel):
+            continue
+        root = workspace_root(username, chat_id, create=False)
+        try:
+            resolve_rel(root, rel)
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+            raise ValueError("Draft is too large.")
+        seen.add(rel)
+        row: dict[str, Any] = {"path": rel, "text": text}
+        caret = item.get("caret")
+        if isinstance(caret, list) and len(caret) == 2:
+            try:
+                row["caret"] = [int(caret[0]), int(caret[1])]
+            except (TypeError, ValueError):
+                pass
+        rows.append(row)
+        if len(rows) >= MAX_DRAFTS:
+            break
+    payload = json.dumps({"drafts": rows}, ensure_ascii=False, separators=(",", ":")) + "\n"
+    data = payload.encode("utf-8")
+    if len(data) > DRAFTS_MAX_BYTES:
+        raise ValueError("Drafts are too large.")
+    path = drafts_path(username, chat_id)
+    with _DRAFTS_LOCK:
+        if not rows:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return []
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        os.chmod(path, 0o600)
+    return rows
+
+
+def drop_draft(username: str, chat_id: str, rel: str) -> None:
+    current = [row for row in load_drafts(username, chat_id) if row.get("path") != rel]
+    save_drafts(username, chat_id, current)
+
+
+def drop_drafts(username: str, chat_id: str) -> None:
+    try:
+        drafts_path(username, chat_id).unlink()
+    except OSError:
+        pass
+
+
 def delete_workspace(username: str, chat_id: str) -> None:
     root = workspace_root(username, chat_id, create=False)
     if root.is_dir():
         shutil.rmtree(root, ignore_errors=True)
     drop_history(username, chat_id)
+    drop_drafts(username, chat_id)
     from ui.preview import drop_storage
 
     drop_storage(username, chat_id)

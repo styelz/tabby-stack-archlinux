@@ -93,6 +93,7 @@ function mountChat(root) {
         </div>
         <div class="chat-view">
           <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
+          <div class="chat-stage" id="chat-stage">
           <div class="chat-log-wrap" id="chat-log-wrap">
             <div class="chat-find" id="chat-find" hidden>
               <input id="chat-find-input" type="search" placeholder="Find in chat" autocomplete="off" />
@@ -114,7 +115,35 @@ function mountChat(root) {
             <div class="chat-log" id="chat-log"></div>
             <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
           </div>
-          <section class="chat-editor" id="chat-editor" aria-label="File editor" hidden></section>
+          <div class="chat-editor-col" id="chat-editor-col" hidden>
+            <div class="chat-find" id="editor-find" hidden>
+              <input id="editor-find-input" type="search" placeholder="Find in file" autocomplete="off" />
+              <span class="chat-find-count" id="editor-find-count"></span>
+              <button type="button" class="btn ghost chat-icon" id="editor-find-prev" aria-label="Previous match" title="Previous match">↑</button>
+              <button type="button" class="btn ghost chat-icon" id="editor-find-next" aria-label="Next match" title="Next match">↓</button>
+              <button type="button" class="btn ghost chat-icon" id="editor-find-close" aria-label="Close find" title="Close find">×</button>
+            </div>
+            <section class="chat-editor" id="chat-editor" aria-label="File editor"></section>
+          </div>
+          <section class="chat-preview" id="chat-preview" hidden>
+            <div class="chat-preview-head">
+              <strong>Preview</strong>
+              <span class="spacer"></span>
+              <button type="button" class="btn ghost" id="chat-preview-reload">Reload</button>
+              <button type="button" class="btn ghost chat-icon" id="chat-preview-close" aria-label="Close preview" title="Close preview">×</button>
+            </div>
+            <iframe id="chat-preview-frame" title="Site preview" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation"></iframe>
+          </section>
+          </div>
+          <section class="chat-term" id="chat-term" hidden>
+            <div class="chat-term-head">
+              <strong>Terminal</strong>
+              <span class="muted" id="chat-term-note"></span>
+              <span class="spacer"></span>
+              <button type="button" class="btn ghost chat-icon" id="chat-term-close" aria-label="Close terminal" title="Close terminal">×</button>
+            </div>
+            <div class="chat-term-xterm" id="chat-term-xterm"></div>
+          </section>
         </div>
         <div class="chat-compose">
           <ul class="slash-menu" id="history-menu" hidden></ul>
@@ -172,6 +201,8 @@ function mountChat(root) {
           <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
           <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
           <button class="btn" type="button" id="chat-files-site">Open site</button>
+          <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
+          <button class="btn ghost" type="button" id="chat-files-term" title="Open a jailed project shell">Term</button>
           <div class="chat-more chat-files-more">
             <button class="btn ghost chat-icon" type="button" id="chat-files-more" aria-haspopup="true" aria-expanded="false" aria-label="More file actions" title="More">⋯</button>
             <div class="chat-more-menu" id="chat-files-more-menu" hidden>
@@ -228,6 +259,23 @@ function mountChat(root) {
   const tabsBar = root.querySelector("#chat-tabs");
   const logWrap = root.querySelector("#chat-log-wrap");
   const editorPane = root.querySelector("#chat-editor");
+  const editorCol = root.querySelector("#chat-editor-col");
+  const previewPane = root.querySelector("#chat-preview");
+  const previewFrame = root.querySelector("#chat-preview-frame");
+  const previewReloadBtn = root.querySelector("#chat-preview-reload");
+  const previewCloseBtn = root.querySelector("#chat-preview-close");
+  const termPane = root.querySelector("#chat-term");
+  const termHost = root.querySelector("#chat-term-xterm");
+  const termNote = root.querySelector("#chat-term-note");
+  const termCloseBtn = root.querySelector("#chat-term-close");
+  const filesPreviewBtn = root.querySelector("#chat-files-preview");
+  const filesTermBtn = root.querySelector("#chat-files-term");
+  const editorFindBar = root.querySelector("#editor-find");
+  const editorFindInput = root.querySelector("#editor-find-input");
+  const editorFindCountEl = root.querySelector("#editor-find-count");
+  const editorFindPrevBtn = root.querySelector("#editor-find-prev");
+  const editorFindNextBtn = root.querySelector("#editor-find-next");
+  const editorFindCloseBtn = root.querySelector("#editor-find-close");
   const filesZipBtn = root.querySelector("#chat-files-zip");
   const filesClearBtn = root.querySelector("#chat-files-clear");
   const filesNewBtn = root.querySelector("#chat-files-new");
@@ -268,6 +316,18 @@ function mountChat(root) {
   let findQuery = "";
   let findHits = [];
   let findIndex = 0;
+  let editorFindQuery = "";
+  let editorFindHits = [];
+  let editorFindIndex = 0;
+  let previewOpen = false;
+  let previewUrl = "";
+  let termOpen = false;
+  let termSocket = null;
+  let termTerm = null;
+  let termFit = null;
+  let draftsTimer = 0;
+  let draftsChat = "";
+  const TREE_DRAG = "application/x-tabby-path";
   // Chat ids the server says own project files. Drives the sidebar badge in
   // both modes, so it survives a reload and covers chats not opened yet.
   let codeChats = new Set();
@@ -811,13 +871,19 @@ function mountChat(root) {
   function switchWorkspaceTabs(chatId) {
     if (tabsChat === chatId) return;
     stashCurrentTabs();
+    if (tabsChat) flushDrafts();
     tabsChat = chatId || "";
     restoreTabsFor(tabsChat);
     resetFilesTreeState();
+    draftsChat = "";
+    closeTerm();
+    if (previewOpen) hidePreview();
+    if (window.TabbyLsp) window.TabbyLsp.reset();
   }
 
   function warnDirtyUnload(event) {
     persist();
+    flushDrafts(true);
     if (!anyDirtyTabs()) return;
     event.preventDefault();
     event.returnValue = "";
@@ -990,6 +1056,11 @@ function mountChat(root) {
       const target = row && row.page ? row.path : filesEntry;
       filesSiteBtn.title = target ? `Open ${target} in a new tab` : "No HTML page yet";
     }
+    if (filesPreviewBtn) {
+      filesPreviewBtn.disabled = !filesEntry;
+      filesPreviewBtn.classList.toggle("is-on", previewOpen);
+    }
+    if (filesTermBtn) filesTermBtn.classList.toggle("is-on", termOpen);
   }
 
   function paintFilesTree() {
@@ -1021,6 +1092,7 @@ function mountChat(root) {
           (!isDir && isPendingFile(node.path) ? " is-attached" : "");
         item.dataset.path = node.path;
         item.dataset.kind = node.kind;
+        item.draggable = true;
         item.style.setProperty("--depth", String(depth));
         const action = isDir ? "toggle" : "open";
         const size = !isDir && row ? TabbyUI.formatBytes(row.size) : "";
@@ -1316,6 +1388,7 @@ function mountChat(root) {
       box.scrollTop = tab.scrollTop || 0;
       box.scrollLeft = tab.scrollLeft || 0;
       syncEditorScroll();
+      if (window.TabbyLsp && view === "ready") window.TabbyLsp.didOpen(tab.path, box.value);
     }
     paintEditorHead();
   }
@@ -1352,6 +1425,14 @@ function mountChat(root) {
     if (code && wrap && !wrap.classList.contains("is-plain")) {
       // The trailing newline keeps the overlay as tall as the textarea.
       code.innerHTML = `${fileHighlight(tab.path, text)}\n`;
+    }
+    if (gutter && editorFindHits.length) {
+      const marks = new Set(editorFindHits.map(([start]) => text.slice(0, start).split("\n").length));
+      gutter.querySelectorAll(".is-find-line").forEach((node) => node.classList.remove("is-find-line"));
+      // Gutter is plain text; a data attr is enough for CSS line tint via box-shadow later.
+      gutter.dataset.findLines = [...marks].join(",");
+    } else if (gutter) {
+      gutter.dataset.findLines = "";
     }
     syncEditorScroll();
   }
@@ -1411,13 +1492,17 @@ function mountChat(root) {
         tab.loading = false;
         if (chatId !== store.activeId || !findTab(tab.path)) return;
         tab.original = text;
-        tab.text = text;
-        tab.dirty = false;
+        if (tab.dirty && typeof tab.text === "string" && tab.text !== text) {
+          tab.dirty = true;
+        } else {
+          tab.text = text;
+          tab.dirty = false;
+          tab.caret = null;
+          tab.scrollTop = 0;
+          tab.scrollLeft = 0;
+        }
         tab.state = "ready";
         tab.rev += 1;
-        tab.caret = null;
-        tab.scrollTop = 0;
-        tab.scrollLeft = 0;
         if (activeTab === tab.path) renderEditorPane();
         paintTabs();
       })
@@ -1437,6 +1522,7 @@ function mountChat(root) {
     const wasEditor = Boolean(logWrap && logWrap.hidden);
     if (!wasEditor && showEditor) logScroll = log.scrollTop;
     if (logWrap) logWrap.hidden = showEditor;
+    if (editorCol) editorCol.hidden = !showEditor;
     if (editorPane) editorPane.hidden = !showEditor;
     if (showEditor) {
       ensureTabLoaded(tab);
@@ -1684,6 +1770,9 @@ function mountChat(root) {
       tab.note = "Saved.";
       const saved = filesListing.find((item) => item.path === tab.path);
       tab.size = saved ? Number(saved.size) || 0 : tab.size;
+      queueDrafts();
+      reloadPreviewIfNeeded(tab.path);
+      if (window.TabbyLsp) window.TabbyLsp.didSave(tab.path, contents);
       paintFilesHead();
       paintFilesTree();
       paintTabs();
@@ -1705,6 +1794,7 @@ function mountChat(root) {
     // Read the file again: a code turn may have rewritten it while we edited,
     // and the buffer we started from is then no longer what is on disk.
     tab.state = "loading";
+    queueDrafts();
     paintTabs();
     paintView();
   }
@@ -1729,6 +1819,315 @@ function mountChat(root) {
       if (tab) tab.close();
       addBubble("assistant", `Error: ${err.message}`);
     }
+  }
+
+  function collectDrafts(chatId) {
+    stashEditor();
+    const saved = chatId && tabsByChat[chatId];
+    const list = saved ? saved.openTabs : openTabs;
+    const tabs = [];
+    const seen = new Set();
+    (list || []).forEach((tab) => {
+      if (!tab || isHistoryTab(tab) || !tab.dirty || !TEXT_SUFFIXES.has(fileSuffix(tab.path))) return;
+      if (seen.has(tab.path)) return;
+      seen.add(tab.path);
+      tabs.push({
+        path: tab.path,
+        text: String(tab.text || ""),
+        caret: Array.isArray(tab.caret) ? tab.caret : undefined,
+      });
+    });
+    return tabs;
+  }
+
+  function queueDrafts() {
+    if (draftsTimer) clearTimeout(draftsTimer);
+    draftsTimer = setTimeout(() => {
+      draftsTimer = 0;
+      flushDrafts();
+    }, 800);
+  }
+
+  function flushDrafts(keepalive) {
+    const chatId = tabsChat || store.activeId;
+    if (!chatId) return;
+    stashCurrentTabs();
+    const drafts = collectDrafts(chatId);
+    const body = JSON.stringify({ drafts });
+    const url = TabbyUI.path(`workspace/${encodeURIComponent(chatId)}/drafts`);
+    if (keepalive) {
+      fetch(url, {
+        method: "PUT",
+        body,
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+      }).catch(() => {});
+      return;
+    }
+    TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/drafts`, {
+      method: "PUT",
+      body: { drafts },
+    }).catch(() => {});
+  }
+
+  async function loadDrafts(chatId) {
+    if (!chatId || activeMode() !== "code") return;
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/drafts`);
+      const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+      drafts.forEach((draft) => {
+        if (!draft || !draft.path || typeof draft.text !== "string") return;
+        if (!TEXT_SUFFIXES.has(fileSuffix(draft.path))) return;
+        let tab = findTab(draft.path);
+        if (!tab) {
+          openTabs.push({
+            path: draft.path,
+            text: draft.text,
+            original: "",
+            dirty: true,
+            state: "loading",
+            rev: 0,
+            size: 0,
+            caret: Array.isArray(draft.caret) ? draft.caret : null,
+          });
+          tab = findTab(draft.path);
+        } else if (!tab.dirty) {
+          tab.text = draft.text;
+          tab.dirty = tab.text !== tab.original;
+          if (Array.isArray(draft.caret)) tab.caret = draft.caret;
+        }
+      });
+      draftsChat = chatId;
+      if (drafts.length) {
+        paintTabs();
+        paintView();
+      }
+    } catch {
+      /* drafts are optional */
+    }
+  }
+
+  function previewSuffix(path) {
+    return [".html", ".htm", ".css", ".js", ".mjs"].includes(fileSuffix(path));
+  }
+
+  async function mintPreviewUrl(wanted) {
+    const chatId = store.activeId;
+    if (!chatId) return "";
+    const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/preview`, {
+      method: "POST",
+      body: { path: wanted || "" },
+    });
+    return new URL(TabbyUI.path(data.url), window.location.href).href;
+  }
+
+  async function showPreview() {
+    const row = selectedRow();
+    const wanted = row && row.page ? row.path : "";
+    if (!filesEntry && !wanted) {
+      addBubble("assistant", "Error: No page to open yet. Ask for an HTML file first.");
+      return;
+    }
+    try {
+      previewUrl = await mintPreviewUrl(wanted);
+      previewOpen = true;
+      if (previewPane) previewPane.hidden = false;
+      if (previewFrame) previewFrame.src = previewUrl;
+      if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function hidePreview() {
+    previewOpen = false;
+    previewUrl = "";
+    if (previewPane) previewPane.hidden = true;
+    if (previewFrame) previewFrame.src = "about:blank";
+    if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
+  }
+
+  function reloadPreviewIfNeeded(path) {
+    if (!previewOpen || !previewFrame || !previewUrl) return;
+    if (path && !previewSuffix(path)) return;
+    const url = previewUrl;
+    previewFrame.src = "about:blank";
+    setTimeout(() => {
+      if (previewOpen && previewFrame) previewFrame.src = url;
+    }, 30);
+  }
+
+  function wsUrl(suffix) {
+    const href = new URL(TabbyUI.path(suffix), window.location.href);
+    href.protocol = href.protocol === "https:" ? "wss:" : "ws:";
+    return href.href;
+  }
+
+  function fitTerm() {
+    if (termFit && termTerm) {
+      try {
+        termFit.fit();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (termSocket && termSocket.readyState === 1 && termTerm) {
+      termSocket.send(JSON.stringify({ type: "resize", cols: termTerm.cols, rows: termTerm.rows }));
+    }
+  }
+
+  function closeTerm() {
+    termOpen = false;
+    if (termPane) termPane.hidden = true;
+    if (filesTermBtn) filesTermBtn.classList.remove("is-on");
+    if (termSocket) {
+      try {
+        termSocket.close();
+      } catch {
+        /* ignore */
+      }
+      termSocket = null;
+    }
+    if (termTerm) {
+      try {
+        termTerm.dispose();
+      } catch {
+        /* ignore */
+      }
+      termTerm = null;
+      termFit = null;
+    }
+    if (termHost) termHost.replaceChildren();
+    if (termNote) termNote.textContent = "";
+  }
+
+  function openTerm() {
+    const chatId = store.activeId;
+    if (!chatId) return;
+    if (typeof window.Terminal !== "function") {
+      if (termNote) termNote.textContent = "xterm.js is missing.";
+      if (termPane) termPane.hidden = false;
+      return;
+    }
+    termOpen = true;
+    if (termPane) termPane.hidden = false;
+    if (filesTermBtn) filesTermBtn.classList.add("is-on");
+    if (termTerm) {
+      fitTerm();
+      return;
+    }
+    termTerm = new window.Terminal({
+      cursorBlink: true,
+      fontSize: 12,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      theme: { background: "#0b0d12", foreground: "#e8ecf4", cursor: "#7aa2ff" },
+    });
+    if (window.FitAddon && window.FitAddon.FitAddon) {
+      termFit = new window.FitAddon.FitAddon();
+      termTerm.loadAddon(termFit);
+    }
+    termTerm.open(termHost);
+    termTerm.onData((data) => {
+      if (termSocket && termSocket.readyState === 1) termSocket.send(new TextEncoder().encode(data));
+    });
+    termSocket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell`));
+    termSocket.binaryType = "arraybuffer";
+    termSocket.onopen = () => fitTerm();
+    termSocket.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload && payload.type === "error") {
+            if (termNote) termNote.textContent = payload.message || "install bubblewrap";
+            termTerm.write(`\r\n${payload.message || "install bubblewrap"}\r\n`);
+          }
+        } catch {
+          termTerm.write(event.data);
+        }
+        return;
+      }
+      termTerm.write(new Uint8Array(event.data));
+    };
+    termSocket.onclose = () => {
+      if (termNote && !termNote.textContent) termNote.textContent = "Disconnected.";
+    };
+    requestAnimationFrame(fitTerm);
+  }
+
+  function collectEditorFindHits(query) {
+    const tab = activeTabRow();
+    const box = editorBox();
+    const text = box ? box.value : tab && tab.text;
+    const needle = String(query || "").toLowerCase();
+    if (!needle || text == null) return [];
+    const hay = String(text).toLowerCase();
+    const hits = [];
+    let from = 0;
+    while (from <= hay.length) {
+      const at = hay.indexOf(needle, from);
+      if (at < 0) break;
+      hits.push([at, at + needle.length]);
+      from = at + Math.max(1, needle.length);
+      if (hits.length > 400) break;
+    }
+    return hits;
+  }
+
+  function paintEditorFindBar() {
+    if (!editorFindCountEl) return;
+    if (!editorFindQuery) {
+      editorFindCountEl.textContent = "";
+      return;
+    }
+    editorFindCountEl.textContent = editorFindHits.length
+      ? `${editorFindIndex + 1} / ${editorFindHits.length}`
+      : "0 / 0";
+  }
+
+  function revealEditorFindHit(index) {
+    const box = editorBox();
+    if (!box || !editorFindHits.length) {
+      paintEditorFindBar();
+      return;
+    }
+    editorFindIndex = ((index % editorFindHits.length) + editorFindHits.length) % editorFindHits.length;
+    const [start, end] = editorFindHits[editorFindIndex];
+    box.focus();
+    box.setSelectionRange(start, end);
+    const line = box.value.slice(0, start).split("\n").length;
+    const lineH = parseFloat(getComputedStyle(box).lineHeight) || 18;
+    box.scrollTop = Math.max(0, (line - 3) * lineH);
+    paintEditorFindBar();
+    queueHighlight();
+  }
+
+  function runEditorFind(query, jump) {
+    editorFindQuery = String(query || "");
+    editorFindHits = collectEditorFindHits(editorFindQuery);
+    editorFindIndex = 0;
+    paintEditorFindBar();
+    if (jump !== false && editorFindHits.length) revealEditorFindHit(0);
+    else queueHighlight();
+  }
+
+  function openEditorFind() {
+    if (editorFindBar) editorFindBar.hidden = false;
+    if (editorFindInput) {
+      editorFindInput.focus();
+      editorFindInput.select();
+      runEditorFind(editorFindInput.value);
+    }
+  }
+
+  function closeEditorFind() {
+    editorFindQuery = "";
+    editorFindHits = [];
+    editorFindIndex = 0;
+    if (editorFindBar) editorFindBar.hidden = true;
+    if (editorFindInput) editorFindInput.value = "";
+    paintEditorFindBar();
+    queueHighlight();
   }
 
   let filesRefreshTimer = 0;
@@ -1760,6 +2159,8 @@ function mountChat(root) {
       filesEntry = "";
     }
     paintFiles();
+    if (chatId && draftsChat !== chatId) loadDrafts(chatId);
+    if (window.TabbyLsp && chatId) window.TabbyLsp.setChat(chatId);
   }
 
   /** Code turns stream one status per write, so coalesce the listing calls. */
@@ -2523,6 +2924,7 @@ function mountChat(root) {
       if (open) open.dirty = false;
       filesSelected = path;
       pendingFiles = pendingFiles.filter((file) => file.path !== path);
+      queueDrafts();
       paintAttach();
       paintFiles();
     } catch (err) {
@@ -2591,6 +2993,105 @@ function mountChat(root) {
       applyListing(data);
       filesFocusDir = dest;
       filesOpenFolders.add(dest);
+      paintAttach();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function treeDragPayload(event) {
+    const transfer = event.dataTransfer;
+    if (!transfer) return null;
+    const path = transfer.getData(TREE_DRAG) || transfer.getData("text/plain");
+    const kind = transfer.getData("application/x-tabby-kind") || "file";
+    if (!path) return null;
+    return { path, kind };
+  }
+
+  function treeHasDrag(event) {
+    return Array.from((event.dataTransfer && event.dataTransfer.types) || []).includes(TREE_DRAG);
+  }
+
+  function dropDirFor(event) {
+    const row = event.target.closest && event.target.closest(".chat-file");
+    if (!row || !filesTree.contains(row)) return "";
+    if (row.dataset.kind === "dir") return row.dataset.path || "";
+    return fileDir(row.dataset.path || "");
+  }
+
+  function moveDest(src, kind, dir) {
+    const name = fileBase(src);
+    if (!name) return "";
+    return dir ? `${dir}/${name}` : name;
+  }
+
+  function invalidTreeMove(src, kind, dest) {
+    if (!src || !dest || src === dest) return true;
+    if (kind === "dir" && (dest === src || dest.startsWith(`${src}/`))) return true;
+    return false;
+  }
+
+  function markTreeDrop(event) {
+    if (filesTree) {
+      filesTree.querySelectorAll(".chat-file.is-drop-target").forEach((node) => {
+        node.classList.remove("is-drop-target");
+      });
+    }
+    const row = event.target.closest && event.target.closest(".chat-file");
+    if (row && filesTree && filesTree.contains(row)) row.classList.add("is-drop-target");
+  }
+
+  async function moveProjectItem(src, kind, dir) {
+    const dest = moveDest(src, kind, dir);
+    if (invalidTreeMove(src, kind, dest)) return;
+    const exists = kind === "dir"
+      ? filesListing.some((row) => row.path === dest || row.path.startsWith(`${dest}/`))
+      : filesListing.some((row) => row.path === dest);
+    if (exists) {
+      const yes = await TabbyUI.confirmModal({
+        title: kind === "dir" ? "Replace folder?" : "Replace file?",
+        text: `${dest} already exists. Replace it?`,
+        yes: "Replace",
+        no: "Cancel",
+      });
+      if (!yes) return;
+      try {
+        if (kind === "dir") {
+          await TabbyUI.api(
+            `workspace/${encodeURIComponent(store.activeId)}/folder?path=${encodeURIComponent(dest)}`,
+            { method: "DELETE" }
+          );
+        } else {
+          await TabbyUI.api(
+            `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(dest)}`,
+            { method: "DELETE" }
+          );
+        }
+      } catch (err) {
+        addBubble("assistant", `Error: ${err.message}`);
+        return;
+      }
+    }
+    try {
+      if (kind === "dir") {
+        const data = await TabbyUI.api(
+          `workspace/${encodeURIComponent(store.activeId)}/folder`,
+          { method: "POST", body: { path: src, to: dest } }
+        );
+        (Array.isArray(data.moved) ? data.moved : []).forEach((row) => {
+          if (row && row.from && row.to) retargetPath(row.from, row.to);
+        });
+        applyListing(data);
+        filesFocusDir = dest;
+        filesOpenFolders.add(dest);
+      } else {
+        const data = await TabbyUI.api(
+          `workspace/${encodeURIComponent(store.activeId)}/rename`,
+          { method: "POST", body: { path: src, to: dest } }
+        );
+        retargetPath(src, data.path || dest);
+        applyListing(data);
+      }
       paintAttach();
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
@@ -3704,11 +4205,21 @@ function mountChat(root) {
 
   function editorHasFocus() {
     const el = document.activeElement;
-    return Boolean(el && editorPane && !editorPane.hidden && editorPane.contains(el));
+    return Boolean(
+      el &&
+        editorCol &&
+        !editorCol.hidden &&
+        (editorCol.contains(el) || (editorPane && editorPane.contains(el)))
+    );
   }
 
   function onGlobalKey(event) {
     if (event.key === "Escape") {
+      if (editorFindBar && !editorFindBar.hidden) {
+        closeEditorFind();
+        event.preventDefault();
+        return;
+      }
       if (findBar && !findBar.hidden) {
         closeFind();
         event.preventDefault();
@@ -3743,9 +4254,9 @@ function mountChat(root) {
       return;
     }
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
-      if (editorHasFocus()) return;
       event.preventDefault();
-      openFind();
+      if (editorHasFocus()) openEditorFind();
+      else openFind();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "o") {
@@ -4548,6 +5059,8 @@ function mountChat(root) {
               if (label) working.setActivity(label, { processing: true });
               if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && store.activeId === chatId) {
                 refreshFilesSoon();
+                const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
+                reloadPreviewIfNeeded(written);
               }
             }
             if (event.reasoning) {
@@ -5294,6 +5807,21 @@ function mountChat(root) {
     setChatMode(btn.dataset.mode);
   });
   if (filesTree) {
+    filesTree.addEventListener("dragstart", (event) => {
+      const row = event.target.closest(".chat-file");
+      if (!row || !row.dataset.path) return;
+      event.dataTransfer.setData(TREE_DRAG, row.dataset.path);
+      event.dataTransfer.setData("application/x-tabby-kind", row.dataset.kind || "file");
+      event.dataTransfer.setData("text/plain", row.dataset.path);
+      event.dataTransfer.effectAllowed = "move";
+      row.classList.add("is-dragging");
+    });
+    filesTree.addEventListener("dragend", () => {
+      filesTree.querySelectorAll(".is-dragging, .is-drop-target").forEach((node) => {
+        node.classList.remove("is-dragging", "is-drop-target");
+      });
+      if (filesPane) filesPane.classList.remove("is-drop");
+    });
     filesTree.addEventListener("click", async (event) => {
       const btn = event.target.closest("[data-file]");
       if (!btn) return;
@@ -5374,6 +5902,9 @@ function mountChat(root) {
       if (!tab) return;
       tab.text = event.target.value;
       queueHighlight();
+      queueDrafts();
+      if (window.TabbyLsp) window.TabbyLsp.didChange(tab.path, tab.text);
+      if (editorFindBar && !editorFindBar.hidden) runEditorFind(editorFindQuery, false);
       const next = tab.text !== tab.original;
       if (next === tab.dirty) return;
       tab.dirty = next;
@@ -5392,6 +5923,11 @@ function mountChat(root) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         saveTab();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.code === "Space") {
+        event.preventDefault();
+        if (window.TabbyLsp) window.TabbyLsp.complete();
         return;
       }
       // Tab indents code instead of leaving the box; Shift+Tab still moves focus out.
@@ -5427,6 +5963,34 @@ function mountChat(root) {
   if (filesSiteBtn) {
     filesSiteBtn.addEventListener("click", () => openSite());
   }
+  if (filesPreviewBtn) {
+    filesPreviewBtn.addEventListener("click", () => {
+      if (previewOpen) hidePreview();
+      else showPreview();
+    });
+  }
+  if (previewReloadBtn) previewReloadBtn.addEventListener("click", () => reloadPreviewIfNeeded());
+  if (previewCloseBtn) previewCloseBtn.addEventListener("click", () => hidePreview());
+  if (filesTermBtn) {
+    filesTermBtn.addEventListener("click", () => {
+      if (termOpen) closeTerm();
+      else openTerm();
+    });
+  }
+  if (termCloseBtn) termCloseBtn.addEventListener("click", () => closeTerm());
+  if (editorFindInput) {
+    editorFindInput.addEventListener("input", () => runEditorFind(editorFindInput.value));
+    editorFindInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (event.shiftKey) revealEditorFindHit(editorFindIndex - 1);
+        else revealEditorFindHit(editorFindIndex + 1);
+      }
+    });
+  }
+  if (editorFindPrevBtn) editorFindPrevBtn.addEventListener("click", () => revealEditorFindHit(editorFindIndex - 1));
+  if (editorFindNextBtn) editorFindNextBtn.addEventListener("click", () => revealEditorFindHit(editorFindIndex + 1));
+  if (editorFindCloseBtn) editorFindCloseBtn.addEventListener("click", () => closeEditorFind());
   if (filesToggleBtn) {
     filesToggleBtn.addEventListener("click", () => setFilesOpen(!filesOpen));
   }
@@ -5475,6 +6039,13 @@ function mountChat(root) {
   }
   if (filesPane) {
     filesPane.addEventListener("dragover", (event) => {
+      if (treeHasDrag(event)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        filesPane.classList.add("is-drop");
+        markTreeDrop(event);
+        return;
+      }
       if (Array.from(event.dataTransfer.types || []).includes("Files")) {
         event.preventDefault();
         filesPane.classList.add("is-drop");
@@ -5483,10 +6054,23 @@ function mountChat(root) {
     filesPane.addEventListener("dragleave", (event) => {
       if (event.relatedTarget && filesPane.contains(event.relatedTarget)) return;
       filesPane.classList.remove("is-drop");
+      if (filesTree) filesTree.querySelectorAll(".chat-file.is-drop-target").forEach((node) => {
+        node.classList.remove("is-drop-target");
+      });
     });
     filesPane.addEventListener("drop", (event) => {
       event.preventDefault();
       filesPane.classList.remove("is-drop");
+      if (filesTree) filesTree.querySelectorAll(".chat-file.is-drop-target").forEach((node) => {
+        node.classList.remove("is-drop-target");
+      });
+      const dragged = treeDragPayload(event);
+      if (dragged) {
+        moveProjectItem(dragged.path, dragged.kind, dropDirFor(event)).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
       const files = event.dataTransfer && event.dataTransfer.files;
       if (!files || !files.length) return;
       const row = event.target.closest(".chat-file");

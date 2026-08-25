@@ -120,6 +120,18 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function jumpSidebarSearch()", self.src)
         self.assertIn("function paintFindHits()", self.src)
 
+    def test_tree_drag_and_editor_find(self):
+        self.assertIn('application/x-tabby-path', self.src)
+        self.assertIn("function moveProjectItem(", self.src)
+        self.assertIn('id="editor-find"', self.src)
+        self.assertIn("function openEditorFind()", self.src)
+        self.assertIn("function flushDrafts(", self.src)
+        self.assertIn('id="chat-preview"', self.src)
+        self.assertIn("function showPreview()", self.src)
+        self.assertIn('id="chat-term"', self.src)
+        self.assertIn("function openTerm()", self.src)
+        self.assertIn("window.TabbyLsp", self.src)
+
 
 if __name__ == "__main__":
     unittest.main()
