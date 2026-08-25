@@ -538,7 +538,12 @@ async def ui_code_preview(
     an opaque origin, and such a document does not send SameSite=Lax cookies
     with its own subresource requests.
     """
-    from ui.preview import SANDBOX_CSP, resolve
+    from ui.preview import (
+        SANDBOX_CSP,
+        html_preview_bytes,
+        is_html_name,
+        resolve,
+    )
     from ui.workspace import guess_media_type, resolve_file, safe_name, site_entry
 
     owner = resolve(token)
@@ -560,15 +565,22 @@ async def ui_code_preview(
         if not entry:
             raise HTTPException(404, "File not found.") from exc
         return RedirectResponse(f"{request.url.path}{quote(entry)}", status_code=307)
+    headers = {
+        "Content-Security-Policy": SANDBOX_CSP,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+    if is_html_name(file_path.name):
+        return Response(
+            content=html_preview_bytes(file_path),
+            media_type=guess_media_type(file_path),
+            headers=headers,
+        )
     return FileResponse(
         file_path,
         media_type=guess_media_type(file_path),
-        headers={
-            "Content-Security-Policy": SANDBOX_CSP,
-            "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "no-referrer",
-            "Cache-Control": "no-store",
-        },
+        headers=headers,
     )
 
 
