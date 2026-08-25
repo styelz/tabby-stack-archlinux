@@ -1060,6 +1060,29 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   padding: 12px;
 }
 .chat-editor-body > p { margin: 0; }
+.chat-editor-body.is-loading {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.chat-editor-spinner-host {
+  display: grid;
+  place-items: center;
+}
+.code-monaco > .chat-editor-spinner-host {
+  position: absolute;
+  inset: 0;
+}
+.chat-editor-spinner {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--accent), var(--accent-2), var(--ok), transparent 72%);
+  -webkit-mask: radial-gradient(farthest-side, transparent 54%, #000 58%);
+  mask: radial-gradient(farthest-side, transparent 54%, #000 58%);
+  animation: think-spin 0.85s linear infinite;
+  filter: drop-shadow(0 0 12px rgba(122, 162, 255, 0.45));
+}
 .chat-editor-body.is-image { display: grid; place-content: start center; }
 .chat-editor-body img {
   display: block;
@@ -1671,7 +1694,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   .think-icon.is-processing .think-spark,
   .think-icon.is-done,
   .think-icon.is-done .think-spark,
-  .is-working .think-head.is-live {
+  .is-working .think-head.is-live,
+  .chat-editor-spinner {
     animation: none;
     opacity: 1;
     transform: none;

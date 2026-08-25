@@ -1412,6 +1412,14 @@ function mountChat(root) {
     return tab.state === "loading" && tab.rev > 0 ? "ready" : tab.state;
   }
 
+  function editorSpinnerHtml() {
+    return (
+      '<div class="chat-editor-spinner-host" role="status" aria-label="Loading">' +
+      '<span class="chat-editor-spinner" aria-hidden="true"></span>' +
+      "</div>"
+    );
+  }
+
   function editorBodyHtml(tab, view) {
     if (view === "image") {
       const src = `${fileUrl(store.activeId, tab.path)}&v=${tab.size}`;
@@ -1424,9 +1432,10 @@ function mountChat(root) {
       return '<div class="chat-editor-body"><p class="muted">Could not read this file.</p></div>';
     }
     if (view !== "ready" && view !== "diff") {
-      return '<div class="chat-editor-body"><p class="muted">Loading…</p></div>';
+      return `<div class="chat-editor-body is-loading">${editorSpinnerHtml()}</div>`;
     }
-    return '<div class="chat-editor-body is-monaco"><div class="code-monaco"></div></div>';
+    const spin = window.monaco ? "" : editorSpinnerHtml();
+    return `<div class="chat-editor-body is-monaco"><div class="code-monaco">${spin}</div></div>`;
   }
 
   function renderEditorPane() {
