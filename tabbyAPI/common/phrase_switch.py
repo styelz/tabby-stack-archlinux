@@ -532,7 +532,7 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         "- **Editor:** your project stays on your computer and the editor supplies its own tools.",
         "- **Browser Chat:** conversations, visual questions, model commands, and image generation.",
         "- **Browser Code:** one private project folder per chat, with file tools, uploads, "
-        "an editor, site preview, and zip download. It does not provide a shell.",
+        "a Monaco editor, Changes/diff, site preview, a jailed terminal, and zip download.",
         "- **Status:** model switching, GPU mode, restart, updates, health, and resource graphs.",
         "- **Gallery:** generated output images only.",
         "- **Logs:** live and historical server output.",

@@ -87,6 +87,11 @@ async def ui_index(request: Request):
     return _private_response(file_response("index.html"))
 
 
+@router.get("/assets/vs/{rest:path}", include_in_schema=False)
+async def ui_monaco_asset(rest: str):
+    return file_response(f"vs/{rest}", nested=True)
+
+
 @router.get("/assets/{name}", include_in_schema=False)
 async def ui_asset(name: str):
     return file_response(name)

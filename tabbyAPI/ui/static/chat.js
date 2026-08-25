@@ -218,6 +218,10 @@ function mountChat(root) {
           </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
+        <div class="chat-files-history" id="chat-files-changes">
+          <button type="button" class="chat-files-history-head" id="chat-files-changes-toggle" aria-expanded="true">Changes</button>
+          <div class="chat-files-history-list" id="chat-files-changes-list"></div>
+        </div>
         <div class="chat-files-history" id="chat-files-history">
           <button type="button" class="chat-files-history-head" id="chat-files-history-toggle" aria-expanded="true">History</button>
           <div class="chat-files-history-list" id="chat-files-history-list"></div>
@@ -260,6 +264,9 @@ function mountChat(root) {
   const filesPane = root.querySelector("#chat-files");
   const filesTree = root.querySelector("#chat-files-tree");
   const filesHistoryList = root.querySelector("#chat-files-history-list");
+  const filesChangesList = root.querySelector("#chat-files-changes-list");
+  const filesChangesToggle = root.querySelector("#chat-files-changes-toggle");
+  const filesChangesPane = root.querySelector("#chat-files-changes");
   const tabsBar = root.querySelector("#chat-tabs");
   const logWrap = root.querySelector("#chat-log-wrap");
   const editorPane = root.querySelector("#chat-editor");
@@ -310,6 +317,9 @@ function mountChat(root) {
   let filesHistory = [];
   let filesHistoryPath = "";
   let filesHistoryReq = 0;
+  let filesChanged = [];
+  let pendingOpenChange = "";
+  let changesOpen = true;
   // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
   // its own buffer so switching away does not throw away unsaved edits.
   let openTabs = [];
@@ -901,6 +911,8 @@ function mountChat(root) {
     restoreTabsFor(tabsChat);
     resetFilesTreeState();
     draftsChat = "";
+    filesChanged = [];
+    pendingOpenChange = "";
     closeTerm();
     if (previewOpen) hidePreview();
     if (window.TabbyLsp) window.TabbyLsp.reset();
@@ -1144,6 +1156,73 @@ function mountChat(root) {
     filesTree.replaceChildren(frag);
   }
 
+  function noteChange(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean || clean.startsWith("__history__/")) return;
+    filesChanged = filesChanged.filter((row) => row.path !== clean);
+    filesChanged.unshift({ path: clean, ts: Date.now() });
+    if (filesChanged.length > 40) filesChanged.length = 40;
+    paintFilesChanges();
+  }
+
+  function noteAgentWrite(path) {
+    if (!path) return;
+    noteChange(path);
+    if (TEXT_SUFFIXES.has(fileSuffix(path))) pendingOpenChange = path;
+  }
+
+  function changeRows() {
+    const seen = new Set();
+    const rows = [];
+    filesChanged.forEach((row) => {
+      if (!row || !row.path || seen.has(row.path)) return;
+      seen.add(row.path);
+      rows.push(row);
+    });
+    openTabs.forEach((tab) => {
+      if (!tab || isHistoryTab(tab) || !tab.dirty) return;
+      if (seen.has(tab.path)) return;
+      seen.add(tab.path);
+      rows.push({ path: tab.path, ts: Date.now() });
+    });
+    return rows;
+  }
+
+  function paintFilesChanges() {
+    if (!filesChangesList) return;
+    if (filesChangesPane) filesChangesPane.classList.toggle("is-collapsed", !changesOpen);
+    if (filesChangesToggle) filesChangesToggle.setAttribute("aria-expanded", changesOpen ? "true" : "false");
+    const rows = changeRows();
+    if (!rows.length) {
+      filesChangesList.innerHTML =
+        '<p class="muted chat-files-empty">Edits from you and the model show up here.</p>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    rows.forEach((row) => {
+      const tab = findTab(row.path);
+      const item = document.createElement("div");
+      item.className =
+        "chat-history" + (selectedPathFromTab(activeTab) === row.path && !isHistoryTab(activeTabRow()) ? " is-active" : "");
+      item.dataset.path = row.path;
+      const dirty = Boolean(tab && tab.dirty);
+      item.innerHTML =
+        `<button type="button" class="chat-history-open" data-change="open" title="Edit this file and its diff">${TabbyUI.escapeHtml(row.path)}</button>` +
+        `<span class="chat-file-size">${dirty ? "unsaved" : "edited"}</span>`;
+      frag.appendChild(item);
+    });
+    filesChangesList.replaceChildren(frag);
+  }
+
+  async function openChange(path) {
+    if (!path) return;
+    filesSelected = path;
+    filesFocusDir = fileDir(path);
+    await refreshHistory();
+    if (filesHistory.length) openHistoryTab(path, filesHistory[0]);
+    else openFileTab(path);
+  }
+
   function historyTabKey(path, id) {
     return `__history__/${id}/${path}`;
   }
@@ -1266,11 +1345,17 @@ function mountChat(root) {
     });
   }
 
-  /** Keep the live textarea in the tab so a re-render or tab switch restores it. */
+  /** Keep the live editor buffer in the tab so a re-render or tab switch restores it. */
   function stashEditor() {
     const tab = activeTabRow();
+    if (!tab) return;
+    if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
+      tab.text = window.TabbyMonaco.getValue();
+      tab.caret = window.TabbyMonaco.getCaret();
+      return;
+    }
     const box = editorBox();
-    if (!tab || !box) return;
+    if (!box) return;
     tab.text = box.value;
     tab.scrollTop = box.scrollTop;
     tab.scrollLeft = box.scrollLeft;
@@ -1328,24 +1413,6 @@ function mountChat(root) {
   }
 
   function editorBodyHtml(tab, view) {
-    if (view === "diff") {
-      const rows = Array.isArray(tab.diff) ? tab.diff : [];
-      if (!rows.length) {
-        return '<div class="chat-editor-body"><p class="muted">This version matches the latest file.</p></div>';
-      }
-      let html = '<div class="chat-editor-body is-diff"><div class="code-diff">';
-      rows.forEach((row) => {
-        const kind = row.kind === "del" || row.kind === "add" ? row.kind : "eq";
-        const mark = kind === "del" ? "−" : kind === "add" ? "+" : " ";
-        html +=
-          `<div class="code-diff-line is-${kind}">` +
-          `<span class="code-diff-mark">${mark}</span>` +
-          `<span class="code-diff-text">${TabbyUI.escapeHtml(row.text || "")}</span>` +
-          "</div>";
-      });
-      html += "</div></div>";
-      return html;
-    }
     if (view === "image") {
       const src = `${fileUrl(store.activeId, tab.path)}&v=${tab.size}`;
       return `<div class="chat-editor-body is-image"><img alt="" src="${TabbyUI.escapeHtml(src)}" /></div>`;
@@ -1356,18 +1423,10 @@ function mountChat(root) {
     if (view === "error") {
       return '<div class="chat-editor-body"><p class="muted">Could not read this file.</p></div>';
     }
-    if (view !== "ready") {
+    if (view !== "ready" && view !== "diff") {
       return '<div class="chat-editor-body"><p class="muted">Loading…</p></div>';
     }
-    const plain = tab.text.length > HIGHLIGHT_LIMIT || !fileLang(tab.path);
-    return (
-      `<div class="code-edit${plain ? " is-plain" : ""}">` +
-      '<div class="code-edit-gutter" aria-hidden="true"></div>' +
-      '<div class="code-edit-main">' +
-      '<pre class="code-hl" aria-hidden="true"><code></code></pre>' +
-      '<textarea class="chat-files-edit" spellcheck="false" wrap="off" aria-label="File contents"></textarea>' +
-      "</div></div>"
-    );
+    return '<div class="chat-editor-body is-monaco"><div class="code-monaco"></div></div>';
   }
 
   function renderEditorPane() {
@@ -1384,14 +1443,17 @@ function mountChat(root) {
     }
     editorPane.dataset.key = key;
     const title = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
-    const lang = isHistoryTab(tab) ? "vs latest" : fileLang(tab.path);
+    const lang = isHistoryTab(tab)
+      ? "vs previous"
+      : fileLang(tab.path) || (window.TabbyMonaco ? window.TabbyMonaco.languageFor(tab.path) : "");
     const tools =
-      view === "ready"
-        ? '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
+      view === "ready" || view === "diff"
+        ? (view === "diff"
+            ? '<button type="button" class="btn ghost" data-edit="restore">Restore old</button>'
+            : '<button type="button" class="btn ghost" data-edit="compare">Changes</button>') +
+          '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
           '<button type="button" class="btn primary" data-edit="save" disabled>Saved</button>'
-        : view === "diff"
-          ? '<button type="button" class="btn" data-edit="restore">Restore this version</button>'
-          : "";
+        : "";
     editorPane.innerHTML =
       '<div class="chat-editor-head">' +
       `<strong>${TabbyUI.escapeHtml(title)}</strong>` +
@@ -1405,17 +1467,49 @@ function mountChat(root) {
       "</div>" +
       editorBodyHtml(tab, view) +
       '<p class="muted chat-editor-note"></p>';
-    const box = editorBox();
-    if (box) {
-      box.value = tab.text;
-      paintHighlight();
-      if (tab.caret) box.setSelectionRange(tab.caret[0], tab.caret[1]);
-      box.scrollTop = tab.scrollTop || 0;
-      box.scrollLeft = tab.scrollLeft || 0;
-      syncEditorScroll();
-      if (window.TabbyLsp && view === "ready") window.TabbyLsp.didOpen(tab.path, box.value);
-    }
+    mountMonaco(tab, view);
     paintEditorHead();
+  }
+
+  function onMonacoChange(text) {
+    const tab = activeTabRow();
+    if (!tab) return;
+    tab.text = text;
+    queueDrafts();
+    const path = isHistoryTab(tab) ? tab.filePath : tab.path;
+    if (window.TabbyLsp && path) window.TabbyLsp.didChange(path, text);
+    const next = text !== String(tab.original || "");
+    if (next === tab.dirty) {
+      paintEditorHead();
+      return;
+    }
+    tab.dirty = next;
+    tab.note = "";
+    if (next && path) noteChange(path);
+    paintEditorHead();
+    paintTabs();
+    paintFilesChanges();
+  }
+
+  function mountMonaco(tab, view) {
+    const host = editorPane.querySelector(".code-monaco");
+    if (!host || !window.TabbyMonaco) return;
+    window.TabbyMonaco.onChange(onMonacoChange);
+    window.TabbyMonaco.onSave(() => saveTab());
+    const path = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
+    if (view === "diff") {
+      window.TabbyMonaco.showDiff(host, {
+        path,
+        original: tab.oldText || "",
+        modified: tab.text || tab.original || "",
+      });
+      return;
+    }
+    window.TabbyMonaco.showFile(host, {
+      path,
+      text: tab.text || "",
+      caret: tab.caret,
+    });
   }
 
   function syncEditorScroll() {
@@ -1484,6 +1578,9 @@ function mountChat(root) {
           tab.loading = false;
           if (chatId !== store.activeId || !findTab(tab.path)) return;
           tab.diff = Array.isArray(data.diff) ? data.diff : [];
+          tab.oldText = String(data.contents || "");
+          tab.original = String(data.latest || "");
+          tab.text = String(data.latest || "");
           tab.size = Number(data.bytes) || tab.size;
           tab.revTs = Number(data.ts) || tab.revTs;
           tab.state = "diff";
@@ -1555,6 +1652,7 @@ function mountChat(root) {
       return;
     }
     if (editorPane) editorPane.dataset.key = "";
+    if (window.TabbyMonaco) window.TabbyMonaco.dispose();
     // display:none drops the scroll offset, so put the log back where it was.
     if (wasEditor) {
       log.scrollTop = followLog ? log.scrollHeight : logScroll;
@@ -1566,6 +1664,7 @@ function mountChat(root) {
     paintFilesHead();
     paintFilesTree();
     paintFilesHistory();
+    paintFilesChanges();
     paintTabs();
     paintView();
   }
@@ -1771,37 +1870,46 @@ function mountChat(root) {
 
   async function saveTab() {
     const tab = activeTabRow();
-    const box = editorBox();
-    if (!tab || isHistoryTab(tab) || !box || !tab.dirty || tab.busy) return;
+    stashEditor();
+    if (!tab || !tab.dirty || tab.busy) return;
+    const path = isHistoryTab(tab) ? tab.filePath : tab.path;
+    if (!path) return;
+    const contents = tab.text;
     const chatId = store.activeId;
-    const contents = box.value;
     tab.busy = true;
     tab.note = "";
     paintEditorHead();
     try {
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(tab.path)}`,
+        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(path)}`,
         { method: "PUT", body: { contents } }
       );
       tab.busy = false;
-      if (chatId !== store.activeId || !findTab(tab.path)) return;
+      if (chatId !== store.activeId) return;
       filesListing = Array.isArray(data.files) ? data.files : filesListing;
       filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
       noteChatFiles(chatId, filesListing.length > 0);
+      const live = findTab(path) || tab;
+      live.original = contents;
+      live.text = contents;
+      live.dirty = false;
+      live.gone = false;
+      live.note = "Saved.";
       tab.original = contents;
       tab.text = contents;
       tab.dirty = false;
-      tab.gone = false;
       tab.note = "Saved.";
-      const saved = filesListing.find((item) => item.path === tab.path);
-      tab.size = saved ? Number(saved.size) || 0 : tab.size;
+      const saved = filesListing.find((item) => item.path === path);
+      live.size = saved ? Number(saved.size) || 0 : live.size;
+      noteChange(path);
       queueDrafts();
-      reloadPreviewIfNeeded(tab.path);
-      if (window.TabbyLsp) window.TabbyLsp.didSave(tab.path, contents);
+      reloadPreviewIfNeeded(path);
+      if (window.TabbyLsp) window.TabbyLsp.didSave(path, contents);
       paintFilesHead();
       paintFilesTree();
       paintTabs();
       paintEditorHead();
+      paintFilesChanges();
       refreshHistory();
     } catch (err) {
       tab.busy = false;
@@ -1812,14 +1920,20 @@ function mountChat(root) {
 
   function revertTab() {
     const tab = activeTabRow();
-    if (!tab || isHistoryTab(tab) || !tab.dirty) return;
+    if (!tab || !tab.dirty) return;
     tab.dirty = false;
     tab.note = "";
     tab.caret = null;
-    // Read the file again: a code turn may have rewritten it while we edited,
-    // and the buffer we started from is then no longer what is on disk.
-    tab.state = "loading";
+    tab.text = tab.original || "";
     queueDrafts();
+    if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
+      window.TabbyMonaco.setValue(tab.text);
+      paintEditorHead();
+      paintTabs();
+      paintFilesChanges();
+      return;
+    }
+    tab.state = "loading";
     paintTabs();
     paintView();
   }
@@ -1853,11 +1967,13 @@ function mountChat(root) {
     const tabs = [];
     const seen = new Set();
     (list || []).forEach((tab) => {
-      if (!tab || isHistoryTab(tab) || !tab.dirty || !TEXT_SUFFIXES.has(fileSuffix(tab.path))) return;
-      if (seen.has(tab.path)) return;
-      seen.add(tab.path);
+      if (!tab) return;
+      const path = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
+      if (!tab.dirty || !TEXT_SUFFIXES.has(fileSuffix(path))) return;
+      if (seen.has(path)) return;
+      seen.add(path);
       tabs.push({
-        path: tab.path,
+        path,
         text: String(tab.text || ""),
         caret: Array.isArray(tab.caret) ? tab.caret : undefined,
       });
@@ -2137,6 +2253,10 @@ function mountChat(root) {
   }
 
   function openEditorFind() {
+    if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
+      window.TabbyMonaco.find();
+      return;
+    }
     if (editorFindBar) editorFindBar.hidden = false;
     if (editorFindInput) {
       editorFindInput.focus();
@@ -2186,6 +2306,11 @@ function mountChat(root) {
     paintFiles();
     if (chatId && draftsChat !== chatId) loadDrafts(chatId);
     if (window.TabbyLsp && chatId) window.TabbyLsp.setChat(chatId);
+    if (pendingOpenChange && listingHas(pendingOpenChange)) {
+      const path = pendingOpenChange;
+      pendingOpenChange = "";
+      openChange(path);
+    }
   }
 
   /** Code turns stream one status per write, so coalesce the listing calls. */
@@ -2279,6 +2404,7 @@ function mountChat(root) {
     const filesHandle = root.querySelector("#chat-files-resize");
     if (sideHandle) sideHandle.setAttribute("aria-valuenow", String(sidebarW));
     if (filesHandle) filesHandle.setAttribute("aria-valuenow", String(filesW));
+    if (window.TabbyMonaco) window.TabbyMonaco.layout();
   }
 
   function persistPaneWidth(key, value) {
@@ -2364,7 +2490,13 @@ function mountChat(root) {
     if (isNarrowChat()) return;
     setPaneWidth("sidebar", sidebarW, false);
     setPaneWidth("files", filesW, false);
+    if (window.TabbyMonaco) window.TabbyMonaco.layout();
   });
+  if (editorCol && window.ResizeObserver) {
+    new ResizeObserver(() => {
+      if (window.TabbyMonaco) window.TabbyMonaco.layout();
+    }).observe(editorCol);
+  }
 
   function copyText(text, btn) {
     const value = String(text || "");
@@ -5187,6 +5319,7 @@ function mountChat(root) {
                 refreshFilesSoon();
                 const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
                 reloadPreviewIfNeeded(written);
+                if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
               }
             }
             if (event.reasoning) {
@@ -6010,6 +6143,21 @@ function mountChat(root) {
       }
     });
   }
+  if (filesChangesList) {
+    filesChangesList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-change]");
+      if (!btn) return;
+      const row = btn.closest(".chat-history");
+      const path = row && row.dataset.path;
+      if (btn.dataset.change === "open" && path) openChange(path);
+    });
+  }
+  if (filesChangesToggle) {
+    filesChangesToggle.addEventListener("click", () => {
+      changesOpen = !changesOpen;
+      paintFilesChanges();
+    });
+  }
   if (tabsBar) {
     tabsBar.addEventListener("click", (event) => {
       const item = event.target.closest("[data-tab]");
@@ -6077,6 +6225,10 @@ function mountChat(root) {
       const tab = activeTabRow();
       if (btn.dataset.edit === "save") saveTab();
       if (btn.dataset.edit === "revert") revertTab();
+      if (btn.dataset.edit === "compare" && tab) {
+        openChange(isHistoryTab(tab) ? tab.filePath : tab.path);
+        return;
+      }
       if (btn.dataset.edit === "restore" && isHistoryTab(tab)) {
         restoreHistory(tab.filePath, tab.revId);
         return;

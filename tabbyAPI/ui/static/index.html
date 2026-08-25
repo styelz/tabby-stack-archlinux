@@ -17,7 +17,7 @@
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260826-sidebar-resize";
+    window.TABBY_UI_ASSET_V = "20260826-monaco";
     ["styles.css", "xterm.css"].forEach(function (name) {
       var link = document.createElement("link");
       link.rel = "stylesheet";
@@ -61,7 +61,7 @@
   </main>
 
   <script>
-    ["highlight.js", "utils.js", "xterm.js", "xterm-addon-fit.js", "lsp.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
+    ["highlight.js", "utils.js", "xterm.js", "xterm-addon-fit.js", "monaco.js", "lsp.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
       document.write('<script src="' + TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V + '"><\/script>');
     });
   </script>

@@ -1297,6 +1297,8 @@ PACKAGES=(
   libglvnd
   dos2unix
   dialog
+  nodejs
+  npm
 )
 
 ensure_sudo
@@ -1485,6 +1487,17 @@ if [[ "$UPDATE_MODE" -eq 1 ]] || ! "$DEST_TABBY/venv/bin/python" -c "import infi
   run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[extras]"
 fi
 run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U 'numpy>=2.1.0'
+if [[ -f "$DEST_TABBY/ui/fetch_monaco.py" ]]; then
+  progress 56 "Monaco editor"
+  run_quiet "$DEST_TABBY/venv/bin/python" "$DEST_TABBY/ui/fetch_monaco.py"
+fi
+run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U python-lsp-server
+if command -v npm >/dev/null 2>&1; then
+  progress 57 "Code-mode language servers"
+  mkdir -p "$DEST_TABBY/.lsp-tools"
+  run_quiet npm install --omit=dev --prefix "$DEST_TABBY/.lsp-tools" \
+    typescript typescript-language-server vscode-langservers-extracted
+fi
 if [[ "$UPDATE_MODE" -eq 0 && -x "$DEST_TABBY/venv/bin/python" && -f "$DEST_TABBY/switch_model.py" ]]; then
   ( cd "$DEST_TABBY" && "$DEST_TABBY/venv/bin/python" switch_model.py qwen --no-load ) >>"$INSTALL_LOG" 2>&1 || true
 fi

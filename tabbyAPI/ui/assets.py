@@ -8,14 +8,31 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-ALLOWED_SUFFIXES = {".css", ".js", ".html", ".svg", ".png", ".ico", ".woff2", ".map"}
+ALLOWED_SUFFIXES = {
+    ".css",
+    ".js",
+    ".html",
+    ".svg",
+    ".png",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".map",
+}
 
 
-def static_file(name: str) -> Path:
-    if not name or name != Path(name).name:
+def static_file(name: str, *, nested: bool = False) -> Path:
+    if not name:
         raise HTTPException(400, "Invalid asset name")
-    path = (STATIC_DIR / name).resolve()
-    if not str(path).startswith(str(STATIC_DIR.resolve())):
+    rel = Path(name)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise HTTPException(400, "Invalid asset path")
+    if not nested and name != rel.name:
+        raise HTTPException(400, "Invalid asset name")
+    path = (STATIC_DIR / rel).resolve()
+    root = STATIC_DIR.resolve()
+    if path != root and root not in path.parents:
         raise HTTPException(400, "Invalid asset path")
     if path.suffix.lower() not in ALLOWED_SUFFIXES:
         raise HTTPException(404, "Unknown asset")
@@ -24,8 +41,8 @@ def static_file(name: str) -> Path:
     return path
 
 
-def file_response(name: str) -> FileResponse:
-    path = static_file(name)
+def file_response(name: str, *, nested: bool = False) -> FileResponse:
+    path = static_file(name, nested=nested)
     media = {
         ".css": "text/css; charset=utf-8",
         ".js": "text/javascript; charset=utf-8",
@@ -33,7 +50,9 @@ def file_response(name: str) -> FileResponse:
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".ico": "image/x-icon",
+        ".woff": "font/woff",
         ".woff2": "font/woff2",
+        ".ttf": "font/ttf",
         ".map": "application/json",
     }.get(path.suffix.lower(), "application/octet-stream")
     response = FileResponse(path, media_type=media)

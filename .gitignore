@@ -26,6 +26,8 @@ Thumbs.db
 
 # Runtime and secrets (also ignored inside tabbyAPI/)
 **/venv/
+tabbyAPI/ui/static/vs/
+tabbyAPI/.lsp-tools/
 **/models/
 **/logs/
 **/pasted-images/

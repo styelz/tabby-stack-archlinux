@@ -50,10 +50,26 @@ def language_for(path: str) -> str:
     return _SUFFIX_LANG.get(suffix, "")
 
 
+def _bin_search_path() -> str:
+    root = Path(__file__).resolve().parent.parent
+    extra = [
+        root / "venv" / "bin",
+        root / ".lsp-tools" / "node_modules" / ".bin",
+    ]
+    parts = [str(path) for path in extra if path.is_dir()]
+    parts.append(os.environ.get("PATH") or "")
+    return os.pathsep.join(parts)
+
+
+def which_bin(name: str) -> Optional[str]:
+    return shutil.which(name, path=_bin_search_path())
+
+
 def command_for(language: str) -> Optional[list[str]]:
     for argv in _COMMANDS.get(language, []):
-        if argv and shutil.which(argv[0]):
-            return list(argv)
+        found = which_bin(argv[0]) if argv else None
+        if found:
+            return [found, *argv[1:]]
     return None
 
 

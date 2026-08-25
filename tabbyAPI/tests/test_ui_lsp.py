@@ -23,11 +23,11 @@ class LspMapTests(unittest.TestCase):
             self.assertIsNone(lsp.command_for("javascript"))
 
     def test_picks_first_server_on_path(self):
-        def which(name):
+        def which(name, path=None):
             return "/usr/bin/pylsp" if name == "pylsp" else None
 
         with mock.patch("ui.lsp.shutil.which", side_effect=which):
-            self.assertEqual(lsp.command_for("python"), ["pylsp"])
+            self.assertEqual(lsp.command_for("python"), ["/usr/bin/pylsp"])
 
     def test_probe_without_server_is_unavailable(self):
         with mock.patch("ui.lsp.shutil.which", return_value=None):
