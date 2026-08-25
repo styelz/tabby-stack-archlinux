@@ -13,7 +13,26 @@
   let currentPath = "";
 
   function localVs() {
-    return window.TabbyUI ? window.TabbyUI.path("assets/vs") : "/v1/ui/assets/vs";
+    const rel = window.TabbyUI ? window.TabbyUI.path("assets/vs") : "/v1/ui/assets/vs";
+    try {
+      return new URL(rel, window.location.href).href.replace(/\/+$/, "");
+    } catch {
+      return rel;
+    }
+  }
+
+  function installWorkers(vs) {
+    const base = String(vs || "").replace(/\/+$/, "");
+    const workerMain = `${base}/base/worker/workerMain.js`;
+    const body =
+      `self.MonacoEnvironment={baseUrl:${JSON.stringify(`${base}/`)}};` +
+      `importScripts(${JSON.stringify(workerMain)});`;
+    const workerUrl = URL.createObjectURL(new Blob([body], { type: "text/javascript" }));
+    window.MonacoEnvironment = {
+      getWorkerUrl() {
+        return workerUrl;
+      },
+    };
   }
 
   function loadScript(src) {
@@ -47,6 +66,7 @@
         await loadScript(`${vs}/loader.js`);
       }
       loadCss(`${vs}/editor/editor.main.css`);
+      installWorkers(vs);
       window.require.config({ paths: { vs } });
       await new Promise((resolve) => window.require(["vs/editor/editor.main"], resolve));
       window.monaco.editor.defineTheme("tabby", {

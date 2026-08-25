@@ -720,6 +720,43 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
             await reader
 
 
+@router.post("/workspace/{chat_id}/lsp", include_in_schema=False)
+async def ui_workspace_lsp_http(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    """JSON fallback when the reverse proxy does not upgrade WebSockets."""
+    from ui import lsp
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    cid = _workspace_chat_id(chat_id)
+    events: list[dict] = []
+
+    def on_event(event: dict) -> None:
+        events.append(event)
+
+    path = str(body.get("path") or "")
+    kind = str(body.get("type") or "")
+    language = lsp.language_for(path)
+    server = await lsp.get_server(_user, cid, language) if language and kind != "probe" else None
+    attached = False
+    if server and on_event not in server.listeners:
+        server.listeners.append(on_event)
+        attached = True
+    try:
+        reply = await lsp.handle_client(_user, cid, body)
+        if kind in ("didOpen", "didChange", "didSave"):
+            await asyncio.sleep(0.35)
+    finally:
+        if attached and server and on_event in server.listeners:
+            server.listeners.remove(on_event)
+    return {"ok": True, "reply": reply, "events": events}
+
+
 @router.websocket("/workspace/{chat_id}/lsp")
 async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
     from ui import lsp

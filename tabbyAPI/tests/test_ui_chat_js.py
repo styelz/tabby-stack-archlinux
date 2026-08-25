@@ -110,8 +110,18 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('data-files-more="refresh"', self.src)
         self.assertIn('id="chat-files-history-toggle"', self.src)
         self.assertIn("function setHistoryOpen(open)", self.src)
+        self.assertIn("function setChangesOpen(open)", self.src)
+        self.assertIn("tabby-ui-chat-changes", self.src)
+        self.assertIn("chat-files-twist", self.src)
+        self.assertIn("function changeMenuItems(", self.src)
+        self.assertIn("function discardChange(", self.src)
+        self.assertIn("function discardAllChanges(", self.src)
+        self.assertIn('label: "Discard Changes"', self.src)
+        self.assertIn('label: "Discard All Changes"', self.src)
+        self.assertIn("filesChangesList.contains(changeRow)", self.src)
         css = CHAT_CSS.read_text(encoding="utf-8")
         self.assertIn(".chat-files-history.is-collapsed", css)
+        self.assertIn(".chat-files-twist", css)
         self.assertIn(".chat-files.is-drop", css)
 
     def test_find_in_chat_bar(self):

@@ -8,6 +8,15 @@
     return href.href;
   }
 
+  function preferHttp() {
+    try {
+      const base = window.TabbyUI.path("");
+      return Boolean(base && !base.startsWith("/v1/ui"));
+    } catch {
+      return false;
+    }
+  }
+
   const state = {
     socket: null,
     chatId: "",
@@ -18,9 +27,49 @@
     changeTimer: 0,
     queue: [],
     providers: false,
+    http: preferHttp(),
   };
 
+  function applyMessage(message) {
+    if (!message || typeof message !== "object") return;
+    if (message.type === "diagnostics") {
+      if (window.TabbyMonaco) window.TabbyMonaco.setMarkers(message.path, message.items || []);
+      return;
+    }
+    const pending = state.pending[message.id];
+    if (pending) {
+      delete state.pending[message.id];
+      pending(message);
+    }
+  }
+
+  async function sendHttp(payload) {
+    const chatId = state.chatId;
+    if (!chatId || !window.TabbyUI) return { type: "unavailable" };
+    try {
+      const data = await window.TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/lsp`,
+        { method: "POST", body: payload }
+      );
+      (data.events || []).forEach(applyMessage);
+      return data.reply || { type: "unavailable" };
+    } catch {
+      return { type: "unavailable" };
+    }
+  }
+
   function send(payload) {
+    if (state.http) {
+      const id = payload.id;
+      sendHttp(payload).then((reply) => {
+        if (id && state.pending[id]) {
+          const pending = state.pending[id];
+          delete state.pending[id];
+          pending(reply || { type: "unavailable" });
+        }
+      });
+      return true;
+    }
     if (!state.socket || state.socket.readyState !== 1) {
       state.queue.push(payload);
       return false;
@@ -30,9 +79,9 @@
   }
 
   function flushQueue() {
-    while (state.queue.length && state.socket && state.socket.readyState === 1) {
-      const item = state.queue.shift();
-      state.socket.send(JSON.stringify(item));
+    while (state.queue.length) {
+      if (!state.http && !(state.socket && state.socket.readyState === 1)) return;
+      send(state.queue.shift());
     }
   }
 
@@ -41,7 +90,6 @@
       const id = (state.req += 1);
       state.pending[id] = resolve;
       if (!send(Object.assign({ id }, payload))) {
-        // Still queued; resolve when the reply arrives after open.
         setTimeout(() => {
           if (state.pending[id]) {
             delete state.pending[id];
@@ -54,12 +102,21 @@
 
   function connect(chatId) {
     if (!chatId) return;
+    if (state.http) {
+      state.chatId = chatId;
+      flushQueue();
+      return;
+    }
     if (state.socket && state.chatId === chatId && state.socket.readyState < 2) return;
-    resetSocket();
+    resetSocket(false);
     state.chatId = chatId;
     const socket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/lsp`));
     state.socket = socket;
-    socket.onopen = () => flushQueue();
+    let opened = false;
+    socket.onopen = () => {
+      opened = true;
+      flushQueue();
+    };
     socket.onmessage = (event) => {
       let message;
       try {
@@ -67,23 +124,19 @@
       } catch {
         return;
       }
-      if (!message || typeof message !== "object") return;
-      if (message.type === "diagnostics") {
-        if (window.TabbyMonaco) window.TabbyMonaco.setMarkers(message.path, message.items || []);
-        return;
-      }
-      const pending = state.pending[message.id];
-      if (pending) {
-        delete state.pending[message.id];
-        pending(message);
-      }
+      applyMessage(message);
     };
     socket.onclose = () => {
-      if (state.socket === socket) state.socket = null;
+      if (state.socket !== socket) return;
+      state.socket = null;
+      if (!opened) {
+        state.http = true;
+        flushQueue();
+      }
     };
   }
 
-  function resetSocket() {
+  function resetSocket(clearChat) {
     if (state.socket) {
       try {
         state.socket.close();
@@ -94,6 +147,7 @@
     state.socket = null;
     state.pending = Object.create(null);
     state.queue = [];
+    if (clearChat) state.chatId = "";
   }
 
   function monacoKind(item) {
@@ -191,9 +245,8 @@
       }
     },
     reset() {
-      resetSocket();
+      resetSocket(true);
       state.path = "";
-      state.chatId = "";
     },
     setChat(chatId) {
       state.chatId = chatId || "";

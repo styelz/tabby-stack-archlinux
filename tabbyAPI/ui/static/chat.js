@@ -181,6 +181,7 @@ function mountChat(root) {
             <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
             <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
             <input id="chat-upload" type="file" multiple accept=".html,.htm,.css,.js,.mjs,.json,.jsx,.ts,.tsx,.md,.txt,.svg,.xml,.yml,.yaml,.csv,.py,.sh,.php,.toml,.ini,.conf,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif,text/plain,text/html,text/css,text/javascript,application/json" hidden />
+            <input id="chat-upload-dir" type="file" multiple webkitdirectory directory hidden />
             <div class="chat-form-actions">
               <div class="chat-attach-wrap">
                 <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-haspopup="true" aria-expanded="false" aria-label="Attach image" title="Attach image">📎</button>
@@ -211,7 +212,13 @@ function mountChat(root) {
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
           <div class="chat-files-actions">
             <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
-            <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
+            <div class="chat-more chat-files-upload-wrap">
+              <button class="btn ghost" type="button" id="chat-files-upload" title="Add files or folders from this computer" aria-haspopup="true" aria-expanded="false">Upload</button>
+              <div class="chat-more-menu" id="chat-files-upload-menu" hidden>
+                <button type="button" data-upload="files">Files</button>
+                <button type="button" data-upload="folder">Folder</button>
+              </div>
+            </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
             <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
             <button class="btn ghost" type="button" id="chat-files-term" title="Open a jailed project shell">Term</button>
@@ -219,11 +226,19 @@ function mountChat(root) {
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-history" id="chat-files-changes">
-          <button type="button" class="chat-files-history-head" id="chat-files-changes-toggle" aria-expanded="true">Changes</button>
+          <button type="button" class="chat-files-history-head" id="chat-files-changes-toggle" aria-expanded="true">
+            <span class="chat-files-twist" aria-hidden="true"></span>
+            <span class="chat-files-history-title">Changes</span>
+            <span class="chat-files-history-count" id="chat-files-changes-count"></span>
+          </button>
           <div class="chat-files-history-list" id="chat-files-changes-list"></div>
         </div>
         <div class="chat-files-history" id="chat-files-history">
-          <button type="button" class="chat-files-history-head" id="chat-files-history-toggle" aria-expanded="true">History</button>
+          <button type="button" class="chat-files-history-head" id="chat-files-history-toggle" aria-expanded="true">
+            <span class="chat-files-twist" aria-hidden="true"></span>
+            <span class="chat-files-history-title">History</span>
+            <span class="chat-files-history-count" id="chat-files-history-count"></span>
+          </button>
           <div class="chat-files-history-list" id="chat-files-history-list"></div>
         </div>
       </aside>
@@ -251,6 +266,7 @@ function mountChat(root) {
   const attachMenu = root.querySelector("#chat-attach-menu");
   const fileInput = root.querySelector("#chat-file");
   const uploadInput = root.querySelector("#chat-upload");
+  const uploadDirInput = root.querySelector("#chat-upload-dir");
   const micBtn = root.querySelector("#chat-mic");
   const countEl = root.querySelector("#chat-count");
   const loadingBar = root.querySelector("#chat-loading");
@@ -291,10 +307,13 @@ function mountChat(root) {
   const filesClearBtn = root.querySelector("#chat-files-clear");
   const filesNewBtn = root.querySelector("#chat-files-new");
   const filesUploadBtn = root.querySelector("#chat-files-upload");
+  const filesUploadMenu = root.querySelector("#chat-files-upload-menu");
   const filesMoreBtn = root.querySelector("#chat-files-more");
   const filesMoreMenu = root.querySelector("#chat-files-more-menu");
   const filesHistoryPane = root.querySelector("#chat-files-history");
   const filesHistoryToggle = root.querySelector("#chat-files-history-toggle");
+  const filesChangesCountEl = root.querySelector("#chat-files-changes-count");
+  const filesHistoryCountEl = root.querySelector("#chat-files-history-count");
   const filesCountEl = root.querySelector("#chat-files-count");
   const filesSiteBtn = root.querySelector("#chat-files-site");
   const filesToggleBtn = root.querySelector("#chat-files-toggle");
@@ -319,7 +338,6 @@ function mountChat(root) {
   let filesHistoryReq = 0;
   let filesChanged = [];
   let pendingOpenChange = "";
-  let changesOpen = true;
   // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
   // its own buffer so switching away does not throw away unsaved edits.
   let openTabs = [];
@@ -372,12 +390,14 @@ function mountChat(root) {
   const FILES_W_DEFAULT = 250;
   const CHAT_COL_MIN = 280;
   const HISTORY_KEY = "tabby-ui-chat-history";
+  const CHANGES_KEY = "tabby-ui-chat-changes";
   const MAX_CHATS = 50;
   const narrowChat = window.matchMedia("(max-width: 900px)");
   // Below 900px the pane is a bottom sheet over the chat, so it starts closed
   // there no matter what the desktop preference says.
   let filesOpen = narrowChat.matches ? false : readFilesOpen();
   let historyOpen = readHistoryOpen();
+  let changesOpen = readChangesOpen();
 
   function readFilesOpen() {
     try {
@@ -390,6 +410,14 @@ function mountChat(root) {
   function readHistoryOpen() {
     try {
       return localStorage.getItem(HISTORY_KEY) !== "closed";
+    } catch {
+      return true;
+    }
+  }
+
+  function readChangesOpen() {
+    try {
+      return localStorage.getItem(CHANGES_KEY) !== "closed";
     } catch {
       return true;
     }
@@ -559,6 +587,9 @@ function mountChat(root) {
   let pendingImage = null;
   let pendingFiles = [];
   let uploadWantsAttach = false;
+  let uploadTargetDir = "";
+  const SKIP_UPLOAD_DIRS = new Set([".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache"]);
+  const SKIP_UPLOAD_FILES = new Set([".ds_store", "thumbs.db"]);
   let renaming = false;
   let settings = { temperature: null };
   try {
@@ -1059,11 +1090,34 @@ function mountChat(root) {
     return filesListing.find((row) => row.path === filesSelected) || null;
   }
 
+  function paintSectionCount(el, count) {
+    if (!el) return;
+    el.textContent = count ? String(count) : "";
+  }
+
+  function paintChangesPane() {
+    if (filesChangesPane) filesChangesPane.classList.toggle("is-collapsed", !changesOpen);
+    if (filesChangesToggle) filesChangesToggle.setAttribute("aria-expanded", changesOpen ? "true" : "false");
+    paintSectionCount(filesChangesCountEl, changeRows().length);
+  }
+
   function paintHistoryPane() {
     if (filesHistoryPane) filesHistoryPane.classList.toggle("is-collapsed", !historyOpen);
     if (filesHistoryToggle) {
       filesHistoryToggle.setAttribute("aria-expanded", historyOpen ? "true" : "false");
     }
+    const n = filesSelected && filesHistoryPath === filesSelected ? filesHistory.length : 0;
+    paintSectionCount(filesHistoryCountEl, n);
+  }
+
+  function setChangesOpen(open) {
+    changesOpen = Boolean(open);
+    try {
+      localStorage.setItem(CHANGES_KEY, changesOpen ? "open" : "closed");
+    } catch {
+      /* ignore */
+    }
+    paintChangesPane();
   }
 
   function setHistoryOpen(open) {
@@ -1079,6 +1133,7 @@ function mountChat(root) {
   function paintFilesHead() {
     paintFilesToggle();
     paintHistoryPane();
+    paintChangesPane();
     const total = filesListing.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
       filesCountEl.textContent = filesListing.length
@@ -1156,18 +1211,30 @@ function mountChat(root) {
     filesTree.replaceChildren(frag);
   }
 
-  function noteChange(path) {
+  function noteChange(path, written) {
     const clean = String(path || "").replace(/^\/+/, "");
     if (!clean || clean.startsWith("__history__/")) return;
+    const prev = filesChanged.find((row) => row.path === clean);
     filesChanged = filesChanged.filter((row) => row.path !== clean);
-    filesChanged.unshift({ path: clean, ts: Date.now() });
+    filesChanged.unshift({
+      path: clean,
+      ts: Date.now(),
+      written: Boolean(written || (prev && prev.written)),
+    });
     if (filesChanged.length > 40) filesChanged.length = 40;
+    paintFilesChanges();
+  }
+
+  function dropChange(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean) return;
+    filesChanged = filesChanged.filter((row) => row.path !== clean);
     paintFilesChanges();
   }
 
   function noteAgentWrite(path) {
     if (!path) return;
-    noteChange(path);
+    noteChange(path, true);
     if (TEXT_SUFFIXES.has(fileSuffix(path))) pendingOpenChange = path;
   }
 
@@ -1183,15 +1250,14 @@ function mountChat(root) {
       if (!tab || isHistoryTab(tab) || !tab.dirty) return;
       if (seen.has(tab.path)) return;
       seen.add(tab.path);
-      rows.push({ path: tab.path, ts: Date.now() });
+      rows.push({ path: tab.path, ts: Date.now(), written: false });
     });
     return rows;
   }
 
   function paintFilesChanges() {
     if (!filesChangesList) return;
-    if (filesChangesPane) filesChangesPane.classList.toggle("is-collapsed", !changesOpen);
-    if (filesChangesToggle) filesChangesToggle.setAttribute("aria-expanded", changesOpen ? "true" : "false");
+    paintChangesPane();
     const rows = changeRows();
     if (!rows.length) {
       filesChangesList.innerHTML =
@@ -1208,7 +1274,10 @@ function mountChat(root) {
       const dirty = Boolean(tab && tab.dirty);
       item.innerHTML =
         `<button type="button" class="chat-history-open" data-change="open" title="Edit this file and its diff">${TabbyUI.escapeHtml(row.path)}</button>` +
-        `<span class="chat-file-size">${dirty ? "unsaved" : "edited"}</span>`;
+        `<span class="chat-file-size">${dirty ? "unsaved" : "edited"}</span>` +
+        `<span class="chat-file-tools">` +
+        `<button type="button" class="btn ghost chat-icon" data-change="discard" aria-label="Discard changes" title="Discard changes">↩</button>` +
+        `</span>`;
       frag.appendChild(item);
     });
     filesChangesList.replaceChildren(frag);
@@ -1244,6 +1313,7 @@ function mountChat(root) {
 
   function paintFilesHistory() {
     if (!filesHistoryList) return;
+    paintHistoryPane();
     if (!filesSelected) {
       filesHistoryList.innerHTML =
         '<p class="muted chat-files-empty">Select a file to see its history.</p>';
@@ -1803,6 +1873,36 @@ function mountChat(root) {
     if (narrowChat.matches && filesOpen) setFilesOpen(false);
   }
 
+  async function loadFileHistory(path) {
+    const chatId = store.activeId;
+    if (!path || activeMode() !== "code" || !chatId) return [];
+    const data = await TabbyUI.api(
+      `workspace/${encodeURIComponent(chatId)}/history?path=${encodeURIComponent(path)}`
+    );
+    return Array.isArray(data.versions) ? data.versions : [];
+  }
+
+  async function applyRestore(path, revId, options) {
+    const data = await TabbyUI.api(
+      `workspace/${encodeURIComponent(store.activeId)}/history/restore`,
+      { method: "POST", body: { path, id: revId } }
+    );
+    const tab = findTab(path);
+    if (tab) {
+      tab.dirty = false;
+      tab.state = "loading";
+    }
+    openTabs.forEach((item) => {
+      if (isHistoryTab(item) && item.filePath === path) {
+        item.state = "loading";
+        item.rev += 1;
+      }
+    });
+    applyListing(data);
+    if (!options || options.open !== false) openFileTab(data.path || path);
+    refreshHistory();
+  }
+
   async function restoreHistory(path, revId) {
     if (!path || !revId) return;
     const yes = await TabbyUI.confirmModal({
@@ -1813,26 +1913,62 @@ function mountChat(root) {
     });
     if (!yes) return;
     try {
-      const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(store.activeId)}/history/restore`,
-        { method: "POST", body: { path, id: revId } }
-      );
-      const tab = findTab(path);
-      if (tab) {
-        tab.dirty = false;
-        tab.state = "loading";
-      }
-      openTabs.forEach((item) => {
-        if (isHistoryTab(item) && item.filePath === path) {
-          item.state = "loading";
-          item.rev += 1;
-        }
-      });
-      applyListing(data);
-      openFileTab(data.path || path);
-      refreshHistory();
+      await applyRestore(path, revId);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function discardChange(path, options) {
+    const opts = options || {};
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean) return false;
+    const row = filesChanged.find((item) => item.path === clean);
+    const tab = findTab(clean);
+    const written = Boolean(row && row.written);
+    if (!opts.skipConfirm) {
+      const yes = await TabbyUI.confirmModal({
+        title: "Discard changes?",
+        text: written
+          ? `Undo the last write to “${clean}”? The current file is kept in History.`
+          : `Discard unsaved edits to “${clean}”?`,
+        yes: "Discard",
+        no: "Cancel",
+      });
+      if (!yes) return false;
+    }
+    try {
+      if (written) {
+        if (tab) tab.dirty = false;
+        const versions = await loadFileHistory(clean);
+        if (versions.length) {
+          await applyRestore(clean, versions[0].id, { open: false });
+        } else if (filesListing.some((item) => item.path === clean)) {
+          await deleteProjectFile(clean, { skipConfirm: true });
+        }
+      } else if (tab && tab.dirty) {
+        revertTabAt(clean);
+      }
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+      return false;
+    }
+    dropChange(clean);
+    return true;
+  }
+
+  async function discardAllChanges() {
+    const rows = changeRows();
+    if (!rows.length) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Discard all changes?",
+      text: `Undo changes to ${rows.length} file${rows.length === 1 ? "" : "s"}? Unsaved edits and last writes are thrown away.`,
+      yes: "Discard",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    for (const row of rows) {
+      await discardChange(row.path, { skipConfirm: true });
     }
   }
 
@@ -1924,7 +2060,7 @@ function mountChat(root) {
       tab.note = "Saved.";
       const saved = filesListing.find((item) => item.path === path);
       live.size = saved ? Number(saved.size) || 0 : live.size;
-      noteChange(path);
+      noteChange(path, true);
       queueDrafts();
       reloadPreviewIfNeeded(path);
       if (window.TabbyLsp) window.TabbyLsp.didSave(path, contents);
@@ -1941,24 +2077,36 @@ function mountChat(root) {
     }
   }
 
-  function revertTab() {
-    const tab = activeTabRow();
-    if (!tab || !tab.dirty) return;
+  function revertTabAt(path) {
+    const tab = findTab(path);
+    if (!tab || isHistoryTab(tab) || !tab.dirty) return;
     tab.dirty = false;
     tab.note = "";
     tab.caret = null;
     tab.text = tab.original || "";
     queueDrafts();
-    if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
+    if (window.TabbyLsp) window.TabbyLsp.didChange(tab.path, tab.text);
+    if (activeTab === tab.path && window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
       window.TabbyMonaco.setValue(tab.text);
       paintEditorHead();
       paintTabs();
       paintFilesChanges();
       return;
     }
-    tab.state = "loading";
+    if (activeTab === tab.path) {
+      tab.state = "loading";
+      paintTabs();
+      paintView();
+      return;
+    }
     paintTabs();
-    paintView();
+    paintFilesChanges();
+  }
+
+  function revertTab() {
+    const tab = activeTabRow();
+    if (!tab || isHistoryTab(tab)) return;
+    revertTabAt(tab.path);
   }
 
   async function openSite() {
@@ -2394,10 +2542,17 @@ function mountChat(root) {
     filesMoreBtn.setAttribute("aria-expanded", "false");
   }
 
+  function hideUploadMenu() {
+    if (!filesUploadMenu || !filesUploadBtn) return;
+    filesUploadMenu.hidden = true;
+    filesUploadBtn.setAttribute("aria-expanded", "false");
+  }
+
   function hidePopovers() {
     hideMoreMenu();
     hideFilesMoreMenu();
     hideAttachMenu();
+    hideUploadMenu();
     if (TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
   }
 
@@ -2934,6 +3089,7 @@ function mountChat(root) {
     };
     add("image", "Attach image");
     add("upload", "Upload files to project");
+    add("upload-folder", "Upload folder to project");
     if (filesListing.length) {
       const mark = document.createElement("div");
       mark.className = "chat-attach-label";
@@ -2961,6 +3117,8 @@ function mountChat(root) {
     }
     const open = Boolean(attachMenu && attachMenu.hidden);
     hideMoreMenu();
+    hideFilesMoreMenu();
+    hideUploadMenu();
     if (!open) {
       hideAttachMenu();
       return;
@@ -2975,6 +3133,7 @@ function mountChat(root) {
     pendingFiles = [];
     if (fileInput) fileInput.value = "";
     if (uploadInput) uploadInput.value = "";
+    if (uploadDirInput) uploadDirInput.value = "";
     paintAttach();
   }
 
@@ -3194,14 +3353,17 @@ function mountChat(root) {
     }
   }
 
-  async function deleteProjectFile(path) {
-    const yes = await TabbyUI.confirmModal({
-      title: "Delete file",
-      text: `Delete “${path}”? The last version stays in History.`,
-      yes: "Delete",
-      no: "Cancel",
-    });
-    if (!yes) return;
+  async function deleteProjectFile(path, options) {
+    const skipConfirm = Boolean(options && options.skipConfirm);
+    if (!skipConfirm) {
+      const yes = await TabbyUI.confirmModal({
+        title: "Delete file",
+        text: `Delete “${path}”? The last version stays in History.`,
+        yes: "Delete",
+        no: "Cancel",
+      });
+      if (!yes) return;
+    }
     try {
       const data = await TabbyUI.api(
         `workspace/${encodeURIComponent(store.activeId)}/file?path=${encodeURIComponent(path)}`,
@@ -3214,10 +3376,12 @@ function mountChat(root) {
       if (open) open.dirty = false;
       filesSelected = path;
       pendingFiles = pendingFiles.filter((file) => file.path !== path);
+      dropChange(path);
       queueDrafts();
       paintAttach();
       paintFiles();
     } catch (err) {
+      if (skipConfirm) throw err;
       addBubble("assistant", `Error: ${err.message}`);
     }
   }
@@ -3490,24 +3654,143 @@ function mountChat(root) {
     }
   }
 
+  function cleanUploadRel(rel) {
+    return String(rel || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter((part) => part && part !== "." && part !== "..");
+  }
+
+  function skipUploadParts(parts) {
+    if (!parts.length) return true;
+    if (parts.some((part) => SKIP_UPLOAD_DIRS.has(part))) return true;
+    return SKIP_UPLOAD_FILES.has(String(parts[parts.length - 1] || "").toLowerCase());
+  }
+
+  function normalizeUploadItems(fileList) {
+    return Array.from(fileList || []).filter(Boolean).map((item) => {
+      if (item && item.file) {
+        return { file: item.file, rel: String(item.rel || item.file.name || "file") };
+      }
+      const file = item;
+      return { file, rel: String(file.webkitRelativePath || file.name || "file") };
+    });
+  }
+
+  function readDirEntries(reader) {
+    return new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+  }
+
+  function readEntryFile(entry) {
+    return new Promise((resolve, reject) => entry.file(resolve, reject));
+  }
+
+  async function collectEntry(entry, prefix, out) {
+    if (!entry) return;
+    if (entry.isFile) {
+      if (SKIP_UPLOAD_FILES.has(String(entry.name || "").toLowerCase())) return;
+      const file = await readEntryFile(entry);
+      out.push({ file, rel: `${prefix}${entry.name}` });
+      return;
+    }
+    if (!entry.isDirectory || SKIP_UPLOAD_DIRS.has(entry.name)) return;
+    const next = `${prefix}${entry.name}/`;
+    const reader = entry.createReader();
+    let batch = await readDirEntries(reader);
+    while (batch.length) {
+      for (const child of batch) await collectEntry(child, next, out);
+      batch = await readDirEntries(reader);
+    }
+  }
+
+  async function readDirHandle(dirHandle, prefix, out) {
+    if (!dirHandle || SKIP_UPLOAD_DIRS.has(dirHandle.name)) return out;
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === "directory") {
+        if (SKIP_UPLOAD_DIRS.has(name)) continue;
+        await readDirHandle(handle, `${prefix}/${name}`, out);
+      } else if (handle.kind === "file") {
+        if (SKIP_UPLOAD_FILES.has(String(name || "").toLowerCase())) continue;
+        const file = await handle.getFile();
+        out.push({ file, rel: `${prefix}/${name}` });
+      }
+    }
+    return out;
+  }
+
+  async function itemsFromDataTransfer(dt) {
+    const items = dt && dt.items;
+    if (items && items.length) {
+      const entries = [];
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item.kind !== "file") continue;
+        const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+        if (entry) entries.push(entry);
+      }
+      if (entries.length) {
+        const out = [];
+        for (const entry of entries) await collectEntry(entry, "", out);
+        return out;
+      }
+    }
+    return Array.from((dt && dt.files) || []);
+  }
+
+  async function pickLocalFiles({ attach = false, dir = "", folder = false } = {}) {
+    uploadWantsAttach = attach;
+    uploadTargetDir = dir || "";
+    if (folder && typeof window.showDirectoryPicker === "function") {
+      try {
+        const handle = await window.showDirectoryPicker({ mode: "read" });
+        const items = [];
+        await readDirHandle(handle, handle.name || "folder", items);
+        await uploadLocalFiles(items, {
+          attach,
+          open: !attach && items.length === 1,
+          dir: uploadTargetDir,
+        });
+        return;
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+      }
+    }
+    const input = folder ? uploadDirInput : uploadInput;
+    if (input) input.click();
+  }
+
   async function uploadLocalFiles(fileList, { attach = false, open = false, dir = "" } = {}) {
     const chatId = store.activeId;
-    const files = Array.from(fileList || []).filter(Boolean);
+    let items = normalizeUploadItems(fileList);
     const prefix = dir ? `${String(dir).replace(/\/+$/, "")}/` : "";
+    if (items.length > 200) {
+      addBubble("assistant", "Error: Too many files (max 200).");
+      items = items.slice(0, 200);
+    }
     let lastText = "";
-    for (const file of files) {
-      const name = prefix + String(file.name || "file").split(/[/\\]/).pop();
+    const errors = [];
+    let skipped = 0;
+    let written = 0;
+    for (const item of items) {
+      const parts = cleanUploadRel(item.rel);
+      if (skipUploadParts(parts)) {
+        skipped += 1;
+        continue;
+      }
+      const name = prefix + parts.join("/");
+      const file = item.file;
       const suffix = fileSuffix(name);
       if (!TEXT_SUFFIXES.has(suffix) && !IMAGE_SUFFIXES.has(suffix)) {
-        addBubble("assistant", `Error: ${name} is not a text or image file.`);
+        errors.push(`${name} is not a text or image file.`);
         continue;
       }
       if (TEXT_SUFFIXES.has(suffix) && file.size > 1 * 1024 * 1024) {
-        addBubble("assistant", `Error: ${name} is larger than 1 MB.`);
+        errors.push(`${name} is larger than 1 MB.`);
         continue;
       }
       if (IMAGE_SUFFIXES.has(suffix) && file.size > 8 * 1024 * 1024) {
-        addBubble("assistant", `Error: ${name} must be under 8 MB.`);
+        errors.push(`${name} must be under 8 MB.`);
         continue;
       }
       const bytesB64 = await blobToBase64(file);
@@ -3517,10 +3800,17 @@ function mountChat(root) {
       );
       applyListing(data);
       const path = data.path || name;
+      written += 1;
       if (attach) await attachProjectFile(path, { toggle: false });
       if (TEXT_SUFFIXES.has(fileSuffix(path))) lastText = path;
     }
-    if (open && lastText && files.length === 1) openFileTab(lastText);
+    if (errors.length) {
+      const extra = errors.length > 3 ? ` (+${errors.length - 3} more)` : "";
+      addBubble("assistant", `Error: ${errors.slice(0, 3).join(" ")}${extra}`);
+    } else if (!written && skipped) {
+      addBubble("assistant", "Error: Nothing in that folder could be added.");
+    }
+    if (open && lastText && items.length === 1) openFileTab(lastText);
   }
 
   function resizeDataUrl(dataUrl, maxEdge, quality) {
@@ -4481,6 +4771,15 @@ function mountChat(root) {
       !filesMoreBtn.contains(target)
     ) {
       hideFilesMoreMenu();
+    }
+    if (
+      filesUploadMenu &&
+      filesUploadBtn &&
+      !filesUploadMenu.hidden &&
+      !filesUploadMenu.contains(target) &&
+      !filesUploadBtn.contains(target)
+    ) {
+      hideUploadMenu();
     }
     if (
       attachMenu &&
@@ -5688,6 +5987,12 @@ function mountChat(root) {
       { label: "New folder", run: () => {
         createUserFolder(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
+      { label: "Upload files", run: () => {
+        pickLocalFiles({ dir: path }).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { label: "Upload folder", run: () => {
+        pickLocalFiles({ dir: path, folder: true }).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
       { sep: true },
       { label: open ? "Collapse" : "Expand", run: () => toggleFolder(path) },
       { label: "Expand all", run: () => expandAllFolders() },
@@ -5708,8 +6013,10 @@ function mountChat(root) {
         createUserFolder().catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
       { label: "Upload files", run: () => {
-        uploadWantsAttach = false;
-        if (uploadInput) uploadInput.click();
+        pickLocalFiles({}).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { label: "Upload folder", run: () => {
+        pickLocalFiles({ folder: true }).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
       { label: "Refresh", run: () => refreshFiles() },
       { sep: true },
@@ -5725,6 +6032,33 @@ function mountChat(root) {
     return [
       { label: "Compare to latest", run: () => openHistoryTab(path, version) },
       { label: "Restore this version", run: () => restoreHistory(path, version.id) },
+    ];
+  }
+
+  function changeMenuItems(path) {
+    const tab = findTab(path);
+    const busy = Boolean(tab && tab.busy);
+    return [
+      { label: "Open Changes", run: () => openChange(path) },
+      { label: "Open File", run: () => openFileTab(path) },
+      { label: "Copy path", run: () => copyText(path) },
+      { sep: true },
+      { label: "Discard Changes", danger: true, disabled: busy, run: () => discardChange(path) },
+      { label: "Discard All Changes", danger: true, disabled: !changeRows().length, run: () => discardAllChanges() },
+    ];
+  }
+
+  function changesPaneMenuItems() {
+    return [
+      { label: changesOpen ? "Collapse" : "Expand", run: () => setChangesOpen(!changesOpen) },
+      { sep: true },
+      { label: "Discard All Changes", danger: true, disabled: !changeRows().length, run: () => discardAllChanges() },
+    ];
+  }
+
+  function historyPaneMenuItems() {
+    return [
+      { label: historyOpen ? "Collapse" : "Expand", run: () => setHistoryOpen(!historyOpen) },
     ];
   }
 
@@ -5843,7 +6177,27 @@ function mountChat(root) {
       openCtx(event, fileMenuItems(fileRow.dataset.path));
       return;
     }
+    const changeRow = event.target.closest(".chat-history");
+    if (changeRow && filesChangesList && filesChangesList.contains(changeRow) && changeRow.dataset.path) {
+      openCtx(event, changeMenuItems(changeRow.dataset.path));
+      return;
+    }
+    if (event.target.closest("#chat-files-changes")) {
+      openCtx(event, changesPaneMenuItems());
+      return;
+    }
     const historyRow = event.target.closest(".chat-history");
+    if (historyRow && filesHistoryList && filesHistoryList.contains(historyRow) && filesSelected) {
+      const version = filesHistory.find((row) => row.id === historyRow.dataset.id);
+      if (version) {
+        openCtx(event, historyMenuItems(filesSelected, version));
+        return;
+      }
+    }
+    if (event.target.closest("#chat-files-history")) {
+      openCtx(event, historyPaneMenuItems());
+      return;
+    }
     if (historyRow && filesHistoryList && filesHistoryList.contains(historyRow) && filesSelected) {
       const version = filesHistory.find((row) => row.id === historyRow.dataset.id);
       if (version) {
@@ -6182,13 +6536,11 @@ function mountChat(root) {
       const row = btn.closest(".chat-history");
       const path = row && row.dataset.path;
       if (btn.dataset.change === "open" && path) openChange(path);
+      if (btn.dataset.change === "discard" && path) discardChange(path);
     });
   }
   if (filesChangesToggle) {
-    filesChangesToggle.addEventListener("click", () => {
-      changesOpen = !changesOpen;
-      paintFilesChanges();
-    });
+    filesChangesToggle.addEventListener("click", () => setChangesOpen(!changesOpen));
   }
   if (tabsBar) {
     tabsBar.addEventListener("click", (event) => {
@@ -6322,8 +6674,26 @@ function mountChat(root) {
   }
   if (filesUploadBtn) {
     filesUploadBtn.addEventListener("click", () => {
-      uploadWantsAttach = false;
-      if (uploadInput) uploadInput.click();
+      const open = Boolean(filesUploadMenu && filesUploadMenu.hidden);
+      hideMoreMenu();
+      hideFilesMoreMenu();
+      hideAttachMenu();
+      if (!filesUploadMenu) {
+        pickLocalFiles({}).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+        return;
+      }
+      filesUploadMenu.hidden = !open;
+      filesUploadBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+  if (filesUploadMenu) {
+    filesUploadMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-upload]");
+      if (!btn) return;
+      hideUploadMenu();
+      pickLocalFiles({ folder: btn.dataset.upload === "folder" }).catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
     });
   }
   if (filesMoreBtn && filesMoreMenu) {
@@ -6331,6 +6701,7 @@ function mountChat(root) {
       const open = filesMoreMenu.hidden;
       hideMoreMenu();
       hideAttachMenu();
+      hideUploadMenu();
       filesMoreMenu.hidden = !open;
       filesMoreBtn.setAttribute("aria-expanded", open ? "true" : "false");
     });
@@ -6382,10 +6753,13 @@ function mountChat(root) {
         return;
       }
       const files = event.dataTransfer && event.dataTransfer.files;
-      if (!files || !files.length) return;
+      if ((!event.dataTransfer || !event.dataTransfer.items || !event.dataTransfer.items.length) && (!files || !files.length)) return;
       const row = event.target.closest(".chat-file");
       const dir = row && row.dataset.kind === "dir" ? row.dataset.path : "";
-      uploadLocalFiles(files, { attach: false, open: files.length === 1, dir }).catch((err) => {
+      itemsFromDataTransfer(event.dataTransfer).then((picked) => {
+        if (!picked.length) return;
+        return uploadLocalFiles(picked, { attach: false, open: picked.length === 1, dir });
+      }).catch((err) => {
         addBubble("assistant", `Error: ${err.message}`);
       });
     });
@@ -6424,8 +6798,15 @@ function mountChat(root) {
         return;
       }
       if (btn.dataset.attach === "upload") {
-        uploadWantsAttach = true;
-        if (uploadInput) uploadInput.click();
+        pickLocalFiles({ attach: true }).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
+      if (btn.dataset.attach === "upload-folder") {
+        pickLocalFiles({ attach: true, folder: true }).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
         return;
       }
       if (btn.dataset.attach === "file" && btn.dataset.path) {
@@ -6449,20 +6830,25 @@ function mountChat(root) {
       addBubble("assistant", `Error: ${err.message}`);
     });
   });
-  if (uploadInput) {
-    uploadInput.addEventListener("change", () => {
-      const files = uploadInput.files;
+  function bindUploadInput(input) {
+    if (!input) return;
+    input.addEventListener("change", () => {
+      const files = input.files;
       const attach = uploadWantsAttach;
+      const dir = uploadTargetDir;
       uploadWantsAttach = false;
-      uploadLocalFiles(files, { attach, open: !attach && files.length === 1 })
+      uploadTargetDir = "";
+      uploadLocalFiles(files, { attach, open: !attach && files && files.length === 1, dir })
         .catch((err) => {
           addBubble("assistant", `Error: ${err.message}`);
         })
         .finally(() => {
-          uploadInput.value = "";
+          input.value = "";
         });
     });
   }
+  bindUploadInput(uploadInput);
+  bindUploadInput(uploadDirInput);
   input.addEventListener("paste", (event) => {
     const items = event.clipboardData && event.clipboardData.items;
     if (!items) return;
@@ -6487,9 +6873,12 @@ function mountChat(root) {
     event.preventDefault();
     form.classList.remove("is-drop");
     const files = event.dataTransfer && event.dataTransfer.files;
-    if (!files || !files.length) return;
+    if ((!event.dataTransfer || !event.dataTransfer.items || !event.dataTransfer.items.length) && (!files || !files.length)) return;
     if (activeMode() === "code") {
-      uploadLocalFiles(files, { attach: true, open: files.length === 1 }).catch((err) => {
+      itemsFromDataTransfer(event.dataTransfer).then((picked) => {
+        if (!picked.length) return;
+        return uploadLocalFiles(picked, { attach: true, open: picked.length === 1 });
+      }).catch((err) => {
         addBubble("assistant", `Error: ${err.message}`);
       });
       return;

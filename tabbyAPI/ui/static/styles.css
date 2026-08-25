@@ -607,6 +607,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-width: 8px;
 }
 .chat-files-more,
+.chat-files-upload-wrap,
 .chat-files-close {
   flex: 0 0 auto;
 }
@@ -625,8 +626,8 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   font-variant-numeric: tabular-nums;
 }
 .chat-files-tree {
-  flex: 1 1 55%;
-  min-height: 0;
+  flex: 2 1 0;
+  min-height: 72px;
   overflow: auto;
   padding: 0 8px 8px;
   display: flex;
@@ -634,7 +635,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   gap: 2px;
 }
 .chat-files-history {
-  flex: 1 1 45%;
+  flex: 1 1 0;
   min-height: 72px;
   display: flex;
   flex-direction: column;
@@ -646,18 +647,56 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 }
 .chat-files-history.is-collapsed .chat-files-history-list { display: none; }
 .chat-files-history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
+  height: 22px;
   border: 0;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.03);
   color: inherit;
   text-align: left;
   width: 100%;
-  padding: 8px 10px 6px;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   cursor: pointer;
+  user-select: none;
 }
-.chat-files-history-head:hover { color: var(--text); }
+.chat-files-history-head:hover { background: rgba(122, 162, 255, 0.1); }
+.chat-files-twist {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  opacity: 0.7;
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+.chat-files-history.is-collapsed .chat-files-twist {
+  transform: rotate(0deg);
+}
+.chat-files-history-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-files-history-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+.chat-files-history-count:empty { display: none; }
 .chat-files.is-drop {
   outline: 2px dashed var(--accent);
   outline-offset: -6px;
@@ -1969,6 +2008,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .chat-more-menu button:focus-visible {
   background: rgba(122, 162, 255, 0.16);
   outline: none;
+}
+.chat-files-upload-wrap .chat-more-menu {
+  right: auto;
+  left: 0;
 }
 .chat-edit-bar,
 .chat-attach {
