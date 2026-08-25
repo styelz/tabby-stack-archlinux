@@ -66,7 +66,7 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 **Code** gives every conversation its own project folder. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
-<img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/2556f7ac-379b-488f-8624-3056df940086" />
+<img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/c38532d6-1e74-4a8e-a851-9082c3786186" />
 
 Other pages:
 
@@ -79,7 +79,7 @@ Other pages:
 
 <img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/1450953d-5e8a-4818-b6d9-adc1f83beb80" />
 
-<img width="1919" height="1124" alt="image" src="https://github.com/user-attachments/assets/36f5395d-86ab-4a0c-8fa2-57e0cecb3e49" />
+<img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/0975f116-f71f-4cca-8439-c78a64614ece" />
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/db17067e-e5da-46ea-aec7-bfe4b1086a85" />
 
