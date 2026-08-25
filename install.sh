@@ -1378,14 +1378,27 @@ enable_docker() {
   sudo -n usermod -aG docker "$USER" >>"$INSTALL_LOG" 2>&1 || true
 }
 
+drop_codebox_containers() {
+  local ids=()
+  if need_cmd docker; then
+    mapfile -t ids < <(docker ps -aq --filter label=tabby.stack=code 2>/dev/null || true)
+    if ((${#ids[@]})); then
+      docker rm -f "${ids[@]}" >>"$INSTALL_LOG" 2>&1 || \
+        sudo -n docker rm -f "${ids[@]}" >>"$INSTALL_LOG" 2>&1 || true
+    fi
+  fi
+}
+
 build_codebox_image() {
   local df="$DEST_TABBY/ui/codebox/Dockerfile"
   local dir="$DEST_TABBY/ui/codebox"
   [[ -f "$df" ]] || return 0
   if sudo -n docker build -t tabby-stack-code:local -f "$df" "$dir" >>"$INSTALL_LOG" 2>&1; then
+    drop_codebox_containers
     return 0
   fi
   if need_cmd docker && docker build -t tabby-stack-code:local -f "$df" "$dir" >>"$INSTALL_LOG" 2>&1; then
+    drop_codebox_containers
     return 0
   fi
   echo "WARNING: tabby-stack-code image build failed" >> "$INSTALL_LOG"
@@ -1515,13 +1528,6 @@ run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U 'numpy>=2.1.0'
 if [[ -f "$DEST_TABBY/ui/fetch_monaco.py" ]]; then
   progress 56 "Monaco editor"
   run_quiet "$DEST_TABBY/venv/bin/python" "$DEST_TABBY/ui/fetch_monaco.py"
-fi
-run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U python-lsp-server
-if command -v npm >/dev/null 2>&1; then
-  progress 57 "Code-mode language servers"
-  mkdir -p "$DEST_TABBY/.lsp-tools"
-  run_quiet npm install --omit=dev --prefix "$DEST_TABBY/.lsp-tools" \
-    typescript typescript-language-server vscode-langservers-extracted
 fi
 if [[ "$UPDATE_MODE" -eq 0 && -x "$DEST_TABBY/venv/bin/python" && -f "$DEST_TABBY/switch_model.py" ]]; then
   ( cd "$DEST_TABBY" && "$DEST_TABBY/venv/bin/python" switch_model.py qwen --no-load ) >>"$INSTALL_LOG" 2>&1 || true

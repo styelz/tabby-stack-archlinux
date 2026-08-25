@@ -4,6 +4,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$ROOT/venv/bin/python"
+# Code-mode Term talks to docker. Wait briefly if the daemon is still coming up.
+if command -v docker >/dev/null 2>&1 && [[ ! -S /var/run/docker.sock ]]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -S /var/run/docker.sock ]] && break
+    sleep 1
+  done
+fi
 if [[ -w /var/run/docker.sock ]]; then
   exec "$PY" watch_api.py
 fi

@@ -67,11 +67,12 @@ class ShellSession:
         self._pending = pending
         self.last_io = time.time()
 
-    def write(self, data: bytes) -> None:
-        if self.sock is None:
+    async def write(self, data: bytes) -> None:
+        if self.sock is None or not data:
             return
+        loop = asyncio.get_running_loop()
         try:
-            self.sock.send(data)
+            await loop.sock_sendall(self.sock, data)
             self.last_io = time.time()
         except OSError:
             pass
@@ -90,25 +91,10 @@ class ShellSession:
         if self.sock is None:
             return b""
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[bytes] = loop.create_future()
-
-        def _ready() -> None:
-            if future.done():
-                return
-            try:
-                chunk = self.sock.recv(n)
-            except BlockingIOError:
-                return
-            except OSError:
-                chunk = b""
-            future.set_result(chunk)
-
-        loop.add_reader(self.sock.fileno(), _ready)
         try:
-            chunk = await future
-        finally:
-            with contextlib.suppress(Exception):
-                loop.remove_reader(self.sock.fileno())
+            chunk = await loop.sock_recv(self.sock, n)
+        except OSError:
+            return b""
         if chunk:
             self.last_io = time.time()
         return chunk
@@ -156,3 +142,11 @@ def drop_chat(username: str, chat_id: str) -> None:
     if session:
         session.close()
     codebox.drop_container(username, chat_id)
+
+
+def drop_user(username: str) -> None:
+    dead = [key for key in list(_sessions) if key[0] == username]
+    for key in dead:
+        session = _sessions.pop(key, None)
+        if session:
+            session.close()

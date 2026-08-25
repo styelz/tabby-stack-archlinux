@@ -673,14 +673,13 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
     except HTTPException:
         await websocket.close(code=4400)
         return
+    await websocket.accept()
     try:
         session = await shell.get_session(user, cid)
     except shell.ShellError as exc:
-        await websocket.accept()
         await websocket.send_json({"type": "error", "message": str(exc)})
         await websocket.close()
         return
-    await websocket.accept()
     await websocket.send_json({"type": "ready"})
 
     async def pump_out() -> None:
@@ -701,7 +700,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
                 break
             data = message.get("bytes")
             if data:
-                session.write(data)
+                await session.write(data)
                 continue
             text = message.get("text")
             if not text:

@@ -508,13 +508,26 @@ finish_git_update() {
 
   if [[ -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" ]]; then
     if command -v docker >/dev/null 2>&1; then
-      docker build -t tabby-stack-code:local \
+      local built=0
+      if docker build -t tabby-stack-code:local \
         -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" \
-        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1 || \
-      sudo -n docker build -t tabby-stack-code:local \
+        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1; then
+        built=1
+      elif sudo -n docker build -t tabby-stack-code:local \
         -f "$DEST/tabbyAPI/ui/codebox/Dockerfile" \
-        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1 || \
-      echo "WARNING: tabby-stack-code image build failed" >> "$UPDATE_LOG"
+        "$DEST/tabbyAPI/ui/codebox" >> "$UPDATE_LOG" 2>&1; then
+        built=1
+      else
+        echo "WARNING: tabby-stack-code image build failed" >> "$UPDATE_LOG"
+      fi
+      if [[ "$built" -eq 1 ]]; then
+        local box_ids=()
+        mapfile -t box_ids < <(docker ps -aq --filter label=tabby.stack=code 2>/dev/null || true)
+        if ((${#box_ids[@]})); then
+          docker rm -f "${box_ids[@]}" >> "$UPDATE_LOG" 2>&1 || \
+            sudo -n docker rm -f "${box_ids[@]}" >> "$UPDATE_LOG" 2>&1 || true
+        fi
+      fi
     fi
   fi
 

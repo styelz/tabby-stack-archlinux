@@ -185,8 +185,11 @@ def delete_store(username: str) -> None:
             path.unlink()
         except OSError:
             pass
+    from ui import lsp, shell
     from ui.preview import drop_user
     from ui.workspace import delete_user_workspaces
 
+    shell.drop_user(username)
+    lsp.drop_user(username)
     delete_user_workspaces(username)
     drop_user(username)

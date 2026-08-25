@@ -174,11 +174,24 @@ def _run(argv: list[str], timeout: float = 60) -> subprocess.CompletedProcess:
         raise CodeboxError("docker timed out") from exc
 
 
-def _inspect_status(name: str) -> Optional[str]:
-    proc = _run([docker_bin(), "inspect", "-f", "{{.State.Status}}", name], timeout=15)
+def _inspect_field(name: str, fmt: str) -> Optional[str]:
+    proc = _run([docker_bin(), "inspect", "-f", fmt, name], timeout=15)
     if proc.returncode != 0:
         return None
     return (proc.stdout or b"").decode("utf-8", "replace").strip() or None
+
+
+def _inspect_status(name: str) -> Optional[str]:
+    return _inspect_field(name, "{{.State.Status}}")
+
+
+def _stale_container(name: str) -> bool:
+    """True when this container was created from an older image tag."""
+    wanted = _inspect_field(IMAGE, "{{.Id}}")
+    current = _inspect_field(name, "{{.Image}}")
+    if not wanted or not current:
+        return False
+    return current != wanted
 
 
 def _docker_error(proc: subprocess.CompletedProcess, fallback: str) -> str:
@@ -209,6 +222,9 @@ def ensure_container(username: str, chat_id: str) -> str:
     root = workspace_root(username, chat_id, create=True, box=False)
     with _name_lock(name):
         status = _inspect_status(name)
+        if status and _stale_container(name):
+            _run([docker_bin(), "rm", "-f", name], timeout=30)
+            status = None
         if status == "running":
             return name
         if status:

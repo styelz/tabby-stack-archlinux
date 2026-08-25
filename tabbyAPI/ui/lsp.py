@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -99,7 +98,9 @@ class LspServer:
         result = await self.request(
             "initialize",
             {
-                "processId": os.getpid(),
+                # Null: these servers run in a container PID namespace, so a
+                # host pid looks dead and vscode-languageserver exits.
+                "processId": None,
                 "rootUri": root_uri,
                 "workspaceFolders": [{"uri": root_uri, "name": "project"}],
                 "capabilities": {
@@ -263,6 +264,12 @@ async def get_server(username: str, chat_id: str, language: str) -> Optional[Lsp
 
 def drop_chat(username: str, chat_id: str) -> None:
     dead = [key for key in _servers if key[0] == username and key[1] == chat_id]
+    for key in dead:
+        _servers.pop(key).close()
+
+
+def drop_user(username: str) -> None:
+    dead = [key for key in list(_servers) if key[0] == username]
     for key in dead:
         _servers.pop(key).close()
 
