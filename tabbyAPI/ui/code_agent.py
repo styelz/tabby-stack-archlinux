@@ -1,4 +1,4 @@
-"""Server-side file-tool loop for UI Code mode. No shell."""
+"""Server-side jailed project-tool loop for UI Code mode. No shell."""
 
 from __future__ import annotations
 
@@ -15,9 +15,14 @@ CODE_SYSTEM = (
     "You are coding in a per-chat project folder on this Tabby Stack host. "
     "The user can create, upload, and attach files; attached files are included "
     "in their message. Use the file tools (Write, StrReplace, Read, Delete, List) "
-    "to create and edit files. Do not dump whole files in chat. Do not use a "
-    "shell and do not try to run the site. Point img src at the planned local "
-    "paths. When you are done, give a short summary of what you wrote."
+    "to create and edit text files. Use OptimizeImage to compress, resize, or "
+    "convert project images. Do not create placeholder files when an attached "
+    "project image can be processed with OptimizeImage. Do not dump whole files "
+    "in chat. Do not use a shell and do not try to run the site. Point img src "
+    "at the planned local paths. Generated assets for an HTML website are "
+    "automatically converted to web-optimized files and their code references "
+    "are updated after rendering. When you are done, give a short summary of "
+    "what you wrote or optimized."
 )
 
 _WRITE_NAMES = (
@@ -35,6 +40,7 @@ _REPLACE_NAMES = (
 _READ_NAMES = ("read", "read_file", "readfile")
 _DELETE_NAMES = ("delete", "delete_file", "remove_file")
 _LIST_NAMES = ("list", "list_dir", "listdir", "list_files")
+_OPTIMIZE_NAMES = ("optimizeimage", "optimize_image", "compress_image", "resize_image")
 
 
 def code_tool_specs() -> list[ToolSpec]:
@@ -110,6 +116,62 @@ def code_tool_specs() -> list[ToolSpec]:
                 },
             ),
         ),
+        ToolSpec(
+            type="function",
+            function=Function(
+                name="OptimizeImage",
+                description=(
+                    "Optimize, resize, or convert one existing project image. "
+                    "Omit output_path and format to safely optimize it in place."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path of the existing project image.",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": (
+                                "Optional destination. Omit to overwrite in place, or when "
+                                "converting to create name.optimized.ext."
+                            ),
+                        },
+                        "max_width": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8192,
+                            "description": "Optional maximum width while preserving aspect ratio.",
+                        },
+                        "max_height": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8192,
+                            "description": "Optional maximum height while preserving aspect ratio.",
+                        },
+                        "quality": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "default": 82,
+                            "description": "JPEG or WebP quality.",
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["original", "png", "jpeg", "webp", "gif"],
+                            "default": "original",
+                        },
+                        "lossless": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Use lossless encoding when writing WebP.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
+        ),
     ]
 
 
@@ -163,6 +225,8 @@ def _kind(name: str) -> str:
         return "delete"
     if match_tool_name([key], _LIST_NAMES):
         return "list"
+    if match_tool_name([key], _OPTIMIZE_NAMES):
+        return "optimize"
     return ""
 
 
@@ -200,7 +264,23 @@ def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[st
     if kind == "delete":
         workspace.delete_file(username, chat_id, rel)
         return f"Deleting {rel}", f"Deleted {rel}"
-    return "Tool error", f"Unknown tool {name!r}. Use Write, StrReplace, Read, Delete, or List."
+    if kind == "optimize":
+        result = workspace.optimize_image(
+            username,
+            chat_id,
+            rel,
+            output_path=str(args.get("output_path") or ""),
+            max_width=args.get("max_width"),
+            max_height=args.get("max_height"),
+            quality=args.get("quality", 82),
+            output_format=str(args.get("format") or "original"),
+            lossless=bool(args.get("lossless", False)),
+        )
+        return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
+    return (
+        "Tool error",
+        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Delete, List, or OptimizeImage.",
+    )
 
 
 def _assistant_message(response):
@@ -303,8 +383,16 @@ async def iter_code_turns(
                 label, result = execute_tool(username, chat_id, name, args)
             except (ValueError, FileNotFoundError, OSError) as exc:
                 label, result = "Tool error", str(exc)
-            if label.startswith("Writing ") or label.startswith("Editing "):
-                path = _arg_path(args)
+            if (
+                label.startswith("Writing ")
+                or label.startswith("Editing ")
+                or label.startswith("Optimizing ")
+            ):
+                path = (
+                    label.removeprefix("Optimizing ")
+                    if label.startswith("Optimizing ")
+                    else _arg_path(args)
+                )
                 if path and path not in written:
                     written.append(path)
             yield ("status", label)

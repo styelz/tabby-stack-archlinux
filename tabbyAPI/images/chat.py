@@ -367,7 +367,8 @@ def _console_ready_text(
     if code:
         dests = [dest for _url, dest in pairs]
         names = []
-        for name in list(extra_files or []) + dests:
+        workspace_files = list(extra_files) if extra_files is not None else dests
+        for name in workspace_files:
             if name and name not in names:
                 names.append(name)
         if names:

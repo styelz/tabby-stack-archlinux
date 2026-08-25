@@ -337,6 +337,167 @@ def copy_bytes(username: str, chat_id: str, rel: str, data: bytes) -> str:
     return path.relative_to(root.resolve()).as_posix()
 
 
+def optimize_image(
+    username: str,
+    chat_id: str,
+    rel: str,
+    *,
+    output_path: str = "",
+    max_width: Optional[int] = None,
+    max_height: Optional[int] = None,
+    quality: int = 82,
+    output_format: str = "original",
+    lossless: bool = False,
+) -> dict[str, Any]:
+    """Compress, resize, or convert one raster image in a chat workspace."""
+    from PIL import Image, ImageOps
+
+    source = resolve_file(username, chat_id, rel)
+    if not is_image_path(rel):
+        raise ValueError("OptimizeImage only supports PNG, JPEG, WebP, and GIF files.")
+
+    formats = {
+        ".png": "PNG",
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".webp": "WEBP",
+        ".gif": "GIF",
+    }
+    requested = str(output_format or "original").strip().lower()
+    if requested == "jpg":
+        requested = "jpeg"
+    if requested not in ("original", "png", "jpeg", "webp", "gif"):
+        raise ValueError("format must be original, png, jpeg, webp, or gif")
+    image_format = formats[source.suffix.lower()] if requested == "original" else requested.upper()
+
+    destination = str(output_path or "").strip()
+    if not destination:
+        if requested == "original":
+            destination = rel
+        else:
+            extension = ".jpg" if requested == "jpeg" else f".{requested}"
+            source_rel = Path(rel)
+            destination = str(source_rel.with_name(f"{source_rel.stem}.optimized{extension}"))
+    destination_suffix = Path(destination).suffix.lower()
+    if destination_suffix not in formats:
+        raise ValueError("output_path must end in .png, .jpg, .jpeg, .webp, or .gif")
+    if formats[destination_suffix] != image_format:
+        raise ValueError("output_path extension does not match format")
+
+    try:
+        width_limit = int(max_width) if max_width is not None else None
+        height_limit = int(max_height) if max_height is not None else None
+        image_quality = int(quality)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Dimensions and quality must be integers.") from exc
+    if width_limit is not None and not 1 <= width_limit <= 8192:
+        raise ValueError("max_width must be between 1 and 8192")
+    if height_limit is not None and not 1 <= height_limit <= 8192:
+        raise ValueError("max_height must be between 1 and 8192")
+    if not 1 <= image_quality <= 100:
+        raise ValueError("quality must be between 1 and 100")
+
+    original_bytes = source.stat().st_size
+    try:
+        with Image.open(source) as opened:
+            if int(getattr(opened, "n_frames", 1) or 1) > 1:
+                raise ValueError("Animated images are not supported by OptimizeImage.")
+            if opened.width * opened.height > 40_000_000:
+                raise ValueError("Image dimensions are too large to optimize safely.")
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            original_size = (image.width, image.height)
+            if width_limit is not None or height_limit is not None:
+                bounds = (
+                    width_limit or image.width,
+                    height_limit or image.height,
+                )
+                image.thumbnail(bounds, Image.Resampling.LANCZOS)
+
+            if image_format == "JPEG":
+                if image.mode in ("RGBA", "LA") or (
+                    image.mode == "P" and "transparency" in image.info
+                ):
+                    rgba = image.convert("RGBA")
+                    flattened = Image.new("RGB", rgba.size, "white")
+                    flattened.paste(rgba, mask=rgba.getchannel("A"))
+                    image = flattened
+                elif image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+
+            buffer = io.BytesIO()
+            save_options: dict[str, Any] = {"format": image_format}
+            if image_format == "PNG":
+                save_options.update(optimize=True, compress_level=9)
+            elif image_format == "JPEG":
+                save_options.update(quality=image_quality, optimize=True, progressive=True)
+            elif image_format == "WEBP":
+                save_options.update(quality=image_quality, method=6, lossless=bool(lossless))
+            elif image_format == "GIF":
+                save_options.update(optimize=True)
+            image.save(buffer, **save_options)
+    except ValueError:
+        raise
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Could not optimize {rel}: {exc}") from exc
+
+    encoded = buffer.getvalue()
+    written = copy_bytes(username, chat_id, destination, encoded)
+    return {
+        "path": written,
+        "format": image_format.lower(),
+        "original_dimensions": f"{original_size[0]}x{original_size[1]}",
+        "dimensions": f"{image.width}x{image.height}",
+        "original_bytes": original_bytes,
+        "bytes": len(encoded),
+        "saved_bytes": original_bytes - len(encoded),
+    }
+
+
+def _generated_item_prompt(job, dest: str) -> str:
+    for item in getattr(job, "items", None) or []:
+        if str(getattr(item, "output_path", "") or "").strip() == dest:
+            return str(getattr(item, "prompt", "") or "")
+    return ""
+
+
+def _has_transparency(path: Path) -> bool:
+    from PIL import Image
+
+    try:
+        with Image.open(path) as image:
+            if image.mode in ("RGBA", "LA"):
+                low, _high = image.getchannel("A").getextrema()
+                return low < 255
+            return image.mode == "P" and "transparency" in image.info
+    except OSError:
+        return False
+
+
+def _rewrite_project_image_path(
+    username: str, chat_id: str, old_path: str, new_path: str
+) -> list[str]:
+    changed: list[str] = []
+    replacements = [(old_path, new_path)]
+    old_name = Path(old_path).name
+    new_name = Path(new_path).name
+    if old_name != old_path:
+        replacements.append((old_name, new_name))
+    for row in list_files(username, chat_id):
+        rel = str(row["path"])
+        if not row["editable"] or rel in (old_path, new_path):
+            continue
+        text = read_text(username, chat_id, rel)
+        updated = text
+        for old, new in replacements:
+            updated = updated.replace(old, new)
+        if updated == text:
+            continue
+        write_text(username, chat_id, rel, updated)
+        changed.append(rel)
+    return changed
+
+
 def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     from common.gpu_mode import generated_image_path
     from images.paths import generated_png_name_from_url, living_download_pairs
@@ -348,7 +509,44 @@ def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
         if src is None:
             continue
         copied.append(copy_bytes(username, chat_id, dest, src.read_bytes()))
-    return copied
+
+    # A Code-mode request that produced an HTML page is a website build. Convert
+    # its generated PNG assets to WebP and update the page/CSS/JS references as
+    # one server-side operation, so the model cannot leave stale .png paths.
+    if not site_entry(username, chat_id):
+        return copied
+
+    optimized: list[str] = []
+    for dest in copied:
+        source = resolve_file(username, chat_id, dest)
+        prompt = f"{dest} {_generated_item_prompt(job, dest)}".lower()
+        graphic = any(
+            word in prompt
+            for word in ("logo", "icon", "badge", "wordmark", "emblem", "transparent")
+        )
+        transparent = _has_transparency(source)
+        output = str(Path(dest).with_suffix(".webp"))
+        try:
+            result = optimize_image(
+                username,
+                chat_id,
+                dest,
+                output_path=output,
+                max_width=1024 if graphic else 1920,
+                max_height=1024 if graphic else 1920,
+                quality=88 if graphic else 82,
+                output_format="webp",
+                lossless=graphic or transparent,
+            )
+            written = str(result["path"])
+            _rewrite_project_image_path(username, chat_id, dest, written)
+            delete_file(username, chat_id, dest)
+            optimized.append(written)
+        except (ValueError, FileNotFoundError, OSError):
+            # Keep the original PNG and its already-written code reference if a
+            # particular asset cannot be converted.
+            optimized.append(dest)
+    return optimized
 
 
 def delete_workspace(username: str, chat_id: str) -> None:

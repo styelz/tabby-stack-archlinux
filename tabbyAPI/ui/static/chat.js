@@ -2162,9 +2162,13 @@ function mountChat(root) {
   function outboundUserText(item) {
     let text = String(item.content || "");
     const files = Array.isArray(item.attachedFiles) ? item.attachedFiles : [];
-    const blocks = files
+    const textBlocks = files
       .filter((file) => file.kind !== "image" && file.path && typeof file.text === "string")
       .map((file) => `Attached file \`${file.path}\`:\n\`\`\`\n${file.text}\n\`\`\``);
+    const imageBlocks = files
+      .filter((file) => file.kind === "image" && file.path)
+      .map((file) => `Attached project image: \`${file.path}\``);
+    const blocks = [...imageBlocks, ...textBlocks];
     if (blocks.length) text = text ? `${text}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n");
     return text;
   }
