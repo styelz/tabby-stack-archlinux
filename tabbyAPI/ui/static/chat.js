@@ -45,6 +45,12 @@ function tabbyLooksLikeChatNotImage(raw) {
 // or "expand" on whichever side they sit.
 const CHEVRON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 5-7 7 7 7" /></svg>';
+const TREE_TWIST_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 4 6 4-6 4z" /></svg>';
+const TREE_FOLDER_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H7l1.2 1.5H12.5A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" /></svg>';
+const TREE_FILE_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2h5.2L12 4.8V14H4z" /></svg>';
 
 function mountChat(root) {
   root.innerHTML = `
@@ -224,6 +230,10 @@ function mountChat(root) {
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   let filesListing = [];
   let filesSelected = "";
+  let filesFocusDir = "";
+  let filesOpenFolders = new Set();
+  let filesSeenPaths = new Set();
+  let filesRevealed = "";
   let filesEntry = "";
   let filesHistory = [];
   let filesHistoryPath = "";
@@ -733,6 +743,112 @@ function mountChat(root) {
     return at >= 0 ? name.slice(at).toLowerCase() : "";
   }
 
+  function fileDir(path) {
+    const text = String(path || "");
+    const slash = text.lastIndexOf("/");
+    return slash >= 0 ? text.slice(0, slash) : "";
+  }
+
+  function fileBase(path) {
+    const text = String(path || "");
+    const slash = text.lastIndexOf("/");
+    return slash >= 0 ? text.slice(slash + 1) : text;
+  }
+
+  function folderAncestors(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    const dirs = [];
+    for (let i = 1; i < parts.length; i += 1) {
+      dirs.push(parts.slice(0, i).join("/"));
+    }
+    return dirs;
+  }
+
+  function resetFilesTreeState() {
+    filesOpenFolders.clear();
+    filesSeenPaths = new Set();
+    filesRevealed = "";
+    filesFocusDir = "";
+  }
+
+  function buildFilesTree(rows) {
+    const root = { name: "", path: "", kind: "dir", children: [] };
+    const dirs = new Map([["", root]]);
+
+    function ensureDir(path) {
+      if (dirs.has(path)) return dirs.get(path);
+      const parent = ensureDir(fileDir(path));
+      const node = { name: fileBase(path), path, kind: "dir", children: [] };
+      parent.children.push(node);
+      dirs.set(path, node);
+      return node;
+    }
+
+    rows.forEach((row) => {
+      const path = String(row.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!path) return;
+      ensureDir(fileDir(path)).children.push({
+        name: fileBase(path),
+        path,
+        kind: "file",
+        row,
+      });
+    });
+
+    function sortNode(node) {
+      node.children.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      });
+      node.children.forEach((child) => {
+        if (child.kind === "dir") sortNode(child);
+      });
+    }
+    sortNode(root);
+    return root;
+  }
+
+  function syncTreeFolders(rows) {
+    const paths = rows.map((row) => String(row.path || ""));
+    paths.forEach((path) => {
+      if (filesSeenPaths.has(path)) return;
+      folderAncestors(path).forEach((dir) => filesOpenFolders.add(dir));
+    });
+    filesSeenPaths = new Set(paths);
+    const live = new Set();
+    paths.forEach((path) => folderAncestors(path).forEach((dir) => live.add(dir)));
+    [...filesOpenFolders].forEach((dir) => {
+      if (!live.has(dir)) filesOpenFolders.delete(dir);
+    });
+    if (filesFocusDir && !live.has(filesFocusDir)) filesFocusDir = "";
+  }
+
+  function revealSelectedIfNeeded() {
+    if (!filesSelected || filesSelected === filesRevealed) return;
+    filesRevealed = filesSelected;
+    folderAncestors(filesSelected).forEach((dir) => filesOpenFolders.add(dir));
+  }
+
+  function toggleFolder(path) {
+    if (!path) return;
+    if (filesOpenFolders.has(path)) filesOpenFolders.delete(path);
+    else filesOpenFolders.add(path);
+    paintFilesTree();
+  }
+
+  function expandAllFolders() {
+    filesSeenPaths.forEach((path) => {
+      folderAncestors(path).forEach((dir) => filesOpenFolders.add(dir));
+    });
+    paintFilesTree();
+  }
+
+  function collapseAllFolders() {
+    filesOpenFolders.clear();
+    filesRevealed = "";
+    paintFilesTree();
+  }
+
   function isPendingFile(path) {
     return pendingFiles.some((file) => file.path === path);
   }
@@ -769,29 +885,55 @@ function mountChat(root) {
   function paintFilesTree() {
     if (!filesTree) return;
     if (!filesListing.length) {
+      filesOpenFolders.clear();
+      filesSeenPaths = new Set();
+      filesRevealed = "";
       filesTree.innerHTML =
         '<p class="muted chat-files-empty">No files yet. Create one, upload, or ask for a page.</p>';
       return;
     }
+    syncTreeFolders(filesListing);
+    revealSelectedIfNeeded();
     const frag = document.createDocumentFragment();
-    filesListing.forEach((row) => {
-      const item = document.createElement("div");
-      item.className =
-        "chat-file" +
-        (row.path === filesSelected ? " is-active" : "") +
-        (findTab(row.path) ? " is-open" : "") +
-        (isPendingFile(row.path) ? " is-attached" : "");
-      item.dataset.path = row.path;
-      item.innerHTML =
-        `<button type="button" class="chat-file-open" data-file="open" title="${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
-        `<span class="chat-file-size">${TabbyUI.escapeHtml(TabbyUI.formatBytes(row.size))}</span>` +
-        `<span class="chat-file-tools">` +
-        `<button type="button" class="btn ghost chat-icon${isPendingFile(row.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
-        `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
-        `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>` +
-        `</span>`;
-      frag.appendChild(item);
-    });
+    const walk = (nodes, depth) => {
+      nodes.forEach((node) => {
+        const isDir = node.kind === "dir";
+        const expanded = isDir && filesOpenFolders.has(node.path);
+        const row = node.row;
+        const item = document.createElement("div");
+        item.className =
+          "chat-file" +
+          (isDir ? " is-dir" : "") +
+          (expanded ? " is-expanded" : "") +
+          (!isDir && node.path === filesSelected ? " is-active" : "") +
+          (!isDir && findTab(node.path) ? " is-open" : "") +
+          (!isDir && isPendingFile(node.path) ? " is-attached" : "");
+        item.dataset.path = node.path;
+        item.dataset.kind = node.kind;
+        item.style.setProperty("--depth", String(depth));
+        const action = isDir ? "toggle" : "open";
+        const size = !isDir && row ? TabbyUI.formatBytes(row.size) : "";
+        item.innerHTML =
+          `<button type="button" class="chat-file-open" data-file="${action}" title="${TabbyUI.escapeHtml(node.path)}"${
+            isDir ? ` aria-expanded="${expanded ? "true" : "false"}"` : ""
+          }>` +
+          `<span class="chat-file-twist" aria-hidden="true">${isDir ? TREE_TWIST_SVG : ""}</span>` +
+          `<span class="chat-file-icon" aria-hidden="true">${isDir ? TREE_FOLDER_SVG : TREE_FILE_SVG}</span>` +
+          `<span class="chat-file-name">${TabbyUI.escapeHtml(node.name)}</span>` +
+          `</button>` +
+          (size ? `<span class="chat-file-size">${TabbyUI.escapeHtml(size)}</span>` : "<span></span>") +
+          (isDir
+            ? ""
+            : `<span class="chat-file-tools">` +
+              `<button type="button" class="btn ghost chat-icon${isPendingFile(node.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
+              `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
+              `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>` +
+              `</span>`);
+        frag.appendChild(item);
+        if (isDir && expanded) walk(node.children, depth + 1);
+      });
+    };
+    walk(buildFilesTree(filesListing).children, 0);
     filesTree.replaceChildren(frag);
   }
 
@@ -1212,6 +1354,7 @@ function mountChat(root) {
     stashEditor();
     activeTab = path;
     filesSelected = selectedPathFromTab(path);
+    if (filesSelected) filesFocusDir = fileDir(filesSelected);
     paintTabsAndFiles();
     refreshHistory();
   }
@@ -1486,12 +1629,14 @@ function mountChat(root) {
     if (tabsChat !== chatId) {
       tabsChat = chatId;
       resetTabs();
+      resetFilesTreeState();
     }
     if (activeMode() !== "code" || !chatId) {
       filesListing = [];
       filesSelected = "";
       filesEntry = "";
       resetTabs();
+      resetFilesTreeState();
       paintFiles();
       return;
     }
@@ -2089,24 +2234,28 @@ function mountChat(root) {
     paintAttach();
   }
 
-  function defaultNewPath() {
+  function defaultNewPath(dir) {
+    const prefix = dir ? `${String(dir).replace(/\/+$/, "")}/` : "";
     const names = new Set(filesListing.map((row) => row.path));
-    if (!names.has("untitled.txt")) return "untitled.txt";
+    if (!names.has(`${prefix}untitled.txt`)) return `${prefix}untitled.txt`;
     for (let i = 2; i < 100; i += 1) {
-      const name = `untitled-${i}.txt`;
+      const name = `${prefix}untitled-${i}.txt`;
       if (!names.has(name)) return name;
     }
-    return `untitled-${Date.now()}.txt`;
+    return `${prefix}untitled-${Date.now()}.txt`;
   }
 
-  async function createUserFile() {
+  async function createUserFile(dir) {
+    const folder = dir != null && dir !== ""
+      ? String(dir).replace(/\/+$/, "")
+      : filesFocusDir;
     const raw = await TabbyUI.promptModal({
       title: "New file",
       text: "Relative path in this chat's project.",
       label: "Path",
       yes: "Create",
-      value: defaultNewPath(),
-      placeholder: "index.html",
+      value: defaultNewPath(folder),
+      placeholder: folder ? `${folder}/index.html` : "index.html",
     });
     if (raw == null) return;
     let path = String(raw).trim().replace(/\\/g, "/").replace(/^\/+/, "");
@@ -2129,7 +2278,9 @@ function mountChat(root) {
         { method: "PUT", body: { contents: "" } }
       );
       applyListing(data);
-      openFileTab(data.path || path);
+      const written = data.path || path;
+      filesFocusDir = fileDir(written);
+      openFileTab(written);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
@@ -2327,6 +2478,7 @@ function mountChat(root) {
       filesEntry = "";
       pendingFiles = [];
       resetTabs();
+      resetFilesTreeState();
       noteChatFiles(store.activeId, false);
       paintAttach();
       paintFiles();
@@ -4407,6 +4559,22 @@ function mountChat(root) {
     ];
   }
 
+  function folderMenuItems(path) {
+    const open = filesOpenFolders.has(path);
+    return [
+      { label: "New file", run: () => {
+        filesFocusDir = path;
+        createUserFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { sep: true },
+      { label: open ? "Collapse" : "Expand", run: () => toggleFolder(path) },
+      { label: "Expand all", run: () => expandAllFolders() },
+      { label: "Collapse all", run: () => collapseAllFolders() },
+      { sep: true },
+      { label: "Copy path", run: () => copyText(path) },
+    ];
+  }
+
   function filesPaneMenuItems() {
     return [
       { label: "New file", run: () => {
@@ -4417,6 +4585,9 @@ function mountChat(root) {
         if (uploadInput) uploadInput.click();
       } },
       { label: "Refresh", run: () => refreshFiles() },
+      { sep: true },
+      { label: "Expand all", disabled: !filesListing.length, run: () => expandAllFolders() },
+      { label: "Collapse all", disabled: !filesListing.length, run: () => collapseAllFolders() },
       { sep: true },
       { label: "Download zip", disabled: !filesListing.length, run: () => downloadZip() },
       { label: "Clear files", danger: true, disabled: !filesListing.length, run: () => clearProjectFiles() },
@@ -4533,7 +4704,13 @@ function mountChat(root) {
 
     const fileRow = event.target.closest(".chat-file");
     if (fileRow && filesTree && filesTree.contains(fileRow) && fileRow.dataset.path) {
+      if (fileRow.dataset.kind === "dir") {
+        filesFocusDir = fileRow.dataset.path;
+        openCtx(event, folderMenuItems(fileRow.dataset.path));
+        return;
+      }
       filesSelected = fileRow.dataset.path;
+      filesFocusDir = fileDir(fileRow.dataset.path);
       paintFilesTree();
       refreshHistory();
       openCtx(event, fileMenuItems(fileRow.dataset.path));
@@ -4800,7 +4977,13 @@ function mountChat(root) {
       const row = btn.closest(".chat-file");
       const path = row && row.dataset.path;
       if (!path) return;
+      if (btn.dataset.file === "toggle") {
+        filesFocusDir = path;
+        toggleFolder(path);
+        return;
+      }
       if (btn.dataset.file === "open") {
+        filesFocusDir = fileDir(path);
         openFileTab(path);
         return;
       }
@@ -4816,6 +4999,21 @@ function mountChat(root) {
       }
       if (btn.dataset.file === "delete") {
         deleteProjectFile(path);
+      }
+    });
+    filesTree.addEventListener("keydown", (event) => {
+      const row = event.target.closest(".chat-file");
+      if (!row || !filesTree.contains(row) || row.dataset.kind !== "dir") return;
+      const path = row.dataset.path;
+      if (!path) return;
+      if (event.key === "ArrowRight" && !filesOpenFolders.has(path)) {
+        event.preventDefault();
+        filesFocusDir = path;
+        toggleFolder(path);
+      } else if (event.key === "ArrowLeft" && filesOpenFolders.has(path)) {
+        event.preventDefault();
+        filesFocusDir = path;
+        toggleFolder(path);
       }
     });
   }
