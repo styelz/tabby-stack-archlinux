@@ -165,10 +165,13 @@
     );
   }
 
-  function markdownImage(href, alt) {
+  function markdownImage(href, alt, inlineImages) {
     const resolved = resolveUiUrl(href);
     const safeHref = escapeHtml(resolved);
     const safeAlt = escapeHtml(alt || "");
+    if (inlineImages === false) {
+      return `<a href="${safeHref}" target="_blank" rel="noreferrer">${safeAlt || escapeHtml(href)}</a>`;
+    }
     return `<a href="${safeHref}" target="_blank" rel="noreferrer"><img src="${safeHref}" alt="${safeAlt}"></a>`;
   }
 
@@ -240,7 +243,7 @@
     return { text: out.join("\n"), fences };
   }
 
-  function autolink(html, used) {
+  function autolink(html, used, inlineImages) {
     return html.replace(
       /(https?:\/\/[^\s<]+|\/v1\/ui\/gallery\/file\/[^\s<]+|\/ui\/gallery\/file\/[^\s<]+|\/v1\/images\/generated-[^\s<]+)/g,
       (url) => {
@@ -249,25 +252,25 @@
         if (isImageHref(href)) {
           used.add(href);
           used.add(url);
-          return markdownImage(href, "");
+          return markdownImage(href, "", inlineImages);
         }
         return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
       }
     );
   }
 
-  function formatInline(text, used) {
+  function formatInline(text, used, inlineImages) {
     let html = escapeHtml(text);
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    return autolink(html, used);
+    return autolink(html, used, inlineImages);
   }
 
   function isFenceToken(line) {
     return /^@@CODE\d+@@$/.test(line.trim()) || /^@@IMG\d+@@$/.test(line.trim());
   }
 
-  function renderBlocks(src, used) {
+  function renderBlocks(src, used, inlineImages) {
     const lines = String(src || "").split("\n");
     const out = [];
     let i = 0;
@@ -285,7 +288,7 @@
       const heading = /^(#{1,3})\s+(.+)$/.exec(line);
       if (heading) {
         const level = heading[1].length;
-        out.push(`<h${level}>${formatInline(heading[2], used)}</h${level}>`);
+        out.push(`<h${level}>${formatInline(heading[2], used, inlineImages)}</h${level}>`);
         i += 1;
         continue;
       }
@@ -299,7 +302,7 @@
         while (i < lines.length) {
           const item = itemRe.exec(lines[i]);
           if (!item) break;
-          const parts = [formatInline(item[1], used)];
+          const parts = [formatInline(item[1], used, inlineImages)];
           i += 1;
           while (i < lines.length) {
             const raw = lines[i];
@@ -322,7 +325,7 @@
               continue;
             }
             if (/^\s+/.test(raw)) {
-              parts.push(`<br>${formatInline(raw.trim(), used)}`);
+              parts.push(`<br>${formatInline(raw.trim(), used, inlineImages)}`);
               i += 1;
               continue;
             }
@@ -345,12 +348,13 @@
         para.push(lines[i]);
         i += 1;
       }
-      out.push(`<p>${para.map((part) => formatInline(part, used)).join("<br>")}</p>`);
+      out.push(`<p>${para.map((part) => formatInline(part, used, inlineImages)).join("<br>")}</p>`);
     }
     return out.join("");
   }
 
-  function renderMarkdown(text) {
+  function renderMarkdown(text, options) {
+    const inlineImages = !options || options.inlineImages !== false;
     const used = new Set();
     const images = [];
     const extracted = extractFences(String(text || ""));
@@ -359,10 +363,10 @@
       used.add(href);
       used.add(resolveUiUrl(href));
       const token = `@@IMG${images.length}@@`;
-      images.push(markdownImage(href, alt));
+      images.push(markdownImage(href, alt, inlineImages));
       return token;
     });
-    let html = renderBlocks(src, used);
+    let html = renderBlocks(src, used, inlineImages);
     html = html.replace(/@@IMG(\d+)@@/g, (_, i) => images[Number(i)] || "");
     html = html.replace(/@@CODE(\d+)@@/g, (_, i) => extracted.fences[Number(i)] || "");
     return html;

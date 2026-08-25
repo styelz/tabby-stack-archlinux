@@ -2407,7 +2407,7 @@ function mountChat(root) {
     const cleaned = TabbyUI.formatAssistantContent
       ? TabbyUI.formatAssistantContent(text)
       : String(text || "");
-    return TabbyUI.renderMarkdown(cleaned);
+    return TabbyUI.renderMarkdown(cleaned, { inlineImages: activeMode() !== "code" });
   }
 
   function looksLikeImageReply(text) {
