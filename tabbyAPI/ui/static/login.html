@@ -1,9 +1,28 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="ui-loading">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tabby Stack — Sign in</title>
+  <style>
+    html { background: #0b0d12; color-scheme: dark; }
+    body { margin: 0; background: #0b0d12; color: #e8ecf4; }
+    html.ui-loading body { visibility: hidden; }
+    html.ui-loading::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: #0b0d12;
+      z-index: 2147483647;
+      pointer-events: none;
+    }
+  </style>
+  <noscript>
+    <style>
+      html.ui-loading body { visibility: visible; }
+      html.ui-loading::before { content: none; }
+    </style>
+  </noscript>
   <script>
     window.TABBY_UI_BASE = (function () {
       var p = location.pathname || "";
@@ -11,7 +30,11 @@
       var i = p.indexOf(m);
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
-    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + '/assets/styles.css?v=20260825-image-preview-dl" />');
+    window.TABBY_REVEAL_UI = function () {
+      document.documentElement.classList.remove("ui-loading");
+    };
+    setTimeout(window.TABBY_REVEAL_UI, 8000);
+    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + '/assets/styles.css?v=20260826-boot" />');
   </script>
 </head>
 <body class="login-body">
@@ -38,7 +61,10 @@
     </form>
   </main>
   <script>
-    document.write('<script src="' + TABBY_UI_BASE + '/assets/auth.js?v=20260825-image-preview-dl"><\/script>');
+    document.write('<script src="' + TABBY_UI_BASE + '/assets/auth.js?v=20260826-boot"><\/script>');
+  </script>
+  <script>
+    if (typeof TABBY_REVEAL_UI === "function") TABBY_REVEAL_UI();
   </script>
 </body>
 </html>

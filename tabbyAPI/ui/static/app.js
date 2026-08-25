@@ -106,4 +106,5 @@
 
   window.addEventListener("hashchange", () => show(currentName()));
   show(currentName());
+  if (typeof TABBY_REVEAL_UI === "function") TABBY_REVEAL_UI();
 })();

@@ -8,7 +8,21 @@
     html { background: #0b0d12; color-scheme: dark; }
     body { margin: 0; background: #0b0d12; color: #e8ecf4; }
     html.ui-loading body { visibility: hidden; }
+    html.ui-loading::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: #0b0d12;
+      z-index: 2147483647;
+      pointer-events: none;
+    }
   </style>
+  <noscript>
+    <style>
+      html.ui-loading body { visibility: visible; }
+      html.ui-loading::before { content: none; }
+    </style>
+  </noscript>
   <script>
     window.TABBY_UI_BASE = (function () {
       var p = location.pathname || "";
@@ -16,17 +30,16 @@
       var i = p.indexOf(m);
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
+    window.TABBY_REVEAL_UI = function () {
+      document.documentElement.classList.remove("ui-loading");
+    };
+    setTimeout(window.TABBY_REVEAL_UI, 8000);
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260826-monaco";
-    ["styles.css", "xterm.css"].forEach(function (name) {
-      var link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V;
-      link.onload = link.onerror = function () {
-        document.documentElement.classList.remove("ui-loading");
-      };
-      document.head.appendChild(link);
-    });
+    window.TABBY_UI_ASSET_V = "20260826-boot";
+    // document.write keeps CSS render-blocking. createElement("link") does not,
+    // and unhiding on the first sheet's onload flashed the unstyled shell.
+    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
+    document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/xterm.css?v=" + TABBY_UI_ASSET_V + '">');
   </script>
 </head>
 <body>
