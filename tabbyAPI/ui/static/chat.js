@@ -49,6 +49,14 @@ const TREE_FOLDER_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H7l1.2 1.5H12.5A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" /></svg>';
 const TREE_FILE_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2h5.2L12 4.8V14H4z" /></svg>';
+const FILES_NEW_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9" /></svg>';
+const FILES_UPLOAD_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 11.5V3.5M4.5 7 8 3.5 11.5 7"/><path d="M3 13h10" /></svg>';
+const FILES_PREVIEW_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8" /></svg>';
+const FILES_TERM_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5 7.2 8 5 9.5"/><path d="M8.2 9.5H11" /></svg>';
 
 function mountChat(root) {
   root.innerHTML = `
@@ -127,6 +135,7 @@ function mountChat(root) {
             <section class="chat-editor" id="chat-editor" aria-label="File editor"></section>
           </div>
           <section class="chat-preview" id="chat-preview" hidden>
+            <button type="button" class="chat-resize" id="chat-preview-resize" aria-label="Resize preview" title="Drag to resize"></button>
             <div class="chat-preview-head">
               <strong>Preview</strong>
               <span class="spacer"></span>
@@ -137,6 +146,7 @@ function mountChat(root) {
           </section>
           </div>
           <section class="chat-term" id="chat-term" hidden>
+            <button type="button" class="chat-resize chat-resize-y" id="chat-term-resize" aria-label="Resize terminal" title="Drag to resize"></button>
             <div class="chat-term-head">
               <strong>Terminal</strong>
               <span class="muted" id="chat-term-note"></span>
@@ -147,6 +157,7 @@ function mountChat(root) {
           </section>
         </div>
         <div class="chat-compose">
+          <button type="button" class="chat-resize chat-resize-y" id="chat-compose-resize" aria-label="Resize input" title="Drag to resize"></button>
           <ul class="slash-menu" id="history-menu" hidden></ul>
           <ul class="slash-menu" id="slash-menu" hidden></ul>
           <div class="chat-edit-bar" id="chat-edit-bar" hidden>
@@ -211,21 +222,22 @@ function mountChat(root) {
           </div>
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
           <div class="chat-files-actions">
-            <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-new" aria-label="New">${FILES_NEW_SVG}</button>
             <div class="chat-more chat-files-upload-wrap">
-              <button class="btn ghost" type="button" id="chat-files-upload" title="Add files or folders from this computer" aria-haspopup="true" aria-expanded="false">Upload</button>
+              <button class="btn ghost chat-icon" type="button" id="chat-files-upload" aria-label="Upload" aria-haspopup="true" aria-expanded="false">${FILES_UPLOAD_SVG}</button>
               <div class="chat-more-menu" id="chat-files-upload-menu" hidden>
                 <button type="button" data-upload="files">Files</button>
                 <button type="button" data-upload="folder">Folder</button>
               </div>
             </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
-            <button class="btn ghost" type="button" id="chat-files-preview" title="Preview the site in this page">Preview</button>
-            <button class="btn ghost" type="button" id="chat-files-term" title="Open this chat's project container">Term</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-preview" aria-label="Preview">${FILES_PREVIEW_SVG}</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Term">${FILES_TERM_SVG}</button>
           </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-history" id="chat-files-changes">
+          <button type="button" class="chat-resize chat-resize-y" id="chat-files-changes-resize" aria-label="Resize changes pane" title="Drag to resize"></button>
           <button type="button" class="chat-files-history-head" id="chat-files-changes-toggle" aria-expanded="true">
             <span class="chat-files-twist" aria-hidden="true"></span>
             <span class="chat-files-history-title">Changes</span>
@@ -234,6 +246,7 @@ function mountChat(root) {
           <div class="chat-files-history-list" id="chat-files-changes-list"></div>
         </div>
         <div class="chat-files-history" id="chat-files-history">
+          <button type="button" class="chat-resize chat-resize-y" id="chat-files-history-resize" aria-label="Resize history pane" title="Drag to resize"></button>
           <button type="button" class="chat-files-history-head" id="chat-files-history-toggle" aria-expanded="true">
             <span class="chat-files-twist" aria-hidden="true"></span>
             <span class="chat-files-history-title">History</span>
@@ -384,12 +397,23 @@ function mountChat(root) {
   const SIDEBAR_W_KEY = "tabby-ui-chat-sidebar-w";
   const FILES_KEY = "tabby-ui-chat-files";
   const FILES_W_KEY = "tabby-ui-chat-files-w";
+  const PREVIEW_W_KEY = "tabby-ui-chat-preview-w";
+  const TERM_H_KEY = "tabby-ui-chat-term-h";
+  const COMPOSE_H_KEY = "tabby-ui-chat-compose-h";
+  const FILES_FR_KEY = "tabby-ui-chat-files-fr";
   const SIDEBAR_W_MIN = 180;
   const SIDEBAR_W_MAX = 520;
   const SIDEBAR_W_DEFAULT = 268;
   const FILES_W_MIN = 160;
   const FILES_W_MAX = 560;
   const FILES_W_DEFAULT = 250;
+  const PREVIEW_W_MIN = 22;
+  const PREVIEW_W_MAX = 78;
+  const PREVIEW_W_DEFAULT = 42;
+  const TERM_H_MIN = 80;
+  const TERM_H_DEFAULT = 220;
+  const COMPOSE_H_MIN = 56;
+  const FILES_SPLIT_MIN = 64;
   const CHAT_COL_MIN = 280;
   const HISTORY_KEY = "tabby-ui-chat-history";
   const CHANGES_KEY = "tabby-ui-chat-changes";
@@ -618,8 +642,26 @@ function mountChat(root) {
     }
     return fallback;
   }
+  function readFilesFr() {
+    try {
+      const parts = String(localStorage.getItem(FILES_FR_KEY) || "").split(",");
+      if (parts.length === 3) {
+        const nums = parts.map((n) => Number.parseFloat(n));
+        if (nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)) {
+          return { tree: nums[0], changes: nums[1], history: nums[2] };
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return { tree: 2, changes: 1, history: 1 };
+  }
   let sidebarW = readStoredWidth(SIDEBAR_W_KEY, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
   let filesW = readStoredWidth(FILES_W_KEY, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
+  let previewW = readStoredWidth(PREVIEW_W_KEY, PREVIEW_W_DEFAULT, PREVIEW_W_MIN, PREVIEW_W_MAX);
+  let termH = readStoredWidth(TERM_H_KEY, TERM_H_DEFAULT, TERM_H_MIN, 800);
+  let composeH = readStoredWidth(COMPOSE_H_KEY, 0, 0, 800);
+  let filesFr = readFilesFr();
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
     { slash: "/list models", send: "list models", hint: "Installed profiles" },
@@ -2437,6 +2479,7 @@ function mountChat(root) {
     termWanted = true;
     termOpen = true;
     if (termPane) termPane.hidden = false;
+    setTermH(termH, false);
     if (filesTermBtn) filesTermBtn.classList.add("is-on");
     if (typeof window.Terminal !== "function") {
       if (termNote) termNote.textContent = "xterm.js is missing.";
@@ -2593,9 +2636,15 @@ function mountChat(root) {
   }
 
   function resizeInput() {
-    input.style.height = "auto";
-    const minH = parseFloat(getComputedStyle(input).minHeight) || 0;
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), 180)}px`;
+    if (composeH > 0) {
+      input.style.height = `${composeH}px`;
+      input.style.maxHeight = "none";
+    } else {
+      input.style.maxHeight = "";
+      input.style.height = "auto";
+      const minH = parseFloat(getComputedStyle(input).minHeight) || 0;
+      input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), 180)}px`;
+    }
     if (countEl) {
       const n = input.value.length;
       countEl.textContent = n >= 400 ? `${n.toLocaleString()} chars` : "";
@@ -2654,16 +2703,26 @@ function mountChat(root) {
     if (isNarrowChat()) return;
     setPaneWidth("sidebar", sidebarW, false);
     setPaneWidth("files", filesW, false);
+    setPreviewW(previewW, false);
+    setTermH(termH, false);
+    if (composeH > 0) setComposeH(composeH, false);
   }
 
   function applyPaneWidths() {
     shell.style.setProperty("--chat-sidebar-w", `${sidebarW}px`);
     shell.style.setProperty("--chat-files-w", `${filesW}px`);
+    shell.style.setProperty("--chat-preview-w", `${previewW}%`);
+    shell.style.setProperty("--chat-term-h", `${termH}px`);
     const sideHandle = root.querySelector("#chat-sidebar-resize");
     const filesHandle = root.querySelector("#chat-files-resize");
+    const previewHandle = root.querySelector("#chat-preview-resize");
+    const termHandle = root.querySelector("#chat-term-resize");
     if (sideHandle) sideHandle.setAttribute("aria-valuenow", String(sidebarW));
     if (filesHandle) filesHandle.setAttribute("aria-valuenow", String(filesW));
+    if (previewHandle) previewHandle.setAttribute("aria-valuenow", String(previewW));
+    if (termHandle) termHandle.setAttribute("aria-valuenow", String(termH));
     if (window.TabbyMonaco) window.TabbyMonaco.layout();
+    if (termOpen) fitTerm();
   }
 
   function persistPaneWidth(key, value) {
@@ -2696,61 +2755,330 @@ function mountChat(root) {
     return width;
   }
 
-  function bindPaneResize(handle, which) {
+  function stageEl() {
+    return root.querySelector("#chat-stage");
+  }
+
+  function clampPreviewPct(next) {
+    const stageW = stageEl() ? stageEl().clientWidth : 0;
+    const minMain = 160;
+    const minPrev = 180;
+    let lo = PREVIEW_W_MIN;
+    let hi = PREVIEW_W_MAX;
+    if (stageW >= minMain + minPrev) {
+      lo = Math.max(lo, (minPrev / stageW) * 100);
+      hi = Math.min(hi, ((stageW - minMain) / stageW) * 100);
+    }
+    return Math.round(Math.min(hi, Math.max(lo, next)));
+  }
+
+  function setPreviewW(next, persist) {
+    previewW = clampPreviewPct(next);
+    applyPaneWidths();
+    if (persist) persistPaneWidth(PREVIEW_W_KEY, previewW);
+    return previewW;
+  }
+
+  function termMax() {
+    const view = root.querySelector(".chat-view");
+    const h = view ? view.clientHeight : 0;
+    return Math.max(TERM_H_MIN, Math.floor((h || 480) * 0.72));
+  }
+
+  function setTermH(next, persist) {
+    termH = Math.round(Math.min(termMax(), Math.max(TERM_H_MIN, next)));
+    applyPaneWidths();
+    if (persist) persistPaneWidth(TERM_H_KEY, termH);
+    return termH;
+  }
+
+  function composeMax() {
+    const wrap = root.querySelector(".chat-wrap");
+    const h = wrap ? wrap.clientHeight : 0;
+    return Math.max(COMPOSE_H_MIN, (h || 400) - 180);
+  }
+
+  function applyComposeH() {
+    const handle = root.querySelector("#chat-compose-resize");
+    if (composeH > 0) {
+      shell.style.setProperty("--chat-input-h", `${composeH}px`);
+      input.style.maxHeight = "none";
+      input.style.height = `${composeH}px`;
+    } else {
+      shell.style.removeProperty("--chat-input-h");
+      input.style.maxHeight = "";
+      resizeInput();
+    }
+    if (handle) {
+      handle.setAttribute(
+        "aria-valuenow",
+        String(composeH > 0 ? composeH : Math.round(input.getBoundingClientRect().height))
+      );
+    }
+    if (window.TabbyMonaco) window.TabbyMonaco.layout();
+  }
+
+  function setComposeH(next, persist) {
+    if (next <= 0) composeH = 0;
+    else composeH = Math.round(Math.min(composeMax(), Math.max(COMPOSE_H_MIN, next)));
+    applyComposeH();
+    if (persist) persistPaneWidth(COMPOSE_H_KEY, composeH);
+    return composeH;
+  }
+
+  function applyFilesFr() {
+    if (!filesPane) return;
+    filesPane.style.setProperty("--chat-files-tree-fr", String(filesFr.tree));
+    filesPane.style.setProperty("--chat-files-changes-fr", String(filesFr.changes));
+    filesPane.style.setProperty("--chat-files-history-fr", String(filesFr.history));
+    const changesHandle = root.querySelector("#chat-files-changes-resize");
+    const historyHandle = root.querySelector("#chat-files-history-resize");
+    if (changesHandle) changesHandle.setAttribute("aria-valuenow", String(Math.round(filesFr.changes * 100)));
+    if (historyHandle) historyHandle.setAttribute("aria-valuenow", String(Math.round(filesFr.history * 100)));
+  }
+
+  function persistFilesFr() {
+    persistPaneWidth(
+      FILES_FR_KEY,
+      `${filesFr.tree.toFixed(3)},${filesFr.changes.toFixed(3)},${filesFr.history.toFixed(3)}`
+    );
+  }
+
+  function filesSplitSections() {
+    return [
+      { key: "tree", el: filesTree, open: true },
+      { key: "changes", el: filesChangesPane, open: changesOpen },
+      { key: "history", el: filesHistoryPane, open: historyOpen },
+    ];
+  }
+
+  function bindDragResize(handle, opts) {
     if (!handle) return;
-    handle.setAttribute("aria-valuemin", String(which === "sidebar" ? SIDEBAR_W_MIN : FILES_W_MIN));
-    handle.setAttribute("aria-valuemax", String(which === "sidebar" ? SIDEBAR_W_MAX : FILES_W_MAX));
+    const axis = opts.axis || "x";
+    const invert = Boolean(opts.invert);
+    const minOf = () => (typeof opts.min === "function" ? opts.min() : opts.min);
+    const maxOf = () => (typeof opts.max === "function" ? opts.max() : opts.max);
+    const defOf = () => (typeof opts.def === "function" ? opts.def() : opts.def);
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", axis === "y" ? "horizontal" : "vertical");
+    const coord = (event) => (axis === "y" ? event.clientY : event.clientX);
+    const paint = () => {
+      handle.setAttribute("aria-valuenow", String(Math.round(opts.get())));
+      const min = minOf();
+      const max = maxOf();
+      if (min != null) handle.setAttribute("aria-valuemin", String(min));
+      if (max != null) handle.setAttribute("aria-valuemax", String(max));
+    };
     let drag = null;
     const onMove = (event) => {
       if (!drag) return;
-      const dx = event.clientX - drag.x;
-      setPaneWidth(which, which === "sidebar" ? drag.w + dx : drag.w - dx, false);
+      const delta = coord(event) - drag.p;
+      opts.set(drag.v + (invert ? -delta : delta), false);
+      paint();
     };
     const onUp = () => {
       if (!drag) return;
       drag = null;
       handle.classList.remove("is-dragging");
-      shell.classList.remove("is-resizing");
+      shell.classList.remove("is-resizing", "is-resizing-y");
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      persistPaneWidth(which === "sidebar" ? SIDEBAR_W_KEY : FILES_W_KEY, which === "sidebar" ? sidebarW : filesW);
+      window.removeEventListener("pointercancel", onUp);
+      if (opts.persist) opts.persist();
+      paint();
     };
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || isNarrowChat()) return;
+      if (opts.enabled && !opts.enabled()) return;
       event.preventDefault();
-      drag = { x: event.clientX, w: which === "sidebar" ? sidebarW : filesW };
+      drag = { p: coord(event), v: opts.get() };
       handle.classList.add("is-dragging");
       shell.classList.add("is-resizing");
+      if (axis === "y") shell.classList.add("is-resizing-y");
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     });
     handle.addEventListener("dblclick", () => {
-      setPaneWidth(which, which === "sidebar" ? SIDEBAR_W_DEFAULT : FILES_W_DEFAULT, true);
+      if (isNarrowChat()) return;
+      opts.set(defOf(), true);
+      paint();
     });
     handle.addEventListener("keydown", (event) => {
+      if (isNarrowChat()) return;
       const step = event.shiftKey ? 32 : 16;
       let delta = 0;
-      if (event.key === "ArrowLeft") delta = which === "sidebar" ? -step : step;
-      else if (event.key === "ArrowRight") delta = which === "sidebar" ? step : -step;
-      else if (event.key === "Home") {
+      if (axis === "x") {
+        if (event.key === "ArrowLeft") delta = invert ? step : -step;
+        else if (event.key === "ArrowRight") delta = invert ? -step : step;
+      } else if (event.key === "ArrowUp") delta = invert ? step : -step;
+      else if (event.key === "ArrowDown") delta = invert ? -step : step;
+      if (event.key === "Home") {
         event.preventDefault();
-        setPaneWidth(which, which === "sidebar" ? SIDEBAR_W_DEFAULT : FILES_W_DEFAULT, true);
+        opts.set(defOf(), true);
+        paint();
         return;
-      } else return;
+      }
+      if (!delta) return;
       event.preventDefault();
-      setPaneWidth(which, (which === "sidebar" ? sidebarW : filesW) + delta, true);
+      opts.set(opts.get() + delta, true);
+      paint();
+    });
+    paint();
+  }
+
+  function bindFilesSplit(handle, belowKey) {
+    if (!handle || !filesPane) return;
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "horizontal");
+    let drag = null;
+    const onMove = (event) => {
+      if (!drag) return;
+      const dy = event.clientY - drag.y;
+      let newA = drag.aH + dy;
+      let newB = drag.bH - dy;
+      if (newA < drag.aMin) {
+        newB -= drag.aMin - newA;
+        newA = drag.aMin;
+      }
+      if (newB < drag.bMin) {
+        newA -= drag.bMin - newB;
+        newB = drag.bMin;
+      }
+      if (newA < drag.aMin || newB < drag.bMin) return;
+      const sumH = newA + newB;
+      if (sumH <= 0) return;
+      filesFr[drag.aKey] = drag.sumFr * (newA / sumH);
+      filesFr[drag.bKey] = drag.sumFr * (newB / sumH);
+      applyFilesFr();
+    };
+    const onUp = () => {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("is-dragging");
+      shell.classList.remove("is-resizing", "is-resizing-y");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      persistFilesFr();
+    };
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || isNarrowChat()) return;
+      const visible = filesSplitSections().filter((row) => row.open && row.el);
+      const below = visible.findIndex((row) => row.key === belowKey);
+      if (below <= 0) return;
+      const above = visible[below - 1];
+      const under = visible[below];
+      event.preventDefault();
+      drag = {
+        y: event.clientY,
+        aH: above.el.getBoundingClientRect().height,
+        bH: under.el.getBoundingClientRect().height,
+        aMin: FILES_SPLIT_MIN,
+        bMin: FILES_SPLIT_MIN,
+        aKey: above.key,
+        bKey: under.key,
+        sumFr: filesFr[above.key] + filesFr[under.key],
+      };
+      handle.classList.add("is-dragging");
+      shell.classList.add("is-resizing", "is-resizing-y");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+    handle.addEventListener("dblclick", () => {
+      if (isNarrowChat()) return;
+      filesFr = { tree: 2, changes: 1, history: 1 };
+      applyFilesFr();
+      persistFilesFr();
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (isNarrowChat()) return;
+      if (event.key === "Home") {
+        event.preventDefault();
+        filesFr = { tree: 2, changes: 1, history: 1 };
+        applyFilesFr();
+        persistFilesFr();
+        return;
+      }
+      const step = event.shiftKey ? 0.25 : 0.12;
+      let delta = 0;
+      if (event.key === "ArrowUp") delta = -step;
+      else if (event.key === "ArrowDown") delta = step;
+      else return;
+      event.preventDefault();
+      const visible = filesSplitSections().filter((row) => row.open && row.el);
+      const below = visible.findIndex((row) => row.key === belowKey);
+      if (below <= 0) return;
+      const above = visible[below - 1];
+      const under = visible[below];
+      const sumFr = filesFr[above.key] + filesFr[under.key];
+      const nextA = Math.min(sumFr - 0.15, Math.max(0.15, filesFr[above.key] + delta));
+      filesFr[above.key] = nextA;
+      filesFr[under.key] = sumFr - nextA;
+      applyFilesFr();
+      persistFilesFr();
     });
   }
 
   applyPaneWidths();
-  bindPaneResize(root.querySelector("#chat-sidebar-resize"), "sidebar");
-  bindPaneResize(root.querySelector("#chat-files-resize"), "files");
+  applyFilesFr();
+  if (composeH > 0) setComposeH(composeH, false);
+  else applyComposeH();
+  bindDragResize(root.querySelector("#chat-sidebar-resize"), {
+    axis: "x",
+    min: SIDEBAR_W_MIN,
+    max: SIDEBAR_W_MAX,
+    def: SIDEBAR_W_DEFAULT,
+    get: () => sidebarW,
+    set: (next, persist) => setPaneWidth("sidebar", next, persist),
+    persist: () => persistPaneWidth(SIDEBAR_W_KEY, sidebarW),
+  });
+  bindDragResize(root.querySelector("#chat-files-resize"), {
+    axis: "x",
+    invert: true,
+    min: FILES_W_MIN,
+    max: FILES_W_MAX,
+    def: FILES_W_DEFAULT,
+    get: () => filesW,
+    set: (next, persist) => setPaneWidth("files", next, persist),
+    persist: () => persistPaneWidth(FILES_W_KEY, filesW),
+  });
+  bindDragResize(root.querySelector("#chat-preview-resize"), {
+    axis: "x",
+    invert: true,
+    min: PREVIEW_W_MIN,
+    max: PREVIEW_W_MAX,
+    def: PREVIEW_W_DEFAULT,
+    get: () => previewW,
+    set: (next, persist) => setPreviewW(next, persist),
+    persist: () => persistPaneWidth(PREVIEW_W_KEY, previewW),
+  });
+  bindDragResize(root.querySelector("#chat-term-resize"), {
+    axis: "y",
+    invert: true,
+    min: TERM_H_MIN,
+    max: termMax,
+    def: TERM_H_DEFAULT,
+    get: () => termH,
+    set: (next, persist) => setTermH(next, persist),
+    persist: () => persistPaneWidth(TERM_H_KEY, termH),
+  });
+  bindDragResize(root.querySelector("#chat-compose-resize"), {
+    axis: "y",
+    invert: true,
+    min: COMPOSE_H_MIN,
+    max: composeMax,
+    def: 0,
+    get: () => (composeH > 0 ? composeH : Math.round(input.getBoundingClientRect().height)),
+    set: (next, persist) => setComposeH(next, persist),
+    persist: () => persistPaneWidth(COMPOSE_H_KEY, composeH),
+  });
+  bindFilesSplit(root.querySelector("#chat-files-changes-resize"), "changes");
+  bindFilesSplit(root.querySelector("#chat-files-history-resize"), "history");
   window.addEventListener("resize", () => {
     if (isNarrowChat()) return;
-    setPaneWidth("sidebar", sidebarW, false);
-    setPaneWidth("files", filesW, false);
-    if (window.TabbyMonaco) window.TabbyMonaco.layout();
-    if (termOpen) fitTerm();
+    reclampPaneWidths();
   });
   if (editorCol && window.ResizeObserver) {
     new ResizeObserver(() => {
