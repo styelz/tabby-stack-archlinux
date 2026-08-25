@@ -83,6 +83,22 @@ function mountStatus(root) {
     return (TabbyUI.cssVar && TabbyUI.cssVar(name)) || fallback;
   }
 
+  function occupancyLabel(data) {
+    const queue = (data && data.stack_queue) || {};
+    if (queue.queued) return queue.hint || "You are in a queue";
+    if (queue.busy) return queue.hint || "In use";
+    return "Free";
+  }
+
+  function occupancyExtra(data) {
+    const queue = (data && data.stack_queue) || {};
+    const parts = [];
+    if (queue.occupant) parts.push(queue.occupant);
+    if (queue.kind) parts.push(queue.kind);
+    if (queue.waiters) parts.push(`${queue.waiters} waiting`);
+    return parts.join(" · ");
+  }
+
   function fact(title, value, extra = "") {
     const sub = extra ? `<span class="fact-x">${TabbyUI.escapeHtml(extra)}</span>` : "";
     const plain = `${title}: ${String(value).replace(/<[^>]+>/g, "")}${extra ? ` (${extra})` : ""}`;
@@ -270,6 +286,7 @@ function mountStatus(root) {
       .replace(/^NVIDIA\s+/i, "");
     cards.innerHTML = [
       fact("GPU", TabbyUI.escapeHtml(data.gpu_mode || "unknown"), data.comfy_up ? "Comfy up" : "Comfy idle"),
+      fact("Stack", TabbyUI.escapeHtml(occupancyLabel(data)), occupancyExtra(data)),
       fact("Profile", TabbyUI.escapeHtml(data.profile || "—"), data.tabby_model || "LLM unloaded"),
       fact("Context", TabbyUI.escapeHtml(String(model.max_seq_len || "—")), model.cache_mode ? `cache ${model.cache_mode}` : ""),
       fact(

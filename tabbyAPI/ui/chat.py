@@ -21,9 +21,11 @@ from common.phrase_switch import (
     last_user_text,
     llm_not_ready_response,
     looks_like_chat_not_image,
+    requested_profile,
     should_yield_comfy_to_llm,
+    start_switch,
     stream_text,
-    switch_lock_held,
+    switch_reply_text,
     text_response,
     yield_comfy_to_llm_response,
 )
@@ -131,6 +133,10 @@ async def _run_console_work(
 ):
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     await disconnect_handler.poll()
+    name = requested_profile(data)
+    if name:
+        start_switch(name)
+        return text_response(data, switch_reply_text(name))
     image_response = await handle_image_chat(
         data,
         api_base,
@@ -252,11 +258,9 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     data = completion_request_from_payload(payload)
     saved_images = materialize_pasted_images(data)
     api_base = public_api_base(request)
-    switched = handle_if_requested(data, api_base=api_base)
+    switched = handle_if_requested(data, api_base=api_base, defer_switch=True)
     if switched is not None:
         return switched
-    if switch_lock_held():
-        return await llm_not_ready_response(data, console=True)
 
     disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
     gate = StackGate(username, kind="code" if code else "chat")

@@ -11,6 +11,13 @@ from uuid import uuid4
 QUEUE_MARK = "tabby-stack-queue:"
 QUEUE_HINT = "The stack is being used. You are in a queue."
 
+KIND_ACTIONS = {
+    "chat": "chatting",
+    "code": "writing code",
+    "image": "generating images",
+    "gpu": "switching the GPU",
+}
+
 _cond = asyncio.Condition()
 _occupant: Optional["Occupant"] = None
 _waiters: list["Waiter"] = []
@@ -32,25 +39,58 @@ class Waiter:
     kind: str = "chat"
 
 
-def _externally_busy() -> bool:
+def _image_job():
     try:
         from images.jobs import active_mcp_image_job
 
         job = active_mcp_image_job()
-        if job and job.status in ("queued", "running"):
-            return True
     except Exception:
-        pass
+        return None
+    if job and job.status in ("queued", "running"):
+        return job
+    return None
+
+
+def _switch_busy() -> bool:
+    try:
+        from common.phrase_switch import switch_lock_held
+
+        return bool(switch_lock_held())
+    except Exception:
+        return False
+
+
+def _llm_jobs_active() -> bool:
     try:
         from common import model as tabby_model
 
         container = tabby_model.container
         jobs = getattr(container, "active_job_ids", None) if container is not None else None
-        if jobs:
-            return True
+        return bool(jobs)
     except Exception:
-        pass
-    return False
+        return False
+
+
+def _externally_busy() -> bool:
+    if _image_job() is not None:
+        return True
+    if _switch_busy():
+        return True
+    return _llm_jobs_active()
+
+
+def _holder(occupant: Optional[Occupant]) -> tuple[Optional[str], str]:
+    """kind, occupant username for the current GPU holder."""
+    if occupant is not None:
+        return occupant.kind, occupant.username or ""
+    job = _image_job()
+    if job is not None:
+        return "image", str(getattr(job, "owner", "") or "")
+    if _switch_busy():
+        return "gpu", ""
+    if _llm_jobs_active():
+        return "chat", ""
+    return None, ""
 
 
 def snapshot(username: str = "") -> dict[str, Any]:
@@ -64,23 +104,54 @@ def snapshot(username: str = "") -> dict[str, Any]:
             position = index
             queued_at = waiter.queued_at
             break
+    kind, occupant_name = _holder(occupant)
     now = time.time()
+    queued = position is not None
+    busy = occupant is not None or bool(waiters) or _externally_busy()
     return {
-        "busy": occupant is not None or bool(waiters) or _externally_busy(),
-        "queued": position is not None,
+        "busy": busy,
+        "queued": queued,
         "position": position,
         "waiters": len(waiters),
-        "kind": occupant.kind if occupant else None,
+        "kind": kind,
+        "occupant": occupant_name or None,
+        "mine": bool(who and occupant_name and occupant_name == who),
         "elapsed_s": int(now - occupant.started_at) if occupant else 0,
         "queued_elapsed_s": int(now - queued_at) if queued_at else 0,
-        "hint": queue_text({"position": position or 0}),
+        "hint": queue_text(
+            {
+                "position": position or 0,
+                "queued": queued,
+                "busy": busy,
+                "kind": kind,
+                "occupant": occupant_name,
+                "who": who,
+            }
+        ),
     }
 
 
 def queue_text(info: Optional[dict[str, Any]] = None) -> str:
-    position = int((info or {}).get("position") or 0)
-    if position > 1:
-        return f"{QUEUE_HINT} You are number {position}."
+    info = info or {}
+    position = int(info.get("position") or 0)
+    occupant = str(info.get("occupant") or "").strip()
+    kind = str(info.get("kind") or "").strip()
+    who = str(info.get("who") or "").strip()
+    queued = bool(info.get("queued")) or position > 0
+    action = KIND_ACTIONS.get(kind, "")
+    if occupant and occupant != who:
+        head = f"{occupant} is {action}." if action else f"{occupant} is using the stack."
+    elif action:
+        head = f"The stack is {action}."
+    else:
+        head = "The stack is being used."
+    if queued:
+        line = QUEUE_HINT if head == "The stack is being used." else f"{head} You are in a queue."
+        if position > 1:
+            return f"{line} You are number {position}."
+        return line
+    if info.get("busy") or occupant or kind:
+        return f"{head} Your request will wait."
     return QUEUE_HINT
 
 
@@ -160,8 +231,14 @@ async def wait_tick(timeout: float = 1.0) -> None:
             return
 
 
+def reset_for_tests() -> None:
+    global _occupant
+    _occupant = None
+    _waiters.clear()
+
+
 class StackGate:
-    """One UI chat request: take the GPU slot or wait in line."""
+    """One UI chat or GPU request: take the GPU slot or wait in line."""
 
     def __init__(self, username: str, *, kind: str = "chat"):
         self.username = username or ""
@@ -185,6 +262,13 @@ class StackGate:
             self.waiter = None
             return None
         return snapshot(self.username)
+
+    async def wait_until_acquired(self, disconnect_handler) -> None:
+        while True:
+            info = await self.step(disconnect_handler)
+            if info is None:
+                return
+            await wait_tick(1.0)
 
     async def release(self) -> None:
         waiter = self.waiter

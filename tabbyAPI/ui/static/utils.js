@@ -1320,6 +1320,17 @@
         return;
       }
       this.lastGpuStatus = data;
+      const queue = data.stack_queue || {};
+      if (data.gpu_waiting) {
+        const name = data.switch_target || data.profile || "model";
+        const text = `WAITING · ${name}`;
+        labelEl.textContent = text;
+        chip.className = "chip warn is-busy";
+        chip.title = queue.hint || `Waiting to switch to ${name}`;
+        chip.setAttribute("aria-label", text);
+        window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
+        return;
+      }
       if (data.switching || data.restarting || data.busy) {
         const name = data.switch_target || data.profile || "model";
         const key = String(name).toLowerCase();
@@ -1332,6 +1343,18 @@
           : comfy
             ? "Loading Comfy. Chat is paused until it is ready."
             : `Loading ${name}. Chat is paused until the model is ready.`;
+        chip.setAttribute("aria-label", text);
+        window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
+        return;
+      }
+      if (queue.busy && !queue.mine) {
+        const kind = String(queue.kind || "chat");
+        const kindLabel =
+          kind === "image" ? "images" : kind === "code" ? "code" : kind === "gpu" ? "gpu" : "chat";
+        const text = `IN USE · ${kindLabel}`;
+        labelEl.textContent = text;
+        chip.className = "chip warn";
+        chip.title = queue.hint || "The stack is being used";
         chip.setAttribute("aria-label", text);
         window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
         return;

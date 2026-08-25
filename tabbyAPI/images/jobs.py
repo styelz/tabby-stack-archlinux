@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from common import model
 from common.gpu_mode import (
+    JOBS_PERSIST_NAME,
     comfy_up,
     generate_image,
     save_generated_image,
@@ -56,7 +57,6 @@ _MCP_JOB_ID: Optional[str] = None
 _GENERATE_LOCK: Optional[asyncio.Lock] = None
 _GENERATE_LOCK_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _PERSIST_LOADED = False
-JOBS_PERSIST_NAME = "mcp_jobs.json"
 RESTART_ABANDON_REASON = "TabbyAPI restarted before this job finished."
 
 
@@ -193,8 +193,24 @@ async def _load_profile(profile_name: str) -> None:
             raise RuntimeError(event)
 
 
-async def reload_last_llm(name: Optional[str] = None) -> str:
+async def wait_out_generating_image_jobs(*, from_job: bool = False, interval: float = 0.5) -> None:
+    """Block until no Comfy batch still owns the GPU.
+
+    The image worker passes from_job=True so its own restore is not waiting
+    on itself.
+    """
+    if from_job:
+        return
+    while True:
+        job = active_mcp_image_job()
+        if not job or job.status not in ("queued", "running"):
+            return
+        await asyncio.sleep(interval)
+
+
+async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False) -> str:
     """Free Comfy and load a TabbyAPI profile. Returns the profile alias."""
+    await wait_out_generating_image_jobs(from_job=from_job)
     names = available_profiles()
     if name in names:
         profile_name = name
@@ -917,7 +933,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
             if restore and (was_llm or restore_name):
                 job.phase = "restoring_llm"
                 _signal(job)
-                await reload_last_llm(restore_name)
+                await reload_last_llm(restore_name, from_job=True)
         job.status = "done"
         job.phase = "done"
         copy_job_to_workspace(job)

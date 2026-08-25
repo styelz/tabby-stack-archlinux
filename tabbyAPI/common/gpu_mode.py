@@ -50,7 +50,27 @@ WORKFLOW_PATH = ROOT / "comfy_workflows" / "flux_schnell_api.json"
 IMG2IMG_WORKFLOW_PATH = ROOT / "comfy_workflows" / "flux_schnell_img2img.json"
 QWEN_IMAGE_WORKFLOW_PATH = ROOT / "comfy_workflows" / "qwen_image_api.json"
 GENERATED_DIR = ROOT / "pasted-images"
+JOBS_PERSIST_NAME = "mcp_jobs.json"
 TURN_PATH = GENERATED_DIR / "turn.json"
+
+
+def persisted_jobs_block_llm_load(path: Optional[Path] = None) -> bool:
+    """True when mcp_jobs.json still has a queued/running Comfy batch.
+
+    Used by the switch_model subprocess, which must not import images.jobs
+    (that would treat the live worker as dead and abandon the job on disk).
+    """
+    target = path or (GENERATED_DIR / JOBS_PERSIST_NAME)
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, list):
+        return False
+    return any(
+        isinstance(entry, dict) and str(entry.get("status") or "") in ("queued", "running")
+        for entry in raw
+    )
 GALLERY_THUMB_MAX = 480
 GALLERY_THUMB_QUALITY = 72
 CHECKPOINT_NAME = "flux1-schnell-fp8.safetensors"

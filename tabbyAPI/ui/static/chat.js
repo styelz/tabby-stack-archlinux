@@ -184,8 +184,8 @@ function mountChat(root) {
             <span class="chat-loading-text" id="chat-loading-text">The model is loading. Chat is paused until it is ready.</span>
             <span class="chat-loading-time" id="chat-loading-time"></span>
           </div>
-          <div class="chat-loading" id="chat-waiting" hidden>
-            <span class="chat-loading-mark">Queued</span>
+            <div class="chat-loading" id="chat-waiting" hidden>
+            <span class="chat-loading-mark" id="chat-waiting-mark">Queued</span>
             <span class="chat-loading-text" id="chat-waiting-text">The stack is being used. You are in a queue.</span>
             <span class="chat-loading-time" id="chat-waiting-time"></span>
           </div>
@@ -295,6 +295,7 @@ function mountChat(root) {
   const loadingTextEl = root.querySelector("#chat-loading-text");
   const loadingTimeEl = root.querySelector("#chat-loading-time");
   const waitingBar = root.querySelector("#chat-waiting");
+  const waitingMark = root.querySelector("#chat-waiting-mark");
   const waitingTextEl = root.querySelector("#chat-waiting-text");
   const waitingTimeEl = root.querySelector("#chat-waiting-time");
   const comfyHint = root.querySelector("#chat-comfy-hint");
@@ -5625,6 +5626,7 @@ function mountChat(root) {
         const data = await TabbyUI.api("status");
         if (stopped) return;
         rememberGpu(data);
+        applyStackOccupancy(data);
         const queue = data && data.stack_queue;
         if (queue && queue.queued) {
           showStackQueue(queue.hint || "", working);
@@ -5692,6 +5694,7 @@ function mountChat(root) {
   let modelLoadTicker = null;
   let loadingHintText = "";
   let stackWaiting = false;
+  let stackIdleBusy = false;
   let stackWaitStarted = 0;
   let stackWaitTicker = null;
   let stackWaitHint = "";
@@ -5853,8 +5856,10 @@ function mountChat(root) {
   }
 
   function showStackQueue(hint, working) {
+    stackIdleBusy = false;
     stackWaitHint = String(hint || "").trim() || STACK_QUEUE_HINT;
     stackWaiting = true;
+    if (waitingMark) waitingMark.textContent = "Queued";
     startStackWaitClock();
     paintStackWaitElapsed();
     if (waitingBar) waitingBar.hidden = false;
@@ -5862,6 +5867,40 @@ function mountChat(root) {
       working.setActivity("Queued", { processing: true, note: stackWaitHint });
     }
     paintCompose();
+  }
+
+  function showIdleOccupancy(hint) {
+    if (stackWaiting) return;
+    stackIdleBusy = true;
+    stackWaitHint = String(hint || "").trim() || "The stack is being used. Your request will wait.";
+    if (waitingMark) waitingMark.textContent = "In use";
+    if (waitingTimeEl) waitingTimeEl.textContent = "";
+    if (waitingTextEl) waitingTextEl.textContent = stackWaitHint;
+    if (waitingBar) waitingBar.hidden = false;
+    paintCompose();
+  }
+
+  function hideIdleOccupancy() {
+    if (!stackIdleBusy) return;
+    stackIdleBusy = false;
+    if (!stackWaiting) {
+      if (waitingBar) waitingBar.hidden = true;
+      if (waitingMark) waitingMark.textContent = "Queued";
+    }
+    paintCompose();
+  }
+
+  function applyStackOccupancy(data) {
+    const queue = data && data.stack_queue;
+    if (queue && queue.queued) {
+      showStackQueue(queue.hint || "", flightIsHere() ? flightWorking : null);
+      return;
+    }
+    if (queue && queue.busy && !queue.mine && !stackWaiting) {
+      showIdleOccupancy(queue.hint || "");
+      return;
+    }
+    if (!stackWaiting) hideIdleOccupancy();
   }
 
   function hideStackQueue(working, resume) {
@@ -5990,6 +6029,7 @@ function mountChat(root) {
   function onGpuStatus(event) {
     const data = event && event.detail;
     rememberGpu(data);
+    applyStackOccupancy(data);
     if (modelWait || !statusIsBusy(data) || (data && data.down)) return;
     const target = data.switch_target || (comfyIsStarting(data) ? "comfy" : "");
     const kind = data.restarting ? "restart" : "switch";
@@ -6030,7 +6070,7 @@ function mountChat(root) {
 
   function paintCompose() {
     if (form) form.classList.toggle("is-loading", modelLoading);
-    if (waitingBar) waitingBar.hidden = modelLoading || !stackWaiting;
+    if (waitingBar) waitingBar.hidden = modelLoading || !(stackWaiting || stackIdleBusy);
     const here = flightIsHere();
     const away = Boolean(inFlight && !here);
     if (flightAwayBar) {

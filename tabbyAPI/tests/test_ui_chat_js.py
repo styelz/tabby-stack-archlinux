@@ -130,6 +130,25 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function jumpSidebarSearch()", self.src)
         self.assertIn("function paintFindHits()", self.src)
 
+    def test_stack_occupancy_banner_and_chip(self):
+        self.assertIn('id="chat-waiting-mark"', self.src)
+        self.assertIn('function applyStackOccupancy(data)', self.src)
+        self.assertIn('function showIdleOccupancy(hint)', self.src)
+        self.assertIn('textContent = "In use"', self.src)
+        utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
+        app = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.js"
+        status = Path(__file__).resolve().parents[1] / "ui" / "static" / "status.js"
+        utils_src = utils.read_text(encoding="utf-8")
+        app_src = app.read_text(encoding="utf-8")
+        status_src = status.read_text(encoding="utf-8")
+        self.assertIn("IN USE · ${kindLabel}", utils_src)
+        self.assertIn("WAITING · ${name}", utils_src)
+        self.assertIn("gpu_waiting", utils_src)
+        self.assertIn("stack_queue.busy || data.stack_queue.queued", app_src)
+        self.assertIn('occupied && !switchLocked && current !== name ? "Wait"', app_src)
+        self.assertIn("function occupancyLabel(data)", status_src)
+        self.assertIn('fact("Stack"', status_src)
+
     def test_tree_drag_and_editor_find(self):
         self.assertIn('application/x-tabby-path', self.src)
         self.assertIn("function moveProjectItem(", self.src)

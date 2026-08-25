@@ -61,11 +61,18 @@
   function gpuMenuBusy(data) {
     if (gpuSwitchBusy) return true;
     if (!data || data.down) return true;
-    return Boolean(data.switching || data.restarting || data.busy);
+    return Boolean(data.switching || data.restarting);
   }
 
   function statusWithLocalSwitch(data) {
     if (!gpuSwitchBusy) return data;
+    const queue = (data && data.stack_queue) || {};
+    if (queue.queued || (queue.busy && !(data && data.switching))) {
+      return Object.assign({}, data || {}, {
+        gpu_waiting: true,
+        switch_target: (data && data.switch_target) || gpuSwitchTarget,
+      });
+    }
     return Object.assign({}, data || {}, {
       switching: true,
       busy: true,
@@ -99,12 +106,15 @@
   function fillGpuMenu(data) {
     if (!gpuPanel) return;
     gpuPanel.replaceChildren();
-    const busy = gpuMenuBusy(data);
+    const switchLocked = gpuMenuBusy(data);
+    const occupied = Boolean(data && data.stack_queue && data.stack_queue.busy);
     const current = currentGpuMode(data);
     const profiles = (data && data.profiles) || [];
     if (profiles.length) {
       profiles.forEach((name) => {
-        gpuPanel.appendChild(makeGpuItem(name, name, current === name, busy));
+        gpuPanel.appendChild(
+          makeGpuItem(name, name, current === name, switchLocked, occupied && !switchLocked && current !== name ? "Wait" : "")
+        );
       });
     } else {
       const empty = document.createElement("p");
@@ -115,7 +125,15 @@
     const sep = document.createElement("div");
     sep.className = "user-menu-sep";
     gpuPanel.appendChild(sep);
-    gpuPanel.appendChild(makeGpuItem("Comfy", "comfy", current === "comfy", busy, "Images"));
+    gpuPanel.appendChild(
+      makeGpuItem(
+        "Comfy",
+        "comfy",
+        current === "comfy",
+        switchLocked,
+        occupied && !switchLocked && current !== "comfy" ? "Wait" : "Images"
+      )
+    );
     const copySep = document.createElement("div");
     copySep.className = "user-menu-sep";
     gpuPanel.appendChild(copySep);
@@ -156,20 +174,28 @@
     const token = String(mode || "").trim().toLowerCase();
     if (!token || gpuSwitchBusy) return;
     const data = TabbyUI.lastGpuStatus || {};
-    if (gpuMenuBusy(data) || currentGpuMode(data) === token) {
+    if (currentGpuMode(data) === token) {
+      closeGpuMenu();
+      return;
+    }
+    if (gpuMenuBusy(data) && !gpuSwitchBusy) {
       closeGpuMenu();
       return;
     }
     closeGpuMenu();
     gpuSwitchBusy = true;
     gpuSwitchTarget = token;
+    const queue = data.stack_queue || {};
+    const waiting = Boolean(queue.busy) && !data.switching && !data.restarting;
     TabbyUI.paintGpuChip(
-      Object.assign({}, data, {
-        switching: true,
-        busy: true,
-        switch_target: token,
-        profile: token === "comfy" ? data.profile : token,
-      })
+      Object.assign({}, data, waiting
+        ? { gpu_waiting: true, switch_target: token }
+        : {
+            switching: true,
+            busy: true,
+            switch_target: token,
+            profile: token === "comfy" ? data.profile : token,
+          })
     );
     kickHeaderStatus(400);
     try {
@@ -466,7 +492,8 @@
     } finally {
       const data = TabbyUI.lastGpuStatus;
       const switching = gpuSwitchBusy || (data && (data.switching || data.restarting || data.busy));
-      kickHeaderStatus(headerFailing ? 3000 : switching ? 2000 : 15000);
+      const occupied = Boolean(data && data.stack_queue && (data.stack_queue.busy || data.stack_queue.queued));
+      kickHeaderStatus(headerFailing ? 3000 : switching || occupied ? 2000 : 15000);
     }
   }
   refreshHeaderStatus();

@@ -15,6 +15,7 @@ from common.gpu_mode import (
     COMFY_DIR,
     COMFY_PYTHON,
     GPU_ALIASES,
+    persisted_jobs_block_llm_load,
     start_comfy_if_needed,
     stop_comfy,
     write_mode,
@@ -288,6 +289,15 @@ def switch_to_comfy(base: str) -> dict:
     return {"ready_s": elapsed, "mode": "comfy"}
 
 
+def wait_out_image_jobs(poll_s: float = 0.5) -> None:
+    """Do not stop Comfy while a render is still generating."""
+    if not persisted_jobs_block_llm_load():
+        return
+    print("Waiting for in-flight image job to finish before loading the LLM...")
+    while persisted_jobs_block_llm_load():
+        time.sleep(poll_s)
+
+
 def switch_to_llm(
     name: str,
     base: str | None = None,
@@ -315,6 +325,7 @@ def switch_to_llm(
         return {"ready_s": 0.0, "already": False, "loaded": None, "profile": name, "offline": True}
 
     started = time.time()
+    wait_out_image_jobs()
     stop_comfy()
     write_mode("llm", profile=name)
     loaded = current_model(base)

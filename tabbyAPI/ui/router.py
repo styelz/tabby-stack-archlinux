@@ -212,19 +212,11 @@ async def ui_update(request: Request, _admin: str = Depends(require_ui_admin)):
     return await asyncio.to_thread(start_stack_update, full=bool(body.get("full")))
 
 
-@router.post("/gpu", include_in_schema=False)
-async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
+async def apply_gpu_mode(token: str) -> dict:
     from common.gpu_mode import GPU_ALIASES, comfy_up
     from endpoints.core.image_jobs import ensure_comfy, loaded_tabby_name, reload_last_llm
     from select_model import available_profiles, last_profile, profile_aliases
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    token = str(body.get("mode") or "").strip().lower()
-    if not token:
-        raise HTTPException(400, "mode is required")
     if token in GPU_ALIASES:
         try:
             await ensure_comfy()
@@ -242,7 +234,7 @@ async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
     if token == "llm":
         name = last_profile() if last_profile() in names else (names[0] if names else None)
     else:
-        name = aliases.get(token) or aliases.get(str(body.get("mode") or "").strip())
+        name = aliases.get(token)
     if not name:
         raise HTTPException(400, f"Unknown mode {token!r}")
     try:
@@ -256,6 +248,28 @@ async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
         "comfy_up": comfy_up(),
         "message": f"GPU handed to TabbyAPI ({name})",
     }
+
+
+@router.post("/gpu", include_in_schema=False)
+async def ui_gpu(request: Request, _user: str = Depends(require_ui_user)):
+    from common.networking import DisconnectHandler
+    from ui.occupancy import StackGate
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = str(body.get("mode") or "").strip().lower()
+    if not token:
+        raise HTTPException(400, "mode is required")
+
+    gate = StackGate(_user, kind="gpu")
+    disconnect_handler = DisconnectHandler(request, "/v1/ui/gpu")
+    try:
+        await gate.wait_until_acquired(disconnect_handler)
+        return await apply_gpu_mode(token)
+    finally:
+        await gate.release()
 
 
 @router.post("/chat", include_in_schema=False)

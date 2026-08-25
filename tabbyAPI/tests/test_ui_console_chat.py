@@ -231,6 +231,16 @@ class SlashCommandTests(unittest.TestCase):
 
 
 class ConsoleChatNotReadyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from ui.occupancy import reset_for_tests
+
+        reset_for_tests()
+
+    def tearDown(self):
+        from ui.occupancy import reset_for_tests
+
+        reset_for_tests()
+
     def _body(self):
         return {
             "messages": [{"role": "user", "content": "hello"}],

@@ -1434,7 +1434,12 @@ def image_ready_response(
     return text_response(data, text)
 
 
-def handle_if_requested(data: ChatCompletionRequest, api_base: Optional[str] = None):
+def handle_if_requested(
+    data: ChatCompletionRequest,
+    api_base: Optional[str] = None,
+    *,
+    defer_switch: bool = False,
+):
     if is_help_request(data):
         return text_response(data, help_text(api_base=api_base))
     if is_list_request(data):
@@ -1459,6 +1464,8 @@ def handle_if_requested(data: ChatCompletionRequest, api_base: Optional[str] = N
                 data,
                 f"Unknown model {token!r}. Send 'list models' or 'help'.",
             )
+        return None
+    if defer_switch:
         return None
     start_switch(name)
     return text_response(data, switch_reply_text(name))
