@@ -221,11 +221,13 @@ wait_for_tabby_health() {
     body="$(curl -sf "$url" 2>/dev/null || true)"
     if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
       echo "API healthy at $url (${i}s)." >> "${INSTALL_LOG:-/dev/null}"
+      append_update_log "API healthy at $url (${i}s)."
       return 0
     fi
     sleep 1
   done
   echo "Timed out after ${tries}s waiting for $url" >> "${INSTALL_LOG:-/dev/null}"
+  append_update_log "Timed out after ${tries}s waiting for $url"
   [[ -n "$body" ]] && echo "Last body: $body" >> "${INSTALL_LOG:-/dev/null}"
   return 1
 }
@@ -292,11 +294,18 @@ progress_start() {
   GAUGE_MODE="log"
 }
 
+append_update_log() {
+  if [[ -n "${TABBY_UPDATE_LOG:-}" ]]; then
+    printf '%s\n' "$1" >> "$TABBY_UPDATE_LOG"
+  fi
+}
+
 progress() {
   local pct="$1" msg="$2"
   if [[ -n "$INSTALL_LOG" ]]; then
     printf '%s\n' "==> [$pct%] $msg" >> "$INSTALL_LOG"
   fi
+  append_update_log "==> [$pct%] $msg"
   case "${GAUGE_MODE:-}" in
     dialog)
       printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg" >&3 || true
@@ -362,6 +371,7 @@ progress_fail() {
   [[ -n "$INSTALL_LOG" && -f "$INSTALL_LOG" ]] && tail -n 40 "$INSTALL_LOG"
   echo
   echo "Full log: ${INSTALL_LOG:-}"
+  append_update_log "Install failed. Full log: ${INSTALL_LOG:-}"
   exit "$rc"
 }
 
@@ -373,6 +383,7 @@ run_quiet() {
   if ! "$@" >>"$INSTALL_LOG" 2>&1; then
     local rc=$?
     echo "Command failed ($rc): $*" >> "$INSTALL_LOG"
+    append_update_log "Command failed ($rc): $*"
     progress_fail "$rc"
   fi
 }
@@ -1853,6 +1864,7 @@ EOF
 
 if [[ "$UPDATE_MODE" -eq 1 ]]; then
   echo "Update finished."
+  append_update_log "Update finished."
 else
   echo "Install finished."
 fi

@@ -38,7 +38,7 @@ from ui.manager import (
     start_stack_update,
     stack_status,
     stream_journal_lines,
-    update_log_lines,
+    update_log_state,
 )
 
 # Served under /v1 so SSH forwarders that only proxy /openai/v1 and
@@ -200,7 +200,7 @@ async def ui_restart(_admin: str = Depends(require_ui_admin)):
 
 @router.get("/update/log", include_in_schema=False)
 async def ui_update_log(lines: int = 400, _admin: str = Depends(require_ui_admin)):
-    return {"lines": update_log_lines(lines)}
+    return update_log_state(lines)
 
 
 @router.post("/update", include_in_schema=False)

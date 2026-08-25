@@ -20,6 +20,7 @@ from common.logger import is_ui_access_line
 ROOT = Path(__file__).resolve().parent.parent
 STACK_ROOT = ROOT.parent
 JOURNAL_UNITS = ("tabbyapi", "comfyui")
+UPDATE_UNIT = "tabby-stack-update"
 CONSOLE_SYSTEM = (
     "You are chatting in the Tabby Stack web console. Answer in this conversation "
     "only. Do not write project files, HTML, CSS, or scripts to disk. "
@@ -397,6 +398,14 @@ def update_log_lines(limit: int = 400) -> list[str]:
     return lines[-count:]
 
 
+def update_job_running() -> bool:
+    return unit_active(UPDATE_UNIT) is True
+
+
+def update_log_state(limit: int = 400) -> dict[str, Any]:
+    return {"lines": update_log_lines(limit), "running": update_job_running()}
+
+
 def _update_log_tail(limit: int = 40) -> str:
     return "\n".join(update_log_lines(limit))
 
@@ -431,30 +440,91 @@ def _prompt_response(prompt: dict[str, Any] | None, fallback: str) -> dict[str, 
     }
 
 
+def _spawn_full_update(script: Path) -> dict[str, Any]:
+    """Run update.sh outside the tabbyapi cgroup so systemctl restart can finish.
+
+    A child of tabbyapi.service (even with start_new_session) stays in that
+    cgroup. install.sh then deadlocks on `systemctl --user restart tabbyapi`:
+    systemd waits for the update process, the update process waits for systemd.
+    The API never bounces and the Status modal waits forever.
+    """
+    args = ["bash", str(script), "--all", "--restart"]
+    started = {
+        "ok": True,
+        "message": (
+            "Started full (git + deps) update. TabbyAPI will bounce when it finishes."
+        ),
+        "restarting": True,
+        "log": _update_log_tail(400),
+    }
+    if update_job_running():
+        return {
+            "ok": False,
+            "message": "An update is already running.",
+            "log": _update_log_tail(400),
+        }
+    systemd_run = shutil.which("systemd-run")
+    if systemd_run:
+        for extra in (
+            ["systemctl", "--user", "reset-failed", UPDATE_UNIT],
+            ["systemctl", "--user", "stop", UPDATE_UNIT],
+        ):
+            subprocess.run(
+                extra,
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+        cmd = [
+            systemd_run,
+            "--user",
+            "--collect",
+            f"--unit={UPDATE_UNIT}",
+            f"--working-directory={STACK_ROOT}",
+            "--",
+            *args,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(STACK_ROOT),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, "message": str(exc), "log": _update_log_tail(400)}
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            return {
+                "ok": False,
+                "message": detail[:1500] if detail else "systemd-run failed to start the update.",
+                "log": _update_log_tail(400),
+            }
+        started["log"] = _update_log_tail(400)
+        return started
+    try:
+        subprocess.Popen(
+            args,
+            cwd=str(STACK_ROOT),
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return {"ok": False, "message": str(exc), "log": _update_log_tail(400)}
+    started["log"] = _update_log_tail(400)
+    return started
+
+
 def start_stack_update(*, full: bool = False) -> dict[str, Any]:
     script = STACK_ROOT / "update.sh"
     if not script.is_file():
         return {"ok": False, "message": f"update.sh not found at {script}"}
     if full:
-        args = ["bash", str(script), "--all", "--restart"]
-        try:
-            subprocess.Popen(
-                args,
-                cwd=str(STACK_ROOT),
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            return {"ok": False, "message": str(exc)}
-        return {
-            "ok": True,
-            "message": (
-                "Started full (git + deps) update. TabbyAPI will bounce when it finishes."
-            ),
-            "restarting": True,
-            "log": _update_log_tail(400),
-        }
+        return _spawn_full_update(script)
 
     prompt_path = STACK_ROOT / UPDATE_PROMPT_NAME
     try:

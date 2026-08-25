@@ -725,6 +725,7 @@
     let journalRetry = 0;
     let updateTimer = 0;
     let updateSeen = 0;
+    let updateRunning = false;
     let clockTimer = 0;
     const startedAt = Date.now();
 
@@ -842,6 +843,7 @@
     async function pullUpdateLog() {
       try {
         const data = await api("update/log?lines=500");
+        updateRunning = Boolean(data.running);
         const lines = Array.isArray(data.lines) ? data.lines : [];
         if (lines.length < updateSeen) updateSeen = 0;
         const extra = lines.slice(updateSeen);
@@ -865,15 +867,36 @@
       return Boolean(data.tabby_model || data.comfy_up || health.healthy);
     }
 
+    function updateLooksFailed(text) {
+      return /Git command failed|Failed to restart tabbyapi|did not become healthy|Update failed|Install failed/i.test(text);
+    }
+
+    function updateLooksDone(text) {
+      return /Update finished\.|==> \[100%\] Finished\b/i.test(text);
+    }
+
     async function waitUntilReady(opts = {}) {
       const requireDown = Boolean(opts.requireDown);
+      const watchUpdate = Boolean(opts.watchUpdate);
       let sawBusy = false;
+      let sawUpdateRunning = false;
+      let updateGoneAt = 0;
+      let lastUptime = null;
       const started = Date.now();
+      const deadline = started + (Number(opts.timeoutMs) || (watchUpdate ? 45 * 60 * 1000 : 20 * 60 * 1000));
       while (!closed) {
+        if (Date.now() > deadline) {
+          throw new Error("Timed out waiting for TabbyAPI. See the log above.");
+        }
         try {
           const data = await api("status");
           paintGpuFromStatus(data);
           const name = (data && data.switch_target) || "";
+          const up = Number(data && data.uptime_s);
+          if (Number.isFinite(up)) {
+            if (lastUptime != null && up + 5 < lastUptime) sawBusy = true;
+            lastUptime = up;
+          }
           if (data && (data.restarting || data.switching || data.busy)) {
             sawBusy = true;
             if (data.restarting) {
@@ -890,12 +913,38 @@
           } else if (
             requireDown &&
             looksReady(data) &&
-            /Git command failed|Failed to restart tabbyapi|did not become healthy|Update failed/i.test(buffer.join("\n"))
+            updateLooksFailed(buffer.join("\n"))
           ) {
             throw new Error("The update failed before a restart. See the log above.");
           }
+          if (watchUpdate) {
+            const text = buffer.join("\n");
+            if (updateRunning) {
+              sawUpdateRunning = true;
+              updateGoneAt = 0;
+            } else if (sawUpdateRunning && !updateGoneAt) {
+              updateGoneAt = Date.now();
+            }
+            if (updateLooksFailed(text) && !updateRunning) {
+              throw new Error("The update failed. See the log above.");
+            }
+            if (looksReady(data) && updateLooksDone(text) && !updateRunning) {
+              paintGpuFromStatus(data);
+              return data;
+            }
+            if (
+              looksReady(data) &&
+              sawUpdateRunning &&
+              !updateRunning &&
+              updateGoneAt &&
+              Date.now() - updateGoneAt > 2500
+            ) {
+              paintGpuFromStatus(data);
+              return data;
+            }
+          }
         } catch (err) {
-          if (err && /failed before a restart/i.test(err.message || "")) throw err;
+          if (err && /failed before a restart|The update failed|Timed out waiting/i.test(err.message || "")) throw err;
           sawBusy = true;
           if (window.TabbyUI && window.TabbyUI.paintApiDown) window.TabbyUI.paintApiDown(err);
           noteEl.textContent = "API is down. Waiting for it to come back…";

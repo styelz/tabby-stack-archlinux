@@ -148,14 +148,24 @@ class UiManagerTests(unittest.TestCase):
             self.assertEqual(result["restart_no"], "Skip")
             self.assertEqual(result["message"], "Pulled the latest code.")
 
-    def test_full_update_still_starts_in_background(self):
+    def test_full_update_starts_outside_tabbyapi_cgroup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "update.sh").write_text("#!/bin/bash\nexit 0\n")
             with mock.patch.object(manager, "STACK_ROOT", root):
-                with mock.patch.object(manager.subprocess, "Popen") as popen:
-                    result = manager.start_stack_update(full=True)
-            popen.assert_called_once()
-            self.assertIn("--all", popen.call_args[0][0])
+                with mock.patch.object(manager, "update_job_running", return_value=False):
+                    with mock.patch.object(manager.shutil, "which", return_value="/usr/bin/systemd-run"):
+                        with mock.patch.object(manager.subprocess, "run") as run:
+                            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+                            with mock.patch.object(manager.subprocess, "Popen") as popen:
+                                result = manager.start_stack_update(full=True)
+            popen.assert_not_called()
+            cmds = [c[0][0] for c in run.call_args_list]
+            self.assertTrue(any(cmd and cmd[0] == "/usr/bin/systemd-run" for cmd in cmds))
+            spawned = next(cmd for cmd in cmds if cmd and cmd[0] == "/usr/bin/systemd-run")
+            self.assertIn("--user", spawned)
+            self.assertIn("--collect", spawned)
+            self.assertIn("--all", spawned)
+            self.assertIn("--restart", spawned)
             self.assertTrue(result["ok"])
             self.assertNotIn("ask_restart", result)

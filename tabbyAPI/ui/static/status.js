@@ -527,7 +527,7 @@ function mountStatus(root) {
       modal.ingestText(result.log || "");
       if (result.message) modal.setNote(result.message);
       modal.setTitle("Updating, then restarting");
-      await modal.waitUntilReady({ requireDown: true });
+      await modal.waitUntilReady({ requireDown: true, watchUpdate: true });
       msg.textContent = "API is back.";
       await refresh().catch((err) => TabbyUI.paintApiDown(err));
       finishProgress(modal, {

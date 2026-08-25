@@ -884,4 +884,6 @@ fi
 progress 100 "Code pulled; applying deps and restart"
 trap - EXIT
 progress_stop
+export TABBY_UPDATE_LOG="$UPDATE_LOG"
+printf '%s\n' "==> handing off to install.sh --update" >> "$UPDATE_LOG"
 exec bash "$DEST/install.sh" --update
