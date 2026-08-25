@@ -65,6 +65,7 @@ function mountChat(root) {
         <div class="chat-side-foot">
           <button class="btn danger" type="button" id="chat-clear">Clear history</button>
         </div>
+        <button type="button" class="chat-resize" id="chat-sidebar-resize" aria-label="Resize chat list" title="Drag to resize"></button>
       </aside>
       <div class="chat-wrap">
         <div class="toolbar chat-toolbar">
@@ -194,6 +195,7 @@ function mountChat(root) {
         </div>
       </div>
       <aside class="chat-files" id="chat-files" hidden>
+        <button type="button" class="chat-resize" id="chat-files-resize" aria-label="Resize files pane" title="Drag to resize"></button>
         <div class="chat-files-head">
           <span>Files</span>
           <span class="chat-files-count" id="chat-files-count"></span>
@@ -349,7 +351,16 @@ function mountChat(root) {
   const STORAGE_KEY = "tabby-ui-chat-store";
   const SETTINGS_KEY = "tabby-ui-chat-settings";
   const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
+  const SIDEBAR_W_KEY = "tabby-ui-chat-sidebar-w";
   const FILES_KEY = "tabby-ui-chat-files";
+  const FILES_W_KEY = "tabby-ui-chat-files-w";
+  const SIDEBAR_W_MIN = 180;
+  const SIDEBAR_W_MAX = 520;
+  const SIDEBAR_W_DEFAULT = 268;
+  const FILES_W_MIN = 160;
+  const FILES_W_MAX = 560;
+  const FILES_W_DEFAULT = 250;
+  const CHAT_COL_MIN = 280;
   const HISTORY_KEY = "tabby-ui-chat-history";
   const MAX_CHATS = 50;
   const narrowChat = window.matchMedia("(max-width: 900px)");
@@ -555,6 +566,17 @@ function mountChat(root) {
   } catch {
     /* ignore */
   }
+  function readStoredWidth(key, fallback, min, max) {
+    try {
+      const n = Number.parseInt(localStorage.getItem(key) || "", 10);
+      if (Number.isFinite(n)) return Math.min(max, Math.max(min, n));
+    } catch {
+      /* ignore */
+    }
+    return fallback;
+  }
+  let sidebarW = readStoredWidth(SIDEBAR_W_KEY, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
+  let filesW = readStoredWidth(FILES_W_KEY, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
     { slash: "/list models", send: "list models", hint: "Installed profiles" },
@@ -720,6 +742,7 @@ function mountChat(root) {
       }
     }
     paintMode();
+    reclampPaneWidths();
     if (filesOpen) refreshFiles();
   }
 
@@ -2240,7 +2263,108 @@ function mountChat(root) {
       /* ignore */
     }
     paintToolbar();
+    reclampPaneWidths();
   }
+
+  function reclampPaneWidths() {
+    if (isNarrowChat()) return;
+    setPaneWidth("sidebar", sidebarW, false);
+    setPaneWidth("files", filesW, false);
+  }
+
+  function applyPaneWidths() {
+    shell.style.setProperty("--chat-sidebar-w", `${sidebarW}px`);
+    shell.style.setProperty("--chat-files-w", `${filesW}px`);
+    const sideHandle = root.querySelector("#chat-sidebar-resize");
+    const filesHandle = root.querySelector("#chat-files-resize");
+    if (sideHandle) sideHandle.setAttribute("aria-valuenow", String(sidebarW));
+    if (filesHandle) filesHandle.setAttribute("aria-valuenow", String(filesW));
+  }
+
+  function persistPaneWidth(key, value) {
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function clampPaneWidth(which, next) {
+    const shellW = shell.clientWidth || 0;
+    const leftOn = !isNarrowChat() && !shell.classList.contains("is-sidebar-hidden");
+    const rightOn = !isNarrowChat() && filesPane && !filesPane.hidden;
+    const other = which === "sidebar"
+      ? (rightOn ? filesW : 0)
+      : (leftOn ? sidebarW : 0);
+    const min = which === "sidebar" ? SIDEBAR_W_MIN : FILES_W_MIN;
+    const max = which === "sidebar" ? SIDEBAR_W_MAX : FILES_W_MAX;
+    const room = Math.max(min, shellW - other - CHAT_COL_MIN);
+    return Math.round(Math.min(max, room, Math.max(min, next)));
+  }
+
+  function setPaneWidth(which, next, persist) {
+    const width = clampPaneWidth(which, next);
+    if (which === "sidebar") sidebarW = width;
+    else filesW = width;
+    applyPaneWidths();
+    if (persist) persistPaneWidth(which === "sidebar" ? SIDEBAR_W_KEY : FILES_W_KEY, width);
+    return width;
+  }
+
+  function bindPaneResize(handle, which) {
+    if (!handle) return;
+    handle.setAttribute("aria-valuemin", String(which === "sidebar" ? SIDEBAR_W_MIN : FILES_W_MIN));
+    handle.setAttribute("aria-valuemax", String(which === "sidebar" ? SIDEBAR_W_MAX : FILES_W_MAX));
+    let drag = null;
+    const onMove = (event) => {
+      if (!drag) return;
+      const dx = event.clientX - drag.x;
+      setPaneWidth(which, which === "sidebar" ? drag.w + dx : drag.w - dx, false);
+    };
+    const onUp = () => {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("is-dragging");
+      shell.classList.remove("is-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      persistPaneWidth(which === "sidebar" ? SIDEBAR_W_KEY : FILES_W_KEY, which === "sidebar" ? sidebarW : filesW);
+    };
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || isNarrowChat()) return;
+      event.preventDefault();
+      drag = { x: event.clientX, w: which === "sidebar" ? sidebarW : filesW };
+      handle.classList.add("is-dragging");
+      shell.classList.add("is-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+    handle.addEventListener("dblclick", () => {
+      setPaneWidth(which, which === "sidebar" ? SIDEBAR_W_DEFAULT : FILES_W_DEFAULT, true);
+    });
+    handle.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 32 : 16;
+      let delta = 0;
+      if (event.key === "ArrowLeft") delta = which === "sidebar" ? -step : step;
+      else if (event.key === "ArrowRight") delta = which === "sidebar" ? step : -step;
+      else if (event.key === "Home") {
+        event.preventDefault();
+        setPaneWidth(which, which === "sidebar" ? SIDEBAR_W_DEFAULT : FILES_W_DEFAULT, true);
+        return;
+      } else return;
+      event.preventDefault();
+      setPaneWidth(which, (which === "sidebar" ? sidebarW : filesW) + delta, true);
+    });
+  }
+
+  applyPaneWidths();
+  bindPaneResize(root.querySelector("#chat-sidebar-resize"), "sidebar");
+  bindPaneResize(root.querySelector("#chat-files-resize"), "files");
+  window.addEventListener("resize", () => {
+    if (isNarrowChat()) return;
+    setPaneWidth("sidebar", sidebarW, false);
+    setPaneWidth("files", filesW, false);
+  });
 
   function copyText(text, btn) {
     const value = String(text || "");

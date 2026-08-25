@@ -232,8 +232,10 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 .log-view .lvl-debug { color: #8a93a6; }
 
 .chat-shell {
+  --chat-sidebar-w: 268px;
+  --chat-files-w: 250px;
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: var(--chat-sidebar-w) minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
@@ -244,20 +246,59 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
 /* Only an open pane adds a column, so closing it hands the width back. The
    pane is a file list now; the editor opens as a tab in the chat column. */
 .chat-shell.is-code.is-files-open {
-  grid-template-columns: 268px minmax(0, 1fr) minmax(190px, 250px);
+  grid-template-columns: var(--chat-sidebar-w) minmax(0, 1fr) var(--chat-files-w);
 }
 .chat-shell.is-sidebar-hidden.is-code.is-files-open {
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 250px);
+  grid-template-columns: minmax(0, 1fr) var(--chat-files-w);
 }
 .chat-shell.is-sidebar-hidden .chat-sidebar {
   display: none;
 }
+.chat-shell.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.chat-shell.is-resizing iframe {
+  pointer-events: none;
+}
 .chat-sidebar {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  position: relative;
   background: rgba(18, 21, 28, 0.92);
   border-right: 1px solid var(--line);
+}
+.chat-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 9px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.chat-sidebar .chat-resize { right: 0; }
+.chat-files .chat-resize { left: 0; }
+.chat-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: transparent;
+}
+.chat-resize:hover::after,
+.chat-resize:focus-visible::after,
+.chat-resize.is-dragging::after {
+  background: var(--accent);
 }
 .chat-side-head {
   display: flex;
@@ -547,6 +588,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  position: relative;
   border-left: 1px solid var(--line);
   background: rgba(18, 21, 28, 0.72);
 }
@@ -2479,15 +2521,6 @@ figure.shot .open { display: block; }
   }
   .chart-card canvas { height: 200px; flex: none; }
 }
-@media (max-width: 1100px) {
-  /* Less room for the pane, but the chat keeps a usable column. */
-  .chat-shell.is-code.is-files-open {
-    grid-template-columns: 268px minmax(0, 1fr) minmax(170px, 220px);
-  }
-  .chat-shell.is-sidebar-hidden.is-code.is-files-open {
-    grid-template-columns: minmax(0, 1fr) minmax(170px, 240px);
-  }
-}
 @media (max-width: 900px) {
   .app-header { flex-wrap: wrap; }
   .tabs { order: 3; flex: 1 1 100%; }
@@ -2512,6 +2545,7 @@ figure.shot .open { display: block; }
   .chat-tab { max-width: 10rem; }
   .code-edit { --code-font-size: 11px; }
   #chat-sidebar-toggle { display: inline-grid; }
+  .chat-resize { display: none; }
   .chat-sidebar {
     position: absolute;
     inset: 0 auto 0 0;
