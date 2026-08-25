@@ -12,6 +12,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from images.jobs import (
     active_mcp_image_job,
+    copy_job_to_workspace,
     get_mcp_image_job,
     launch_mcp_image_job,
     note_coding_progress,
@@ -232,7 +233,12 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
 
 
 async def _start_mixed_job(
-    items: list[dict[str, str]], api_base: str, *, start: bool = True, owner: str | None = None
+    items: list[dict[str, str]],
+    api_base: str,
+    *,
+    start: bool = True,
+    owner: str | None = None,
+    chat_id: str | None = None,
 ):
     job, kind = await start_mcp_image_job(
         items=items,
@@ -242,6 +248,7 @@ async def _start_mixed_job(
         delay=0.0,
         start=start,
         owner=owner,
+        chat_id=chat_id,
     )
     xlogger.info(f"Mixed chat queued image job {job.id} ({kind}, {len(items)} dests)")
     return job
@@ -260,6 +267,7 @@ async def _start_prompt_job(
     restore: bool,
     source_image=None,
     owner: str | None = None,
+    chat_id: str | None = None,
 ):
     items = [{"prompt": prompt, "output_path": "images/generated.png"}]
     job, kind = await start_mcp_image_job(
@@ -269,6 +277,7 @@ async def _start_prompt_job(
         api_base=api_base or "",
         delay=0.0,
         owner=owner,
+        chat_id=chat_id,
     )
     xlogger.info(f"Chat image job {job.id} ({kind})")
     return job
@@ -384,14 +393,19 @@ def _console_ready_text(
 
 
 def _copy_workspace_pngs(job, workspace) -> list[str]:
+    copied = copy_job_to_workspace(job)
+    if copied:
+        return copied
     if not workspace:
         return []
     owner, chat_id = workspace
     if not owner or not chat_id:
         return []
-    from ui.workspace import copy_job_pngs
-
-    return copy_job_pngs(owner, chat_id, job)
+    if not str(getattr(job, "chat_id", "") or "").strip():
+        job.chat_id = chat_id
+    if not str(getattr(job, "owner", "") or "").strip():
+        job.owner = owner
+    return copy_job_to_workspace(job)
 
 
 def _url_response(
@@ -518,8 +532,14 @@ async def _stream_code_then_images(
                 written = list(event[2] or [])
         started = job
         if items:
-            started = await _start_mixed_job(items, api_base or "", start=True, owner=owner)
+            started = await _start_mixed_job(
+                items, api_base or "", start=True, owner=owner, chat_id=chat_id
+            )
         elif started is not None and getattr(started, "status", "") == "coding":
+            if chat_id:
+                started.chat_id = chat_id
+            if owner:
+                started.owner = owner
             await _launch_mixed_job(started)
         if started is not None:
             yield ServerSentEvent(comment=f"{JOB_MARK} {started.id}")
@@ -556,8 +576,14 @@ async def _stream_code_then_images(
             written = list(event[2] or [])
     started = job
     if items:
-        started = await _start_mixed_job(items, api_base or "", start=True, owner=owner)
+        started = await _start_mixed_job(
+            items, api_base or "", start=True, owner=owner, chat_id=chat_id
+        )
     elif started is not None and getattr(started, "status", "") == "coding":
+        if chat_id:
+            started.chat_id = chat_id
+        if owner:
+            started.owner = owner
         await _launch_mixed_job(started)
     if started is not None:
         await wait_until_done(started)
@@ -610,6 +636,12 @@ async def handle(
             job = busy
 
     if job and job.status in ("queued", "running"):
+        if workspace:
+            bound_owner, bound_chat = workspace
+            if bound_owner:
+                job.owner = bound_owner
+            if bound_chat:
+                job.chat_id = bound_chat
         return await _hold_then_reply(
             data,
             job,
@@ -686,7 +718,13 @@ async def handle(
                     items=plan.items,
                 )
             if console:
-                started = await _start_mixed_job(plan.items, api_base or "", start=True, owner=owner)
+                started = await _start_mixed_job(
+                    plan.items,
+                    api_base or "",
+                    start=True,
+                    owner=owner,
+                    chat_id=chat_id,
+                )
                 return await _hold_then_reply(
                     data, started, mixed=False, api_base=api_base, console=True
                 )
@@ -697,7 +735,11 @@ async def handle(
                 and _file_write_pairs(_assistant_message(code_response))
             )
             started = await _start_mixed_job(
-                plan.items, api_base or "", start=not keep, owner=owner
+                plan.items,
+                api_base or "",
+                start=not keep,
+                owner=owner,
+                chat_id=chat_id,
             )
             if keep:
                 return _code_reply(data, started, code_response)
@@ -713,7 +755,12 @@ async def handle(
     explicit = requested_image_prompt(data, explicit_only=True)
     if llm_ready and explicit:
         started = await _start_prompt_job(
-            explicit, api_base or "", restore=True, source_image=source_image, owner=owner
+            explicit,
+            api_base or "",
+            restore=True,
+            source_image=source_image,
+            owner=owner,
+            chat_id=chat_id if workspace else None,
         )
         return await _hold_then_reply(
             data,
@@ -734,7 +781,12 @@ async def handle(
                 prompt = text or "cartoon style"
         if prompt:
             started = await _start_prompt_job(
-                prompt, api_base or "", restore=False, source_image=source_image, owner=owner
+                prompt,
+                api_base or "",
+                restore=False,
+                source_image=source_image,
+                owner=owner,
+                chat_id=chat_id if workspace else None,
             )
             return await _hold_then_reply(
                 data,

@@ -174,6 +174,11 @@ function mountChat(root) {
             <button class="btn" type="button" id="chat-steer" hidden>Steer</button>
             <button class="btn ghost chat-queue-clear" type="button" id="chat-queue-clear" aria-label="Remove queued message">×</button>
           </div>
+          <div class="chat-loading" id="chat-flight-away" hidden>
+            <span class="chat-loading-mark">Busy</span>
+            <span class="chat-loading-text" id="chat-flight-away-text">Images are still rendering in another chat.</span>
+            <button class="btn" type="button" id="chat-flight-back">Switch back</button>
+          </div>
           <div class="chat-loading" id="chat-loading" hidden>
             <span class="chat-loading-mark">Loading</span>
             <span class="chat-loading-text" id="chat-loading-text">The model is loading. Chat is paused until it is ready.</span>
@@ -269,6 +274,9 @@ function mountChat(root) {
   const queueTextEl = root.querySelector("#chat-queue-text");
   const steerBtn = root.querySelector("#chat-steer");
   const queueClearBtn = root.querySelector("#chat-queue-clear");
+  const flightAwayBar = root.querySelector("#chat-flight-away");
+  const flightAwayText = root.querySelector("#chat-flight-away-text");
+  const flightBackBtn = root.querySelector("#chat-flight-back");
   const navList = root.querySelector("#chat-nav-list");
   const searchEl = root.querySelector("#chat-search");
   const moreBtn = root.querySelector("#chat-more");
@@ -871,14 +879,17 @@ function mountChat(root) {
     const frag = document.createDocumentFragment();
     list.forEach((item) => {
       const btn = document.createElement("div");
-      btn.className = "chat-nav" + (item.id === store.activeId ? " is-active" : "") + (item.pinned ? " is-pinned" : "");
+      btn.className = "chat-nav"
+        + (item.id === store.activeId ? " is-active" : "")
+        + (item.pinned ? " is-pinned" : "")
+        + (inFlight && item.id === flightChatId ? " is-busy" : "");
       btn.dataset.id = item.id;
       btn.setAttribute("role", "button");
       btn.tabIndex = 0;
       btn.innerHTML =
         `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>` +
         `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span>` +
-        `<span class="chat-nav-when">${TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>` +
+        `<span class="chat-nav-when">${inFlight && item.id === flightChatId ? "Generating" : TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>` +
         `<span class="chat-nav-tools">` +
         `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${item.pinned ? "Unpin" : "Pin"}">★</button>` +
         `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename">✎</button>` +
@@ -5164,7 +5175,7 @@ function mountChat(root) {
   }
 
   function startNewChat() {
-    abortSession("stop");
+    if (flightIsHere()) abortSession("stop");
     persist();
     cancelEdit();
     clearPendingImage();
@@ -5201,7 +5212,9 @@ function mountChat(root) {
       });
       if (!yes) return;
     }
-    abortSession("stop");
+    if (inFlight && doomed.some((item) => item.id === flightChatId)) {
+      abortSession("stop");
+    }
     cancelEdit();
     clearPendingImage();
     doomed.forEach((item) => dropWorkspace(item.id));
@@ -5345,7 +5358,7 @@ function mountChat(root) {
         event.preventDefault();
         return;
       }
-      if (inFlight && !input.value.trim()) {
+      if (inFlight && flightIsHere() && !input.value.trim()) {
         abortSession("stop");
         event.preventDefault();
       }
@@ -5985,6 +5998,16 @@ function mountChat(root) {
     if (abortController) abortController.abort();
   }
 
+  function flightIsHere() {
+    return Boolean(inFlight && flightChatId && store.activeId === flightChatId);
+  }
+
+  function flightChatTitle() {
+    const chat = store.chats.find((item) => item.id === flightChatId);
+    const title = String((chat && chat.title) || "").replace(/\s+/g, " ").trim();
+    return title || "another chat";
+  }
+
   function takeQueue() {
     const text = queuedText;
     queuedText = "";
@@ -5999,6 +6022,14 @@ function mountChat(root) {
   function paintCompose() {
     if (form) form.classList.toggle("is-loading", modelLoading);
     if (waitingBar) waitingBar.hidden = modelLoading || !stackWaiting;
+    const here = flightIsHere();
+    const away = Boolean(inFlight && !here);
+    if (flightAwayBar) {
+      flightAwayBar.hidden = modelLoading || !away;
+      if (away && flightAwayText) {
+        flightAwayText.textContent = `Images are still rendering in “${flightChatTitle()}”. Switch back to see progress.`;
+      }
+    }
     if (modelLoading) {
       if (queueBar) queueBar.hidden = true;
       if (comfyHint) comfyHint.hidden = true;
@@ -6020,34 +6051,36 @@ function mountChat(root) {
     }
     input.disabled = false;
     if (loadingBar) loadingBar.hidden = true;
-    const action = tabbyChatComposeAction(inFlight, input.value, queuedText);
+    const action = tabbyChatComposeAction(here, input.value, queuedText);
     const hasQueue = Boolean(queuedText);
-    if (queueBar) queueBar.hidden = !hasQueue;
+    if (queueBar) queueBar.hidden = !hasQueue || away;
     if (queueTextEl) queueTextEl.textContent = queuedText;
     if (steerBtn) {
       steerBtn.hidden = !action.showSteer;
-      steerBtn.disabled = !(inFlight && hasQueue);
+      steerBtn.disabled = !(here && hasQueue);
     }
     if (!sendBtn) return;
-    sendBtn.disabled = false;
+    sendBtn.disabled = away;
     sendBtn.classList.toggle("primary", action.mode !== "stop");
     sendBtn.classList.toggle("danger", action.mode === "stop");
     sendBtn.classList.toggle("is-stop", action.mode === "stop");
-    sendBtn.setAttribute("aria-label", action.label);
+    sendBtn.setAttribute("aria-label", away ? "Busy" : action.label);
     if (action.mode === "stop") {
       sendBtn.innerHTML = `<span class="chat-stop-icon" aria-hidden="true"></span>${action.label}`;
     } else {
       sendBtn.textContent = action.label;
     }
-    input.placeholder = inFlight
-      ? hasQueue
-        ? "Session running. Steer the queued message or type a replacement."
-        : "Session running. Type a follow-up to queue it."
-      : comfyOwnsGpu()
-        ? "Describe a picture, or type a question to switch back to the LLM."
-        : activeMode() === "code"
-          ? CODE_PLACEHOLDER
-          : DEFAULT_PLACEHOLDER;
+    input.placeholder = away
+      ? `Images are still rendering in “${flightChatTitle()}”. Switch back to see progress.`
+      : here
+        ? hasQueue
+          ? "Session running. Steer the queued message or type a replacement."
+          : "Session running. Type a follow-up to queue it."
+        : comfyOwnsGpu()
+          ? "Describe a picture, or type a question to switch back to the LLM."
+          : activeMode() === "code"
+            ? CODE_PLACEHOLDER
+            : DEFAULT_PLACEHOLDER;
     if (editBar) editBar.hidden = pendingEditIndex < 0;
     paintComfyHint();
   }
@@ -6226,7 +6259,7 @@ function mountChat(root) {
     }
     if (flightWorking === working) flightWorking = null;
     if (chatMode(store.chats.find((item) => item.id === chatId)) === "code") {
-      refreshFiles();
+      if (store.activeId === chatId) refreshFiles();
     }
   }
 
@@ -6234,12 +6267,13 @@ function mountChat(root) {
     if (modelLoading && !loopBusy) return;
     if (loopBusy) {
       if (modelLoading) return;
-      if (firstText && !(opts && opts.replay)) queueFollowup(firstText);
+      if (firstText && !(opts && opts.replay) && flightIsHere()) queueFollowup(firstText);
       return;
     }
     loopBusy = true;
     inFlight = true;
     paintCompose();
+    renderSidebar();
     try {
       let next = firstText;
       let sendOpts = opts;
@@ -6259,6 +6293,10 @@ function mountChat(root) {
           }
           break;
         }
+        if (store.activeId !== flightChatId) {
+          queuedText = "";
+          break;
+        }
         next = takeQueue();
       }
     } finally {
@@ -6267,6 +6305,7 @@ function mountChat(root) {
       abortController = null;
       flightChatId = "";
       paintCompose();
+      renderSidebar();
       input.focus();
     }
   }
@@ -6283,6 +6322,7 @@ function mountChat(root) {
     hideHistoryMenu();
     const text = input.value.trim();
     if (inFlight) {
+      if (!flightIsHere()) return;
       if (text) {
         resetRecall();
         input.value = "";
@@ -6309,13 +6349,13 @@ function mountChat(root) {
     });
   }
   sendBtn.addEventListener("click", (event) => {
-    if (!inFlight) return;
+    if (!flightIsHere()) return;
     if (input.value.trim()) return;
     event.preventDefault();
     abortSession("stop");
   });
   steerBtn.addEventListener("click", () => {
-    if (!inFlight || !queuedText) return;
+    if (!flightIsHere() || !queuedText) return;
     abortSession("steer");
   });
   queueClearBtn.addEventListener("click", () => {
@@ -6323,6 +6363,12 @@ function mountChat(root) {
     paintCompose();
     input.focus();
   });
+  if (flightBackBtn) {
+    flightBackBtn.addEventListener("click", () => {
+      if (!flightChatId) return;
+      loadChat(flightChatId);
+    });
+  }
   input.addEventListener("input", () => {
     if (input.value.startsWith("/")) {
       hideHistoryMenu();

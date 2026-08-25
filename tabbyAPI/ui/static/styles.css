@@ -1146,6 +1146,7 @@ button.chip {
 .chat-nav:hover,
 .chat-nav:focus-visible { background: rgba(var(--accent-rgb), 0.1); outline: none; }
 .chat-nav.is-active { background: rgba(var(--accent-rgb), 0.16); }
+.chat-nav.is-busy .chat-nav-when { color: var(--accent); font-weight: 600; }
 .chat-nav-empty {
   color: var(--muted);
   font-size: 0.8125rem;

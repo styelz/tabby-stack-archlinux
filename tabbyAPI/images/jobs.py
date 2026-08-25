@@ -95,6 +95,9 @@ class McpImageJob:
     download_stopped: bool = False
     code_turns: int = 0
     owner: str = ""
+    chat_id: str = ""
+    workspace_copied: bool = False
+    workspace_files: list[str] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     progress: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -318,6 +321,7 @@ def _job_to_persist(job: McpImageJob) -> dict:
         "client_saved": bool(job.client_saved),
         "code_turns": int(job.code_turns or 0),
         "owner": str(job.owner or ""),
+        "chat_id": str(job.chat_id or ""),
     }
 
 
@@ -349,6 +353,7 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         client_saved=bool(data.get("client_saved")),
         code_turns=int(data.get("code_turns") or 0),
         owner=str(data.get("owner") or ""),
+        chat_id=str(data.get("chat_id") or ""),
     )
     if job.status == "coding":
         job.phase = "writing_code"
@@ -710,6 +715,7 @@ async def start_mcp_image_job(
     items: Optional[list[dict]] = None,
     start: bool = True,
     owner: Optional[str] = None,
+    chat_id: Optional[str] = None,
 ) -> tuple[McpImageJob, str]:
     """Queue a Comfy job that survives the MCP HTTP client disconnecting.
 
@@ -732,10 +738,13 @@ async def start_mcp_image_job(
         raise ValueError("prompt is required")
 
     owner_name = str(owner or "").strip()
+    chat_name = str(chat_id or "").strip()
     busy = active_mcp_image_job()
     if busy:
         if str(busy.owner or "").strip() != owner_name:
             return busy, "busy"
+        if chat_name and not str(busy.chat_id or "").strip():
+            busy.chat_id = chat_name
         async with busy.lock:
             if busy.accepting and busy.count + sum(
                 max(1, item.count) for item in new_items
@@ -763,6 +772,7 @@ async def start_mcp_image_job(
         wait_s=wait_s,
         started_at=time.time(),
         owner=owner_name,
+        chat_id=chat_name,
     )
     refresh_job_wait(job)
     _remember_mcp_job(job)
@@ -808,7 +818,32 @@ async def wait_until_done(job: McpImageJob) -> McpImageJob:
     """Block until this job is done or errored. SSE pings keep the client alive."""
     while job.status in ("queued", "running"):
         await wait_mcp_job_progress(job, MCP_POLL_WAIT_MAX_S)
+    copy_job_to_workspace(job)
     return job
+
+
+def copy_job_to_workspace(job: McpImageJob) -> list[str]:
+    """Copy finished PNGs into the Code-mode workspace even if the chat stream dropped."""
+    existing = list(getattr(job, "workspace_files", None) or [])
+    if existing or bool(getattr(job, "workspace_copied", False)):
+        return existing
+    owner = str(getattr(job, "owner", "") or "").strip()
+    chat_id = str(getattr(job, "chat_id", "") or "").strip()
+    if not owner or not chat_id:
+        return []
+    if str(getattr(job, "status", "") or "") not in ("done", "error"):
+        return []
+    job.workspace_copied = True
+    try:
+        from ui.workspace import copy_job_pngs
+
+        copied = copy_job_pngs(owner, chat_id, job)
+    except Exception as exc:
+        job.workspace_copied = False
+        xlogger.warning(f"Could not copy job {job.id} into workspace {chat_id}: {exc}")
+        return []
+    job.workspace_files = list(copied)
+    return job.workspace_files
 
 
 async def wait_mcp_job_progress(job: McpImageJob, wait_s: float) -> None:
@@ -884,6 +919,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                 await reload_last_llm(restore_name)
         job.status = "done"
         job.phase = "done"
+        copy_job_to_workspace(job)
         _signal(job)
     except asyncio.CancelledError:
         if job.status not in ("done", "error"):
@@ -891,11 +927,13 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
             job.phase = "error"
             job.error = job.error or "Image job was cancelled"
             _signal(job)
+        copy_job_to_workspace(job)
         raise
     except Exception as exc:
         job.status = "error"
         job.phase = "error"
         job.error = str(exc)
+        copy_job_to_workspace(job)
         _signal(job)
     finally:
         if _MCP_JOB_ID == job.id:
