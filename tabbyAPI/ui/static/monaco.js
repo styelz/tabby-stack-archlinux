@@ -163,6 +163,36 @@
     disposeModels();
   }
 
+  function zoomFactor() {
+    if (window.TabbyUI && typeof TabbyUI.getZoom === "function") {
+      return TabbyUI.getZoom() / 100;
+    }
+    const raw = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--ui-zoom")
+    );
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  }
+
+  function editorFontSize() {
+    return Math.max(8, Math.round(13 * zoomFactor()));
+  }
+
+  function editorPadding() {
+    return { top: Math.max(4, Math.round(8 * zoomFactor())) };
+  }
+
+  function applyEditorZoom() {
+    const opts = { fontSize: editorFontSize(), padding: editorPadding() };
+    if (editor) editor.updateOptions(opts);
+    if (diffEditor) {
+      diffEditor.updateOptions(opts);
+      const modified = diffEditor.getModifiedEditor && diffEditor.getModifiedEditor();
+      const original = diffEditor.getOriginalEditor && diffEditor.getOriginalEditor();
+      if (modified) modified.updateOptions(opts);
+      if (original) original.updateOptions(opts);
+    }
+  }
+
   const common = {
     theme: "tabby",
     automaticLayout: true,
@@ -188,6 +218,8 @@
     links: true,
     find: { addExtraSpaceOnTop: false, seedSearchStringFromSelection: "always" },
   };
+
+  window.addEventListener("tabby-zoom-change", applyEditorZoom);
 
   function bindSave(ed) {
     if (!ed || !window.monaco) return;
@@ -218,6 +250,8 @@
     );
     editor = monaco.editor.create(el, {
       ...common,
+      fontSize: editorFontSize(),
+      padding: editorPadding(),
       model: modifiedModel,
       readOnly: Boolean(opts.readOnly),
     });
@@ -252,6 +286,8 @@
     );
     diffEditor = monaco.editor.createDiffEditor(el, {
       ...common,
+      fontSize: editorFontSize(),
+      padding: editorPadding(),
       originalEditable: false,
       renderSideBySide: !window.matchMedia("(max-width: 1100px)").matches,
       useInlineViewWhenSpaceIsLimited: true,

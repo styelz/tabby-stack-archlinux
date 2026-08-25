@@ -163,7 +163,8 @@
       else openUserMenu();
     });
     userChip.addEventListener("contextmenu", (event) => {
-      const name = userChip.textContent || "";
+      const nameEl = document.getElementById("user-chip-name");
+      const name = (nameEl && nameEl.textContent) || "";
       if (!name) return;
       TabbyUI.showContextMenu(event, [
         { label: "Copy username", run: () => TabbyUI.copyText(name) },
@@ -238,7 +239,8 @@
         closeUserMenu();
         TabbyUI.showShortcuts();
       } else if (name === "copy") {
-        TabbyUI.copyText(userChip ? userChip.textContent || "" : "");
+        const nameEl = document.getElementById("user-chip-name");
+        TabbyUI.copyText((nameEl && nameEl.textContent) || "");
         closeUserMenu();
       } else if (name === "fullscreen") {
         if (document.fullscreenElement) document.exitFullscreen();
@@ -263,8 +265,11 @@
 
   TabbyUI.api("auth/check")
     .then((data) => {
+      const nameEl = document.getElementById("user-chip-name");
+      const name = data.username || data.stack_user || "";
+      if (nameEl) nameEl.textContent = name;
       const chip = document.getElementById("user-chip");
-      if (chip) chip.textContent = data.username || data.stack_user || "";
+      if (chip && name) chip.setAttribute("aria-label", name);
       isAdmin = Boolean(data.is_admin);
       const tab = document.getElementById("tab-users");
       if (tab) tab.hidden = !isAdmin;

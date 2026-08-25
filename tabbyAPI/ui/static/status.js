@@ -156,7 +156,8 @@ function mountStatus(root) {
 
     ctx.strokeStyle = themeColor("--line", "rgba(255,255,255,0.08)");
     ctx.fillStyle = themeColor("--muted", "#9aa3b5");
-    ctx.font = "11px ui-monospace, Menlo, Consolas, monospace";
+    const z = window.TabbyUI && TabbyUI.getZoom ? TabbyUI.getZoom() / 100 : 1;
+    ctx.font = `${Math.max(8, Math.round(11 * z))}px ui-monospace, Menlo, Consolas, monospace`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     for (let i = 0; i <= 4; i++) {

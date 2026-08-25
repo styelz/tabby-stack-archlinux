@@ -906,11 +906,16 @@
     return value;
   }
 
+  function zoomFactor() {
+    return getZoom() / 100;
+  }
+
   function setZoom(pct) {
     const value = applyZoom(pct);
     try {
       localStorage.setItem(ZOOM_KEY, String(value));
     } catch (err) {}
+    window.dispatchEvent(new Event("tabby-zoom-change"));
     window.dispatchEvent(new Event("resize"));
     return value;
   }
@@ -956,6 +961,7 @@
     getMode,
     setMode,
     getZoom,
+    zoomFactor,
     setZoom,
     applyZoom,
     resolvedTheme,

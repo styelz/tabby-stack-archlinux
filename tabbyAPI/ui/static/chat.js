@@ -2518,6 +2518,11 @@ function mountChat(root) {
     if (termTerm) termTerm.options.theme = termTheme();
   });
 
+  function termFontSize() {
+    const z = window.TabbyUI && TabbyUI.getZoom ? TabbyUI.getZoom() / 100 : 1;
+    return Math.max(8, Math.round(12 * z));
+  }
+
   function connectTerm(chatId, gen, retries) {
     if (termGen !== gen || !termWanted || !chatId) return;
     if (typeof window.Terminal !== "function") {
@@ -2527,7 +2532,7 @@ function mountChat(root) {
     if (termNote) termNote.textContent = retries ? "Reconnecting…" : "";
     termTerm = new window.Terminal({
       cursorBlink: true,
-      fontSize: 12,
+      fontSize: termFontSize(),
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       theme: termTheme(),
     });
@@ -2766,7 +2771,9 @@ function mountChat(root) {
       input.style.maxHeight = "";
       input.style.height = "auto";
       const minH = parseFloat(getComputedStyle(input).minHeight) || 0;
-      input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), 180)}px`;
+      const cap = parseFloat(getComputedStyle(input).maxHeight);
+      const maxH = Number.isFinite(cap) && cap > 0 ? cap : 180;
+      input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), maxH)}px`;
     }
     if (countEl) {
       const n = input.value.length;
@@ -3206,6 +3213,13 @@ function mountChat(root) {
   });
   bindFilesSplit(root.querySelector("#chat-files-changes-resize"), "changes");
   bindFilesSplit(root.querySelector("#chat-files-history-resize"), "history");
+  window.addEventListener("tabby-zoom-change", () => {
+    if (termTerm) {
+      termTerm.options.fontSize = termFontSize();
+      fitTerm();
+    }
+    resizeInput();
+  });
   window.addEventListener("resize", () => {
     if (isNarrowChat()) return;
     reclampPaneWidths();
