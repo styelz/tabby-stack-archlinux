@@ -1361,10 +1361,14 @@
       }
       const mode = data.gpu_mode || "gpu";
       const label = data.profile || data.tabby_model || "idle";
+      const pretty = ((data.profile_labels || {})[data.profile] || "").trim();
       const text = `${String(mode).toUpperCase()} · ${label}`;
       labelEl.textContent = text;
       chip.className = "chip" + (mode === "llm" ? " ok" : " warn");
-      chip.title = "Click to switch model";
+      const parts = ["Click to switch model"];
+      if (pretty && pretty !== label) parts.unshift(pretty);
+      if (data.tabby_model && data.tabby_model !== pretty) parts.push(data.tabby_model);
+      chip.title = parts.join(" · ");
       chip.setAttribute("aria-label", `GPU and model: ${text}`);
       window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
     },

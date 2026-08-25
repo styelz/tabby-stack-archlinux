@@ -408,6 +408,29 @@ def profile_map() -> dict[str, dict]:
     return mapping
 
 
+def profile_alias_for_model(folder: Optional[str]) -> Optional[str]:
+    """Map a loaded models/ folder name to a profile alias."""
+    if not folder:
+        return None
+    entry = profile_map().get(str(folder).lower())
+    return entry["alias"] if entry else None
+
+
+def profile_ui_labels(names: Optional[list[str]] = None) -> dict[str, str]:
+    """alias -> short pretty name for the GPU picker (text before ' - ')."""
+    if names is None:
+        from select_model import available_profiles
+
+        names = available_profiles()
+    mapping = profile_map()
+    labels: dict[str, str] = {}
+    for name in names:
+        entry = mapping.get(str(name).lower()) or {}
+        pretty = str(entry.get("pretty") or name)
+        labels[name] = pretty.split(" - ", 1)[0].strip() or name
+    return labels
+
+
 def installed_models() -> list[str]:
     """Folder names under models/ that look like real EXL3 downloads."""
     if not MODELS_DIR.exists():

@@ -694,10 +694,11 @@ function mountChat(root) {
     .then((data) => {
       rememberGpu(data);
       const profiles = data.profiles || [];
+      const labels = data.profile_labels || {};
       const extra = profiles.map((name) => ({
         slash: `/${name}`,
         send: `switch to ${name}`,
-        hint: data.profile === name ? "Loaded now" : "Switch model",
+        hint: data.profile === name ? "Loaded now" : labels[name] || "Switch model",
       }));
       commands = [...STATIC_COMMANDS.slice(0, 3), ...extra, ...STATIC_COMMANDS.slice(3)];
       if (input.value.startsWith("/")) renderMenu();

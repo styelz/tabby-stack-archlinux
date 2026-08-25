@@ -231,7 +231,13 @@ def _model_card() -> dict[str, Any]:
 async def stack_status(request=None, username: str = "") -> dict[str, Any]:
     from common.gpu_mode import comfy_up, public_api_base, read_mode
     from common.health import HealthManager
-    from common.phrase_switch import last_llm_profile_name, switch_lock_held, switch_lock_name
+    from common.phrase_switch import (
+        last_llm_profile_name,
+        profile_alias_for_model,
+        profile_ui_labels,
+        switch_lock_held,
+        switch_lock_name,
+    )
     from images.jobs import active_mcp_image_job, loaded_tabby_name
     from select_model import available_profiles, last_profile
     from ui.occupancy import snapshot as stack_queue_snapshot
@@ -271,13 +277,17 @@ async def stack_status(request=None, username: str = "") -> dict[str, Any]:
     comfy_booting = (not http_up) and (bool(comfy_unit) or job_phase == "starting_comfy")
     if comfy_booting and not restarting:
         switching = True
+    names = available_profiles()
+    # Prefer the folder actually in VRAM over last.json (VRAM fallback can desync them).
+    profile = profile_alias_for_model(tabby) or last_llm_profile_name() or last_profile()
     return {
         "ok": True,
         "gpu_mode": gpu_mode,
         "comfy_up": http_up,
         "tabby_model": tabby,
-        "profile": last_llm_profile_name() or last_profile(),
-        "profiles": available_profiles(),
+        "profile": profile,
+        "profiles": names,
+        "profile_labels": profile_ui_labels(names),
         "model": _model_card(),
         "health": {"healthy": healthy, "issues": issue_text},
         "units": {

@@ -306,7 +306,14 @@ function mountStatus(root) {
       ),
     ].join("");
     const profiles = data.profiles || [];
-    select.innerHTML = profiles.map((name) => `<option value="${TabbyUI.escapeHtml(name)}">${TabbyUI.escapeHtml(name)}</option>`).join("");
+    const labels = data.profile_labels || {};
+    select.innerHTML = profiles
+      .map((name) => {
+        const pretty = labels[name];
+        const text = pretty && pretty !== name ? `${name} — ${pretty}` : name;
+        return `<option value="${TabbyUI.escapeHtml(name)}">${TabbyUI.escapeHtml(text)}</option>`;
+      })
+      .join("");
     if (data.profile) select.value = data.profile;
     root.querySelector("#status-stamp").textContent = data.now || "";
     TabbyUI.paintGpuChip(data);

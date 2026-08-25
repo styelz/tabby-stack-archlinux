@@ -80,18 +80,27 @@
     });
   }
 
-  function makeGpuItem(label, mode, on, busy, hint) {
+  function makeGpuItem(label, mode, on, busy, hint, note) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "user-menu-item" + (on ? " is-on" : "");
     btn.setAttribute("role", "menuitem");
     btn.dataset.gpuMode = mode;
     btn.disabled = Boolean(busy);
+    const copy = document.createElement("span");
+    copy.className = "gpu-item-copy";
     const name = document.createElement("span");
     name.textContent = label;
+    copy.append(name);
+    if (note && note !== label) {
+      const sub = document.createElement("span");
+      sub.className = "gpu-item-note";
+      sub.textContent = note;
+      copy.append(sub);
+    }
     const mark = document.createElement("kbd");
     mark.textContent = on ? "✓" : hint || "";
-    btn.append(name, mark);
+    btn.append(copy, mark);
     btn.addEventListener("click", (event) => {
       event.preventDefault();
       if (on) {
@@ -110,10 +119,18 @@
     const occupied = Boolean(data && data.stack_queue && data.stack_queue.busy);
     const current = currentGpuMode(data);
     const profiles = (data && data.profiles) || [];
+    const labels = (data && data.profile_labels) || {};
     if (profiles.length) {
       profiles.forEach((name) => {
         gpuPanel.appendChild(
-          makeGpuItem(name, name, current === name, switchLocked, occupied && !switchLocked && current !== name ? "Wait" : "")
+          makeGpuItem(
+            name,
+            name,
+            current === name,
+            switchLocked,
+            occupied && !switchLocked && current !== name ? "Wait" : "",
+            labels[name] || ""
+          )
         );
       });
     } else {
