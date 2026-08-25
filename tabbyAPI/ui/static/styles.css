@@ -1661,6 +1661,14 @@ button.chip {
   border: 0;
   background: #fff;
 }
+.chat-preview.is-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+}
+.chat-preview.is-tab > .chat-resize {
+  display: none;
+}
 .chat-term {
   display: flex;
   flex-direction: column;

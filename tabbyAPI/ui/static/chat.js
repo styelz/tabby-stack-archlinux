@@ -101,7 +101,7 @@ function mountChat(root) {
           <button class="rail-toggle" type="button" id="chat-files-toggle" hidden aria-expanded="true" aria-controls="chat-files" aria-label="Hide files" title="Hide files">${CHEVRON_SVG}</button>
         </div>
         <div class="chat-view">
-          <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
+          <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat, files, and preview" hidden></div>
           <div class="chat-stage" id="chat-stage">
           <div class="chat-log-wrap" id="chat-log-wrap">
             <div class="chat-find" id="chat-find" hidden>
@@ -139,6 +139,7 @@ function mountChat(root) {
             <div class="chat-preview-head">
               <strong>Preview</strong>
               <span class="spacer"></span>
+              <button type="button" class="btn ghost" id="chat-preview-tab" title="Open preview as a tab">Tab</button>
               <button type="button" class="btn ghost" id="chat-preview-reload">Reload</button>
               <button type="button" class="btn ghost chat-icon" id="chat-preview-close" aria-label="Close preview" title="Close preview">×</button>
             </div>
@@ -303,6 +304,7 @@ function mountChat(root) {
   const previewPane = root.querySelector("#chat-preview");
   const previewFrame = root.querySelector("#chat-preview-frame");
   const previewReloadBtn = root.querySelector("#chat-preview-reload");
+  const previewTabBtn = root.querySelector("#chat-preview-tab");
   const previewCloseBtn = root.querySelector("#chat-preview-close");
   const termPane = root.querySelector("#chat-term");
   const termHost = root.querySelector("#chat-term-xterm");
@@ -366,6 +368,7 @@ function mountChat(root) {
   let editorFindIndex = 0;
   let previewOpen = false;
   let previewUrl = "";
+  const PREVIEW_TAB = "__preview__";
   let termOpen = false;
   let termWanted = false;
   let termGen = 0;
@@ -989,7 +992,10 @@ function mountChat(root) {
     filesChanged = [];
     pendingOpenChange = "";
     closeTerm();
-    if (previewOpen) hidePreview();
+    blankPreviewFrame();
+    previewOpen = Boolean(findTab(PREVIEW_TAB));
+    if (previewPane) previewPane.hidden = !previewOpen;
+    if (filesPreviewBtn) filesPreviewBtn.classList.toggle("is-on", previewOpen);
     if (window.TabbyLsp) window.TabbyLsp.reset();
   }
 
@@ -1344,7 +1350,16 @@ function mountChat(root) {
     return Boolean(tab && tab.kind === "diff");
   }
 
+  function isPreviewPath(path) {
+    return path === PREVIEW_TAB;
+  }
+
+  function isPreviewTab(tab) {
+    return Boolean(tab && (tab.kind === "preview" || tab.path === PREVIEW_TAB));
+  }
+
   function selectedPathFromTab(path) {
+    if (isPreviewPath(path)) return "";
     const tab = findTab(path);
     if (isHistoryTab(tab)) return tab.filePath || "";
     return path || "";
@@ -1441,6 +1456,7 @@ function mountChat(root) {
   }
 
   function tabLabel(tab) {
+    if (isPreviewTab(tab)) return "Preview";
     if (isHistoryTab(tab)) {
       const base = (tab.filePath || tab.path).split("/").pop() || "file";
       return `${base} · ${timeLabel(tab.revTs)}`;
@@ -1462,7 +1478,7 @@ function mountChat(root) {
   /** Keep the live editor buffer in the tab so a re-render or tab switch restores it. */
   function stashEditor() {
     const tab = activeTabRow();
-    if (!tab) return;
+    if (!tab || isPreviewTab(tab)) return;
     if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
       tab.text = window.TabbyMonaco.getValue();
       tab.caret = window.TabbyMonaco.getCaret();
@@ -1487,17 +1503,23 @@ function mountChat(root) {
     chatTab.dataset.tab = "";
     chatTab.innerHTML = '<button type="button" class="chat-tab-open">Chat</button>';
     frag.appendChild(chatTab);
-    openTabs.forEach((tab) => {
+    const paintOne = (tab) => {
       const name = TabbyUI.escapeHtml(tabLabel(tab));
       const item = document.createElement("div");
       item.className =
         "chat-tab" + (tab.path === activeTab ? " is-active" : "") + (tab.dirty ? " is-dirty" : "");
       item.dataset.tab = tab.path;
+      const title = isPreviewTab(tab) ? "Preview" : TabbyUI.escapeHtml(tab.path);
       item.innerHTML =
-        `<button type="button" class="chat-tab-open" title="${TabbyUI.escapeHtml(tab.path)}">${name}</button>` +
+        `<button type="button" class="chat-tab-open" title="${title}">${name}</button>` +
         `<button type="button" class="chat-tab-close" data-tab-close aria-label="Close ${name}">×</button>`;
       frag.appendChild(item);
+    };
+    openTabs.forEach((tab) => {
+      if (!isPreviewTab(tab)) paintOne(tab);
     });
+    const preview = findTab(PREVIEW_TAB);
+    if (preview) paintOne(preview);
     tabsBar.replaceChildren(frag);
   }
 
@@ -1690,7 +1712,7 @@ function mountChat(root) {
   }
 
   function ensureTabLoaded(tab) {
-    if (!tab || tab.state !== "loading" || tab.loading) return;
+    if (!tab || isPreviewTab(tab) || tab.state !== "loading" || tab.loading) return;
     if (isHistoryTab(tab)) {
       const chatId = store.activeId;
       tab.loading = true;
@@ -1774,15 +1796,30 @@ function mountChat(root) {
       });
   }
 
+  function paintPreviewDock() {
+    if (!previewTabBtn) return;
+    const asTab = previewOpen && isPreviewTab(activeTabRow());
+    previewTabBtn.textContent = asTab ? "Side" : "Tab";
+    previewTabBtn.title = asTab ? "Show preview beside the editor" : "Open preview as a tab";
+    previewTabBtn.setAttribute("aria-label", previewTabBtn.title);
+  }
+
   function paintView() {
     const tab = activeTabRow();
     if (activeTab && !tab) activeTab = "";
-    const showEditor = Boolean(tab);
-    const wasEditor = Boolean(logWrap && logWrap.hidden);
-    if (!wasEditor && showEditor) logScroll = log.scrollTop;
-    if (logWrap) logWrap.hidden = showEditor;
+    const previewAsTab = previewOpen && isPreviewTab(tab);
+    const showEditor = Boolean(tab) && !previewAsTab;
+    const showLog = !showEditor && !previewAsTab;
+    const logWasHidden = Boolean(logWrap && logWrap.hidden);
+    if (!logWasHidden && !showLog) logScroll = log.scrollTop;
+    if (logWrap) logWrap.hidden = !showLog;
     if (editorCol) editorCol.hidden = !showEditor;
     if (editorPane) editorPane.hidden = !showEditor;
+    if (previewPane) {
+      previewPane.hidden = !previewOpen;
+      previewPane.classList.toggle("is-tab", previewAsTab);
+    }
+    paintPreviewDock();
     if (showEditor) {
       ensureTabLoaded(tab);
       renderEditorPane();
@@ -1791,7 +1828,7 @@ function mountChat(root) {
     if (editorPane) editorPane.dataset.key = "";
     if (window.TabbyMonaco) window.TabbyMonaco.dispose();
     // display:none drops the scroll offset, so put the log back where it was.
-    if (wasEditor) {
+    if (logWasHidden && showLog) {
       log.scrollTop = followLog ? log.scrollHeight : logScroll;
       paintJump();
     }
@@ -1810,10 +1847,12 @@ function mountChat(root) {
     if (activeTab === path) return;
     stashEditor();
     activeTab = path;
-    filesSelected = selectedPathFromTab(path);
-    if (filesSelected) filesFocusDir = fileDir(filesSelected);
+    if (!isPreviewPath(path)) {
+      filesSelected = selectedPathFromTab(path);
+      if (filesSelected) filesFocusDir = fileDir(filesSelected);
+    }
     paintTabsAndFiles();
-    refreshHistory();
+    if (!isPreviewPath(path)) refreshHistory();
   }
 
   function listingHas(path) {
@@ -2017,6 +2056,10 @@ function mountChat(root) {
   }
 
   async function closeTab(path) {
+    if (isPreviewPath(path) || isPreviewTab(findTab(path))) {
+      hidePreview();
+      return;
+    }
     const tab = findTab(path);
     if (!tab) return;
     if (activeTab === path) stashEditor();
@@ -2027,7 +2070,7 @@ function mountChat(root) {
     if (activeTab === path) {
       const next = openTabs[at] || openTabs[at - 1] || null;
       activeTab = next ? next.path : "";
-      filesSelected = activeTab;
+      filesSelected = isPreviewPath(activeTab) ? filesSelected : selectedPathFromTab(activeTab);
       if (editorPane) editorPane.dataset.key = "";
     }
     paintTabsAndFiles();
@@ -2037,13 +2080,20 @@ function mountChat(root) {
     openTabs = [];
     activeTab = "";
     if (editorPane) editorPane.dataset.key = "";
+    previewOpen = false;
+    if (previewPane) {
+      previewPane.hidden = true;
+      previewPane.classList.remove("is-tab");
+    }
+    blankPreviewFrame();
+    if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
   }
 
   /** Fold a fresh listing into the open tabs: drop gone files, reload rewrites. */
   function syncTabs() {
     for (let i = openTabs.length - 1; i >= 0; i -= 1) {
       const tab = openTabs[i];
-      if (isHistoryTab(tab)) continue;
+      if (isHistoryTab(tab) || isPreviewTab(tab)) continue;
       const row = filesListing.find((item) => item.path === tab.path);
       if (!row) {
         if (tab.dirty) tab.gone = true;
@@ -2062,7 +2112,7 @@ function mountChat(root) {
     if (activeTab && !findTab(activeTab)) activeTab = "";
     // Keep a tree/history selection when Chat is showing so a deleted file
     // can still be restored from History.
-    if (activeTab) filesSelected = selectedPathFromTab(activeTab);
+    if (activeTab && !isPreviewPath(activeTab)) filesSelected = selectedPathFromTab(activeTab);
   }
 
   function paintFiles() {
@@ -2287,6 +2337,50 @@ function mountChat(root) {
     return new URL(TabbyUI.path(data.url), window.location.href).href;
   }
 
+  function ensurePreviewTab() {
+    if (findTab(PREVIEW_TAB)) return;
+    openTabs.push({
+      path: PREVIEW_TAB,
+      kind: "preview",
+      state: "ready",
+      rev: 0,
+      original: "",
+      text: "",
+      dirty: false,
+      busy: false,
+      note: "",
+      gone: false,
+    });
+  }
+
+  function blankPreviewFrame() {
+    previewUrl = "";
+    if (previewFrame) previewFrame.src = "about:blank";
+  }
+
+  function dockPreview() {
+    if (!previewOpen) return;
+    const other = [...openTabs].reverse().find((item) => !isPreviewTab(item));
+    activateTab(other ? other.path : "");
+  }
+
+  async function ensurePreviewLoaded() {
+    if (!previewOpen || !findTab(PREVIEW_TAB)) return;
+    if (previewUrl && previewFrame && previewFrame.getAttribute("src") && previewFrame.getAttribute("src") !== "about:blank") {
+      return;
+    }
+    const row = selectedRow();
+    const wanted = row && row.page ? row.path : "";
+    if (!filesEntry && !wanted) return;
+    try {
+      previewUrl = await mintPreviewUrl(wanted);
+      if (!previewOpen || !previewFrame) return;
+      previewFrame.src = previewUrl;
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
   async function showPreview() {
     const row = selectedRow();
     const wanted = row && row.page ? row.path : "";
@@ -2297,20 +2391,34 @@ function mountChat(root) {
     try {
       previewUrl = await mintPreviewUrl(wanted);
       previewOpen = true;
+      ensurePreviewTab();
       if (previewPane) previewPane.hidden = false;
       if (previewFrame) previewFrame.src = previewUrl;
       if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
+      paintTabsAndFiles();
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
   }
 
   function hidePreview() {
+    const at = openTabs.findIndex((tab) => isPreviewTab(tab));
+    if (at >= 0) {
+      if (activeTab === PREVIEW_TAB) {
+        const next = openTabs[at + 1] || openTabs[at - 1] || null;
+        activeTab = next ? next.path : "";
+        if (editorPane) editorPane.dataset.key = "";
+      }
+      openTabs.splice(at, 1);
+    }
     previewOpen = false;
-    previewUrl = "";
-    if (previewPane) previewPane.hidden = true;
-    if (previewFrame) previewFrame.src = "about:blank";
+    blankPreviewFrame();
+    if (previewPane) {
+      previewPane.hidden = true;
+      previewPane.classList.remove("is-tab");
+    }
     if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
+    paintTabsAndFiles();
   }
 
   function reloadPreviewIfNeeded(path) {
@@ -2615,6 +2723,7 @@ function mountChat(root) {
     paintFiles();
     if (chatId && draftsChat !== chatId) loadDrafts(chatId);
     if (window.TabbyLsp && chatId) window.TabbyLsp.setChat(chatId);
+    if (previewOpen) ensurePreviewLoaded();
     if (pendingOpenChange && listingHas(pendingOpenChange)) {
       const path = pendingOpenChange;
       pendingOpenChange = "";
@@ -6470,6 +6579,16 @@ function mountChat(root) {
         openTabs.length ? { label: "Close all files", run: () => closeAllTabs() } : null,
       ];
     }
+    if (isPreviewPath(path)) {
+      return [
+        { label: "Open", run: () => activateTab(path) },
+        { label: "Show beside editor", run: () => dockPreview() },
+        { label: "Reload", run: () => reloadPreviewIfNeeded() },
+        { label: "Close", run: () => hidePreview() },
+        { label: "Close others", disabled: openTabs.length < 2, run: () => closeOtherTabs(path) },
+        { label: "Close all", run: () => closeAllTabs() },
+      ];
+    }
     const tab = findTab(path);
     if (isHistoryTab(tab)) {
       return [
@@ -6709,6 +6828,17 @@ function mountChat(root) {
         tab ? { label: "Download", run: () => saveUrl(fileUrl(store.activeId, tab.path), tab.path.split("/").pop() || "file") } : null,
         { sep: true },
         { label: "Close file", disabled: !tab, run: () => closeTab(activeTab) },
+      ]);
+      return;
+    }
+
+    if (event.target.closest("#chat-preview")) {
+      openCtx(event, [
+        isPreviewTab(activeTabRow())
+          ? { label: "Show beside editor", run: () => dockPreview() }
+          : { label: "Open as tab", run: () => activateTab(PREVIEW_TAB) },
+        { label: "Reload", run: () => reloadPreviewIfNeeded() },
+        { label: "Close", run: () => hidePreview() },
       ]);
       return;
     }
@@ -7030,6 +7160,12 @@ function mountChat(root) {
     filesPreviewBtn.addEventListener("click", () => {
       if (previewOpen) hidePreview();
       else showPreview();
+    });
+  }
+  if (previewTabBtn) {
+    previewTabBtn.addEventListener("click", () => {
+      if (isPreviewTab(activeTabRow())) dockPreview();
+      else activateTab(PREVIEW_TAB);
     });
   }
   if (previewReloadBtn) previewReloadBtn.addEventListener("click", () => reloadPreviewIfNeeded());
