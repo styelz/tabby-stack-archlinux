@@ -1,4 +1,4 @@
-# tabby-stack - Chat/IDE Web UI and Local LLM
+# tabby-stack - Chat/IDE Web UI using self hosted LLM in ArchLinux
 
 A self-hosted coding assistant, web workspace, and image generator for an Arch Linux machine with an NVIDIA GPU.
 
