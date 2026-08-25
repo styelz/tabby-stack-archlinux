@@ -1326,7 +1326,7 @@
         const comfy = key === "comfy" || key === "flux";
         const text = data.restarting ? "RESTARTING" : `LOADING · ${name}`;
         labelEl.textContent = text;
-        chip.className = "chip warn";
+        chip.className = "chip warn is-busy";
         chip.title = data.restarting
           ? "API is restarting"
           : comfy

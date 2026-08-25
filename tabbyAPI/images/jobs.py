@@ -205,12 +205,13 @@ async def reload_last_llm(name: Optional[str] = None) -> str:
     if not profile_name:
         raise RuntimeError("No TabbyAPI profile is installed")
 
-    await asyncio.to_thread(stop_comfy)
-
     from common.phrase_switch import clear_switch_lock, set_switch_lock
 
+    # Lock before stop_comfy so /status reports switching during the wait
+    # (systemd stop can take tens of seconds). The UI loading banner keys off it.
     set_switch_lock(profile_name)
     try:
+        await asyncio.to_thread(stop_comfy)
         try:
             await _load_profile(profile_name)
         except RuntimeError as exc:

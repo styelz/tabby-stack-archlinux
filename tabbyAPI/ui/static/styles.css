@@ -846,6 +846,19 @@ button.chip {
   color: inherit;
   cursor: pointer;
 }
+#gpu-chip.is-busy::before {
+  content: "";
+  width: 0.55em;
+  height: 0.55em;
+  flex: 0 0 auto;
+  border: 0.12em solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: gpu-chip-spin 0.7s linear infinite;
+}
+@keyframes gpu-chip-spin {
+  to { transform: rotate(360deg); }
+}
 #gpu-chip::after {
   content: "";
   width: 0;

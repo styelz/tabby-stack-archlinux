@@ -5987,6 +5987,15 @@ function mountChat(root) {
     }, 1500);
   }
 
+  function onGpuStatus(event) {
+    const data = event && event.detail;
+    rememberGpu(data);
+    if (modelWait || !statusIsBusy(data) || (data && data.down)) return;
+    const target = data.switch_target || (comfyIsStarting(data) ? "comfy" : "");
+    const kind = data.restarting ? "restart" : "switch";
+    ensureModelWait(null, { kind, target });
+  }
+
   function stopGatePoll() {
     if (!gateTicker) return;
     clearInterval(gateTicker);
@@ -7549,6 +7558,7 @@ function mountChat(root) {
     refreshCodeChats();
     startGatePoll();
   }
+  window.addEventListener("tabby-gpu-status", onGpuStatus);
   loadStore();
   return {
     pause() {
@@ -7574,6 +7584,7 @@ function mountChat(root) {
       hideMoreMenu();
       document.removeEventListener("pointerdown", onPointerDownAway);
       document.removeEventListener("keydown", onGlobalKey);
+      window.removeEventListener("tabby-gpu-status", onGpuStatus);
       window.removeEventListener("beforeunload", warnDirtyUnload);
     },
   };

@@ -43,6 +43,7 @@
   const gpuPanel = document.getElementById("gpu-menu-panel");
   let gpuMenuOpen = false;
   let gpuSwitchBusy = false;
+  let gpuSwitchTarget = "";
 
   function gpuChipText() {
     const labelEl = document.getElementById("gpu-chip-label");
@@ -61,6 +62,15 @@
     if (gpuSwitchBusy) return true;
     if (!data || data.down) return true;
     return Boolean(data.switching || data.restarting || data.busy);
+  }
+
+  function statusWithLocalSwitch(data) {
+    if (!gpuSwitchBusy) return data;
+    return Object.assign({}, data || {}, {
+      switching: true,
+      busy: true,
+      switch_target: (data && data.switch_target) || gpuSwitchTarget,
+    });
   }
 
   function makeGpuItem(label, mode, on, busy, hint) {
@@ -136,7 +146,7 @@
     fillGpuMenu(TabbyUI.lastGpuStatus);
     if (TabbyUI.lastGpuStatus && (TabbyUI.lastGpuStatus.profiles || []).length) return;
     try {
-      TabbyUI.paintGpuChip(await TabbyUI.api("status"));
+      TabbyUI.paintGpuChip(statusWithLocalSwitch(await TabbyUI.api("status")));
     } catch (err) {
       TabbyUI.paintApiDown(err);
     }
@@ -152,6 +162,7 @@
     }
     closeGpuMenu();
     gpuSwitchBusy = true;
+    gpuSwitchTarget = token;
     TabbyUI.paintGpuChip(
       Object.assign({}, data, {
         switching: true,
@@ -160,6 +171,7 @@
         profile: token === "comfy" ? data.profile : token,
       })
     );
+    kickHeaderStatus(400);
     try {
       await TabbyUI.api("gpu", { method: "POST", body: { mode: token } });
       await refreshHeaderStatus();
@@ -167,6 +179,7 @@
       TabbyUI.paintApiDown(err);
     } finally {
       gpuSwitchBusy = false;
+      gpuSwitchTarget = "";
     }
   }
 
@@ -437,22 +450,23 @@
   let headerTimer = 0;
   let headerFailing = false;
 
+  function kickHeaderStatus(delay) {
+    if (headerTimer) clearTimeout(headerTimer);
+    headerTimer = setTimeout(refreshHeaderStatus, delay);
+  }
+
   async function refreshHeaderStatus() {
     try {
       const data = await TabbyUI.api("status");
       headerFailing = false;
-      TabbyUI.paintGpuChip(data);
+      TabbyUI.paintGpuChip(statusWithLocalSwitch(data));
     } catch (err) {
       headerFailing = true;
       TabbyUI.paintApiDown(err);
     } finally {
-      if (headerTimer) clearTimeout(headerTimer);
       const data = TabbyUI.lastGpuStatus;
       const switching = gpuSwitchBusy || (data && (data.switching || data.restarting || data.busy));
-      headerTimer = setTimeout(
-        refreshHeaderStatus,
-        headerFailing ? 3000 : switching ? 2000 : 15000
-      );
+      kickHeaderStatus(headerFailing ? 3000 : switching ? 2000 : 15000);
     }
   }
   refreshHeaderStatus();
