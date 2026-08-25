@@ -55,6 +55,14 @@
   }
 
   function cssColor(name, fallback) {
+    const probe = document.createElement("span");
+    probe.style.backgroundColor = `var(${name})`;
+    document.documentElement.appendChild(probe);
+    const resolved = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    if (resolved && resolved !== "transparent" && resolved !== "rgba(0, 0, 0, 0)") {
+      return resolved;
+    }
     const value =
       window.TabbyUI && TabbyUI.cssVar
         ? TabbyUI.cssVar(name)
@@ -80,6 +88,13 @@
         "diffEditor.removedTextBackground": "#4a1f2466",
         "diffEditor.insertedLineBackground": "#1c3d2a33",
         "diffEditor.removedLineBackground": "#4a1f2433",
+        "scrollbar.shadow": "#00000000",
+        "scrollbarSlider.background": cssColor("--scroll-thumb", "#7aa2ff66"),
+        "scrollbarSlider.hoverBackground": cssColor("--scroll-thumb-hover", "#7aa2ffad"),
+        "scrollbarSlider.activeBackground": cssColor("--scroll-thumb-active", "#7aa2ffe0"),
+        "minimapSlider.background": cssColor("--scroll-thumb", "#7aa2ff66"),
+        "minimapSlider.hoverBackground": cssColor("--scroll-thumb-hover", "#7aa2ffad"),
+        "minimapSlider.activeBackground": cssColor("--scroll-thumb-active", "#7aa2ffe0"),
       },
     });
     window.monaco.editor.setTheme("tabby");
@@ -205,6 +220,11 @@
     wordWrap: "off",
     renderWhitespace: "selection",
     smoothScrolling: true,
+    scrollbar: {
+      useShadows: false,
+      verticalScrollbarSize: 10,
+      horizontalScrollbarSize: 10,
+    },
     padding: { top: 8 },
     mouseWheelZoom: true,
     contextmenu: true,
