@@ -553,6 +553,9 @@ def delete_workspace(username: str, chat_id: str) -> None:
     root = workspace_root(username, chat_id, create=False)
     if root.is_dir():
         shutil.rmtree(root, ignore_errors=True)
+    from ui.preview import drop_storage
+
+    drop_storage(username, chat_id)
 
 
 def delete_user_workspaces(username: str) -> None:

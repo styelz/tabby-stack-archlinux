@@ -7,68 +7,42 @@ own subresource requests. The token sits in the path instead, so relative
 ``src`` and ``href`` values resolve back onto an authorized URL.
 
 That opaque origin also makes ``window.localStorage`` throw. Generated pages
-often persist into it, so HTML responses get an in-memory shim. Do not add
-``allow-same-origin``: that would give the page the console origin.
+often persist into it, so HTML responses get a Storage shim. Writes go to a
+sidecar file next to the workspace (not the project tree), and the next HTML
+response embeds those keys. Do not add ``allow-same-origin``: that would give
+the page the console origin.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 TOKEN_TTL_S = 2 * 60 * 60
 MAX_TOKENS = 200
+STORAGE_MAX_BYTES = 256 * 1024
+STORAGE_ROUTE = "__tabby_storage"
+STORAGE_FILE_SUFFIX = ".preview-storage.json"
 # No allow-same-origin: the page must not reach the console DOM or its cookies.
 SANDBOX_CSP = (
     "sandbox allow-scripts allow-forms allow-modals allow-popups "
     "allow-top-navigation-by-user-activation"
 )
+STORAGE_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
 _STORAGE_MARK = "data-tabby-preview-storage"
-_STORAGE_SHIM = (
-    f'<script {_STORAGE_MARK}="1">'
-    "(function(){"
-    "function memoryStorage(){"
-    "var data=Object.create(null),keys=[];"
-    "return{"
-    "getItem:function(key){"
-    "key=String(key);"
-    "return Object.prototype.hasOwnProperty.call(data,key)?data[key]:null;"
-    "},"
-    "setItem:function(key,value){"
-    "key=String(key);"
-    "if(!Object.prototype.hasOwnProperty.call(data,key))keys.push(key);"
-    "data[key]=String(value);"
-    "},"
-    "removeItem:function(key){"
-    "key=String(key);"
-    "if(Object.prototype.hasOwnProperty.call(data,key)){"
-    "delete data[key];keys=Object.keys(data);"
-    "}"
-    "},"
-    "clear:function(){data=Object.create(null);keys=[];},"
-    "key:function(i){return keys[i]==null?null:keys[i];},"
-    "get length(){return keys.length;}"
-    "};"
-    "}"
-    "function install(name){"
-    "try{void window[name];return;}catch(err){}"
-    "try{"
-    "Object.defineProperty(window,name,{"
-    "configurable:true,enumerable:true,value:memoryStorage()"
-    "});"
-    "}catch(err){}"
-    "}"
-    'install("localStorage");'
-    'install("sessionStorage");'
-    "})();"
-    "</script>"
-)
 
 _tokens: dict[str, dict] = {}
 _lock = threading.Lock()
+_storage_lock = threading.Lock()
 
 
 def _prune(now: float) -> None:
@@ -132,10 +106,144 @@ def is_html_name(name: str) -> bool:
     return Path(name).suffix.lower() in {".html", ".htm"}
 
 
-def inject_storage_shim(html: str) -> str:
-    """Put in-memory Storage on sandboxed previews before page scripts run."""
+def persist_url_for(rel: str) -> str:
+    """Relative URL from this preview page to the token storage route."""
+    parts = [part for part in str(rel or "").replace("\\", "/").split("/") if part]
+    if len(parts) <= 1:
+        return STORAGE_ROUTE
+    return "../" * (len(parts) - 1) + STORAGE_ROUTE
+
+
+def storage_path(username: str, chat_id: str) -> Path:
+    from ui.workspace import safe_name, user_dir
+
+    return user_dir(username) / f"{safe_name(chat_id)}{STORAGE_FILE_SUFFIX}"
+
+
+def load_storage(username: str, chat_id: str) -> dict[str, str]:
+    path = storage_path(username, chat_id)
+    with _storage_lock:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, str):
+            out[key] = value
+    return out
+
+
+def save_storage(username: str, chat_id: str, raw: Any) -> None:
+    if not isinstance(raw, dict):
+        raise ValueError("Storage must be an object.")
+    store = {str(key): "" if value is None else str(value) for key, value in raw.items()}
+    payload = json.dumps(store, ensure_ascii=False, separators=(",", ":")) + "\n"
+    data = payload.encode("utf-8")
+    if len(data) > STORAGE_MAX_BYTES:
+        raise ValueError("Preview storage is too large.")
+    path = storage_path(username, chat_id)
+    with _storage_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        os.chmod(path, 0o600)
+
+
+def drop_storage(username: str, chat_id: str) -> None:
+    try:
+        storage_path(username, chat_id).unlink()
+    except OSError:
+        pass
+
+
+def _json_script(value: object) -> str:
+    return (
+        json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
+def _storage_shim(storage: dict[str, str], persist_url: str) -> str:
+    return (
+        f'<script {_STORAGE_MARK}="1">'
+        "(function(){"
+        f"var SEED={_json_script(storage)};"
+        f"var ENDPOINT={_json_script(persist_url)};"
+        "function memoryStorage(seed,persist){"
+        "var data=Object.create(null),keys=[];"
+        "if(seed){"
+        "Object.keys(seed).forEach(function(k){"
+        "data[k]=String(seed[k]);"
+        "keys.push(k);"
+        "});"
+        "}"
+        "function flush(){"
+        "if(!persist||!ENDPOINT)return;"
+        "try{"
+        "var body=JSON.stringify(data);"
+        "var blob=new Blob([body],{type:'text/plain'});"
+        "if(navigator.sendBeacon&&navigator.sendBeacon(ENDPOINT,blob))return;"
+        "fetch(ENDPOINT,{method:'POST',body:body,credentials:'omit',keepalive:true,mode:'no-cors'});"
+        "}catch(err){}"
+        "}"
+        "if(persist){"
+        "try{window.addEventListener('pagehide',flush);}catch(err){}"
+        "}"
+        "return{"
+        "getItem:function(key){"
+        "key=String(key);"
+        "return Object.prototype.hasOwnProperty.call(data,key)?data[key]:null;"
+        "},"
+        "setItem:function(key,value){"
+        "key=String(key);"
+        "if(!Object.prototype.hasOwnProperty.call(data,key))keys.push(key);"
+        "data[key]=String(value);"
+        "flush();"
+        "},"
+        "removeItem:function(key){"
+        "key=String(key);"
+        "if(Object.prototype.hasOwnProperty.call(data,key)){"
+        "delete data[key];keys=Object.keys(data);"
+        "flush();"
+        "}"
+        "},"
+        "clear:function(){data=Object.create(null);keys=[];flush();},"
+        "key:function(i){return keys[i]==null?null:keys[i];},"
+        "get length(){return keys.length;}"
+        "};"
+        "}"
+        "function usable(name){"
+        "try{"
+        "var store=window[name];"
+        "if(!store||typeof store.getItem!=='function')return false;"
+        "store.getItem('__tabby_probe');"
+        "return true;"
+        "}catch(err){return false;}"
+        "}"
+        "function install(name,seed,persist){"
+        "if(usable(name))return;"
+        "try{"
+        "Object.defineProperty(window,name,{"
+        "configurable:true,enumerable:true,value:memoryStorage(seed,persist)"
+        "});"
+        "}catch(err){}"
+        "}"
+        'install("localStorage",SEED,true);'
+        'install("sessionStorage",null,false);'
+        "})();"
+        "</script>"
+    )
+
+
+def inject_storage_shim(html: str, storage: dict[str, str], persist_url: str) -> str:
+    """Put Storage on sandboxed previews before page scripts run."""
     if _STORAGE_MARK in html:
         return html
+    shim = _storage_shim(storage, persist_url)
     lower = html.lower()
     for tag in ("<head", "<html"):
         start = lower.find(tag)
@@ -144,10 +252,14 @@ def inject_storage_shim(html: str) -> str:
         end = html.find(">", start)
         if end == -1:
             continue
-        return html[: end + 1] + _STORAGE_SHIM + html[end + 1 :]
-    return _STORAGE_SHIM + html
+        return html[: end + 1] + shim + html[end + 1 :]
+    return shim + html
 
 
-def html_preview_bytes(path: Path) -> bytes:
+def html_preview_bytes(
+    path: Path, *, username: str, chat_id: str, persist_url: str
+) -> bytes:
     text = path.read_text(encoding="utf-8", errors="replace")
-    return inject_storage_shim(text).encode("utf-8")
+    return inject_storage_shim(
+        text, load_storage(username, chat_id), persist_url
+    ).encode("utf-8")

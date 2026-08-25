@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sse_starlette import EventSourceResponse
 
 from ui.assets import STATIC_DIR, file_response
+from ui.preview import STORAGE_ROUTE
 from ui.auth import (
     COOKIE_NAME,
     authenticate_user,
@@ -528,6 +529,56 @@ async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)
     return {"ok": True, "files": [], "bytes": 0, "count": 0}
 
 
+def _preview_owner(username: str, chat_id: str, token: str) -> tuple[str, str]:
+    from ui.preview import resolve
+    from ui.workspace import safe_name
+
+    owner = resolve(token)
+    if not owner or owner[0] != username or owner[1] != safe_name(chat_id):
+        raise HTTPException(404, "This preview link expired. Open the site again.")
+    return owner
+
+
+def _preview_headers() -> dict[str, str]:
+    from ui.preview import SANDBOX_CSP
+
+    return {
+        "Content-Security-Policy": SANDBOX_CSP,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+
+
+@router.options(f"/code/{{username}}/{{chat_id}}/{{token}}/{STORAGE_ROUTE}", include_in_schema=False)
+async def ui_code_preview_storage_options(
+    username: str, chat_id: str, token: str
+):
+    from ui.preview import STORAGE_CORS
+
+    _preview_owner(username, chat_id, token)
+    return Response(status_code=204, headers=STORAGE_CORS)
+
+
+@router.post(f"/code/{{username}}/{{chat_id}}/{{token}}/{STORAGE_ROUTE}", include_in_schema=False)
+async def ui_code_preview_storage(
+    request: Request, username: str, chat_id: str, token: str
+):
+    """Accept localStorage dumps from the sandboxed preview shim."""
+    from ui.preview import STORAGE_CORS, save_storage
+
+    user, cid = _preview_owner(username, chat_id, token)
+    try:
+        body = json.loads((await request.body()).decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "Invalid storage payload.") from exc
+    try:
+        save_storage(user, cid, body)
+    except ValueError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    return Response(status_code=204, headers=STORAGE_CORS)
+
+
 @router.get("/code/{username}/{chat_id}/{token}/{path:path}", include_in_schema=False)
 async def ui_code_preview(
     request: Request, username: str, chat_id: str, token: str, path: str = ""
@@ -538,23 +589,17 @@ async def ui_code_preview(
     an opaque origin, and such a document does not send SameSite=Lax cookies
     with its own subresource requests.
     """
-    from ui.preview import (
-        SANDBOX_CSP,
-        html_preview_bytes,
-        is_html_name,
-        resolve,
-    )
-    from ui.workspace import guess_media_type, resolve_file, safe_name, site_entry
+    from ui.preview import STORAGE_ROUTE, html_preview_bytes, is_html_name, persist_url_for
+    from ui.workspace import guess_media_type, resolve_file, site_entry
 
-    owner = resolve(token)
-    if not owner or owner[0] != username or owner[1] != safe_name(chat_id):
-        raise HTTPException(404, "This preview link expired. Open the site again.")
-    user, cid = owner
+    user, cid = _preview_owner(username, chat_id, token)
     rel = path or ""
     # Starlette has already redirected a missing trailing slash, so an empty
     # path here means the directory form.
     if not rel or rel.endswith("/"):
         rel = f"{rel}index.html"
+    if rel == STORAGE_ROUTE or rel.endswith(f"/{STORAGE_ROUTE}"):
+        raise HTTPException(404, "File not found.")
     try:
         file_path = resolve_file(user, cid, rel)
     except ValueError as exc:
@@ -565,15 +610,15 @@ async def ui_code_preview(
         if not entry:
             raise HTTPException(404, "File not found.") from exc
         return RedirectResponse(f"{request.url.path}{quote(entry)}", status_code=307)
-    headers = {
-        "Content-Security-Policy": SANDBOX_CSP,
-        "X-Content-Type-Options": "nosniff",
-        "Referrer-Policy": "no-referrer",
-        "Cache-Control": "no-store",
-    }
+    headers = _preview_headers()
     if is_html_name(file_path.name):
         return Response(
-            content=html_preview_bytes(file_path),
+            content=html_preview_bytes(
+                file_path,
+                username=user,
+                chat_id=cid,
+                persist_url=persist_url_for(rel),
+            ),
             media_type=guess_media_type(file_path),
             headers=headers,
         )
