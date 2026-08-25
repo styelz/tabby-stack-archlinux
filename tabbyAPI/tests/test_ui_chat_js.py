@@ -95,6 +95,32 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertNotRegex(css, r"\.chat-file \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto auto auto")
         self.assertIn('class="chat-file-tools"', self.src)
 
+    def test_dirty_tabs_are_stashed_per_chat(self):
+        self.assertIn("let tabsByChat", self.src)
+        self.assertIn("function stashCurrentTabs()", self.src)
+        self.assertIn("function switchWorkspaceTabs(chatId)", self.src)
+        self.assertIn("function warnDirtyUnload(event)", self.src)
+        self.assertIn("anyDirtyTabs()", self.src)
+
+    def test_optimizing_status_refreshes_files(self):
+        self.assertIn("Writing|Editing|Deleting|Optimizing|Renaming", self.src)
+
+    def test_files_overflow_and_history_collapse(self):
+        self.assertIn('id="chat-files-more"', self.src)
+        self.assertIn('data-files-more="refresh"', self.src)
+        self.assertIn('id="chat-files-history-toggle"', self.src)
+        self.assertIn("function setHistoryOpen(open)", self.src)
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        self.assertIn(".chat-files-history.is-collapsed", css)
+        self.assertIn(".chat-files.is-drop", css)
+
+    def test_find_in_chat_bar(self):
+        self.assertIn('id="chat-find"', self.src)
+        self.assertIn("function openFind(seed)", self.src)
+        self.assertIn("function jumpSidebarSearch()", self.src)
+        self.assertIn("function paintFindHits()", self.src)
+
 
 if __name__ == "__main__":
     unittest.main()
+

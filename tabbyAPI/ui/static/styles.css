@@ -583,11 +583,27 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   flex-direction: column;
   border-top: 1px solid var(--line);
 }
+.chat-files-history.is-collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.chat-files-history.is-collapsed .chat-files-history-list { display: none; }
 .chat-files-history-head {
   flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  width: 100%;
   padding: 8px 10px 6px;
   font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
+}
+.chat-files-history-head:hover { color: var(--text); }
+.chat-files.is-drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
 }
 .chat-files-history-list {
   flex: 1 1 auto;
@@ -983,6 +999,46 @@ input:focus, textarea:focus { outline: 2px solid rgba(122,162,255,0.45); border-
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.chat-find {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-elev);
+}
+.chat-find[hidden] { display: none; }
+.chat-find input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.chat-find input:focus { outline: none; }
+.chat-find-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-row.is-find-hit,
+.chat-turn.is-find-hit {
+  outline: 1px solid rgba(122, 162, 255, 0.45);
+  border-radius: 10px;
+}
+.chat-row.is-find-current,
+.chat-turn.is-find-current {
+  outline-color: var(--accent);
+  background: rgba(122, 162, 255, 0.08);
 }
 .chat-log {
   min-height: 0;

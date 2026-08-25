@@ -14,8 +14,8 @@ MAX_CODE_TURNS = 16
 CODE_SYSTEM = (
     "You are coding in a per-chat project folder on this Tabby Stack host. "
     "The user can create, upload, and attach files; attached files are included "
-    "in their message. Use the file tools (Write, StrReplace, Read, Delete, List) "
-    "to create and edit text files. Use OptimizeImage to compress, resize, or "
+    "in their message. Use the file tools (Write, StrReplace, Read, Rename, "
+    "Delete, List) to create and edit text files. Use OptimizeImage to compress, resize, or "
     "convert project images. Do not create placeholder files when an attached "
     "project image can be processed with OptimizeImage. Do not dump whole files "
     "in chat. Do not use a shell and do not try to run the site. Point img src "
@@ -39,6 +39,7 @@ _REPLACE_NAMES = (
 )
 _READ_NAMES = ("read", "read_file", "readfile")
 _DELETE_NAMES = ("delete", "delete_file", "remove_file")
+_RENAME_NAMES = ("rename", "rename_file", "move_file", "mv")
 _LIST_NAMES = ("list", "list_dir", "listdir", "list_files")
 _OPTIMIZE_NAMES = ("optimizeimage", "optimize_image", "compress_image", "resize_image")
 
@@ -73,6 +74,21 @@ def code_tool_specs() -> list[ToolSpec]:
                         "new_string": {"type": "string"},
                     },
                     "required": ["path", "old_string", "new_string"],
+                },
+            ),
+        ),
+        ToolSpec(
+            type="function",
+            function=Function(
+                name="Rename",
+                description="Rename or move a project file.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Current relative path"},
+                        "to": {"type": "string", "description": "New relative path"},
+                    },
+                    "required": ["path", "to"],
                 },
             ),
         ),
@@ -190,6 +206,14 @@ def _arg_contents(args: dict) -> str:
     return ""
 
 
+def _arg_dest(args: dict) -> str:
+    for key in ("to", "dest", "new_path", "destination"):
+        value = args.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
 def _tool_pairs(message) -> list[tuple[str, dict, str]]:
     pairs: list[tuple[str, dict, str]] = []
     for call in getattr(message, "tool_calls", None) or []:
@@ -223,6 +247,8 @@ def _kind(name: str) -> str:
         return "read"
     if match_tool_name([key], _DELETE_NAMES):
         return "delete"
+    if match_tool_name([key], _RENAME_NAMES):
+        return "rename"
     if match_tool_name([key], _LIST_NAMES):
         return "list"
     if match_tool_name([key], _OPTIMIZE_NAMES):
@@ -264,6 +290,12 @@ def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[st
     if kind == "delete":
         workspace.delete_file(username, chat_id, rel)
         return f"Deleting {rel}", f"Deleted {rel}"
+    if kind == "rename":
+        dest = _arg_dest(args)
+        if not dest:
+            return "Tool error", "to is required"
+        written = workspace.rename_file(username, chat_id, rel, dest)
+        return f"Renaming {written}", f"Renamed {rel} to {written}"
     if kind == "optimize":
         result = workspace.optimize_image(
             username,
@@ -279,7 +311,7 @@ def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[st
         return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
     return (
         "Tool error",
-        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Delete, List, or OptimizeImage.",
+        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Rename, Delete, List, or OptimizeImage.",
     )
 
 
@@ -386,6 +418,7 @@ async def iter_code_turns(
             if (
                 label.startswith("Writing ")
                 or label.startswith("Editing ")
+                or label.startswith("Renaming ")
                 or label.startswith("Optimizing ")
             ):
                 path = (

@@ -482,6 +482,57 @@ async def ui_workspace_rename_file(
     return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
+@router.delete("/workspace/{chat_id}/folder", include_in_schema=False)
+async def ui_workspace_delete_folder(
+    chat_id: str, path: str = "", _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import delete_prefix, listing, site_entry
+
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        delete_prefix(_user, cid, path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Folder not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, **listing(_user, cid), "entry": site_entry(_user, cid)}
+
+
+@router.post("/workspace/{chat_id}/folder", include_in_schema=False)
+async def ui_workspace_rename_folder(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, rename_prefix, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    dest = str(body.get("to") or "")
+    if not path or not dest:
+        raise HTTPException(400, "path and to are required")
+    cid = _workspace_chat_id(chat_id)
+    try:
+        moved = rename_prefix(_user, cid, path, dest)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Folder not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "moved": [{"from": src, "to": written} for src, written in moved],
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
+
+
 @router.get("/workspace/{chat_id}/history", include_in_schema=False)
 async def ui_workspace_history(
     chat_id: str, path: str = "", _user: str = Depends(require_ui_user)

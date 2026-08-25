@@ -94,6 +94,13 @@ function mountChat(root) {
         <div class="chat-view">
           <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
           <div class="chat-log-wrap" id="chat-log-wrap">
+            <div class="chat-find" id="chat-find" hidden>
+              <input id="chat-find-input" type="search" placeholder="Find in chat" autocomplete="off" />
+              <span class="chat-find-count" id="chat-find-count"></span>
+              <button type="button" class="btn ghost chat-icon" id="chat-find-prev" aria-label="Previous match" title="Previous match">↑</button>
+              <button type="button" class="btn ghost chat-icon" id="chat-find-next" aria-label="Next match" title="Next match">↓</button>
+              <button type="button" class="btn ghost chat-icon" id="chat-find-close" aria-label="Close find" title="Close find">×</button>
+            </div>
             <div class="chat-empty" id="chat-empty" hidden>
               <h2 id="chat-empty-title">Console chat</h2>
               <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
@@ -164,15 +171,20 @@ function mountChat(root) {
           <span class="spacer"></span>
           <button class="btn ghost" type="button" id="chat-files-new" title="Create a new text file">New</button>
           <button class="btn ghost" type="button" id="chat-files-upload" title="Add files from this computer">Upload</button>
-          <button class="btn ghost chat-icon" type="button" id="chat-files-refresh" aria-label="Refresh files" title="Refresh files">⟳</button>
           <button class="btn" type="button" id="chat-files-site">Open site</button>
-          <button class="btn ghost" type="button" id="chat-files-zip">Zip</button>
-          <button class="btn ghost" type="button" id="chat-files-clear">Clear</button>
+          <div class="chat-more chat-files-more">
+            <button class="btn ghost chat-icon" type="button" id="chat-files-more" aria-haspopup="true" aria-expanded="false" aria-label="More file actions" title="More">⋯</button>
+            <div class="chat-more-menu" id="chat-files-more-menu" hidden>
+              <button type="button" data-files-more="refresh">Refresh</button>
+              <button type="button" data-files-more="zip" id="chat-files-zip">Download zip</button>
+              <button type="button" data-files-more="clear" id="chat-files-clear">Clear files</button>
+            </div>
+          </div>
           <button class="btn ghost chat-icon chat-files-close" type="button" id="chat-files-close" aria-label="Hide files" title="Hide files">×</button>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-history" id="chat-files-history">
-          <div class="chat-files-history-head">History</div>
+          <button type="button" class="chat-files-history-head" id="chat-files-history-toggle" aria-expanded="true">History</button>
           <div class="chat-files-history-list" id="chat-files-history-list"></div>
         </div>
       </aside>
@@ -220,11 +232,20 @@ function mountChat(root) {
   const filesClearBtn = root.querySelector("#chat-files-clear");
   const filesNewBtn = root.querySelector("#chat-files-new");
   const filesUploadBtn = root.querySelector("#chat-files-upload");
-  const filesRefreshBtn = root.querySelector("#chat-files-refresh");
+  const filesMoreBtn = root.querySelector("#chat-files-more");
+  const filesMoreMenu = root.querySelector("#chat-files-more-menu");
+  const filesHistoryPane = root.querySelector("#chat-files-history");
+  const filesHistoryToggle = root.querySelector("#chat-files-history-toggle");
   const filesCountEl = root.querySelector("#chat-files-count");
   const filesSiteBtn = root.querySelector("#chat-files-site");
   const filesToggleBtn = root.querySelector("#chat-files-toggle");
   const filesCloseBtn = root.querySelector("#chat-files-close");
+  const findBar = root.querySelector("#chat-find");
+  const findInput = root.querySelector("#chat-find-input");
+  const findCountEl = root.querySelector("#chat-find-count");
+  const findPrevBtn = root.querySelector("#chat-find-prev");
+  const findNextBtn = root.querySelector("#chat-find-next");
+  const findCloseBtn = root.querySelector("#chat-find-close");
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   let filesListing = [];
   let filesSelected = "";
@@ -232,6 +253,7 @@ function mountChat(root) {
   let filesOpenFolders = new Set();
   let filesSeenPaths = new Set();
   let filesRevealed = "";
+  let filesTreeReady = false;
   let filesEntry = "";
   let filesHistory = [];
   let filesHistoryPath = "";
@@ -241,7 +263,11 @@ function mountChat(root) {
   let openTabs = [];
   let activeTab = "";
   let tabsChat = "";
+  let tabsByChat = Object.create(null);
   let logScroll = 0;
+  let findQuery = "";
+  let findHits = [];
+  let findIndex = 0;
   // Chat ids the server says own project files. Drives the sidebar badge in
   // both modes, so it survives a reload and covers chats not opened yet.
   let codeChats = new Set();
@@ -262,15 +288,25 @@ function mountChat(root) {
   const SETTINGS_KEY = "tabby-ui-chat-settings";
   const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
   const FILES_KEY = "tabby-ui-chat-files";
+  const HISTORY_KEY = "tabby-ui-chat-history";
   const MAX_CHATS = 50;
   const narrowChat = window.matchMedia("(max-width: 900px)");
   // Below 900px the pane is a bottom sheet over the chat, so it starts closed
   // there no matter what the desktop preference says.
   let filesOpen = narrowChat.matches ? false : readFilesOpen();
+  let historyOpen = readHistoryOpen();
 
   function readFilesOpen() {
     try {
       return localStorage.getItem(FILES_KEY) !== "closed";
+    } catch {
+      return true;
+    }
+  }
+
+  function readHistoryOpen() {
+    try {
+      return localStorage.getItem(HISTORY_KEY) !== "closed";
     } catch {
       return true;
     }
@@ -532,7 +568,10 @@ function mountChat(root) {
     renderSidebar();
     if (!persistReady) return;
     before.forEach((id) => {
-      if (!kept.has(id)) dropWorkspace(id);
+      if (!kept.has(id)) {
+        dropWorkspace(id);
+        forgetTabs(id);
+      }
     });
     TabbyUI.api("chats", { method: "PUT", body: store }).catch(() => {});
   }
@@ -728,7 +767,60 @@ function mountChat(root) {
   function dropWorkspace(chatId) {
     if (!chatId) return;
     codeChats.delete(chatId);
+    forgetTabs(chatId);
     TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  function tabsAreDirty(tabs) {
+    return (tabs || []).some((tab) => tab && tab.dirty);
+  }
+
+  function anyDirtyTabs() {
+    if (tabsAreDirty(openTabs)) return true;
+    return Object.keys(tabsByChat).some((id) => tabsAreDirty(tabsByChat[id] && tabsByChat[id].openTabs));
+  }
+
+  function stashCurrentTabs() {
+    stashEditor();
+    if (!tabsChat) return;
+    tabsByChat[tabsChat] = { openTabs, activeTab };
+  }
+
+  function restoreTabsFor(chatId) {
+    const saved = chatId ? tabsByChat[chatId] : null;
+    if (!saved) {
+      resetTabs();
+      return;
+    }
+    openTabs = saved.openTabs || [];
+    activeTab = saved.activeTab && openTabs.some((tab) => tab.path === saved.activeTab)
+      ? saved.activeTab
+      : "";
+    if (editorPane) editorPane.dataset.key = "";
+  }
+
+  function forgetTabs(chatId) {
+    if (!chatId) return;
+    delete tabsByChat[chatId];
+    if (tabsChat === chatId) {
+      resetTabs();
+      tabsChat = "";
+    }
+  }
+
+  function switchWorkspaceTabs(chatId) {
+    if (tabsChat === chatId) return;
+    stashCurrentTabs();
+    tabsChat = chatId || "";
+    restoreTabsFor(tabsChat);
+    resetFilesTreeState();
+  }
+
+  function warnDirtyUnload(event) {
+    persist();
+    if (!anyDirtyTabs()) return;
+    event.preventDefault();
+    event.returnValue = "";
   }
 
   function fileUrl(chatId, path) {
@@ -767,6 +859,7 @@ function mountChat(root) {
     filesSeenPaths = new Set();
     filesRevealed = "";
     filesFocusDir = "";
+    filesTreeReady = false;
   }
 
   function buildFilesTree(rows) {
@@ -808,10 +901,6 @@ function mountChat(root) {
 
   function syncTreeFolders(rows) {
     const paths = rows.map((row) => String(row.path || ""));
-    paths.forEach((path) => {
-      if (filesSeenPaths.has(path)) return;
-      folderAncestors(path).forEach((dir) => filesOpenFolders.add(dir));
-    });
     filesSeenPaths = new Set(paths);
     const live = new Set();
     paths.forEach((path) => folderAncestors(path).forEach((dir) => live.add(dir)));
@@ -822,6 +911,11 @@ function mountChat(root) {
   }
 
   function revealSelectedIfNeeded() {
+    if (!filesTreeReady) {
+      filesRevealed = filesSelected;
+      filesTreeReady = true;
+      return;
+    }
     if (!filesSelected || filesSelected === filesRevealed) return;
     filesRevealed = filesSelected;
     folderAncestors(filesSelected).forEach((dir) => filesOpenFolders.add(dir));
@@ -862,8 +956,26 @@ function mountChat(root) {
     return filesListing.find((row) => row.path === filesSelected) || null;
   }
 
+  function paintHistoryPane() {
+    if (filesHistoryPane) filesHistoryPane.classList.toggle("is-collapsed", !historyOpen);
+    if (filesHistoryToggle) {
+      filesHistoryToggle.setAttribute("aria-expanded", historyOpen ? "true" : "false");
+    }
+  }
+
+  function setHistoryOpen(open) {
+    historyOpen = Boolean(open);
+    try {
+      localStorage.setItem(HISTORY_KEY, historyOpen ? "open" : "closed");
+    } catch {
+      /* ignore */
+    }
+    paintHistoryPane();
+  }
+
   function paintFilesHead() {
     paintFilesToggle();
+    paintHistoryPane();
     const total = filesListing.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
       filesCountEl.textContent = filesListing.length
@@ -886,6 +998,7 @@ function mountChat(root) {
       filesOpenFolders.clear();
       filesSeenPaths = new Set();
       filesRevealed = "";
+      filesTreeReady = false;
       filesTree.innerHTML =
         '<p class="muted chat-files-empty">No files yet. Create one, upload, or ask for a page.</p>';
       return;
@@ -1622,18 +1735,13 @@ function mountChat(root) {
 
   async function refreshFiles() {
     const chatId = store.activeId;
-    // Tabs belong to one chat's project; another chat starts from Chat again.
     if (tabsChat !== chatId) {
-      tabsChat = chatId;
-      resetTabs();
-      resetFilesTreeState();
+      switchWorkspaceTabs(chatId);
     }
     if (activeMode() !== "code" || !chatId) {
       filesListing = [];
       filesSelected = "";
       filesEntry = "";
-      resetTabs();
-      resetFilesTreeState();
       paintFiles();
       return;
     }
@@ -1697,8 +1805,15 @@ function mountChat(root) {
     moreBtn.setAttribute("aria-expanded", "false");
   }
 
+  function hideFilesMoreMenu() {
+    if (!filesMoreMenu || !filesMoreBtn) return;
+    filesMoreMenu.hidden = true;
+    filesMoreBtn.setAttribute("aria-expanded", "false");
+  }
+
   function hidePopovers() {
     hideMoreMenu();
+    hideFilesMoreMenu();
     hideAttachMenu();
     if (TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
   }
@@ -2283,6 +2398,29 @@ function mountChat(root) {
     }
   }
 
+  async function createUserFolder(dir) {
+    const folder = dir != null && dir !== ""
+      ? String(dir).replace(/\/+$/, "")
+      : filesFocusDir;
+    const raw = await TabbyUI.promptModal({
+      title: "New folder",
+      text: "Folder name in this chat's project.",
+      label: "Folder",
+      yes: "Create",
+      value: folder ? `${folder}/` : "",
+      placeholder: folder ? `${folder}/css` : "css",
+    });
+    if (raw == null) return;
+    const path = String(raw).trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!path || path.includes("..") || path.startsWith("~")) {
+      addBubble("assistant", "Error: Enter a relative folder such as css.");
+      return;
+    }
+    filesFocusDir = path;
+    filesOpenFolders.add(path);
+    await createUserFile(path);
+  }
+
   function retargetPath(from, to) {
     if (!from || !to || from === to) return;
     const tab = findTab(from);
@@ -2392,6 +2530,73 @@ function mountChat(root) {
     }
   }
 
+  async function deleteProjectFolder(dir) {
+    const prefix = String(dir || "").replace(/\/+$/, "");
+    if (!prefix) return;
+    const paths = filesListing
+      .filter((row) => row.path === prefix || row.path.startsWith(`${prefix}/`))
+      .map((row) => row.path);
+    if (!paths.length) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Delete folder",
+      text: `Delete “${prefix}” and ${paths.length} file${paths.length === 1 ? "" : "s"}?`,
+      yes: "Delete",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/folder?path=${encodeURIComponent(prefix)}`,
+        { method: "DELETE" }
+      );
+      applyListing(data);
+      paths.forEach((path) => {
+        const open = findTab(path);
+        if (open) open.dirty = false;
+        pendingFiles = pendingFiles.filter((file) => file.path !== path);
+      });
+      if (filesSelected === prefix || filesSelected.startsWith(`${prefix}/`)) filesSelected = "";
+      paintAttach();
+      paintFiles();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  async function renameProjectFolder(dir) {
+    const prefix = String(dir || "").replace(/\/+$/, "");
+    if (!prefix) return;
+    const raw = await TabbyUI.promptModal({
+      title: "Rename folder",
+      text: "New folder path in this chat's project.",
+      label: "Folder",
+      yes: "Rename",
+      value: prefix,
+    });
+    if (raw == null) return;
+    const dest = String(raw).trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!dest || dest === prefix) return;
+    if (dest.includes("..") || dest.startsWith("~")) {
+      addBubble("assistant", "Error: Enter a relative folder such as css.");
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(store.activeId)}/folder`,
+        { method: "POST", body: { path: prefix, to: dest } }
+      );
+      (Array.isArray(data.moved) ? data.moved : []).forEach((row) => {
+        if (row && row.from && row.to) retargetPath(row.from, row.to);
+      });
+      applyListing(data);
+      filesFocusDir = dest;
+      filesOpenFolders.add(dest);
+      paintAttach();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
   async function saveCodeAsFile(code, lang) {
     const ext = langExt(lang);
     const suggested = defaultNewPath().replace(/untitled(?:-\d+)?\.txt$/, `snippet${ext}`);
@@ -2475,6 +2680,7 @@ function mountChat(root) {
       filesEntry = "";
       pendingFiles = [];
       resetTabs();
+      if (tabsChat) tabsByChat[tabsChat] = { openTabs, activeTab };
       resetFilesTreeState();
       noteChatFiles(store.activeId, false);
       paintAttach();
@@ -2493,12 +2699,13 @@ function mountChat(root) {
     }
   }
 
-  async function uploadLocalFiles(fileList, { attach = false, open = false } = {}) {
+  async function uploadLocalFiles(fileList, { attach = false, open = false, dir = "" } = {}) {
     const chatId = store.activeId;
     const files = Array.from(fileList || []).filter(Boolean);
+    const prefix = dir ? `${String(dir).replace(/\/+$/, "")}/` : "";
     let lastText = "";
     for (const file of files) {
-      const name = String(file.name || "file").split(/[/\\]/).pop();
+      const name = prefix + String(file.name || "file").split(/[/\\]/).pop();
       const suffix = fileSuffix(name);
       if (!TEXT_SUFFIXES.has(suffix) && !IMAGE_SUFFIXES.has(suffix)) {
         addBubble("assistant", `Error: ${name} is not a text or image file.`);
@@ -2668,6 +2875,7 @@ function mountChat(root) {
         '<section><h3>Chats</h3><ul class="shortcuts-list">' +
         shortcutRow("Cycle chats", "<kbd>Tab</kbd>") +
         shortcutRow("Search chats", "<kbd>Ctrl</kbd>+<kbd>K</kbd>") +
+        shortcutRow("Find in chat", "<kbd>Ctrl</kbd>+<kbd>F</kbd>") +
         shortcutRow("New chat", "<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>") +
         shortcutRow("Stop or close", "<kbd>Esc</kbd>") +
         "</ul></section>" +
@@ -3189,6 +3397,88 @@ function mountChat(root) {
     return addAssistantTurn({ live: true, activity });
   }
 
+  function messageFindText(item) {
+    return [item && item.content, item && item.reasoning].filter(Boolean).join("\n");
+  }
+
+  function collectFindHits(q) {
+    const needle = String(q || "").trim().toLowerCase();
+    if (!needle) return [];
+    const hits = [];
+    messages.forEach((item, idx) => {
+      if (!item || item.role === "system") return;
+      if (messageFindText(item).toLowerCase().includes(needle)) hits.push(idx);
+    });
+    return hits;
+  }
+
+  function paintFindBar() {
+    if (!findCountEl) return;
+    if (!findQuery.trim()) {
+      findCountEl.textContent = "";
+      return;
+    }
+    findCountEl.textContent = findHits.length
+      ? `${findIndex + 1}/${findHits.length}`
+      : "0/0";
+  }
+
+  function paintFindHits() {
+    if (!log) return;
+    log.querySelectorAll("[data-msg-idx]").forEach((node) => {
+      const idx = Number(node.dataset.msgIdx);
+      node.classList.toggle("is-find-hit", findHits.includes(idx));
+      node.classList.toggle("is-find-current", findHits.length > 0 && findHits[findIndex] === idx);
+    });
+    paintFindBar();
+  }
+
+  function revealFindHit(index) {
+    if (!findHits.length) {
+      paintFindHits();
+      return;
+    }
+    findIndex = ((index % findHits.length) + findHits.length) % findHits.length;
+    paintFindHits();
+    const node = log.querySelector(`[data-msg-idx="${findHits[findIndex]}"]`);
+    if (node) node.scrollIntoView({ block: "center" });
+  }
+
+  function runFind(query, { jump = true } = {}) {
+    findQuery = String(query || "");
+    findHits = collectFindHits(findQuery);
+    findIndex = 0;
+    paintFindHits();
+    if (jump && findHits.length) revealFindHit(0);
+  }
+
+  function openFind(seed) {
+    if (findBar) findBar.hidden = false;
+    if (findInput) {
+      if (seed != null) findInput.value = seed;
+      findInput.focus();
+      findInput.select();
+      runFind(findInput.value);
+    } else {
+      runFind(seed || findQuery);
+    }
+  }
+
+  function closeFind() {
+    findQuery = "";
+    findHits = [];
+    findIndex = 0;
+    if (findBar) findBar.hidden = true;
+    if (findInput) findInput.value = "";
+    paintFindHits();
+  }
+
+  function jumpSidebarSearch() {
+    const q = String((searchEl && searchEl.value) || "").trim();
+    if (!q) return;
+    openFind(q);
+  }
+
   function renderLog(stickToEnd) {
     log.replaceChildren();
     messages.forEach((item, idx) => {
@@ -3199,6 +3489,7 @@ function mountChat(root) {
       log.appendChild(flightWorking.node);
     }
     paintEmpty();
+    paintFindHits();
     if (stickToEnd !== false) stickLog(true);
     else paintJump();
   }
@@ -3206,6 +3497,7 @@ function mountChat(root) {
   function loadChat(id, stickToEnd) {
     if (id === store.activeId) {
       if (stickToEnd !== false) stickLog(true);
+      jumpSidebarSearch();
       input.focus();
       setSidebarOpen(false);
       return;
@@ -3222,6 +3514,7 @@ function mountChat(root) {
     resetRecall();
     renderLog(stickToEnd !== false);
     refreshFiles();
+    jumpSidebarSearch();
     paintCompose();
     input.focus();
     setSidebarOpen(false);
@@ -3390,6 +3683,15 @@ function mountChat(root) {
       hideMoreMenu();
     }
     if (
+      filesMoreMenu &&
+      filesMoreBtn &&
+      !filesMoreMenu.hidden &&
+      !filesMoreMenu.contains(target) &&
+      !filesMoreBtn.contains(target)
+    ) {
+      hideFilesMoreMenu();
+    }
+    if (
       attachMenu &&
       attachBtn &&
       !attachMenu.hidden &&
@@ -3400,8 +3702,18 @@ function mountChat(root) {
     }
   }
 
+  function editorHasFocus() {
+    const el = document.activeElement;
+    return Boolean(el && editorPane && !editorPane.hidden && editorPane.contains(el));
+  }
+
   function onGlobalKey(event) {
     if (event.key === "Escape") {
+      if (findBar && !findBar.hidden) {
+        closeFind();
+        event.preventDefault();
+        return;
+      }
       if (shell.classList.contains("is-sidebar-open")) {
         setSidebarOpen(false);
         event.preventDefault();
@@ -3428,6 +3740,12 @@ function mountChat(root) {
         searchEl.focus();
         searchEl.select();
       }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
+      if (editorHasFocus()) return;
+      event.preventDefault();
+      openFind();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "o") {
@@ -4228,7 +4546,7 @@ function mountChat(root) {
                 .pop() || "";
               const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
               if (label) working.setActivity(label, { processing: true });
-              if (/^(?:Writing|Editing|Deleting) \S/.test(label) && store.activeId === chatId) {
+              if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && store.activeId === chatId) {
                 refreshFilesSoon();
               }
             }
@@ -4563,12 +4881,17 @@ function mountChat(root) {
         filesFocusDir = path;
         createUserFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
+      { label: "New folder", run: () => {
+        createUserFolder(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
       { sep: true },
       { label: open ? "Collapse" : "Expand", run: () => toggleFolder(path) },
       { label: "Expand all", run: () => expandAllFolders() },
       { label: "Collapse all", run: () => collapseAllFolders() },
       { sep: true },
       { label: "Copy path", run: () => copyText(path) },
+      { label: "Rename folder", run: () => renameProjectFolder(path) },
+      { label: "Delete folder", danger: true, run: () => deleteProjectFolder(path) },
     ];
   }
 
@@ -4576,6 +4899,9 @@ function mountChat(root) {
     return [
       { label: "New file", run: () => {
         createUserFile().catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { label: "New folder", run: () => {
+        createUserFolder().catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
       { label: "Upload files", run: () => {
         uploadWantsAttach = false;
@@ -5126,15 +5452,63 @@ function mountChat(root) {
       if (uploadInput) uploadInput.click();
     });
   }
-  if (filesRefreshBtn) {
-    filesRefreshBtn.addEventListener("click", () => refreshFiles());
+  if (filesMoreBtn && filesMoreMenu) {
+    filesMoreBtn.addEventListener("click", () => {
+      const open = filesMoreMenu.hidden;
+      hideMoreMenu();
+      hideAttachMenu();
+      filesMoreMenu.hidden = !open;
+      filesMoreBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    filesMoreMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-files-more]");
+      if (!btn) return;
+      hideFilesMoreMenu();
+      const act = btn.dataset.filesMore;
+      if (act === "refresh") refreshFiles();
+      if (act === "zip") downloadZip();
+      if (act === "clear") clearProjectFiles();
+    });
   }
-  if (filesZipBtn) {
-    filesZipBtn.addEventListener("click", () => downloadZip());
+  if (filesHistoryToggle) {
+    filesHistoryToggle.addEventListener("click", () => setHistoryOpen(!historyOpen));
   }
-  if (filesClearBtn) {
-    filesClearBtn.addEventListener("click", () => clearProjectFiles());
+  if (filesPane) {
+    filesPane.addEventListener("dragover", (event) => {
+      if (Array.from(event.dataTransfer.types || []).includes("Files")) {
+        event.preventDefault();
+        filesPane.classList.add("is-drop");
+      }
+    });
+    filesPane.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget && filesPane.contains(event.relatedTarget)) return;
+      filesPane.classList.remove("is-drop");
+    });
+    filesPane.addEventListener("drop", (event) => {
+      event.preventDefault();
+      filesPane.classList.remove("is-drop");
+      const files = event.dataTransfer && event.dataTransfer.files;
+      if (!files || !files.length) return;
+      const row = event.target.closest(".chat-file");
+      const dir = row && row.dataset.kind === "dir" ? row.dataset.path : "";
+      uploadLocalFiles(files, { attach: false, open: files.length === 1, dir }).catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
+    });
   }
+  if (findInput) {
+    findInput.addEventListener("input", () => runFind(findInput.value));
+    findInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (event.shiftKey) revealFindHit(findIndex - 1);
+        else revealFindHit(findIndex + 1);
+      }
+    });
+  }
+  if (findPrevBtn) findPrevBtn.addEventListener("click", () => revealFindHit(findIndex - 1));
+  if (findNextBtn) findNextBtn.addEventListener("click", () => revealFindHit(findIndex + 1));
+  if (findCloseBtn) findCloseBtn.addEventListener("click", () => closeFind());
   emptyEl.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-suggest]");
     if (!btn || modelLoading) return;
@@ -5268,7 +5642,7 @@ function mountChat(root) {
     });
   }
 
-  window.addEventListener("beforeunload", persist);
+  window.addEventListener("beforeunload", warnDirtyUnload);
   document.addEventListener("pointerdown", onPointerDownAway);
   document.addEventListener("keydown", onGlobalKey);
   async function loadStore() {
@@ -5326,7 +5700,7 @@ function mountChat(root) {
       hideMoreMenu();
       document.removeEventListener("pointerdown", onPointerDownAway);
       document.removeEventListener("keydown", onGlobalKey);
-      window.removeEventListener("beforeunload", persist);
+      window.removeEventListener("beforeunload", warnDirtyUnload);
     },
   };
 }

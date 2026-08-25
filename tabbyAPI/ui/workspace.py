@@ -531,6 +531,53 @@ def rename_file(username: str, chat_id: str, src: str, dest: str) -> str:
     return written
 
 
+def _folder_prefix(prefix: str) -> str:
+    text = str(prefix or "").strip().replace("\\", "/").strip("/")
+    if not text or text.startswith("~"):
+        raise ValueError("Invalid path")
+    path = Path(text)
+    if path.is_absolute() or any(part == ".." for part in path.parts):
+        raise ValueError("Invalid path")
+    return text
+
+
+def files_with_prefix(username: str, chat_id: str, prefix: str) -> list[str]:
+    text = _folder_prefix(prefix)
+    return [
+        row["path"]
+        for row in list_files(username, chat_id)
+        if row["path"] == text or row["path"].startswith(text + "/")
+    ]
+
+
+def delete_prefix(username: str, chat_id: str, prefix: str) -> list[str]:
+    paths = files_with_prefix(username, chat_id, prefix)
+    if not paths:
+        raise FileNotFoundError(_folder_prefix(prefix))
+    for rel in paths:
+        delete_file(username, chat_id, rel)
+    return paths
+
+
+def rename_prefix(username: str, chat_id: str, src: str, dest: str) -> list[tuple[str, str]]:
+    source = _folder_prefix(src)
+    target = _folder_prefix(dest)
+    if target == source:
+        return [(path, path) for path in files_with_prefix(username, chat_id, source)]
+    if target.startswith(source + "/") or source.startswith(target + "/"):
+        raise ValueError("Cannot move a folder into itself.")
+    paths = files_with_prefix(username, chat_id, source)
+    if not paths:
+        raise FileNotFoundError(source)
+    moved: list[tuple[str, str]] = []
+    for rel in sorted(paths, key=len, reverse=True):
+        suffix = rel[len(source) :].lstrip("/")
+        new = target if not suffix else f"{target}/{suffix}"
+        written = rename_file(username, chat_id, rel, new)
+        moved.append((rel, written))
+    return moved
+
+
 def copy_bytes(username: str, chat_id: str, rel: str, data: bytes) -> str:
     raw = data if isinstance(data, (bytes, bytearray)) else bytes(data or b"")
     root = workspace_root(username, chat_id, create=True)

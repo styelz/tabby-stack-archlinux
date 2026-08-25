@@ -18,6 +18,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/v1/ui/metrics", paths)
         self.assertIn("/v1/ui/users", paths)
         self.assertIn("/v1/ui/chats", paths)
+        self.assertIn("/v1/ui/workspace/{chat_id}/folder", paths)
 
     def test_legacy_ui_redirect_routes_exist(self):
         paths = {route.path for route in legacy_router.routes}
