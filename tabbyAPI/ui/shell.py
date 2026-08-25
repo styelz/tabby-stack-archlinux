@@ -19,6 +19,7 @@ MAX_SESSIONS = 8
 SHELL = "/bin/bash"
 
 _sessions: dict[tuple[str, str], "ShellSession"] = {}
+_gates: dict[tuple[str, str], asyncio.Lock] = {}
 _lock = asyncio.Lock()
 
 
@@ -120,6 +121,16 @@ class ShellSession:
                 sock.close()
 
 
+def connection_gate(username: str, chat_id: str) -> asyncio.Lock:
+    """One shell websocket at a time per chat, so close/reopen cannot overlap."""
+    key = (username, chat_id)
+    lock = _gates.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _gates[key] = lock
+    return lock
+
+
 async def get_session(username: str, chat_id: str) -> ShellSession:
     """Start a new PTY for this websocket. Closing the UI pane must not reuse a
     half-dead exec: the new xterm would be blank and look broken."""
@@ -135,9 +146,16 @@ async def get_session(username: str, chat_id: str) -> ShellSession:
             oldest = next(iter(_sessions))
             _sessions.pop(oldest).close()
         session = ShellSession(username, chat_id)
-        await session.start()
         _sessions[key] = session
-        return session
+    try:
+        await session.start()
+    except BaseException:
+        async with _lock:
+            if _sessions.get(key) is session:
+                _sessions.pop(key, None)
+        session.close()
+        raise
+    return session
 
 
 async def release_session(username: str, chat_id: str, session: ShellSession) -> None:

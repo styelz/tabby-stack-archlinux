@@ -674,26 +674,34 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
         await websocket.close(code=4400)
         return
     await websocket.accept()
+    gate = shell.connection_gate(user, cid)
+    await gate.acquire()
+    session = None
+    reader = None
     try:
-        session = await shell.get_session(user, cid)
-    except shell.ShellError as exc:
-        await websocket.send_json({"type": "error", "message": str(exc)})
-        await websocket.close()
-        return
-    await websocket.send_json({"type": "ready"})
-
-    async def pump_out() -> None:
         try:
-            while session.alive():
-                chunk = await session.read()
-                if not chunk:
-                    break
-                await websocket.send_bytes(chunk)
-        except (WebSocketDisconnect, RuntimeError):
+            session = await shell.get_session(user, cid)
+        except shell.ShellError as exc:
+            with contextlib.suppress(Exception):
+                await websocket.send_json({"type": "error", "message": str(exc)})
+                await websocket.close()
             return
+        await websocket.send_json({"type": "ready"})
 
-    reader = asyncio.create_task(pump_out())
-    try:
+        async def pump_out() -> None:
+            try:
+                while session.alive():
+                    chunk = await session.read()
+                    if not chunk:
+                        break
+                    await websocket.send_bytes(chunk)
+                with contextlib.suppress(Exception):
+                    await websocket.send_json({"type": "exit"})
+                    await websocket.close()
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
+        reader = asyncio.create_task(pump_out())
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
@@ -714,10 +722,16 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        reader.cancel()
-        with contextlib.suppress(Exception):
-            await reader
-        await shell.release_session(user, cid, session)
+        if reader:
+            reader.cancel()
+        if session:
+            await shell.release_session(user, cid, session)
+        if reader:
+            try:
+                await asyncio.wait_for(reader, 1.0)
+            except (Exception, asyncio.CancelledError):
+                pass
+        gate.release()
 
 
 @router.post("/workspace/{chat_id}/lsp", include_in_schema=False)

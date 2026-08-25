@@ -354,6 +354,8 @@ function mountChat(root) {
   let previewOpen = false;
   let previewUrl = "";
   let termOpen = false;
+  let termWanted = false;
+  let termGen = 0;
   let termSocket = null;
   let termTerm = null;
   let termFit = null;
@@ -2298,6 +2300,27 @@ function mountChat(root) {
     }
   }
 
+  function waitSocketClosed(socket) {
+    if (!socket || socket.readyState === 3) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      socket.addEventListener("close", done);
+      socket.addEventListener("error", done);
+      try {
+        if (socket.readyState < 2) socket.close();
+      } catch {
+        done();
+        return;
+      }
+      window.setTimeout(done, 2000);
+    });
+  }
+
   function disposeTermClient() {
     const socket = termSocket;
     termSocket = null;
@@ -2306,12 +2329,8 @@ function mountChat(root) {
       socket.onmessage = null;
       socket.onclose = null;
       socket.onerror = null;
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
     }
+    const wait = waitSocketClosed(socket);
     if (termTerm) {
       try {
         termTerm.dispose();
@@ -2322,9 +2341,12 @@ function mountChat(root) {
       termFit = null;
     }
     if (termHost) termHost.replaceChildren();
+    return wait;
   }
 
   function closeTerm() {
+    termWanted = false;
+    termGen += 1;
     termOpen = false;
     if (termPane) termPane.hidden = true;
     if (filesTermBtn) filesTermBtn.classList.remove("is-on");
@@ -2332,19 +2354,13 @@ function mountChat(root) {
     if (termNote) termNote.textContent = "";
   }
 
-  function openTerm() {
-    const chatId = store.activeId;
-    if (!chatId) return;
+  function connectTerm(chatId, gen, retries) {
+    if (termGen !== gen || !termWanted || !chatId) return;
     if (typeof window.Terminal !== "function") {
       if (termNote) termNote.textContent = "xterm.js is missing.";
-      if (termPane) termPane.hidden = false;
       return;
     }
-    disposeTermClient();
-    termOpen = true;
-    if (termPane) termPane.hidden = false;
-    if (filesTermBtn) filesTermBtn.classList.add("is-on");
-    if (termNote) termNote.textContent = "";
+    if (termNote) termNote.textContent = retries ? "Reconnecting…" : "";
     termTerm = new window.Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -2361,18 +2377,21 @@ function mountChat(root) {
     });
     const socket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell`));
     termSocket = socket;
+    let fatal = false;
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
-      if (termSocket !== socket) return;
+      if (termGen !== gen || termSocket !== socket) return;
+      if (termNote && termNote.textContent === "Reconnecting…") termNote.textContent = "";
       fitTerm();
       if (termTerm) termTerm.focus();
     };
     socket.onmessage = (event) => {
-      if (termSocket !== socket || !termTerm) return;
+      if (termGen !== gen || termSocket !== socket || !termTerm) return;
       if (typeof event.data === "string") {
         try {
           const payload = JSON.parse(event.data);
           if (payload && payload.type === "error") {
+            fatal = true;
             if (termNote) termNote.textContent = payload.message || "install docker";
             termTerm.write(`\r\n${payload.message || "install docker"}\r\n`);
           }
@@ -2381,19 +2400,51 @@ function mountChat(root) {
         }
         return;
       }
+      if (termNote && termNote.textContent === "Reconnecting…") termNote.textContent = "";
       termTerm.write(new Uint8Array(event.data));
     };
     socket.onclose = () => {
-      if (termSocket !== socket) return;
+      if (termGen !== gen || termSocket !== socket) return;
       termSocket = null;
-      if (termNote && !termNote.textContent) termNote.textContent = "Disconnected.";
+      if (!termWanted || fatal) {
+        if (termWanted && termNote && !termNote.textContent) termNote.textContent = "Disconnected.";
+        return;
+      }
+      const next = (retries || 0) + 1;
+      if (next > 8) {
+        if (termNote) termNote.textContent = "Disconnected.";
+        return;
+      }
+      if (termNote) termNote.textContent = "Reconnecting…";
+      window.setTimeout(() => {
+        if (termGen !== gen || !termWanted) return;
+        disposeTermClient().then(() => connectTerm(store.activeId, gen, next));
+      }, Math.min(120 * next, 800));
     };
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (termSocket !== socket) return;
+        if (termGen !== gen || termSocket !== socket) return;
         fitTerm();
         if (termTerm) termTerm.focus();
       });
+    });
+  }
+
+  function openTerm() {
+    const chatId = store.activeId;
+    if (!chatId) return;
+    const gen = ++termGen;
+    termWanted = true;
+    termOpen = true;
+    if (termPane) termPane.hidden = false;
+    if (filesTermBtn) filesTermBtn.classList.add("is-on");
+    if (typeof window.Terminal !== "function") {
+      if (termNote) termNote.textContent = "xterm.js is missing.";
+      return;
+    }
+    disposeTermClient().then(() => {
+      if (termGen !== gen || !termWanted) return;
+      connectTerm(chatId, gen, 0);
     });
   }
 
@@ -6662,7 +6713,7 @@ function mountChat(root) {
   if (previewCloseBtn) previewCloseBtn.addEventListener("click", () => hidePreview());
   if (filesTermBtn) {
     filesTermBtn.addEventListener("click", () => {
-      if (termOpen) closeTerm();
+      if (termOpen && termSocket && termSocket.readyState === 1) closeTerm();
       else openTerm();
     });
   }
