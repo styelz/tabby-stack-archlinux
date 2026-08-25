@@ -1072,6 +1072,44 @@ function mountChat(root) {
     paintTabsAndFiles();
   }
 
+  function listingHas(path) {
+    return filesListing.some((row) => row.path === path);
+  }
+
+  function resolveWorkspaceImage(hint, href) {
+    const clean = String(hint || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (clean && listingHas(clean)) return clean;
+    if (clean) {
+      const webp = clean.replace(/\.(png|jpe?g|gif)$/i, ".webp");
+      if (webp !== clean && listingHas(webp)) return webp;
+      const png = clean.replace(/\.webp$/i, ".png");
+      if (png !== clean && listingHas(png)) return png;
+      const base = (clean.split("/").pop() || "").toLowerCase();
+      const stem = base.replace(/\.[^.]+$/, "");
+      const match = filesListing.find((row) => {
+        if (row.kind !== "image") return false;
+        const name = (row.path.split("/").pop() || "").toLowerCase();
+        return name === base || name.replace(/\.[^.]+$/, "") === stem;
+      });
+      if (match) return match.path;
+    }
+    const fromHref = String(href || "").split(/[?#]/, 1)[0].split("/").pop() || "";
+    if (fromHref && listingHas(fromHref)) return fromHref;
+    const hrefMatch = filesListing.find((row) => (row.path.split("/").pop() || "") === fromHref);
+    return hrefMatch ? hrefMatch.path : "";
+  }
+
+  async function openImageFromLink(link) {
+    const hinted = (link.getAttribute("data-file") || "").trim();
+    const href = link.getAttribute("href") || "";
+    let path = resolveWorkspaceImage(hinted, href);
+    if (!path || !filesListing.length) {
+      await refreshFiles();
+      path = resolveWorkspaceImage(hinted, href);
+    }
+    if (path) openFileTab(path);
+  }
+
   function openFileTab(path) {
     const row = filesListing.find((item) => item.path === path);
     if (!row) return;
@@ -4373,6 +4411,20 @@ function mountChat(root) {
   shell.addEventListener("contextmenu", onChatContextMenu);
 
   log.addEventListener("click", (event) => {
+    const dlBtn = event.target.closest(".md-image-dl");
+    if (dlBtn && log.contains(dlBtn)) {
+      event.preventDefault();
+      const href = dlBtn.getAttribute("data-href") || "";
+      const name = dlBtn.getAttribute("data-name") || "image.png";
+      if (href) saveUrl(href, name);
+      return;
+    }
+    const imageLink = event.target.closest(".md-image-link");
+    if (imageLink && log.contains(imageLink)) {
+      event.preventDefault();
+      openImageFromLink(imageLink);
+      return;
+    }
     const actBtn = event.target.closest("[data-act]");
     if (actBtn && log.contains(actBtn)) {
       event.preventDefault();

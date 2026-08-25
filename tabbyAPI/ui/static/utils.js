@@ -165,27 +165,40 @@
     );
   }
 
+  function workspaceImageHint(alt) {
+    const label = String(alt || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!label || label.includes("..") || /^(https?:)?\/\//i.test(label)) return "";
+    return /\.(png|jpe?g|webp|gif)$/i.test(label) ? label : "";
+  }
+
   function markdownImage(href, alt, inlineImages) {
     const resolved = resolveUiUrl(href);
     const safeHref = escapeHtml(resolved);
     const safeAlt = escapeHtml(alt || "");
+    const cleanHref = String(href || "").split(/[?#]/, 1)[0];
+    const fallback = cleanHref.slice(cleanHref.lastIndexOf("/") + 1) || "Generated image";
+    let label = alt || fallback;
+    try {
+      label = decodeURIComponent(label);
+    } catch (_) {
+      // Keep the original label when a URL contains malformed escapes.
+    }
     if (inlineImages === false) {
-      const cleanHref = String(href || "").split(/[?#]/, 1)[0];
-      const fallback = cleanHref.slice(cleanHref.lastIndexOf("/") + 1) || "Generated image";
-      let label = alt || fallback;
-      try {
-        label = decodeURIComponent(label);
-      } catch (_) {
-        // Keep the original label when a URL contains malformed escapes.
-      }
+      const fileHint = workspaceImageHint(label);
+      const fileAttr = fileHint ? ` data-file="${escapeHtml(fileHint)}"` : "";
       return (
-        `<a class="md-image-link" href="${safeHref}" target="_blank" rel="noreferrer">` +
+        `<a class="md-image-link" href="${safeHref}"${fileAttr}>` +
         `<span class="md-image-link-kind">Image</span>` +
         `<span class="md-image-link-name">${escapeHtml(label)}</span>` +
-        `<span class="md-image-link-open">Open &#8599;</span></a>`
+        `<span class="md-image-link-open">Open</span></a>`
       );
     }
-    return `<a href="${safeHref}" target="_blank" rel="noreferrer"><img src="${safeHref}" alt="${safeAlt}"></a>`;
+    return (
+      `<figure class="md-image">` +
+      `<img src="${safeHref}" alt="${safeAlt}">` +
+      `<button type="button" class="btn ghost md-image-dl" data-href="${safeHref}" data-name="${escapeHtml(fallback)}">Download</button>` +
+      `</figure>`
+    );
   }
 
   function codeBlockHtml(lang, code) {
