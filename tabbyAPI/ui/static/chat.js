@@ -1463,13 +1463,19 @@ function mountChat(root) {
     }
     if (canSplit(idx)) add("split", "Split", "Move this turn and later messages to a new chat");
     const item = messages[idx];
+    let stamp = null;
     if (item && item.createdAt) {
-      const stamp = document.createElement("span");
+      stamp = document.createElement("span");
       stamp.className = "chat-stamp";
       stamp.textContent = stampLabel(item.createdAt);
-      meta.appendChild(stamp);
     }
-    meta.appendChild(actions);
+    if (role === "user") {
+      meta.appendChild(actions);
+      if (stamp) meta.appendChild(stamp);
+    } else {
+      if (stamp) meta.appendChild(stamp);
+      meta.appendChild(actions);
+    }
     host.appendChild(meta);
   }
 
