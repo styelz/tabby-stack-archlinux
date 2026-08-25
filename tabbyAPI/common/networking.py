@@ -6,6 +6,7 @@ import socket
 import time
 import traceback
 from fastapi import Depends, HTTPException, Request
+from starlette.requests import HTTPConnection
 from loguru import logger
 from common.logger import xlogger
 from pydantic import BaseModel
@@ -182,23 +183,27 @@ def is_port_in_use(port: int) -> bool:
         return test_socket.connect_ex(("localhost", port)) == 0
 
 
-async def add_request_id(request: Request):
-    """FastAPI depends to add a UUID to a request's state."""
+async def add_request_id(request: HTTPConnection):
+    """FastAPI depends to stamp a UUID on HTTP and WebSocket connections."""
 
     request.state.id = uuid4().hex
     return request
 
 
-async def log_request(request: Request):
+async def log_request(request: HTTPConnection):
     """FastAPI depends to log a request to the user."""
 
-    log_message = [f"Information for {request.method} request {request.state.id}:"]
+    method = request.scope.get("method") or request.scope.get("type", "request")
+    log_message = [f"Information for {method} request {request.state.id}:"]
 
     log_message.append(f"URL: {request.url}")
     log_message.append(f"Headers: {dict(request.headers)}")
 
-    if request.method != "GET":
-        body_bytes = await request.body()
+    if request.scope.get("type") == "http" and method != "GET":
+        http_request = (
+            request if isinstance(request, Request) else Request(request.scope, receive=request.receive)
+        )
+        body_bytes = await http_request.body()
         if body_bytes:
             body = json.loads(body_bytes.decode("utf-8"))
 
