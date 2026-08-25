@@ -55,6 +55,8 @@
   const modeFly = document.getElementById("user-menu-mode-flyout");
   const themeHint = document.getElementById("user-menu-theme-hint");
   const modeHint = document.getElementById("user-menu-mode-hint");
+  const zoomInput = document.getElementById("user-menu-zoom");
+  const zoomHint = document.getElementById("user-menu-zoom-hint");
   const restartItem = document.getElementById("user-menu-restart");
   let userMenuOpen = false;
 
@@ -87,6 +89,9 @@
     }
     const fsBtn = userPanel && userPanel.querySelector('[data-user-act="fullscreen"]');
     if (fsBtn) fsBtn.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+    const pct = TabbyUI.getZoom();
+    if (zoomInput) zoomInput.value = String(pct);
+    if (zoomHint) zoomHint.textContent = `${pct}%`;
   }
 
   function fillThemeFlyout() {
@@ -184,6 +189,12 @@
       closeFlyouts();
       modeFly.hidden = !open;
       modeBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+  if (zoomInput) {
+    zoomInput.addEventListener("input", () => {
+      TabbyUI.setZoom(zoomInput.value);
+      paintUserMenuHints();
     });
   }
 

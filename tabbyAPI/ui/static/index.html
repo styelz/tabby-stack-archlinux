@@ -89,9 +89,17 @@
         apply: apply
       };
       apply();
+      (function () {
+        var KEY = "tabby-ui-zoom";
+        var n = 100;
+        try { n = parseInt(localStorage.getItem(KEY) || "", 10); } catch (e) {}
+        if (!isFinite(n)) n = 100;
+        n = Math.min(150, Math.max(75, Math.round(n / 5) * 5));
+        document.documentElement.style.setProperty("--ui-zoom", String(n / 100));
+      })();
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260826-themes";
+    window.TABBY_UI_ASSET_V = "20260826-reload";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
@@ -130,6 +138,11 @@
               <span>Appearance</span><kbd id="user-menu-mode-hint">Dark</kbd>
             </button>
             <div class="user-menu-flyout" id="user-menu-mode-flyout" hidden role="menu"></div>
+          </div>
+          <div class="user-menu-zoom">
+            <span id="user-menu-zoom-label">Zoom</span>
+            <input type="range" id="user-menu-zoom" min="75" max="150" step="5" value="100" aria-labelledby="user-menu-zoom-label" />
+            <kbd id="user-menu-zoom-hint">100%</kbd>
           </div>
           <div class="user-menu-sep"></div>
           <button type="button" class="user-menu-item" data-user-act="keys">Keyboard shortcuts</button>

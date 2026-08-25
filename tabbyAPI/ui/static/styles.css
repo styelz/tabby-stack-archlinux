@@ -530,6 +530,7 @@ html[data-theme="contrast-light"] {
 }
 html {
   color-scheme: dark;
+  zoom: var(--ui-zoom, 1);
 }
 html[data-theme$="-light"] {
   color-scheme: light;
@@ -756,6 +757,42 @@ input:focus, textarea:focus { outline: 2px solid var(--focus-ring); border-color
 .user-menu-theme {
   justify-content: flex-start;
   gap: 8px;
+}
+.user-menu-zoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.user-menu-zoom > span { flex: 0 0 auto; color: inherit; }
+.user-menu-zoom input[type="range"] {
+  appearance: auto;
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 64px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.user-menu-zoom input[type="range"]:focus,
+.user-menu-zoom input[type="range"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border: 0;
+}
+.user-menu-zoom kbd {
+  flex: 0 0 2.8em;
+  text-align: right;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
 }
 .chip {
   display: inline-flex;

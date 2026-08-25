@@ -360,14 +360,18 @@ function mountStatus(root) {
       msg.textContent = result.message || "Git update finished.";
       await refresh().catch(() => {});
       if (!result.ask_restart) return;
-      const yes = await TabbyUI.confirmModal({
+      const choice = await TabbyUI.confirmModal({
         title: result.restart_title || "Restart API?",
         text: result.restart_text || "",
         yes: result.restart_yes || "Restart",
         no: result.restart_no || "Skip",
+        other: "Reload",
       });
-      if (yes) {
+      if (choice === true) {
         await act(() => TabbyUI.api("restart", { method: "POST", body: {} }));
+      } else if (choice === "other") {
+        msg.textContent = "Reloading the UI…";
+        location.reload();
       } else {
         msg.textContent = `${result.message || "Git update finished."} The API was not restarted.`;
       }

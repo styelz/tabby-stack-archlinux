@@ -645,7 +645,7 @@
     return true;
   }
 
-  function confirmModal({ title, text, yes = "Restart", no = "Skip" } = {}) {
+  function confirmModal({ title, text, yes = "Restart", no = "Skip", other = "" } = {}) {
     return new Promise((resolve) => {
       const wrap = document.createElement("div");
       wrap.className = "dialog-modal";
@@ -657,12 +657,15 @@
         '<pre class="dialog-text"></pre>' +
         '<div class="dialog-actions">' +
         '<button type="button" class="btn dialog-no"></button>' +
+        (other ? '<button type="button" class="btn dialog-other"></button>' : "") +
         '<button type="button" class="btn danger dialog-yes"></button>' +
         "</div></div>";
       wrap.querySelector("h2").textContent = title || "Confirm";
       wrap.querySelector(".dialog-text").textContent = text || "";
       wrap.querySelector(".dialog-no").textContent = no;
       wrap.querySelector(".dialog-yes").textContent = yes;
+      const otherBtn = wrap.querySelector(".dialog-other");
+      if (otherBtn) otherBtn.textContent = other;
       const finish = (value) => {
         document.removeEventListener("keydown", onKey);
         wrap.remove();
@@ -673,6 +676,7 @@
       };
       wrap.querySelector(".dialog-no").addEventListener("click", () => finish(false));
       wrap.querySelector(".dialog-yes").addEventListener("click", () => finish(true));
+      if (otherBtn) otherBtn.addEventListener("click", () => finish("other"));
       wrap.addEventListener("click", (ev) => {
         if (ev.target === wrap) finish(false);
       });
@@ -876,6 +880,43 @@
     applyTheme();
   }
 
+  const ZOOM_KEY = "tabby-ui-zoom";
+  const ZOOM_MIN = 75;
+  const ZOOM_MAX = 150;
+  const ZOOM_STEP = 5;
+  const ZOOM_DEFAULT = 100;
+
+  function clampZoom(n) {
+    const stepped = Math.round(Number(n) / ZOOM_STEP) * ZOOM_STEP;
+    if (!Number.isFinite(stepped)) return ZOOM_DEFAULT;
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, stepped));
+  }
+
+  function getZoom() {
+    try {
+      return clampZoom(Number.parseInt(localStorage.getItem(ZOOM_KEY) || "", 10));
+    } catch (err) {
+      return ZOOM_DEFAULT;
+    }
+  }
+
+  function applyZoom(pct) {
+    const value = clampZoom(pct == null ? getZoom() : pct);
+    document.documentElement.style.setProperty("--ui-zoom", String(value / 100));
+    return value;
+  }
+
+  function setZoom(pct) {
+    const value = applyZoom(pct);
+    try {
+      localStorage.setItem(ZOOM_KEY, String(value));
+    } catch (err) {}
+    window.dispatchEvent(new Event("resize"));
+    return value;
+  }
+
+  applyZoom();
+
   if (window.matchMedia) {
     const schemeQuery = matchMedia("(prefers-color-scheme: dark)");
     const onScheme = () => {
@@ -914,6 +955,9 @@
     setTheme,
     getMode,
     setMode,
+    getZoom,
+    setZoom,
+    applyZoom,
     resolvedTheme,
     applyTheme,
     THEME_FAMILIES,
