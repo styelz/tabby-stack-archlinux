@@ -2873,6 +2873,7 @@ function mountChat(root) {
     const minOf = () => (typeof opts.min === "function" ? opts.min() : opts.min);
     const maxOf = () => (typeof opts.max === "function" ? opts.max() : opts.max);
     const defOf = () => (typeof opts.def === "function" ? opts.def() : opts.def);
+    const scaleOf = () => (typeof opts.scale === "function" ? opts.scale() : (opts.scale || 1));
     handle.setAttribute("role", "separator");
     handle.setAttribute("aria-orientation", axis === "y" ? "horizontal" : "vertical");
     const coord = (event) => (axis === "y" ? event.clientY : event.clientX);
@@ -2886,7 +2887,7 @@ function mountChat(root) {
     let drag = null;
     const onMove = (event) => {
       if (!drag) return;
-      const delta = coord(event) - drag.p;
+      const delta = (coord(event) - drag.p) * drag.s;
       opts.set(drag.v + (invert ? -delta : delta), false);
       paint();
     };
@@ -2905,7 +2906,7 @@ function mountChat(root) {
       if (event.button !== 0 || isNarrowChat()) return;
       if (opts.enabled && !opts.enabled()) return;
       event.preventDefault();
-      drag = { p: coord(event), v: opts.get() };
+      drag = { p: coord(event), v: opts.get(), s: scaleOf() };
       handle.classList.add("is-dragging");
       shell.classList.add("is-resizing");
       if (axis === "y") shell.classList.add("is-resizing-y");
@@ -2920,7 +2921,7 @@ function mountChat(root) {
     });
     handle.addEventListener("keydown", (event) => {
       if (isNarrowChat()) return;
-      const step = event.shiftKey ? 32 : 16;
+      const step = event.shiftKey ? (opts.shiftStep || 32) : (opts.step || 16);
       let delta = 0;
       if (axis === "x") {
         if (event.key === "ArrowLeft") delta = invert ? step : -step;
@@ -3064,6 +3065,12 @@ function mountChat(root) {
     min: PREVIEW_W_MIN,
     max: PREVIEW_W_MAX,
     def: PREVIEW_W_DEFAULT,
+    scale: () => {
+      const w = stageEl() ? stageEl().clientWidth : 0;
+      return w > 0 ? 100 / w : 1;
+    },
+    step: 2,
+    shiftStep: 8,
     get: () => previewW,
     set: (next, persist) => setPreviewW(next, persist),
     persist: () => persistPaneWidth(PREVIEW_W_KEY, previewW),

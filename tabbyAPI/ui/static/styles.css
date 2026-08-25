@@ -758,16 +758,22 @@ input:focus, textarea:focus { outline: 2px solid var(--focus-ring); border-color
   gap: 8px;
 }
 .chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
+  line-height: 1.25;
   padding: 5px 9px;
   border-radius: 999px;
   background: rgba(var(--accent-rgb), 0.12);
   border: 1px solid rgba(var(--accent-rgb), 0.2);
 }
 button.chip {
+  appearance: none;
   font: inherit;
-  font-size: 12px;
-  line-height: 1;
+  font-size: inherit;
+  line-height: inherit;
+  margin: 0;
 }
 .chip.quiet { background: transparent; color: var(--muted); border-color: var(--line); }
 .chip.quiet:hover,
@@ -882,7 +888,7 @@ button.chip {
   min-height: 0;
   position: relative;
   background: var(--sidebar-bg);
-  border-right: 1px solid var(--line);
+  border-right: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
 }
 .chat-resize {
   position: absolute;
@@ -906,8 +912,7 @@ button.chip {
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 3px;
-  border-radius: 2px;
+  width: 1px;
   background: transparent;
   transform: translateX(-50%);
 }
@@ -927,11 +932,11 @@ button.chip {
 .chat-term > .chat-resize-y { top: 0; }
 .chat-resize.chat-resize-y::after {
   top: 50%;
-  right: 3px;
+  right: 0;
   bottom: auto;
-  left: 3px;
+  left: 0;
   width: auto;
-  height: 3px;
+  height: 1px;
   transform: translateY(-50%);
 }
 .chat-term > .chat-resize-y::after {
@@ -939,9 +944,11 @@ button.chip {
   transform: none;
 }
 .chat-resize:hover::after,
-.chat-resize:focus-visible::after,
+.chat-resize:focus-visible::after {
+  background: rgba(var(--accent-rgb), 0.28);
+}
 .chat-resize.is-dragging::after {
-  background: var(--accent);
+  background: rgba(var(--accent-rgb), 0.42);
 }
 .chat-files-history.is-collapsed > .chat-resize { display: none; }
 .chat-side-head {
@@ -1233,7 +1240,7 @@ button.chip {
   min-width: 0;
   min-height: 0;
   position: relative;
-  border-left: 1px solid var(--line);
+  border-left: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
   background: var(--files-bg);
 }
 .chat-files-head {
@@ -1327,7 +1334,7 @@ button.chip {
   display: flex;
   flex-direction: column;
   position: relative;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
 }
 #chat-files-changes:not(.is-collapsed) {
   flex-grow: var(--chat-files-changes-fr, 1);
