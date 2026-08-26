@@ -183,7 +183,7 @@ function mountChat(root) {
           </div>
           <div class="chat-loading" id="chat-flight-away" hidden>
             <span class="chat-loading-mark">Busy</span>
-            <span class="chat-loading-text" id="chat-flight-away-text">Images are still rendering in another chat.</span>
+            <span class="chat-loading-text" id="chat-flight-away-text">A reply is still running in another chat.</span>
             <button class="btn" type="button" id="chat-flight-back">Switch back</button>
           </div>
           <div class="chat-loading" id="chat-loading" hidden>
@@ -6747,7 +6747,7 @@ function mountChat(root) {
     if (flightAwayBar) {
       flightAwayBar.hidden = modelLoading || !away;
       if (away && flightAwayText) {
-        flightAwayText.textContent = `Images are still rendering in “${flightChatTitle()}”. Switch back to see progress.`;
+        flightAwayText.textContent = `A reply is still running in “${flightChatTitle()}”. Switch back to see progress.`;
       }
     }
     if (modelLoading) {
@@ -6791,7 +6791,7 @@ function mountChat(root) {
       sendBtn.textContent = action.label;
     }
     input.placeholder = away
-      ? `Images are still rendering in “${flightChatTitle()}”. Switch back to see progress.`
+      ? `A reply is still running in “${flightChatTitle()}”. Switch back to see progress.`
       : here
         ? hasQueue
           ? "Session running. Steer the queued message or type a replacement."
@@ -7006,6 +7006,7 @@ function mountChat(root) {
       return;
     }
     loopBusy = true;
+    flightChatId = store.activeId;
     inFlight = true;
     paintCompose();
     renderSidebar();
