@@ -675,6 +675,62 @@ function mountChat(root) {
     return (chat.messages || []).some((item) => userTurnHasContent(item));
   }
 
+  function collapseDuplicateWorkspaces(chats, activeId, lastByMode) {
+    const last = lastByMode && typeof lastByMode === "object" ? lastByMode : emptyLastByMode(null);
+    const kids = new Map();
+    chats.forEach((chat) => {
+      const parent = chatParentId(chat);
+      if (!parent) return;
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent).push(chat);
+    });
+    const groups = new Map();
+    const drop = new Set();
+    const remap = new Map();
+    chats.forEach((chat) => {
+      if (!isWorkspaceRoot(chat)) return;
+      const title = String(chat.title || "").trim();
+      if (!title || title === "New chat" || title === "New workspace") return;
+      const key = `${title}\0${Number(chat.updatedAt) || 0}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(chat);
+    });
+    groups.forEach((roots) => {
+      if (roots.length < 2) return;
+      const withKids = roots.filter((root) => kids.has(root.id));
+      const kept = (withKids[0] || roots[0]);
+      roots.forEach((root) => {
+        if (root.id === kept.id) return;
+        drop.add(root.id);
+        remap.set(root.id, kept.id);
+      });
+    });
+    const protect = new Set([activeId, last.code].filter(Boolean));
+    chats.forEach((chat) => {
+      if (protect.has(chat.id)) {
+        const parent = chatParentId(chat);
+        if (parent) protect.add(parent);
+      }
+    });
+    chats.forEach((chat) => {
+      if (!isWorkspaceRoot(chat) || drop.has(chat.id)) return;
+      const title = String(chat.title || "").trim();
+      if (title && title !== "New chat" && title !== "New workspace") return;
+      if (protect.has(chat.id) || kids.has(chat.id)) return;
+      drop.add(chat.id);
+    });
+    chats.forEach((chat) => {
+      const parent = chatParentId(chat);
+      if (parent && remap.has(parent)) chat.parentId = remap.get(parent);
+    });
+    const next = chats.filter((chat) => !drop.has(chat.id));
+    let nextActive = String(activeId || "");
+    if (drop.has(nextActive)) nextActive = remap.get(nextActive) || (next[0] && next[0].id) || "";
+    const nextLast = { chat: String(last.chat || ""), code: String(last.code || "") };
+    if (drop.has(nextLast.code)) nextLast.code = remap.get(nextLast.code) || "";
+    return { chats: next, activeId: nextActive, lastByMode: nextLast };
+  }
+
   function normalizeStore(raw) {
     const chats = [];
     const seen = new Set();
@@ -708,26 +764,37 @@ function mountChat(root) {
       const parent = chatParentId(chats[i]);
       if (parent && !roots.has(parent)) chats.splice(i, 1);
     }
+    const collapsed = collapseDuplicateWorkspaces(
+      chats,
+      String((raw && raw.activeId) || ""),
+      emptyLastByMode(raw)
+    );
+    chats.length = 0;
+    chats.push(...collapsed.chats);
     const lifted = [];
     chats.forEach((chat) => {
       if (!isWorkspaceRoot(chat) || !hasUserTurn(chat)) return;
-      const nested = emptyChat("code", chat.id);
-      nested.messages = cloneMessages(chat.messages);
-      nested.title = titleFromMessages(nested.messages, nested);
-      nested.updatedAt = chat.updatedAt;
-      nested.titleLocked = Boolean(chat.titleLocked);
+      let nested = chats.find((item) => chatParentId(item) === chat.id);
+      if (!nested) {
+        nested = emptyChat("code", chat.id);
+        lifted.push(nested);
+      } else if (!hasUserTurn(nested)) {
+        nested.messages = cloneMessages(chat.messages);
+        nested.title = titleFromMessages(nested.messages, nested);
+        nested.updatedAt = chat.updatedAt;
+        nested.titleLocked = Boolean(chat.titleLocked);
+      }
       chat.messages = [{ ...SYSTEM }];
       chat.titleLocked = true;
       if (!String(chat.title || "").trim() || chat.title === "New chat") {
         chat.title = "New workspace";
       }
-      lifted.push(nested);
     });
     if (lifted.length) chats.unshift(...lifted);
     if (!chats.length) chats.push(emptyChat());
-    let activeId = String((raw && raw.activeId) || "");
+    let activeId = collapsed.activeId || String((raw && raw.activeId) || "");
     if (!chats.some((chat) => chat.id === activeId)) activeId = chats[0].id;
-    const lastByMode = emptyLastByMode(raw);
+    const lastByMode = collapsed.lastByMode || emptyLastByMode(raw);
     if (!chats.some((chat) => chat.id === lastByMode.chat && chatMode(chat) === "chat")) {
       lastByMode.chat = "";
     }
@@ -934,7 +1001,6 @@ function mountChat(root) {
     if (!persistReady) return;
     previous.forEach((item) => {
       if (kept.has(item.id)) return;
-      if (isWorkspaceRoot(item)) dropWorkspace(item.id);
       forgetTabs(item.id);
     });
     const gen = (persistGen += 1);
@@ -8187,8 +8253,10 @@ function mountChat(root) {
   document.addEventListener("keydown", onGlobalKey);
   async function loadStore() {
     let incoming = null;
+    let fetched = false;
     try {
       incoming = await TabbyUI.api("chats");
+      fetched = true;
     } catch {
       incoming = null;
     }
@@ -8205,7 +8273,9 @@ function mountChat(root) {
     store = normalizeStore(incoming);
     messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
     persistReady = true;
-    persist();
+    if (fetched || (incoming && Array.isArray(incoming.chats) && incoming.chats.some(hasUserTurn))) {
+      persist();
+    }
     renderLog();
     paintToolbar();
     renderSidebar();
