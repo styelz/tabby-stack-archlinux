@@ -522,7 +522,7 @@ async def _stream_code_then_images(
     async def _body():
         written: list[str] = []
         text = ""
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Writing files")
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
         async for event in iter_code_turns(sync, disconnect_handler, owner, chat_id):
             kind = event[0]
             if kind == "status":

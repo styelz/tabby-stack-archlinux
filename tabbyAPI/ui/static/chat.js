@@ -109,6 +109,8 @@ function mountChat(root) {
         </div>
           <div class="chat-view">
           <div class="chat-stage" id="chat-stage">
+          <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
+          <div class="chat-stage-main" id="chat-stage-main">
           <div class="chat-log-wrap" id="chat-log-wrap">
             <div class="chat-find" id="chat-find" hidden>
               <input id="chat-find-input" type="search" placeholder="Find in chat" autocomplete="off" />
@@ -131,7 +133,6 @@ function mountChat(root) {
             <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
           </div>
           <div class="chat-editor-col" id="chat-editor-col" hidden>
-            <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
             <div class="chat-find" id="editor-find" hidden>
               <input id="editor-find-input" type="search" placeholder="Find in file" autocomplete="off" />
               <span class="chat-find-count" id="editor-find-count"></span>
@@ -152,6 +153,7 @@ function mountChat(root) {
             </div>
             <iframe id="chat-preview-frame" title="Site preview" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation"></iframe>
           </section>
+          </div>
           </div>
           <section class="chat-term" id="chat-term" hidden>
             <button type="button" class="chat-resize chat-resize-y" id="chat-term-resize" aria-label="Resize terminal" title="Drag to resize"></button>
@@ -1776,9 +1778,17 @@ function mountChat(root) {
     filesTree.replaceChildren(frag);
   }
 
+  function isChangePath(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean || clean.startsWith("__")) return false;
+    // The "Writing files" status is not a real path.
+    if (clean === "files" && !listingHas(clean) && !findTab(clean)) return false;
+    return true;
+  }
+
   function noteChange(path, written) {
     const clean = String(path || "").replace(/^\/+/, "");
-    if (!clean || clean.startsWith("__history__/")) return;
+    if (!isChangePath(clean)) return;
     const prev = filesChanged.find((row) => row.path === clean);
     filesChanged = filesChanged.filter((row) => row.path !== clean);
     filesChanged.unshift({
@@ -1805,15 +1815,16 @@ function mountChat(root) {
   }
 
   function changeRows() {
+    filesChanged = filesChanged.filter((row) => row && isChangePath(row.path));
     const seen = new Set();
     const rows = [];
     filesChanged.forEach((row) => {
-      if (!row || !row.path || seen.has(row.path)) return;
+      if (seen.has(row.path)) return;
       seen.add(row.path);
       rows.push(row);
     });
     openTabs.forEach((tab) => {
-      if (!tab || isHistoryTab(tab) || !tab.dirty) return;
+      if (!tab || isHistoryTab(tab) || isPreviewTab(tab) || !tab.dirty) return;
       if (seen.has(tab.path)) return;
       seen.add(tab.path);
       rows.push({ path: tab.path, ts: Date.now(), written: false });
@@ -2021,7 +2032,7 @@ function mountChat(root) {
 
   function paintTabs() {
     if (!tabsBar) return;
-    const show = activeMode() === "code" && openTabs.length > 0 && Boolean(activeTab);
+    const show = activeMode() === "code" && openTabs.length > 0;
     tabsBar.hidden = !show;
     if (!show) return;
     const frag = document.createDocumentFragment();
@@ -3426,7 +3437,7 @@ function mountChat(root) {
   }
 
   function stageEl() {
-    return root.querySelector("#chat-stage");
+    return root.querySelector("#chat-stage-main") || root.querySelector("#chat-stage");
   }
 
   function clampPreviewPct(next) {
@@ -6951,8 +6962,10 @@ function mountChat(root) {
               if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
                 refreshFilesSoon();
                 const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
-                reloadPreviewIfNeeded(written);
-                if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
+                if (isChangePath(written)) {
+                  reloadPreviewIfNeeded(written);
+                  if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
+                }
               }
             }
             if (event.reasoning) {

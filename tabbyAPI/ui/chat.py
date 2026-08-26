@@ -72,7 +72,7 @@ async def stream_code_only(
     async def _body():
         text = ""
         written: list[str] = []
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Writing files")
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
         async for event in iter_code_turns(sync, disconnect_handler, username, chat_id):
             if event[0] == "status":
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
