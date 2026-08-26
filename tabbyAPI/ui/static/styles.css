@@ -3024,6 +3024,38 @@ button.chip {
   background: rgba(var(--accent-rgb), 0.16);
   outline: none;
 }
+.chat-agent-menu button[data-agent="ask"],
+.chat-agent-btn[data-agent="ask"] {
+  color: var(--ok);
+}
+.chat-agent-menu button[data-agent="plan"],
+.chat-agent-btn[data-agent="plan"] {
+  color: var(--warn);
+}
+.chat-agent-menu button[data-agent="ask"]:hover,
+.chat-agent-menu button[data-agent="ask"]:focus-visible,
+.chat-agent-menu button[data-agent="ask"].is-on {
+  background: rgba(var(--ok-rgb), 0.16);
+  color: var(--ok);
+}
+.chat-agent-menu button[data-agent="plan"]:hover,
+.chat-agent-menu button[data-agent="plan"]:focus-visible,
+.chat-agent-menu button[data-agent="plan"].is-on {
+  background: rgba(var(--warn-rgb), 0.16);
+  color: var(--warn);
+}
+.chat-agent-btn[data-agent="ask"] {
+  border-color: rgba(var(--ok-rgb), 0.4);
+}
+.chat-agent-btn[data-agent="ask"]:hover:not(:disabled) {
+  border-color: rgba(var(--ok-rgb), 0.55);
+}
+.chat-agent-btn[data-agent="plan"] {
+  border-color: rgba(var(--warn-rgb), 0.4);
+}
+.chat-agent-btn[data-agent="plan"]:hover:not(:disabled) {
+  border-color: rgba(var(--warn-rgb), 0.55);
+}
 .chat-plan-build {
   display: flex;
   justify-content: flex-start;

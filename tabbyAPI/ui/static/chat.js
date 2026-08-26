@@ -1225,6 +1225,7 @@ function mountChat(root) {
     if (agentBtn) {
       const label = AGENT_LABELS[codeAgent] || "Agent";
       agentBtn.textContent = label;
+      agentBtn.dataset.agent = codeAgent;
       agentBtn.setAttribute("aria-label", `Code prompt mode: ${label}`);
     }
     if (agentMenu) {
