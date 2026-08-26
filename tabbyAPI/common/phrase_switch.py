@@ -750,11 +750,12 @@ def _abandon_jobs_for_restart() -> None:
         xlogger.warning(f"Could not clear image jobs before restart: {exc}")
 
 
-def start_restart() -> bool:
+def start_restart(*, abandon: bool = True) -> bool:
     """Detach a delayed systemd bounce so this chat reply can flush."""
     if shutil.which("systemctl") is None:
         return False
-    _abandon_jobs_for_restart()
+    if abandon:
+        _abandon_jobs_for_restart()
     LOG.touch(exist_ok=True)
     LOCK.write_text("restart", encoding="utf-8")
     mode = "comfy" if gpu_is_comfy() else "llm"
@@ -1285,6 +1286,9 @@ def should_yield_comfy_to_llm(data: ChatCompletionRequest) -> bool:
 
 def last_llm_profile_name() -> str:
     """Last LLM profile for a Comfy→LLM handoff (never 'comfy')."""
+    alias = profile_alias_for_model(current_folder())
+    if alias:
+        return alias
     try:
         from select_model import last_profile
 

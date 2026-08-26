@@ -27,10 +27,11 @@ from common.gpu_mode import (
     save_generated_image,
     start_comfy_if_needed,
     stop_comfy,
+    wait_gpu_vram_drain,
     write_mode,
 )
 from common.logger import xlogger
-from common.vram_recover import FALLBACK_PROFILE, is_vram_error, mark_fallback, reset_cuda_memory
+from common.vram_recover import is_vram_error, reset_cuda_memory
 from common.tabby_config import config
 from endpoints.core.types.model import ModelLoadRequest
 from endpoints.core.utils.model import stream_model_load
@@ -82,6 +83,7 @@ class McpImageJob:
     wait_s: int
     status: str = "queued"
     phase: str = "queued"
+    restore_name: Optional[str] = None
     urls: list[str] = field(default_factory=list)
     error: str = ""
     started_at: float = field(default_factory=time.time)
@@ -136,6 +138,19 @@ def loaded_tabby_name() -> Optional[str]:
     if model.container and getattr(model.container, "model_dir", None):
         if getattr(model.container, "loaded", False):
             return model.container.model_dir.name
+    return None
+
+
+def restore_llm_profile() -> Optional[str]:
+    """Profile actually in VRAM, else last.json. Never 'comfy'."""
+    from common.phrase_switch import GPU_ALIASES, profile_alias_for_model
+
+    alias = profile_alias_for_model(loaded_tabby_name())
+    if alias:
+        return alias
+    name = last_profile()
+    if name and str(name).lower() not in GPU_ALIASES and str(name).lower() != "comfy":
+        return name
     return None
 
 
@@ -208,12 +223,42 @@ async def wait_out_generating_image_jobs(*, from_job: bool = False, interval: fl
         await asyncio.sleep(interval)
 
 
+async def _unload_tabby_leftovers() -> None:
+    """Drop a half-loaded container even when `loaded` is still false."""
+    if getattr(model, "container", None):
+        try:
+            await model.unload_model(skip_wait=True)
+        except Exception:
+            pass
+    reset_cuda_memory()
+
+
+def _bounce_after_vram_fail(profile_name: str) -> None:
+    """Fresh CUDA context via systemd, keeping config.yml on the intended LLM.
+
+    Do not load the 9B daily profile here — that is what mixed restore was
+    doing after Comfy, so qwen36/qwen35 came back as Qwen3.5-9B.
+    """
+    write_mode("llm", profile=profile_name)
+    from common.phrase_switch import start_restart
+
+    if start_restart(abandon=False):
+        xlogger.warning(
+            f"VRAM still short for {profile_name}; bouncing TabbyAPI to reload it"
+        )
+        return
+    raise RuntimeError(
+        f"Insufficient VRAM reloading {profile_name} and could not bounce the API"
+    )
+
+
 async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False) -> str:
     """Free Comfy and load a TabbyAPI profile. Returns the profile alias."""
     await wait_out_generating_image_jobs(from_job=from_job)
     names = available_profiles()
-    if name in names:
-        profile_name = name
+    chosen = name or restore_llm_profile()
+    if chosen in names:
+        profile_name = chosen
     elif last_profile() in names:
         profile_name = last_profile()
     else:
@@ -226,8 +271,11 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
     # Lock before stop_comfy so /status reports switching during the wait
     # (systemd stop can take tens of seconds). The UI loading banner keys off it.
     set_switch_lock(profile_name)
+    bounce = False
     try:
         await asyncio.to_thread(stop_comfy)
+        await asyncio.to_thread(wait_gpu_vram_drain)
+        reset_cuda_memory()
         load_exc: Optional[BaseException] = None
         try:
             await _load_profile(profile_name)
@@ -239,10 +287,8 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
         if load_exc is not None:
             xlogger.warning("LLM load hit leftover VRAM; stopping Comfy and retrying")
             await asyncio.to_thread(stop_comfy)
-            if loaded_tabby_name():
-                await model.unload_model(skip_wait=True)
-            reset_cuda_memory()
-            load_exc = None
+            await _unload_tabby_leftovers()
+            await asyncio.to_thread(wait_gpu_vram_drain)
             await asyncio.sleep(2)
             retry_exc: Optional[BaseException] = None
             try:
@@ -253,24 +299,22 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
                 retry_exc = exc
 
             if retry_exc is not None:
-                dest = FALLBACK_PROFILE
-                if dest == profile_name or dest not in names:
-                    raise retry_exc
-                xlogger.warning(
-                    f"Falling back to {dest} after VRAM fail on {profile_name}"
-                )
-                if loaded_tabby_name():
-                    await model.unload_model(skip_wait=True)
-                reset_cuda_memory()
-                retry_exc = None
-                await _load_profile(dest)
-                mark_fallback(profile_name, dest)
-                profile_name = dest
+                # Keep last.json / config.yml on the intended profile. A 9B
+                # fallback is the wrong model, not a recovery.
+                write_mode("llm", profile=profile_name)
+                if from_job:
+                    raise RuntimeError(
+                        f"Insufficient VRAM reloading {profile_name}"
+                    ) from retry_exc
+                bounce = True
 
-        write_mode("llm", profile=profile_name)
-        return profile_name
+        if not bounce:
+            write_mode("llm", profile=profile_name)
     finally:
         clear_switch_lock()
+    if bounce:
+        _bounce_after_vram_fail(profile_name)
+    return profile_name
 
 
 def _generate_lock() -> asyncio.Lock:
@@ -336,6 +380,7 @@ def _job_to_persist(job: McpImageJob) -> dict:
         "id": job.id,
         "items": [_item_to_persist(item) for item in job.items],
         "restore": job.restore,
+        "restore_name": job.restore_name,
         "api_base": job.api_base,
         "wait_text": job.wait_text,
         "wait_s": job.wait_s,
@@ -368,6 +413,7 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         id=job_id,
         items=items,
         restore=bool(data.get("restore")),
+        restore_name=str(data.get("restore_name") or "") or None,
         api_base=str(data.get("api_base") or ""),
         wait_text=str(data.get("wait_text") or ""),
         wait_s=int(data.get("wait_s") or 0),
@@ -600,7 +646,7 @@ async def generate_images_job(
         items=items,
     )
     async with _generate_lock():
-        restore_name = last_profile() if restore else None
+        restore_name = restore_llm_profile() if restore else None
         was_llm = bool(loaded_tabby_name())
         await ensure_comfy()
         try:
@@ -785,6 +831,8 @@ async def start_mcp_image_job(
                 busy.items.extend(new_items)
                 if restore:
                     busy.restore = True
+                    if not busy.restore_name:
+                        busy.restore_name = restore_llm_profile()
                 refresh_job_wait(busy)
                 _signal(busy)
                 return busy, "appended"
@@ -794,6 +842,7 @@ async def start_mcp_image_job(
         id=str(uuid4()),
         items=new_items,
         restore=restore,
+        restore_name=restore_llm_profile() if restore else None,
         api_base=api_base,
         wait_text=wait_text,
         wait_s=wait_s,
@@ -906,9 +955,10 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
     from common.gpu_mode import public_image_url
 
     restore = job.restore
-    restore_name = None
+    restore_name = job.restore_name
     was_llm = False
     started_comfy = False
+    bounce_llm = False
     try:
         if delay > 0:
             await asyncio.sleep(delay)
@@ -917,7 +967,9 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         _signal(job)
 
         async with _generate_lock():
-            restore_name = last_profile() if restore else None
+            if restore:
+                restore_name = restore_name or restore_llm_profile()
+                job.restore_name = restore_name
             was_llm = bool(loaded_tabby_name())
             await ensure_comfy()
             started_comfy = True
@@ -968,12 +1020,16 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                         xlogger.warning(
                             f"Could not restore LLM after image job {job.id}: {restore_exc}"
                         )
-                        if not render_failed:
+                        if is_vram_error(restore_exc):
+                            bounce_llm = True
+                        elif not render_failed:
                             raise
         job.status = "done"
         job.phase = "done"
         copy_job_to_workspace(job)
         _signal(job)
+        if bounce_llm:
+            _bounce_after_vram_fail(restore_name or "qwen")
     except asyncio.CancelledError:
         if job.status not in ("done", "error"):
             job.status = "error"

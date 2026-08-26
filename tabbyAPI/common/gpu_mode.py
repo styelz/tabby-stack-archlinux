@@ -336,7 +336,7 @@ def stop_comfy_via_systemd() -> bool:
 
 
 VRAM_DRAIN_MAX_MIB = 2048
-VRAM_DRAIN_TIMEOUT_S = 12.0
+VRAM_DRAIN_TIMEOUT_S = 24.0
 
 
 def gpu_used_mib() -> Optional[int]:
