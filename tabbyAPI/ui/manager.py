@@ -196,12 +196,15 @@ def unit_active(name: str) -> Optional[bool]:
     if shutil.which("systemctl") is None:
         return None
     try:
+        from common.gpu_mode import user_systemd_env
+
         completed = subprocess.run(
             ["systemctl", "--user", "is-active", name],
             check=False,
             capture_output=True,
             text=True,
             timeout=3,
+            env=user_systemd_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -465,6 +468,9 @@ def _spawn_full_update(script: Path) -> dict[str, Any]:
         }
     systemd_run = shutil.which("systemd-run")
     if systemd_run:
+        from common.gpu_mode import user_systemd_env
+
+        env = user_systemd_env()
         for extra in (
             ["systemctl", "--user", "reset-failed", UPDATE_UNIT],
             ["systemctl", "--user", "stop", UPDATE_UNIT],
@@ -474,6 +480,7 @@ def _spawn_full_update(script: Path) -> dict[str, Any]:
                 check=False,
                 capture_output=True,
                 timeout=5,
+                env=env,
             )
         cmd = [
             systemd_run,
@@ -492,6 +499,7 @@ def _spawn_full_update(script: Path) -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=20,
+                env=env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "message": str(exc), "log": _update_log_tail(400)}

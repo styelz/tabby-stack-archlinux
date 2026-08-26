@@ -883,10 +883,22 @@ async def wait_mcp_job_progress(job: McpImageJob, wait_s: float) -> None:
             break
 
 
+def _mark_job_items_failed(job: McpImageJob, reason: str) -> None:
+    for item in job.items:
+        if item.status in ("queued", "running"):
+            item.status = "error"
+            if not item.error:
+                item.error = reason
+
+
 async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
     global _MCP_JOB_ID
     from common.gpu_mode import public_image_url
 
+    restore = job.restore
+    restore_name = None
+    was_llm = False
+    started_comfy = False
     try:
         if delay > 0:
             await asyncio.sleep(delay)
@@ -894,46 +906,60 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.phase = "starting_comfy"
         _signal(job)
 
-        restore = job.restore
         async with _generate_lock():
             restore_name = last_profile() if restore else None
             was_llm = bool(loaded_tabby_name())
             await ensure_comfy()
-            index = 0
-            while True:
-                async with job.lock:
-                    if index >= len(job.items):
-                        job.phase = "restoring_llm" if restore else "done"
-                        break
-                    item = job.items[index]
-                job.phase = "generating"
-                job.current_index = index
-                item.status = "running"
+            started_comfy = True
+            render_failed = False
+            try:
+                index = 0
+                while True:
+                    async with job.lock:
+                        if index >= len(job.items):
+                            job.phase = "restoring_llm" if restore else "done"
+                            break
+                        item = job.items[index]
+                    job.phase = "generating"
+                    job.current_index = index
+                    item.status = "running"
+                    _signal(job)
+                    paths = await _render_specs(
+                        [
+                            {
+                                "prompt": item.prompt,
+                                "size": item.size,
+                                "seed": item.seed,
+                                "count": item.count,
+                            }
+                        ],
+                        owner=job.owner or None,
+                    )
+                    item.urls = [
+                        public_image_url(path.name, api_base=job.api_base, bust=False)
+                        for path in paths
+                    ]
+                    job.urls.extend(item.urls)
+                    item.status = "done"
+                    index += 1
+                    _signal(job)
+            except Exception as exc:
+                render_failed = True
+                _mark_job_items_failed(job, str(exc))
                 _signal(job)
-                paths = await _render_specs(
-                    [
-                        {
-                            "prompt": item.prompt,
-                            "size": item.size,
-                            "seed": item.seed,
-                            "count": item.count,
-                        }
-                    ],
-                    owner=job.owner or None,
-                )
-                item.urls = [
-                    public_image_url(path.name, api_base=job.api_base, bust=False)
-                    for path in paths
-                ]
-                job.urls.extend(item.urls)
-                item.status = "done"
-                index += 1
-                _signal(job)
-
-            if restore and (was_llm or restore_name):
-                job.phase = "restoring_llm"
-                _signal(job)
-                await reload_last_llm(restore_name, from_job=True)
+                raise
+            finally:
+                if restore and started_comfy and (was_llm or restore_name):
+                    job.phase = "restoring_llm"
+                    _signal(job)
+                    try:
+                        await reload_last_llm(restore_name, from_job=True)
+                    except Exception as restore_exc:
+                        xlogger.warning(
+                            f"Could not restore LLM after image job {job.id}: {restore_exc}"
+                        )
+                        if not render_failed:
+                            raise
         job.status = "done"
         job.phase = "done"
         copy_job_to_workspace(job)
@@ -943,6 +969,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
             job.status = "error"
             job.phase = "error"
             job.error = job.error or "Image job was cancelled"
+            _mark_job_items_failed(job, job.error)
             _signal(job)
         copy_job_to_workspace(job)
         raise
@@ -950,6 +977,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.status = "error"
         job.phase = "error"
         job.error = str(exc)
+        _mark_job_items_failed(job, str(exc))
         copy_job_to_workspace(job)
         _signal(job)
     finally:

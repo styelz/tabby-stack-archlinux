@@ -42,12 +42,21 @@ if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
 fi
 if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/null 2>&1; then
   # sudo env_reset drops sourced tabby.env. Re-inject stack settings so the
-  # reverse SSH tunnel and public URL still work.
+  # reverse SSH tunnel and public URL still work. Also keep the user bus so
+  # Tabby can systemctl --user stop comfyui.
   args=()
   names="$( { compgen -e TABBY_ || true; compgen -e COMFYUI_ || true; } )"
   for name in $names; do
     args+=("$name=${!name}")
   done
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  fi
+  args+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+  if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    args+=("DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}")
+  fi
   exec sudo -n -u "$USER" -g docker /usr/bin/env "${args[@]}" \
     "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
 fi

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -79,7 +80,7 @@ QWEN_IMAGE_CLIP = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 QWEN_IMAGE_VAE = "qwen_image_vae.safetensors"
 QWEN_IMAGE_LORA = "Qwen-Image-Lightning-8steps-V1.0.safetensors"
 QWEN_IMAGE_STEPS = 8
-QWEN_IMAGE_TIMEOUT = 600
+QWEN_IMAGE_TIMEOUT = 1200
 QWEN_IMAGE_PREFIX = re.compile(r"(?is)^\s*qwen-image\s*:\s*(.*)$")
 QWEN_IMAGE_HINTS = re.compile(
     r"(?is)\b("
@@ -172,11 +173,43 @@ def write_mode(mode: str, **extra) -> dict:
     return data
 
 
+def user_systemd_env(base: Optional[dict] = None) -> dict[str, str]:
+    """Env for `systemctl --user` when sudo/env_reset dropped the session bus."""
+    env = {str(key): str(value) for key, value in dict(os.environ if base is None else base).items()}
+    uid = os.getuid()
+    runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    env["XDG_RUNTIME_DIR"] = runtime
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        bus = Path(runtime) / "bus"
+        if bus.exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    return env
+
+
+def systemctl_user(*args: str, **kwargs) -> subprocess.CompletedProcess:
+    """`systemctl --user` with a reconstructed session bus when needed."""
+    kwargs.setdefault("env", user_systemd_env())
+    return subprocess.run(["systemctl", "--user", *args], **kwargs)
+
+
 def comfy_up() -> bool:
     try:
         request_json("GET", f"{COMFY_URL}/system_stats", timeout=3)
         return True
     except (URLError, HTTPError, TimeoutError, OSError, json.JSONDecodeError):
+        return False
+
+
+def interrupt_comfy() -> bool:
+    """Ask Comfy to drop the current prompt so /free and stop can proceed."""
+    if not comfy_up():
+        return False
+    try:
+        request_json("POST", f"{COMFY_URL}/interrupt", timeout=10)
+        print("  ComfyUI interrupt sent")
+        return True
+    except (URLError, HTTPError, TimeoutError, OSError) as exc:
+        print(f"  ComfyUI /interrupt failed: {exc}")
         return False
 
 
@@ -198,12 +231,83 @@ def free_comfy() -> bool:
         return False
 
 
+def _parse_pids(text: str) -> list[int]:
+    pids: set[int] = set()
+    for token in (text or "").replace(",", " ").replace(":", " ").split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid > 1:
+            pids.add(pid)
+    pids.discard(os.getpid())
+    return sorted(pids)
+
+
+def comfy_pids() -> list[int]:
+    """PIDs for ComfyUI/main.py or whoever is bound to the Comfy port."""
+    if os.name == "nt":
+        return []
+    found: set[int] = set()
+    main_py = str(COMFY_DIR / "main.py")
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", main_py],
+            capture_output=True,
+            text=True,
+        )
+        found.update(_parse_pids(result.stdout or ""))
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["fuser", f"{COMFY_PORT}/tcp"],
+            capture_output=True,
+            text=True,
+        )
+        found.update(_parse_pids((result.stdout or "") + " " + (result.stderr or "")))
+    except OSError:
+        pass
+    found.discard(os.getpid())
+    return sorted(pid for pid in found if pid > 1)
+
+
+def kill_comfy_process(timeout: float = 10) -> None:
+    """SIGTERM then SIGKILL leftover Comfy processes if systemd stop did not."""
+    pids = comfy_pids()
+    if not pids:
+        return
+    print(f"  killing ComfyUI process {', '.join(str(pid) for pid in pids)}")
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError as exc:
+            print(f"  SIGTERM {pid} failed: {exc}")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not comfy_up() and not comfy_pids():
+            print("  ComfyUI process gone")
+            return
+        time.sleep(0.3)
+    for pid in comfy_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print(f"  SIGKILL ComfyUI pid {pid}")
+        except (ProcessLookupError, PermissionError):
+            continue
+    time.sleep(0.4)
+
+
 def comfy_unit_active() -> bool:
     """True if the user unit is active (HTTP may still be coming up)."""
     if os.name == "nt" or not comfy_user_unit_path().is_file():
         return False
-    result = subprocess.run(
-        ["systemctl", "--user", "is-active", "--quiet", "comfyui"],
+    result = systemctl_user(
+        "is-active",
+        "--quiet",
+        "comfyui",
         capture_output=True,
     )
     return result.returncode == 0
@@ -215,8 +319,9 @@ def stop_comfy_via_systemd() -> bool:
         return False
     if not comfy_user_unit_path().is_file():
         return False
-    result = subprocess.run(
-        ["systemctl", "--user", "stop", "comfyui"],
+    result = systemctl_user(
+        "stop",
+        "comfyui",
         capture_output=True,
         text=True,
     )
@@ -233,22 +338,29 @@ def stop_comfy(timeout: float = 30) -> None:
 
     `/free` is not enough: Comfy stays up and can still hold VRAM
     (RAM-pressure cache). Stop the unit, then wait until it is gone.
+    If systemd cannot talk to the user bus, kill the process.
     """
     http_up = comfy_up()
-    if not http_up and not comfy_unit_active():
+    if not http_up and not comfy_unit_active() and not comfy_pids():
         return
     if http_up:
+        interrupt_comfy()
         free_comfy()
     stopped = stop_comfy_via_systemd()
-    if not comfy_up() and not stopped:
-        return
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not comfy_up():
+        if not comfy_up() and not comfy_pids():
             print("  ComfyUI is down")
             time.sleep(1)
             return
         time.sleep(0.4)
+    if comfy_up() or not stopped or comfy_pids():
+        print("  ComfyUI still answering after stop; killing process")
+        kill_comfy_process()
+    if not comfy_up() and not comfy_pids():
+        print("  ComfyUI is down")
+        time.sleep(1)
+        return
     print("  ComfyUI still answering after stop; LLM load may hit VRAM")
 
 
@@ -318,6 +430,7 @@ def _pump_comfy_journal() -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=user_systemd_env(),
             )
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -336,8 +449,9 @@ def start_comfy_via_systemd() -> bool:
         return False
     if not comfy_user_unit_path().is_file():
         return False
-    result = subprocess.run(
-        ["systemctl", "--user", "start", "comfyui"],
+    result = systemctl_user(
+        "start",
+        "comfyui",
         capture_output=True,
         text=True,
     )
@@ -652,6 +766,7 @@ def generate_image(
                 raw = strip_png_text(fetch_comfy_image(_first_image_ref(item)))
                 return apply_requested_alpha(raw, wanted=wanted)
         time.sleep(0.5)
+    interrupt_comfy()
     raise TimeoutError(f"ComfyUI job {prompt_id} timed out after {timeout:.0f}s")
 
 

@@ -16,10 +16,18 @@ fi
 exec_docker_group() {
   local args=() name
   local names
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  fi
   names="$( { compgen -e TABBY_ || true; compgen -e COMFYUI_ || true; } )"
   for name in $names; do
     args+=("$name=${!name}")
   done
+  args+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+  if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    args+=("DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}")
+  fi
   exec sudo -n -u "$USER" -g docker /usr/bin/env "${args[@]}" "$@"
 }
 # Code-mode Term talks to docker. Wait briefly if the daemon is still coming up.

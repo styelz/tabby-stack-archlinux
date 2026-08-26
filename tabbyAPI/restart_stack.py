@@ -58,13 +58,24 @@ def abandon_persisted_jobs(
 
 def restart_units(mode: str = "llm") -> int:
     """Stop or restart user units. mode is llm or comfy."""
+    from common.gpu_mode import user_systemd_env
+
+    env = user_systemd_env()
     if mode == "comfy":
-        subprocess.run(["systemctl", "--user", "reset-failed", "comfyui"], check=False)
-        subprocess.run(["systemctl", "--user", "restart", "comfyui"], check=False)
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", "comfyui"],
+            check=False,
+            env=env,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "restart", "comfyui"],
+            check=False,
+            env=env,
+        )
     else:
-        subprocess.run(["systemctl", "--user", "stop", "comfyui"], check=False)
-    subprocess.run(["systemctl", "--user", "reset-failed", "tabbyapi"], check=False)
-    return subprocess.run(["systemctl", "--user", "restart", "tabbyapi"]).returncode
+        subprocess.run(["systemctl", "--user", "stop", "comfyui"], check=False, env=env)
+    subprocess.run(["systemctl", "--user", "reset-failed", "tabbyapi"], check=False, env=env)
+    return subprocess.run(["systemctl", "--user", "restart", "tabbyapi"], env=env).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
