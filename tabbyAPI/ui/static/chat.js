@@ -525,6 +525,41 @@ function mountChat(root) {
     return chatMode(chat) === "code" && !chatParentId(chat);
   }
 
+  function nestedChats(rootId) {
+    return store.chats.filter((item) => chatParentId(item) === rootId);
+  }
+
+  function latestNestedChat(rootId) {
+    return nestedChats(rootId).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+  }
+
+  function ensureNestedChat(rootId) {
+    if (!rootId) return null;
+    const existing = latestNestedChat(rootId);
+    if (existing) return existing;
+    const chat = emptyChat("code", rootId);
+    store.chats.unshift(chat);
+    return chat;
+  }
+
+  function expandWorkspace(rootId) {
+    if (!rootId) return;
+    wsOpen[rootId] = true;
+    try {
+      localStorage.setItem(WS_OPEN_KEY, JSON.stringify(wsOpen));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function addCodeWorkspace() {
+    const root = emptyChat("code");
+    const chat = emptyChat("code", root.id);
+    store.chats.unshift(root, chat);
+    expandWorkspace(root.id);
+    return chat;
+  }
+
   function emptyLastByMode(raw) {
     const last = raw && raw.lastByMode && typeof raw.lastByMode === "object" ? raw.lastByMode : {};
     return {
@@ -549,9 +584,19 @@ function mountChat(root) {
     const remembered = store.lastByMode && store.lastByMode[want];
     const hit = remembered
       && store.chats.find((item) => item.id === remembered && chatMode(item) === want);
-    if (hit && (hasUserTurn(hit) || hit.pinned || hit.id === store.activeId)) return hit;
+    if (hit) {
+      if (want === "code" && isWorkspaceRoot(hit)) return hit;
+      if (hasUserTurn(hit) || hit.pinned || hit.id === store.activeId) return hit;
+    }
     return store.chats
-      .filter((item) => chatMode(item) === want && (hasUserTurn(item) || item.pinned))
+      .filter((item) => (
+        chatMode(item) === want
+        && (
+          hasUserTurn(item)
+          || item.pinned
+          || (want === "code" && isWorkspaceRoot(item))
+        )
+      ))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
   }
 
@@ -657,6 +702,22 @@ function mountChat(root) {
       const parent = chatParentId(chats[i]);
       if (parent && !roots.has(parent)) chats.splice(i, 1);
     }
+    const lifted = [];
+    chats.forEach((chat) => {
+      if (!isWorkspaceRoot(chat) || !hasUserTurn(chat)) return;
+      const nested = emptyChat("code", chat.id);
+      nested.messages = cloneMessages(chat.messages);
+      nested.title = titleFromMessages(nested.messages, nested);
+      nested.updatedAt = chat.updatedAt;
+      nested.titleLocked = Boolean(chat.titleLocked);
+      chat.messages = [{ ...SYSTEM }];
+      chat.titleLocked = true;
+      if (!String(chat.title || "").trim() || chat.title === "New chat") {
+        chat.title = "New workspace";
+      }
+      lifted.push(nested);
+    });
+    if (lifted.length) chats.unshift(...lifted);
     if (!chats.length) chats.push(emptyChat());
     let activeId = String((raw && raw.activeId) || "");
     if (!chats.some((chat) => chat.id === activeId)) activeId = chats[0].id;
@@ -666,6 +727,23 @@ function mountChat(root) {
     }
     if (!chats.some((chat) => chat.id === lastByMode.code && chatMode(chat) === "code")) {
       lastByMode.code = "";
+    }
+    const threadUnder = (rootId) => chats.find((item) => chatParentId(item) === rootId) || null;
+    const active = chats.find((chat) => chat.id === activeId);
+    if (active && isWorkspaceRoot(active)) {
+      let thread = threadUnder(activeId);
+      if (!thread) {
+        thread = emptyChat("code", activeId);
+        chats.unshift(thread);
+      }
+      activeId = thread.id;
+    }
+    if (lastByMode.code) {
+      const remembered = chats.find((chat) => chat.id === lastByMode.code);
+      if (remembered && isWorkspaceRoot(remembered)) {
+        const thread = threadUnder(remembered.id);
+        if (thread) lastByMode.code = thread.id;
+      }
     }
     return { version: 1, activeId, chats, lastByMode };
   }
@@ -862,7 +940,13 @@ function mountChat(root) {
 
   function touchActive() {
     const chat = activeChat();
-    if (chat) chat.updatedAt = Date.now();
+    if (!chat) return;
+    const now = Date.now();
+    chat.updatedAt = now;
+    const rootId = chatParentId(chat);
+    if (!rootId) return;
+    const root = store.chats.find((item) => item.id === rootId);
+    if (root) root.updatedAt = now;
   }
 
   function paintToolbar() {
@@ -970,8 +1054,8 @@ function mountChat(root) {
     }
     cancelEdit();
     clearPendingImage();
-    const chat = emptyChat(next);
-    store.chats.unshift(chat);
+    const chat = next === "code" ? addCodeWorkspace() : emptyChat(next);
+    if (next !== "code") store.chats.unshift(chat);
     store.activeId = chat.id;
     messages = cloneMessages(chat.messages);
     persist();
@@ -1031,7 +1115,11 @@ function mountChat(root) {
     roots.sort((a, b) => {
       const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
       if (pin) return pin;
-      return (b.updatedAt || 0) - (a.updatedAt || 0);
+      const stamp = (root) => Math.max(
+        root.updatedAt || 0,
+        ...nestedChats(root.id).map((child) => child.updatedAt || 0)
+      );
+      return stamp(b) - stamp(a);
     });
     const rows = [];
     roots.forEach((root) => {
@@ -1118,7 +1206,7 @@ function mountChat(root) {
     if (title) title.textContent = code ? "Code mode" : "Console chat";
     if (copy) {
       copy.textContent = code
-        ? "A workspace is a project folder. Extra chats under it share those files. Ask for a page, logo, or set of files, or create them in the Files pane."
+        ? "A workspace is a project folder. Chats under it share those files. Ask for a page, logo, or set of files, or create them in the Files pane."
         : "Talk to the loaded model. Slash commands switch models and start pictures. Attach files for this chat only. Pasted images stay on this host.";
     }
     if (suggests) {
@@ -5446,6 +5534,15 @@ function mountChat(root) {
   }
 
   function loadChat(id, stickToEnd) {
+    const wanted = store.chats.find((item) => item.id === id);
+    const existing = wanted && isWorkspaceRoot(wanted) ? latestNestedChat(wanted.id) : null;
+    if (wanted && isWorkspaceRoot(wanted) && existing && existing.id === store.activeId) {
+      if (stickToEnd !== false) stickLog(true);
+      jumpSidebarSearch();
+      input.focus();
+      setSidebarOpen(false);
+      return;
+    }
     if (id === store.activeId) {
       if (stickToEnd !== false) stickLog(true);
       jumpSidebarSearch();
@@ -5454,7 +5551,11 @@ function mountChat(root) {
       return;
     }
     persist();
-    const chat = store.chats.find((item) => item.id === id);
+    let chat = store.chats.find((item) => item.id === id);
+    if (chat && isWorkspaceRoot(chat)) {
+      chat = ensureNestedChat(chat.id);
+      id = chat.id;
+    }
     if (!chat) return;
     store.activeId = id;
     messages = cloneMessages(chat.messages);
@@ -5504,17 +5605,31 @@ function mountChat(root) {
     store.chats = store.chats.filter((item) => !ids.has(item.id));
     if (root) dropWorkspace(id);
     if (ids.has(store.activeId)) {
-      const parent = store.chats.find((item) => item.id === chatParentId(chat));
-      const next = parent || store.chats
-        .filter((item) => chatMode(item) === mode && (hasUserTurn(item) || item.pinned || isWorkspaceRoot(item)))
+      const parentId = chatParentId(chat);
+      const sibling = parentId
+        ? store.chats
+          .filter((item) => chatMode(item) === mode && chatParentId(item) === parentId)
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]
+        : null;
+      const other = store.chats
+        .filter((item) => chatMode(item) === mode && !isWorkspaceRoot(item) && (hasUserTurn(item) || item.pinned))
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-      if (next) {
-        store.activeId = next.id;
-        messages = cloneMessages(next.messages);
+      if (sibling) {
+        store.activeId = sibling.id;
+        messages = cloneMessages(sibling.messages);
+        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+      } else if (!root && parentId && store.chats.some((item) => item.id === parentId)) {
+        const fresh = emptyChat("code", parentId);
+        store.chats.unshift(fresh);
+        store.activeId = fresh.id;
+        messages = cloneMessages(fresh.messages);
+      } else if (other) {
+        store.activeId = other.id;
+        messages = cloneMessages(other.messages);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       } else {
-        const fresh = emptyChat(mode);
-        store.chats.unshift(fresh);
+        const fresh = mode === "code" ? addCodeWorkspace() : emptyChat(mode);
+        if (mode !== "code") store.chats.unshift(fresh);
         store.activeId = fresh.id;
         messages = cloneMessages(fresh.messages);
       }
@@ -5540,12 +5655,7 @@ function mountChat(root) {
     store.chats.unshift(chat);
     store.activeId = chat.id;
     messages = cloneMessages(chat.messages);
-    wsOpen[rootId] = true;
-    try {
-      localStorage.setItem(WS_OPEN_KEY, JSON.stringify(wsOpen));
-    } catch {
-      /* ignore */
-    }
+    expandWorkspace(rootId);
     persist();
     resetRecall();
     renderLog();
@@ -5560,13 +5670,37 @@ function mountChat(root) {
     persist();
     cancelEdit();
     clearPendingImage();
+    if (activeMode() === "code") {
+      const current = activeChat();
+      if (current && isWorkspaceRoot(current)) {
+        startNestedChat(current.id);
+        return;
+      }
+      if (!hasUserTurn({ messages })) {
+        resetRecall();
+        renderLog();
+        input.focus();
+        return;
+      }
+      const chat = addCodeWorkspace();
+      store.activeId = chat.id;
+      messages = cloneMessages(chat.messages);
+      persist();
+      resetRecall();
+      renderLog();
+      filesSelected = "";
+      refreshFiles();
+      hideHistoryMenu();
+      input.focus();
+      return;
+    }
     if (!hasUserTurn({ messages })) {
       resetRecall();
       renderLog();
       input.focus();
       return;
     }
-    const chat = emptyChat(activeMode());
+    const chat = emptyChat("chat");
     store.chats.unshift(chat);
     store.activeId = chat.id;
     messages = cloneMessages(chat.messages);
@@ -5601,12 +5735,13 @@ function mountChat(root) {
     doomed.forEach((item) => {
       if (isWorkspaceRoot(item)) dropWorkspace(item.id);
     });
-    const kept = store.chats.filter((item) => chatMode(item) !== mode);
-    const chat = emptyChat(mode);
+    store.chats = store.chats.filter((item) => chatMode(item) !== mode);
+    const chat = mode === "code" ? addCodeWorkspace() : emptyChat(mode);
+    if (mode !== "code") store.chats.unshift(chat);
     store = {
       version: 1,
       activeId: chat.id,
-      chats: [chat, ...kept],
+      chats: store.chats,
       lastByMode: {
         chat: mode === "chat" ? chat.id : (store.lastByMode && store.lastByMode.chat) || "",
         code: mode === "code" ? chat.id : (store.lastByMode && store.lastByMode.code) || "",
@@ -5629,7 +5764,7 @@ function mountChat(root) {
   }
 
   function renderHistoryMenu(keepIndex) {
-    historyItems = listedChats();
+    historyItems = listedChats().filter((item) => !isWorkspaceRoot(item));
     if (!historyItems.length) {
       hideHistoryMenu();
       return;
@@ -5782,7 +5917,7 @@ function mountChat(root) {
 
   function cycleHistory(delta) {
     persist();
-    const list = listedChats();
+    const list = listedChats().filter((item) => !isWorkspaceRoot(item));
     if (!list.length) return false;
     hideMenu();
     if (historyMenu.hidden) {
