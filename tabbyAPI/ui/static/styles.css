@@ -1982,10 +1982,17 @@ button.chip {
 }
 .chat-preview-tabs {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
   gap: 0.125rem;
+}
+#chat-preview-new {
+  flex: 0 0 auto;
+}
+.chat-preview-tabs-row > .spacer {
+  flex: 1 1 auto;
+  min-width: 0.5rem;
 }
 .chat-preview-tab {
   display: inline-flex;
