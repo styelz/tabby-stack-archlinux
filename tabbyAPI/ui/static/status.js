@@ -526,6 +526,14 @@ function mountStatus(root) {
     try {
       const result = await TabbyUI.api("update", { method: "POST", body: { full: true } });
       modal.ingestText(result.log || "");
+      if (!result.ok) {
+        msg.textContent = result.message || "Full update failed.";
+        finishProgress(modal, {
+          title: "Update failed",
+          note: result.message || "Full update failed to start.",
+        });
+        return;
+      }
       if (result.message) modal.setNote(result.message);
       modal.setTitle("Updating, then restarting");
       await modal.waitUntilReady({ requireDown: true, watchUpdate: true });

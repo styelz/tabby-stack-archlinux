@@ -28,6 +28,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 export TABBY_LOG_CONSOLE_WIDTH="${TABBY_LOG_CONSOLE_WIDTH:-256}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
 if command -v docker >/dev/null 2>&1 && [[ ! -S /var/run/docker.sock ]]; then
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -S /var/run/docker.sock ]] && break
@@ -38,7 +42,7 @@ if [[ -w /var/run/docker.sock ]]; then
   exec "$TABBY/venv/bin/python" "$TABBY/watch_api.py" "$@"
 fi
 if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
-  exec sg docker -c "exec \"$TABBY/venv/bin/python\" \"$TABBY/watch_api.py\""
+  exec sg docker -c "export XDG_RUNTIME_DIR=$(printf %q "$XDG_RUNTIME_DIR"); export DBUS_SESSION_BUS_ADDRESS=$(printf %q "$DBUS_SESSION_BUS_ADDRESS"); exec $(printf %q "$TABBY/venv/bin/python") $(printf %q "$TABBY/watch_api.py")"
 fi
 if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/null 2>&1; then
   # sudo env_reset drops sourced tabby.env. Re-inject stack settings so the
@@ -49,10 +53,6 @@ if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/nu
   for name in $names; do
     args+=("$name=${!name}")
   done
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-  fi
   args+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
   if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     args+=("DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}")

@@ -488,9 +488,12 @@ def _spawn_full_update(script: Path) -> dict[str, Any]:
             "--collect",
             f"--unit={UPDATE_UNIT}",
             f"--working-directory={STACK_ROOT}",
-            "--",
-            *args,
+            f"--setenv=XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
         ]
+        dbus = env.get("DBUS_SESSION_BUS_ADDRESS")
+        if dbus:
+            cmd.append(f"--setenv=DBUS_SESSION_BUS_ADDRESS={dbus}")
+        cmd.extend(["--", *args])
         try:
             proc = subprocess.run(
                 cmd,

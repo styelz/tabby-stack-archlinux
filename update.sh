@@ -378,9 +378,16 @@ format_restart_file_list() {
   fi
 }
 
+ensure_user_bus() {
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  fi
+}
+
 api_unit_running() {
   need_cmd systemctl || return 1
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  ensure_user_bus
   systemctl --user is-active --quiet tabbyapi 2>/dev/null && return 0
   systemctl --user is-failed --quiet tabbyapi 2>/dev/null && return 0
   return 1
@@ -422,7 +429,7 @@ wait_for_tabby_health() {
 restart_tabbyapi() {
   local done_msg="${1:-Pulled the latest code and restarted tabbyapi.}"
   load_tabby_port
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  ensure_user_bus
   trap 'rc=$?; if [[ "$UI_STARTED" -eq 1 ]]; then progress_stop; fi; exit "$rc"' EXIT
   ui_gauge_only "Restarting tabbyapi"
   progress 2 "Restarting tabbyapi"

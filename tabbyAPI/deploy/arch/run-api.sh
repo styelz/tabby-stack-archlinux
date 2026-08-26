@@ -11,15 +11,17 @@ if [[ -f "$ENV_FILE" ]]; then
   . "$ENV_FILE"
   set +a
 fi
+# systemd 256+ needs these for `systemctl --user` / `systemd-run --user`
+# from inside the service (sg/sudo also drop the login session bus).
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
 # sudo env_reset drops systemd EnvironmentFile / sourced tabby.env. Re-inject
 # stack settings so the reverse SSH tunnel and public URL still work.
 exec_docker_group() {
   local args=() name
   local names
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-  fi
   names="$( { compgen -e TABBY_ || true; compgen -e COMFYUI_ || true; } )"
   for name in $names; do
     args+=("$name=${!name}")
@@ -41,7 +43,7 @@ if [[ -w /var/run/docker.sock ]]; then
   exec "$PY" watch_api.py
 fi
 if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
-  exec sg docker -c "exec \"$PY\" watch_api.py"
+  exec sg docker -c "export XDG_RUNTIME_DIR=$(printf %q "$XDG_RUNTIME_DIR"); export DBUS_SESSION_BUS_ADDRESS=$(printf %q "$DBUS_SESSION_BUS_ADDRESS"); exec $(printf %q "$PY") watch_api.py"
 fi
 if command -v sudo >/dev/null 2>&1 && sudo -n -u "$USER" -g docker true >/dev/null 2>&1; then
   exec_docker_group "$PY" watch_api.py

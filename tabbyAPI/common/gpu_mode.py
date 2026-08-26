@@ -174,15 +174,17 @@ def write_mode(mode: str, **extra) -> dict:
 
 
 def user_systemd_env(base: Optional[dict] = None) -> dict[str, str]:
-    """Env for `systemctl --user` when sudo/env_reset dropped the session bus."""
+    """Env for `systemctl --user` when sudo/sg/env_reset dropped the session bus.
+
+    systemd 256+ refuses `--user` unless both vars are set. Always write the
+    usual unix path; do not wait for the socket to exist.
+    """
     env = {str(key): str(value) for key, value in dict(os.environ if base is None else base).items()}
     uid = os.getuid()
     runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     env["XDG_RUNTIME_DIR"] = runtime
     if not env.get("DBUS_SESSION_BUS_ADDRESS"):
-        bus = Path(runtime) / "bus"
-        if bus.exists():
-            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={Path(runtime) / 'bus'}"
     return env
 
 
