@@ -114,7 +114,7 @@ function mountChat(root) {
             </div>
             <div class="chat-empty" id="chat-empty" hidden>
               <h2 id="chat-empty-title">Console chat</h2>
-              <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.</p>
+              <p id="chat-empty-copy">Talk to the loaded model. Slash commands switch models and start pictures. Attach files for this chat only. Pasted images stay on this host.</p>
               <div class="chat-suggests" id="chat-suggests">
                 <button type="button" data-suggest="help">Usage guide</button>
                 <button type="button" data-suggest="list models">List models</button>
@@ -198,11 +198,12 @@ function mountChat(root) {
           <form class="chat-form" id="chat-form">
             <textarea id="chat-input" rows="3" placeholder="Talk to the loaded model. Type / for commands. ↑↓ recalls what you sent."></textarea>
             <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <input id="chat-context" type="file" multiple hidden />
             <input id="chat-upload" type="file" multiple accept=".html,.htm,.css,.js,.mjs,.json,.jsx,.ts,.tsx,.md,.txt,.svg,.xml,.yml,.yaml,.csv,.py,.sh,.php,.toml,.ini,.conf,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif,text/plain,text/html,text/css,text/javascript,application/json" hidden />
             <input id="chat-upload-dir" type="file" multiple webkitdirectory directory hidden />
             <div class="chat-form-actions">
               <div class="chat-attach-wrap">
-                <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-haspopup="true" aria-expanded="false" aria-label="Attach image" title="Attach image">📎</button>
+                <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-haspopup="true" aria-expanded="false" aria-label="Attach image or files" title="Attach image or files">📎</button>
                 <div class="chat-attach-menu" id="chat-attach-menu" hidden></div>
               </div>
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
@@ -288,6 +289,7 @@ function mountChat(root) {
   const attachBtn = root.querySelector("#chat-attach-btn");
   const attachMenu = root.querySelector("#chat-attach-menu");
   const fileInput = root.querySelector("#chat-file");
+  const contextInput = root.querySelector("#chat-context");
   const uploadInput = root.querySelector("#chat-upload");
   const uploadDirInput = root.querySelector("#chat-upload-dir");
   const micBtn = root.querySelector("#chat-mic");
@@ -401,6 +403,13 @@ function mountChat(root) {
     ".php", ".toml", ".ini", ".conf",
   ]);
   const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+  const BINARY_SUFFIXES = new Set([
+    ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar", ".pdf", ".doc", ".docx",
+    ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".dll", ".so", ".dylib", ".wasm",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".webm", ".mov",
+    ".avi", ".wav", ".ogg", ".flac", ".iso", ".bin", ".dat", ".db", ".sqlite",
+    ".pkl", ".npy", ".pt", ".onnx", ".safetensors", ".gguf", ".whl", ".pyc",
+  ]);
   const ATTACH_TEXT_LIMIT = 80_000;
   const MAX_ATTACH = 12;
   const STORAGE_KEY = "tabby-ui-chat-store";
@@ -676,6 +685,7 @@ function mountChat(root) {
   let pendingImage = null;
   let pendingFiles = [];
   let uploadWantsAttach = false;
+  let uploadWantsContext = false;
   let uploadTargetDir = "";
   const SKIP_UPLOAD_DIRS = new Set([".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache"]);
   const SKIP_UPLOAD_FILES = new Set([".ds_store", "thumbs.db"]);
@@ -908,8 +918,8 @@ function mountChat(root) {
     });
     if (filesPane) filesPane.hidden = !code || !filesOpen;
     if (attachBtn) {
-      attachBtn.setAttribute("aria-label", code ? "Attach files" : "Attach image");
-      attachBtn.title = code ? "Attach image or project files" : "Attach image";
+      attachBtn.setAttribute("aria-label", code ? "Attach files" : "Attach image or files");
+      attachBtn.title = code ? "Attach image or project files" : "Attach image or files";
     }
     if (searchEl) searchEl.placeholder = code ? "Search workspaces" : "Search chats";
     const newBtn = root.querySelector("#chat-new");
@@ -1109,7 +1119,7 @@ function mountChat(root) {
     if (copy) {
       copy.textContent = code
         ? "A workspace is a project folder. Extra chats under it share those files. Ask for a page, logo, or set of files, or create them in the Files pane."
-        : "Talk to the loaded model. Slash commands switch models and start pictures. Pasted images stay on this host.";
+        : "Talk to the loaded model. Slash commands switch models and start pictures. Attach files for this chat only. Pasted images stay on this host.";
     }
     if (suggests) {
       suggests.innerHTML = code
@@ -3884,6 +3894,11 @@ function mountChat(root) {
       frag.appendChild(btn);
     };
     add("image", "Attach image");
+    if (activeMode() !== "code") {
+      add("context", "Attach files");
+      attachMenu.replaceChildren(frag);
+      return;
+    }
     add("upload", "Upload files to project");
     add("upload-folder", "Upload folder to project");
     const fileRows = filesListing.filter((row) => row.kind !== "dir");
@@ -3907,11 +3922,6 @@ function mountChat(root) {
 
   function toggleAttachMenu() {
     if (modelLoading) return;
-    if (activeMode() !== "code") {
-      hideAttachMenu();
-      if (fileInput) fileInput.click();
-      return;
-    }
     const open = Boolean(attachMenu && attachMenu.hidden);
     hideMoreMenu();
     hideFilesMoreMenu();
@@ -3929,6 +3939,7 @@ function mountChat(root) {
     pendingImage = null;
     pendingFiles = [];
     if (fileInput) fileInput.value = "";
+    if (contextInput) contextInput.value = "";
     if (uploadInput) uploadInput.value = "";
     if (uploadDirInput) uploadDirInput.value = "";
     paintAttach();
@@ -4548,9 +4559,84 @@ function mountChat(root) {
     return Array.from((dt && dt.files) || []);
   }
 
-  async function pickLocalFiles({ attach = false, dir = "", folder = false } = {}) {
+  function uniqueAttachPath(rel) {
+    const path = cleanUploadRel(rel).join("/") || "file";
+    if (!isPendingFile(path)) return path;
+    const suffix = fileSuffix(path);
+    const stem = suffix && path.endsWith(suffix) ? path.slice(0, -suffix.length) : path;
+    for (let i = 2; i < 100; i += 1) {
+      const next = `${stem}-${i}${suffix}`;
+      if (!isPendingFile(next)) return next;
+    }
+    return `${stem}-${Date.now()}${suffix}`;
+  }
+
+  function looksLikeImageFile(file, path) {
+    if (IMAGE_SUFFIXES.has(fileSuffix(path))) return true;
+    return /^image\/(png|jpe?g|webp|gif)\b/.test(String(file && file.type || "").toLowerCase());
+  }
+
+  async function attachLocalContextFile(file, rel) {
+    if (!file || modelLoading) return false;
+    const parts = cleanUploadRel(rel || file.name || "file");
+    if (skipUploadParts(parts)) return false;
+    const path = uniqueAttachPath(parts.join("/") || file.name || "file");
+    if (pendingFiles.length >= MAX_ATTACH) {
+      addBubble("assistant", "Error: Too many attached files.");
+      return false;
+    }
+    if (looksLikeImageFile(file, path)) {
+      if (file.size > 8 * 1024 * 1024) {
+        addBubble("assistant", `Error: ${path} must be under 8 MB.`);
+        return false;
+      }
+      const dataUrl = await blobToDataUrl(file);
+      const preview = await resizeDataUrl(dataUrl, 320, 0.72);
+      const compact = await resizeDataUrl(dataUrl, 1280, 0.82);
+      pendingFiles.push({ path, kind: "image", dataUrl: compact, preview });
+      paintAttach();
+      return true;
+    }
+    if (BINARY_SUFFIXES.has(fileSuffix(path))) {
+      addBubble("assistant", `Error: ${path} is not a text or image file.`);
+      return false;
+    }
+    if (file.size > 1 * 1024 * 1024) {
+      addBubble("assistant", `Error: ${path} is larger than 1 MB.`);
+      return false;
+    }
+    let text = await file.text();
+    if (text.includes("\0")) {
+      addBubble("assistant", `Error: ${path} is not a text file.`);
+      return false;
+    }
+    if (text.length > ATTACH_TEXT_LIMIT) text = `${text.slice(0, ATTACH_TEXT_LIMIT)}\n…(truncated)`;
+    pendingFiles.push({ path, kind: "text", text });
+    paintAttach();
+    return true;
+  }
+
+  async function attachLocalContextFiles(fileList) {
+    const items = normalizeUploadItems(fileList);
+    let overflow = false;
+    for (const item of items) {
+      if (pendingFiles.length >= MAX_ATTACH) {
+        overflow = true;
+        break;
+      }
+      await attachLocalContextFile(item.file, item.rel);
+    }
+    if (overflow) addBubble("assistant", "Error: Too many attached files.");
+  }
+
+  async function pickLocalFiles({ attach = false, dir = "", folder = false, context = false } = {}) {
     uploadWantsAttach = attach;
+    uploadWantsContext = context;
     uploadTargetDir = dir || "";
+    if (context) {
+      if (contextInput) contextInput.click();
+      return;
+    }
     if (folder && typeof window.showDirectoryPicker === "function") {
       try {
         const handle = await window.showDirectoryPicker({ mode: "read" });
@@ -7012,7 +7098,11 @@ function mountChat(root) {
       { label: "Attach image", run: () => { if (fileInput) fileInput.click(); } },
       activeMode() === "code"
         ? { label: "Attach project file", run: () => toggleAttachMenu() }
-        : null,
+        : { label: "Attach files", run: () => {
+          pickLocalFiles({ context: true }).catch((err) => {
+            addBubble("assistant", `Error: ${err.message}`);
+          });
+        } },
     ];
   }
 
@@ -7740,6 +7830,12 @@ function mountChat(root) {
         if (fileInput) fileInput.click();
         return;
       }
+      if (btn.dataset.attach === "context") {
+        pickLocalFiles({ context: true }).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
       if (btn.dataset.attach === "upload") {
         pickLocalFiles({ attach: true }).catch((err) => {
           addBubble("assistant", `Error: ${err.message}`);
@@ -7778,10 +7874,15 @@ function mountChat(root) {
     input.addEventListener("change", () => {
       const files = input.files;
       const attach = uploadWantsAttach;
+      const context = uploadWantsContext;
       const dir = uploadTargetDir;
       uploadWantsAttach = false;
+      uploadWantsContext = false;
       uploadTargetDir = "";
-      uploadLocalFiles(files, { attach, open: !attach && files && files.length === 1, dir })
+      const work = context
+        ? attachLocalContextFiles(files)
+        : uploadLocalFiles(files, { attach, open: !attach && files && files.length === 1, dir });
+      work
         .catch((err) => {
           addBubble("assistant", `Error: ${err.message}`);
         })
@@ -7792,18 +7893,39 @@ function mountChat(root) {
   }
   bindUploadInput(uploadInput);
   bindUploadInput(uploadDirInput);
+  if (contextInput) {
+    contextInput.addEventListener("change", () => {
+      const files = contextInput.files;
+      attachLocalContextFiles(files)
+        .catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        })
+        .finally(() => {
+          contextInput.value = "";
+        });
+    });
+  }
   input.addEventListener("paste", (event) => {
     const items = event.clipboardData && event.clipboardData.items;
     if (!items) return;
+    const files = [];
     for (const item of items) {
-      if (item.kind === "file" && /^image\//.test(item.type)) {
-        event.preventDefault();
-        setPendingImageFromFile(item.getAsFile()).catch((err) => {
-          addBubble("assistant", `Error: ${err.message}`);
-        });
-        return;
-      }
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
     }
+    if (!files.length) return;
+    if (files.length === 1 && /^image\//.test(files[0].type || "")) {
+      event.preventDefault();
+      setPendingImageFromFile(files[0]).catch((err) => {
+        addBubble("assistant", `Error: ${err.message}`);
+      });
+      return;
+    }
+    event.preventDefault();
+    attachLocalContextFiles(files).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+    });
   });
   form.addEventListener("dragover", (event) => {
     if (Array.from(event.dataTransfer.types || []).includes("Files")) {
@@ -7826,7 +7948,14 @@ function mountChat(root) {
       });
       return;
     }
-    setPendingImageFromFile(files[0]).catch((err) => {
+    itemsFromDataTransfer(event.dataTransfer).then((picked) => {
+      if (!picked.length) return;
+      const first = picked[0].file ? picked[0] : { file: picked[0], rel: picked[0].name };
+      if (picked.length === 1 && looksLikeImageFile(first.file, first.rel || first.file.name)) {
+        return setPendingImageFromFile(first.file);
+      }
+      return attachLocalContextFiles(picked);
+    }).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
     });
   });
