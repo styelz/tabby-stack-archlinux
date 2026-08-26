@@ -63,6 +63,8 @@ const FILES_PREVIEW_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8" /></svg>';
 const FILES_TERM_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5 7.2 8 5 9.5"/><path d="M8.2 9.5H11" /></svg>';
+const MIC_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="5.5" y="1.75" width="5" height="7.5" rx="2.5"/><path d="M3.5 8.25a4.5 4.5 0 0 0 9 0"/><path d="M8 12.75v1.75M5.5 14.5h5"/></svg>';
 
 function mountChat(root) {
   root.innerHTML = `
@@ -222,7 +224,8 @@ function mountChat(root) {
                 <button class="btn ghost chat-icon" type="button" id="chat-attach-btn" aria-haspopup="true" aria-expanded="false" aria-label="Attach image or files" title="Attach image or files">📎</button>
                 <div class="chat-attach-menu" id="chat-attach-menu" hidden></div>
               </div>
-              <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
+              <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-pressed="false" aria-label="Voice input" title="Voice input">${MIC_SVG}</button>
+              <span class="chat-mic-status" id="chat-mic-status" hidden>Listening</span>
               <span id="chat-count"></span>
               <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
               <div class="chat-agent" id="chat-agent" hidden>
@@ -320,6 +323,8 @@ function mountChat(root) {
   const uploadInput = root.querySelector("#chat-upload");
   const uploadDirInput = root.querySelector("#chat-upload-dir");
   const micBtn = root.querySelector("#chat-mic");
+  const micStatus = root.querySelector("#chat-mic-status");
+  let stopMic = () => false;
   const countEl = root.querySelector("#chat-count");
   const loadingBar = root.querySelector("#chat-loading");
   const loadingTextEl = root.querySelector("#chat-loading-text");
@@ -6587,6 +6592,10 @@ function mountChat(root) {
         event.preventDefault();
         return;
       }
+      if (stopMic()) {
+        event.preventDefault();
+        return;
+      }
       if (shell.classList.contains("is-sidebar-open")) {
         setSidebarOpen(false);
         event.preventDefault();
@@ -7636,6 +7645,7 @@ function mountChat(root) {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    stopMic();
     if (modelLoading) return;
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
@@ -8960,41 +8970,132 @@ function mountChat(root) {
     });
   });
   const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (Speech && micBtn) {
+  if (micBtn && Speech) {
     micBtn.hidden = false;
     let rec = null;
-    micBtn.addEventListener("click", () => {
-      if (rec) {
-        rec.stop();
-        rec = null;
-        micBtn.classList.remove("is-live");
-        return;
+    let live = false;
+    let recGen = 0;
+    function paintMic() {
+      micBtn.classList.toggle("is-live", live);
+      micBtn.setAttribute("aria-pressed", live ? "true" : "false");
+      micBtn.setAttribute("aria-label", live ? "Stop recording" : "Voice input");
+      micBtn.title = live ? "Listening — click to stop" : "Voice input";
+      if (micStatus) micStatus.hidden = !live;
+    }
+    function voiceErrorText(code, fallback) {
+      if (code === "not-allowed" || code === "NotAllowedError" || code === "PermissionDeniedError") {
+        return "Microphone permission was denied. Allow the mic for this site, then try again.";
       }
-      rec = new Speech();
-      rec.lang = navigator.language || "en-US";
-      rec.interimResults = true;
-      const baseline = input.value;
-      rec.onresult = (ev) => {
+      if (code === "audio-capture" || code === "NotFoundError" || code === "NotReadableError") {
+        return "No microphone is available.";
+      }
+      if (code === "network" || code === "service-not-allowed") {
+        return "This browser could not reach a speech service. Google Chrome on HTTPS or localhost usually works.";
+      }
+      if (code === "language-not-supported") return "Voice input does not support this language.";
+      if (fallback) return fallback;
+      return `Voice input failed (${code || "unknown"}).`;
+    }
+    function haltRec() {
+      if (!rec) return;
+      const active = rec;
+      rec = null;
+      active.onresult = null;
+      active.onerror = null;
+      active.onend = null;
+      try {
+        active.abort();
+      } catch {
+        try {
+          active.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    stopMic = () => {
+      if (!live && !rec) return false;
+      live = false;
+      recGen = 0;
+      haltRec();
+      paintMic();
+      return true;
+    };
+    function armRec() {
+      const session = new Speech();
+      const gen = recGen;
+      const startedAt = Date.now();
+      rec = session;
+      recGen += 1;
+      session.continuous = true;
+      session.interimResults = true;
+      session.lang = navigator.language || "en-US";
+      const prefix = input.value.replace(/\s+$/, "");
+      session.onresult = (ev) => {
+        if (rec !== session) return;
         let spoken = "";
         for (let i = 0; i < ev.results.length; i += 1) {
           spoken += ev.results[i][0].transcript;
         }
-        if (spoken) {
-          input.value = baseline ? `${baseline.replace(/\s+$/, "")} ${spoken}` : spoken;
-          resizeInput();
-          paintCompose();
+        if (!spoken) return;
+        input.value = prefix ? `${prefix} ${spoken}` : spoken;
+        resizeInput();
+        paintCompose();
+      };
+      session.onerror = (ev) => {
+        if (rec !== session) return;
+        const code = ev && ev.error;
+        if (code === "no-speech" || code === "aborted") return;
+        live = false;
+        recGen = 0;
+        haltRec();
+        paintMic();
+        addBubble("assistant", `Error: ${voiceErrorText(code)}`);
+      };
+      session.onend = () => {
+        if (rec === session) rec = null;
+        if (!live) {
+          paintMic();
+          return;
+        }
+        if (gen === 0 && Date.now() - startedAt < 400) {
+          live = false;
+          recGen = 0;
+          paintMic();
+          addBubble("assistant", "Error: Voice input stopped immediately. Check the microphone, or try Google Chrome on HTTPS or localhost.");
+          return;
+        }
+        try {
+          armRec();
+        } catch (err) {
+          live = false;
+          recGen = 0;
+          paintMic();
+          addBubble("assistant", `Error: ${voiceErrorText(err && err.name, err && err.message)}`);
         }
       };
-      rec.onend = () => {
-        rec = null;
-        micBtn.classList.remove("is-live");
-      };
-      rec.onerror = () => {
-        rec = null;
-        micBtn.classList.remove("is-live");
-      };
-      rec.start();
-      micBtn.classList.add("is-live");
+      session.start();
+    }
+    micBtn.addEventListener("click", () => {
+      if (live || rec) {
+        stopMic();
+        return;
+      }
+      if (input.disabled) return;
+      if (!window.isSecureContext) {
+        addBubble("assistant", "Error: Voice input needs HTTPS or localhost.");
+        return;
+      }
+      live = true;
+      paintMic();
+      try {
+        armRec();
+      } catch (err) {
+        live = false;
+        haltRec();
+        paintMic();
+        addBubble("assistant", `Error: ${voiceErrorText(err && err.name, err && err.message)}`);
+      }
     });
   }
 
@@ -9039,6 +9140,7 @@ function mountChat(root) {
   loadStore();
   return {
     pause() {
+      stopMic();
       stopGatePoll();
       hideHistoryMenu();
       hideMoreMenu();
@@ -9049,6 +9151,7 @@ function mountChat(root) {
       refreshFiles();
     },
     destroy() {
+      stopMic();
       abortSession("stop");
       stopGatePoll();
       stopLoadingClock();
