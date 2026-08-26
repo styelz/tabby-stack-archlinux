@@ -567,16 +567,25 @@ function mountChat(root) {
     store.lastByMode[chatMode(chat)] = chat.id;
   }
 
+  function preferredCodeChat(chat) {
+    if (!chat || !isWorkspaceRoot(chat)) return chat;
+    const kids = nestedChats(chat.id)
+      .filter((item) => hasUserTurn(item) || item.pinned)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return kids[0] || chat;
+  }
+
   function chatForMode(mode) {
     const want = mode === "code" ? "code" : "chat";
     const remembered = store.lastByMode && store.lastByMode[want];
     const hit = remembered
       && store.chats.find((item) => item.id === remembered && chatMode(item) === want);
     if (hit) {
-      if (want === "code" && isWorkspaceRoot(hit)) return hit;
-      if (hasUserTurn(hit) || hit.pinned || hit.id === store.activeId) return hit;
+      const picked = want === "code" ? preferredCodeChat(hit) : hit;
+      if (want === "code" && isWorkspaceRoot(picked)) return picked;
+      if (hasUserTurn(picked) || picked.pinned || picked.id === store.activeId) return picked;
     }
-    return store.chats
+    const fallback = store.chats
       .filter((item) => (
         chatMode(item) === want
         && (
@@ -586,6 +595,7 @@ function mountChat(root) {
         )
       ))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+    return want === "code" ? preferredCodeChat(fallback) : fallback;
   }
 
   function cloneMessages(list) {
@@ -1239,17 +1249,21 @@ function mountChat(root) {
 
   function navRowEl(row, active) {
     const item = row.chat;
-    const current = row.kind === "root" && Boolean(active) && chatParentId(active) === item.id;
-    const canExpand = row.kind === "root" && row.kids > 0;
+    const isRoot = row.kind === "root";
+    const current = isRoot && Boolean(active) && (
+      chatParentId(active) === item.id || (active.id === item.id && row.kids > 0)
+    );
+    const selected = item.id === store.activeId && !(isRoot && row.kids > 0);
+    const canExpand = isRoot && row.kids > 0;
     const expanded = canExpand && workspaceExpanded(item.id);
     const btn = document.createElement("div");
     btn.className = "chat-nav"
-      + (item.id === store.activeId ? " is-active" : "")
+      + (selected ? " is-active" : "")
       + (current ? " is-current" : "")
       + (item.pinned ? " is-pinned" : "")
       + (inFlight && item.id === flightChatId ? " is-busy" : "")
       + (row.kind === "child" ? " is-child" : "")
-      + (row.kind === "root" ? " is-workspace" : "")
+      + (isRoot ? " is-workspace" : "")
       + (canExpand ? " is-branch" : "")
       + (expanded ? " is-open" : "");
     btn.dataset.id = item.id;
@@ -1264,12 +1278,15 @@ function mountChat(root) {
 
   function openWorkspaceNav(id) {
     const kids = listedWorkspaceKids(id, listedChats());
-    if (kids.length && !workspaceExpanded(id)) {
-      expandWorkspace(id);
-      if (id === store.activeId) {
+    if (kids.length) {
+      if (!workspaceExpanded(id)) expandWorkspace(id);
+      const current = activeChat();
+      if (current && workspaceId(current) === id) {
         renderSidebar();
         return;
       }
+      loadChat(kids[0].id);
+      return;
     }
     loadChat(id);
   }
@@ -7114,18 +7131,27 @@ function mountChat(root) {
     const kidCount = root ? listedWorkspaceKids(id, listedChats()).length : 0;
     const expanded = root && workspaceExpanded(id);
     const items = [
-      { label: "Open", run: () => loadChat(id) },
+      { label: "Open", run: () => (root ? openWorkspaceNav(id) : loadChat(id)) },
       root ? { label: "Expand", disabled: kidCount === 0 || expanded, run: () => setWorkspaceOpen(id, true) } : null,
       root ? { label: "Collapse", disabled: kidCount === 0 || !expanded, run: () => setWorkspaceOpen(id, false) } : null,
       root ? { label: "New chat in this workspace", run: () => startNestedChat(id) } : null,
-      { label: "Rename", run: () => { loadChat(id); beginRename(id); } },
+      { label: "Rename", run: () => {
+        if (!root) loadChat(id);
+        beginRename(id);
+      } },
       { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) },
-      { sep: true },
-      { label: "Copy conversation", run: () => copyText(conversationMarkdown(id)) },
-      { label: "Export markdown", run: () => exportChat(id) },
-      { sep: true },
-      { label: root ? "Delete workspace" : "Delete chat", danger: true, run: () => deleteChat(id) },
     ];
+    if (!root || kidCount === 0) {
+      items.push(
+        { sep: true },
+        { label: "Copy conversation", run: () => copyText(conversationMarkdown(id)) },
+        { label: "Export markdown", run: () => exportChat(id) }
+      );
+    }
+    items.push(
+      { sep: true },
+      { label: root ? "Delete workspace" : "Delete chat", danger: true, run: () => deleteChat(id) }
+    );
     return items;
   }
 
@@ -7650,7 +7676,8 @@ function mountChat(root) {
       }
       if (tool.dataset.nav === "pin") togglePin(id);
       if (tool.dataset.nav === "rename") {
-        loadChat(id);
+        const item = store.chats.find((chat) => chat.id === id);
+        if (!isWorkspaceRoot(item)) loadChat(id);
         beginRename(id);
       }
       if (tool.dataset.nav === "delete") deleteChat(id);
