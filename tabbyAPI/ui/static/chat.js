@@ -1013,7 +1013,7 @@ function mountChat(root) {
           && item.id !== activeWorkspaceId()
           && !item.pinned
         ))
-        .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+        .sort((a, b) => workspaceActivity(a) - workspaceActivity(b));
       const drop = new Set();
       let remaining = units.length;
       extras.forEach((item) => {
@@ -1045,15 +1045,19 @@ function mountChat(root) {
       .catch(() => {});
   }
 
+  function workspaceActivity(item) {
+    if (!item) return 0;
+    if (!isWorkspaceRoot(item)) return item.updatedAt || 0;
+    return Math.max(
+      item.updatedAt || 0,
+      ...nestedChats(item.id).map((child) => child.updatedAt || 0)
+    );
+  }
+
   function touchActive() {
     const chat = activeChat();
-    if (!chat) return;
-    const now = Date.now();
-    chat.updatedAt = now;
-    const rootId = chatParentId(chat);
-    if (!rootId) return;
-    const root = store.chats.find((item) => item.id === rootId);
-    if (root) root.updatedAt = now;
+    if (!chat || isWorkspaceRoot(chat)) return;
+    chat.updatedAt = Date.now();
   }
 
   function paintToolbar() {
@@ -1240,11 +1244,7 @@ function mountChat(root) {
     roots.sort((a, b) => {
       const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
       if (pin) return pin;
-      const stamp = (root) => Math.max(
-        root.updatedAt || 0,
-        ...nestedChats(root.id).map((child) => child.updatedAt || 0)
-      );
-      return stamp(b) - stamp(a);
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
     });
     const rows = [];
     roots.forEach((root) => {
