@@ -144,14 +144,22 @@ function mountChat(root) {
           </div>
           <section class="chat-preview" id="chat-preview" hidden>
             <button type="button" class="chat-resize" id="chat-preview-resize" aria-label="Resize preview" title="Drag to resize"></button>
-            <div class="chat-preview-head">
-              <strong>Preview</strong>
-              <span class="spacer"></span>
-              <button type="button" class="btn ghost" id="chat-preview-tab" title="Open preview as a tab">Tab</button>
-              <button type="button" class="btn ghost" id="chat-preview-reload">Reload</button>
-              <button type="button" class="btn ghost chat-icon" id="chat-preview-close" aria-label="Close preview" title="Close preview">×</button>
+            <div class="chat-preview-chrome">
+              <div class="chat-preview-tabs-row">
+                <div class="chat-preview-tabs" id="chat-preview-tabs" role="tablist" aria-label="Browser tabs"></div>
+                <button type="button" class="btn ghost chat-icon" id="chat-preview-new" aria-label="New tab" title="New tab">+</button>
+                <span class="spacer"></span>
+                <button type="button" class="btn ghost" id="chat-preview-tab" title="Open preview as a tab">Tab</button>
+                <button type="button" class="btn ghost chat-icon" id="chat-preview-close" aria-label="Close preview" title="Close preview">×</button>
+              </div>
+              <div class="chat-preview-head">
+                <button type="button" class="btn ghost chat-icon" id="chat-preview-back" aria-label="Back" title="Back">←</button>
+                <button type="button" class="btn ghost chat-icon" id="chat-preview-forward" aria-label="Forward" title="Forward">→</button>
+                <button type="button" class="btn ghost chat-icon" id="chat-preview-reload" aria-label="Reload" title="Reload">↻</button>
+                <input id="chat-preview-url" class="chat-preview-url" type="text" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Page path or URL" />
+              </div>
             </div>
-            <iframe id="chat-preview-frame" title="Site preview" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation"></iframe>
+            <div class="chat-preview-frames" id="chat-preview-frames"></div>
           </section>
           </div>
           </div>
@@ -322,10 +330,16 @@ function mountChat(root) {
   const editorPane = root.querySelector("#chat-editor");
   const editorCol = root.querySelector("#chat-editor-col");
   const previewPane = root.querySelector("#chat-preview");
-  const previewFrame = root.querySelector("#chat-preview-frame");
+  const previewFrames = root.querySelector("#chat-preview-frames");
+  const previewTabsEl = root.querySelector("#chat-preview-tabs");
+  const previewUrlInput = root.querySelector("#chat-preview-url");
+  const previewNewBtn = root.querySelector("#chat-preview-new");
+  const previewBackBtn = root.querySelector("#chat-preview-back");
+  const previewForwardBtn = root.querySelector("#chat-preview-forward");
   const previewReloadBtn = root.querySelector("#chat-preview-reload");
   const previewTabBtn = root.querySelector("#chat-preview-tab");
   const previewCloseBtn = root.querySelector("#chat-preview-close");
+  const PREVIEW_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation";
   const termPane = root.querySelector("#chat-term");
   const termHost = root.querySelector("#chat-term-xterm");
   const termNote = root.querySelector("#chat-term-note");
@@ -387,6 +401,10 @@ function mountChat(root) {
   let editorFindIndex = 0;
   let previewOpen = false;
   let previewUrl = "";
+  let previewRoot = "";
+  let browserTabs = [];
+  let activeBrowserTab = "";
+  let browserTabSeq = 0;
   const PREVIEW_TAB = "__preview__";
   let termOpen = false;
   let termWanted = false;
@@ -1463,7 +1481,17 @@ function mountChat(root) {
   function stashCurrentTabs() {
     stashEditor();
     if (!tabsChat) return;
-    tabsByChat[tabsChat] = { openTabs, activeTab };
+    tabsByChat[tabsChat] = {
+      openTabs,
+      activeTab,
+      browserTabs: browserTabs.map((tab) => ({
+        id: tab.id,
+        path: tab.path,
+        title: tab.title,
+        url: tab.url,
+      })),
+      activeBrowserTab,
+    };
   }
 
   function restoreTabsFor(chatId) {
@@ -1476,6 +1504,7 @@ function mountChat(root) {
     activeTab = saved.activeTab && openTabs.some((tab) => tab.path === saved.activeTab)
       ? saved.activeTab
       : "";
+    restoreBrowserTabList(saved.browserTabs, saved.activeBrowserTab);
     if (editorPane) editorPane.dataset.key = "";
   }
 
@@ -1502,6 +1531,7 @@ function mountChat(root) {
     previewOpen = Boolean(findTab(PREVIEW_TAB));
     if (previewPane) previewPane.hidden = !previewOpen;
     if (filesPreviewBtn) filesPreviewBtn.classList.toggle("is-on", previewOpen);
+    paintBrowserChrome();
     if (window.TabbyLsp) window.TabbyLsp.reset();
   }
 
@@ -2644,7 +2674,7 @@ function mountChat(root) {
       previewPane.hidden = true;
       previewPane.classList.remove("is-tab");
     }
-    blankPreviewFrame();
+    clearBrowserTabs();
     if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
   }
 
@@ -2885,14 +2915,301 @@ function mountChat(root) {
     return [".html", ".htm", ".css", ".js", ".mjs"].includes(fileSuffix(path));
   }
 
-  async function mintPreviewUrl(wanted) {
+  function nextBrowserTabId() {
+    browserTabSeq += 1;
+    return `bt${browserTabSeq}`;
+  }
+
+  function activeBrowserTabRow() {
+    return browserTabs.find((tab) => tab.id === activeBrowserTab) || null;
+  }
+
+  function setPreviewRootFromHref(href) {
+    try {
+      const url = new URL(href, window.location.href);
+      const match = url.pathname.match(/^(.*\/code\/[^/]+\/[^/]+\/[^/]+\/)/);
+      if (!match) return "";
+      previewRoot = `${url.origin}${match[1]}`;
+      return previewRoot;
+    } catch {
+      return "";
+    }
+  }
+
+  function pathFromPreviewHref(href) {
+    if (!href || href === "about:blank") return "";
+    try {
+      const url = new URL(href, window.location.href);
+      if (!previewRoot) setPreviewRootFromHref(href);
+      if (!previewRoot) return "";
+      const root = new URL(previewRoot, window.location.href);
+      if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return "";
+      return decodeURIComponent(url.pathname.slice(root.pathname.length)).replace(/^\//, "");
+    } catch {
+      return "";
+    }
+  }
+
+  function hrefFromPreviewPath(path) {
+    if (!previewRoot) return "";
+    return new URL(String(path || "").replace(/^\//, ""), previewRoot).href;
+  }
+
+  function browserTabLabel(tab) {
+    if (!tab) return "New tab";
+    if (tab.title && tab.title !== "New tab") return tab.title;
+    if (tab.path) return fileBase(tab.path);
+    if (tab.url && tab.url !== "about:blank") {
+      try {
+        return new URL(tab.url, window.location.href).hostname || tab.url;
+      } catch {
+        return tab.url;
+      }
+    }
+    return "New tab";
+  }
+
+  function browserAddressValue(tab) {
+    if (!tab) return "";
+    if (tab.path) return tab.path;
+    if (tab.url && tab.url !== "about:blank") return tab.url;
+    return "";
+  }
+
+  function restoreBrowserTabList(rows, activeId) {
+    blankPreviewFrame();
+    browserTabs = [];
+    activeBrowserTab = "";
+    (rows || []).forEach((row) => {
+      if (!row) return;
+      const id = row.id || nextBrowserTabId();
+      const num = Number(String(id).replace(/^bt/, ""));
+      if (Number.isFinite(num) && num >= browserTabSeq) browserTabSeq = num;
+      browserTabs.push({
+        id,
+        path: row.path || "",
+        title: row.title || "",
+        url: row.url || "",
+        frame: null,
+      });
+    });
+    activeBrowserTab = activeId && browserTabs.some((tab) => tab.id === activeId)
+      ? activeId
+      : (browserTabs[0] ? browserTabs[0].id : "");
+  }
+
+  function paintBrowserChrome() {
+    if (previewTabsEl) {
+      const ids = browserTabs.map((tab) => tab.id).join("\0");
+      const rebuilt = previewTabsEl.dataset.ids !== ids || previewTabsEl.dataset.active !== activeBrowserTab;
+      if (rebuilt) {
+        const frag = document.createDocumentFragment();
+        browserTabs.forEach((tab) => {
+          const item = document.createElement("div");
+          const name = browserTabLabel(tab);
+          item.className = "chat-preview-tab" + (tab.id === activeBrowserTab ? " is-active" : "");
+          item.dataset.btab = tab.id;
+          item.setAttribute("role", "tab");
+          item.setAttribute("aria-selected", tab.id === activeBrowserTab ? "true" : "false");
+          item.innerHTML =
+            `<button type="button" class="chat-preview-tab-open" title="${TabbyUI.escapeHtml(tab.path || tab.url || name)}">${TabbyUI.escapeHtml(name)}</button>` +
+            `<button type="button" class="chat-preview-tab-close" data-btab-close aria-label="Close ${TabbyUI.escapeHtml(name)}">×</button>`;
+          frag.appendChild(item);
+        });
+        previewTabsEl.replaceChildren(frag);
+        previewTabsEl.dataset.ids = ids;
+        previewTabsEl.dataset.active = activeBrowserTab;
+        const current = previewTabsEl.querySelector(".chat-preview-tab.is-active");
+        if (current) current.scrollIntoView({ inline: "nearest", block: "nearest" });
+      } else {
+        browserTabs.forEach((tab) => {
+          const item = previewTabsEl.querySelector(`[data-btab="${tab.id}"]`);
+          if (!item) return;
+          const name = browserTabLabel(tab);
+          const btn = item.querySelector(".chat-preview-tab-open");
+          if (btn && btn.textContent !== name) {
+            btn.textContent = name;
+            btn.title = tab.path || tab.url || name;
+          }
+        });
+      }
+    }
+    if (previewUrlInput && document.activeElement !== previewUrlInput) {
+      previewUrlInput.value = browserAddressValue(activeBrowserTabRow());
+    }
+    browserTabs.forEach((tab) => {
+      if (tab.frame) tab.frame.classList.toggle("is-idle", tab.id !== activeBrowserTab);
+    });
+  }
+
+  function ensureBrowserFrame(tab) {
+    if (!tab) return null;
+    if (tab.frame && tab.frame.isConnected) return tab.frame;
+    const frame = document.createElement("iframe");
+    frame.title = "Site preview";
+    frame.sandbox = PREVIEW_SANDBOX;
+    frame.dataset.btab = tab.id;
+    frame.classList.toggle("is-idle", tab.id !== activeBrowserTab);
+    if (previewFrames) previewFrames.appendChild(frame);
+    tab.frame = frame;
+    return frame;
+  }
+
+  function loadBrowserTab(tab, spec) {
+    if (!tab) return;
+    spec = spec || {};
+    tab.url = spec.url || "";
+    if (spec.path != null) tab.path = spec.path;
+    if (spec.title) tab.title = spec.title;
+    else if (tab.path) tab.title = fileBase(tab.path);
+    const frame = ensureBrowserFrame(tab);
+    frame.src = tab.url || "about:blank";
+    if (tab.id === activeBrowserTab) previewUrl = tab.url;
+    paintBrowserChrome();
+  }
+
+  function activateBrowserTab(id) {
+    const tab = browserTabs.find((item) => item.id === id);
+    if (!tab) return;
+    activeBrowserTab = tab.id;
+    previewUrl = tab.url || "";
+    paintBrowserChrome();
+  }
+
+  function addBrowserTab(spec) {
+    spec = spec || {};
+    const tab = {
+      id: nextBrowserTabId(),
+      path: spec.path || "",
+      title: spec.title || (spec.path ? fileBase(spec.path) : "New tab"),
+      url: spec.url || "",
+      frame: null,
+    };
+    const at = browserTabs.findIndex((item) => item.id === activeBrowserTab);
+    browserTabs.splice(at >= 0 ? at + 1 : browserTabs.length, 0, tab);
+    activeBrowserTab = tab.id;
+    if (tab.url) loadBrowserTab(tab, spec);
+    else {
+      ensureBrowserFrame(tab);
+      previewUrl = "";
+      paintBrowserChrome();
+      if (previewUrlInput) {
+        previewUrlInput.value = "";
+        previewUrlInput.focus();
+        previewUrlInput.select();
+      }
+    }
+    return tab;
+  }
+
+  function closeBrowserTab(id) {
+    const at = browserTabs.findIndex((tab) => tab.id === id);
+    if (at < 0) return;
+    const tab = browserTabs[at];
+    if (tab.frame) tab.frame.remove();
+    browserTabs.splice(at, 1);
+    if (!browserTabs.length) {
+      hidePreview();
+      return;
+    }
+    if (activeBrowserTab === id) {
+      const next = browserTabs[at] || browserTabs[at - 1];
+      activeBrowserTab = next.id;
+      previewUrl = next.url || "";
+    }
+    paintBrowserChrome();
+  }
+
+  function newBlankBrowserTab() {
+    if (!previewOpen) return;
+    addBrowserTab({});
+  }
+
+  function postToActivePreview(kind) {
+    const tab = activeBrowserTabRow();
+    if (!tab || !tab.frame || !tab.frame.contentWindow) return;
+    tab.frame.contentWindow.postMessage({ source: "tabby-preview-host", kind }, "*");
+  }
+
+  function safePreviewHref(href) {
+    const text = String(href || "").trim();
+    if (!text) return "";
+    const lower = text.toLowerCase();
+    if (lower.startsWith("javascript:") || lower.startsWith("vbscript:")) return "";
+    return text;
+  }
+
+  function looksLikeUrl(text) {
+    return /^(https?:|about:|data:|blob:)/i.test(text);
+  }
+
+  async function mintPreview(wanted) {
     const chatId = activeWorkspaceId();
-    if (!chatId) return "";
+    if (!chatId) return { href: "", path: "" };
     const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/preview`, {
       method: "POST",
       body: { path: wanted || "" },
     });
-    return new URL(TabbyUI.path(data.url), window.location.href).href;
+    const href = new URL(TabbyUI.path(data.url), window.location.href).href;
+    setPreviewRootFromHref(href);
+    return { href, path: data.path || wanted || "" };
+  }
+
+  async function mintPreviewUrl(wanted) {
+    const minted = await mintPreview(wanted);
+    return minted.href;
+  }
+
+  async function openPreviewHref(href, opts) {
+    opts = opts || {};
+    const raw = safePreviewHref(href);
+    if (!raw) {
+      if (opts.newTab) addBrowserTab({});
+      return;
+    }
+    let url = raw;
+    try {
+      url = new URL(raw, previewRoot || window.location.href).href;
+    } catch {
+      url = raw;
+    }
+    const path = pathFromPreviewHref(url);
+    const spec = {
+      url,
+      path,
+      title: path ? fileBase(path) : browserTabLabel({ url, path, title: "" }),
+    };
+    if (opts.newTab || !activeBrowserTabRow()) addBrowserTab(spec);
+    else loadBrowserTab(activeBrowserTabRow(), spec);
+  }
+
+  async function goPreviewAddress(raw) {
+    const text = String(raw || "").trim();
+    let tab = activeBrowserTabRow();
+    if (!tab) tab = addBrowserTab({});
+    if (!text) {
+      loadBrowserTab(tab, { url: "about:blank", path: "", title: "New tab" });
+      return;
+    }
+    if (looksLikeUrl(text)) {
+      await openPreviewHref(text);
+      return;
+    }
+    try {
+      if (!previewRoot) await mintPreview(text);
+      const path = text.replace(/^\//, "");
+      const href = hrefFromPreviewPath(path) || (await mintPreview(path)).href;
+      loadBrowserTab(tab, { url: href, path, title: fileBase(path) });
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function previewPagePath(explicit) {
+    if (explicit) return explicit;
+    const row = selectedRow();
+    if (row && row.page) return row.path;
+    return filesEntry || "";
   }
 
   function ensurePreviewTab() {
@@ -2913,7 +3230,27 @@ function mountChat(root) {
 
   function blankPreviewFrame() {
     previewUrl = "";
-    if (previewFrame) previewFrame.src = "about:blank";
+    browserTabs.forEach((tab) => {
+      if (tab.frame) {
+        tab.frame.src = "about:blank";
+        tab.frame.remove();
+        tab.frame = null;
+      }
+    });
+    if (previewFrames) previewFrames.replaceChildren();
+  }
+
+  function clearBrowserTabs() {
+    blankPreviewFrame();
+    browserTabs = [];
+    activeBrowserTab = "";
+    previewRoot = "";
+    if (previewTabsEl) {
+      previewTabsEl.replaceChildren();
+      previewTabsEl.dataset.ids = "";
+      previewTabsEl.dataset.active = "";
+    }
+    if (previewUrlInput) previewUrlInput.value = "";
   }
 
   function dockPreview() {
@@ -2922,36 +3259,61 @@ function mountChat(root) {
     activateTab(other ? other.path : "");
   }
 
+  function browserTabNeedsLoad(tab) {
+    if (!tab || !tab.path && !tab.url) return false;
+    if (!tab.frame) return true;
+    const src = tab.frame.getAttribute("src") || "";
+    return !src || src === "about:blank";
+  }
+
   async function ensurePreviewLoaded() {
     if (!previewOpen || !findTab(PREVIEW_TAB)) return;
-    if (previewUrl && previewFrame && previewFrame.getAttribute("src") && previewFrame.getAttribute("src") !== "about:blank") {
-      return;
-    }
-    const row = selectedRow();
-    const wanted = row && row.page ? row.path : "";
-    if (!filesEntry && !wanted) return;
+    const pending = browserTabs.filter((tab) => browserTabNeedsLoad(tab));
+    if (!pending.length && browserTabs.length) return;
     try {
-      previewUrl = await mintPreviewUrl(wanted);
-      if (!previewOpen || !previewFrame) return;
-      previewFrame.src = previewUrl;
+      if (!browserTabs.length) {
+        const wanted = previewPagePath();
+        if (!filesEntry && !wanted) return;
+        const minted = await mintPreview(wanted);
+        if (!previewOpen) return;
+        addBrowserTab({ path: minted.path, url: minted.href, title: fileBase(minted.path) });
+        return;
+      }
+      const seed = pending.find((tab) => tab.path) || pending[0];
+      if (!previewRoot) await mintPreview(seed.path || "");
+      if (!previewOpen) return;
+      pending.forEach((tab) => {
+        const href = tab.path ? hrefFromPreviewPath(tab.path) : tab.url;
+        if (!href) return;
+        loadBrowserTab(tab, {
+          url: href,
+          path: tab.path || pathFromPreviewHref(href),
+          title: tab.title || (tab.path ? fileBase(tab.path) : ""),
+        });
+      });
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
   }
 
-  async function showPreview() {
-    const row = selectedRow();
-    const wanted = row && row.page ? row.path : "";
+  async function showPreview(opts) {
+    opts = opts || {};
+    const wanted = previewPagePath(opts.path);
     if (!filesEntry && !wanted) {
       addBubble("assistant", "Error: No page to open yet. Ask for an HTML file first.");
       return;
     }
+    const chatId = activeWorkspaceId();
     try {
-      previewUrl = await mintPreviewUrl(wanted);
+      const minted = await mintPreview(wanted);
+      if (chatId !== activeWorkspaceId()) return;
+      const spec = { path: minted.path, url: minted.href, title: fileBase(minted.path) };
       previewOpen = true;
       ensurePreviewTab();
       if (previewPane) previewPane.hidden = false;
-      if (previewFrame) previewFrame.src = previewUrl;
+      if (opts.newTab && browserTabs.length) addBrowserTab(spec);
+      else if (!browserTabs.length) addBrowserTab(spec);
+      else loadBrowserTab(activeBrowserTabRow(), spec);
       if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
       paintTabsAndFiles();
     } catch (err) {
@@ -2970,7 +3332,7 @@ function mountChat(root) {
       openTabs.splice(at, 1);
     }
     previewOpen = false;
-    blankPreviewFrame();
+    clearBrowserTabs();
     if (previewPane) {
       previewPane.hidden = true;
       previewPane.classList.remove("is-tab");
@@ -2979,14 +3341,49 @@ function mountChat(root) {
     paintTabsAndFiles();
   }
 
-  function reloadPreviewIfNeeded(path) {
-    if (!previewOpen || !previewFrame || !previewUrl) return;
-    if (path && !previewSuffix(path)) return;
-    const url = previewUrl;
-    previewFrame.src = "about:blank";
+  function reloadBrowserTab(tab) {
+    if (!tab || !tab.frame) return;
+    const url = tab.url || tab.frame.getAttribute("src") || "";
+    if (!url || url === "about:blank") return;
+    tab.frame.src = "about:blank";
     setTimeout(() => {
-      if (previewOpen && previewFrame) previewFrame.src = url;
+      if (previewOpen && tab.frame) tab.frame.src = url;
     }, 30);
+  }
+
+  function reloadPreviewIfNeeded(path) {
+    if (!previewOpen || !browserTabs.length) return;
+    if (path && !previewSuffix(path)) return;
+    const suffix = path ? fileSuffix(path) : "";
+    const all = !path || suffix === ".css" || suffix === ".js" || suffix === ".mjs";
+    browserTabs.forEach((tab) => {
+      if (all || !tab.path || tab.path === path) reloadBrowserTab(tab);
+    });
+  }
+
+  function onPreviewMessage(event) {
+    const data = event.data;
+    if (!data || data.source !== "tabby-preview") return;
+    const tab = browserTabs.find((item) => item.frame && item.frame.contentWindow === event.source);
+    if (!tab) return;
+    if (data.kind === "open") {
+      openPreviewHref(data.href, { newTab: true });
+      return;
+    }
+    if (data.href) {
+      tab.url = data.href;
+      tab.path = pathFromPreviewHref(data.href);
+    }
+    if (data.title) tab.title = data.title;
+    else if (tab.path) tab.title = fileBase(tab.path);
+    if (tab.id === activeBrowserTab) previewUrl = tab.url || "";
+    paintBrowserChrome();
+  }
+
+  function previewHasFocus(target) {
+    if (!previewOpen || !previewPane) return false;
+    if (target && previewPane.contains(target)) return true;
+    return isPreviewTab(activeTabRow()) && !(target && target.closest(".chat-compose, #chat-editor, textarea, input"));
   }
 
   function wsUrl(suffix) {
@@ -6086,6 +6483,34 @@ function mountChat(root) {
       }
       return;
     }
+    if (previewHasFocus(event.target) && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "t") {
+      event.preventDefault();
+      newBlankBrowserTab();
+      return;
+    }
+    if (previewHasFocus(event.target) && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w") {
+      event.preventDefault();
+      closeBrowserTab(activeBrowserTab);
+      return;
+    }
+    if (previewHasFocus(event.target) && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      if (previewUrlInput) {
+        previewUrlInput.focus();
+        previewUrlInput.select();
+      }
+      return;
+    }
+    if (previewHasFocus(event.target) && event.altKey && event.key === "ArrowLeft") {
+      event.preventDefault();
+      postToActivePreview("back");
+      return;
+    }
+    if (previewHasFocus(event.target) && event.altKey && event.key === "ArrowRight") {
+      event.preventDefault();
+      postToActivePreview("forward");
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (searchEl) {
@@ -7322,6 +7747,8 @@ function mountChat(root) {
       { label: "Duplicate", run: () => duplicateProjectFile(path) },
       { label: "Delete", danger: true, run: () => deleteProjectFile(path) },
       row && row.page ? { sep: true } : null,
+      row && row.page ? { label: "Open in preview", run: () => showPreview({ path }) } : null,
+      row && row.page ? { label: "Open in new preview tab", run: () => showPreview({ path, newTab: true }) } : null,
       row && row.page ? { label: "Open in site", run: () => openSite() } : null,
     ];
   }
@@ -7422,6 +7849,7 @@ function mountChat(root) {
       return [
         { label: "Open", run: () => activateTab(path) },
         { label: "Show beside editor", run: () => dockPreview() },
+        { label: "New tab", run: () => newBlankBrowserTab() },
         { label: "Reload", run: () => reloadPreviewIfNeeded() },
         { label: "Close", run: () => hidePreview() },
         { label: "Close others", disabled: openTabs.length < 2, run: () => closeOtherTabs(path) },
@@ -7691,12 +8119,17 @@ function mountChat(root) {
     }
 
     if (event.target.closest("#chat-preview")) {
+      const strip = event.target.closest("[data-btab]");
+      const tabId = strip && strip.dataset.btab;
       openCtx(event, [
+        { label: "New tab", run: () => newBlankBrowserTab() },
+        { label: "Close tab", run: () => closeBrowserTab(tabId || activeBrowserTab) },
+        { sep: true },
         isPreviewTab(activeTabRow())
           ? { label: "Show beside editor", run: () => dockPreview() }
           : { label: "Open as tab", run: () => activateTab(PREVIEW_TAB) },
         { label: "Reload", run: () => reloadPreviewIfNeeded() },
-        { label: "Close", run: () => hidePreview() },
+        { label: "Close preview", run: () => hidePreview() },
       ]);
       return;
     }
@@ -7893,6 +8326,11 @@ function mountChat(root) {
       }
       if (btn.dataset.file === "open") {
         filesFocusDir = fileDir(path);
+        const fileRow = filesListing.find((item) => item.path === path);
+        if (fileRow && fileRow.page && (event.ctrlKey || event.metaKey)) {
+          showPreview({ path, newTab: previewOpen });
+          return;
+        }
         openFileTab(path);
         return;
       }
@@ -8051,8 +8489,36 @@ function mountChat(root) {
       else activateTab(PREVIEW_TAB);
     });
   }
+  if (previewNewBtn) previewNewBtn.addEventListener("click", () => newBlankBrowserTab());
+  if (previewBackBtn) previewBackBtn.addEventListener("click", () => postToActivePreview("back"));
+  if (previewForwardBtn) previewForwardBtn.addEventListener("click", () => postToActivePreview("forward"));
   if (previewReloadBtn) previewReloadBtn.addEventListener("click", () => reloadPreviewIfNeeded());
   if (previewCloseBtn) previewCloseBtn.addEventListener("click", () => hidePreview());
+  if (previewTabsEl) {
+    previewTabsEl.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-btab]");
+      if (!item) return;
+      if (event.target.closest("[data-btab-close]")) {
+        closeBrowserTab(item.dataset.btab);
+        return;
+      }
+      activateBrowserTab(item.dataset.btab);
+    });
+    previewTabsEl.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) return;
+      const item = event.target.closest("[data-btab]");
+      if (!item) return;
+      event.preventDefault();
+      closeBrowserTab(item.dataset.btab);
+    });
+  }
+  if (previewUrlInput) {
+    previewUrlInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      goPreviewAddress(previewUrlInput.value);
+    });
+  }
   if (filesTermBtn) {
     filesTermBtn.addEventListener("click", () => {
       if (termOpen && termSocket && termSocket.readyState === 1) closeTerm();
@@ -8386,6 +8852,7 @@ function mountChat(root) {
   }
 
   window.addEventListener("beforeunload", warnDirtyUnload);
+  window.addEventListener("message", onPreviewMessage);
   document.addEventListener("pointerdown", onPointerDownAway);
   document.addEventListener("keydown", onGlobalKey);
   async function loadStore() {

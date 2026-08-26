@@ -39,6 +39,7 @@ STORAGE_CORS = {
     "Access-Control-Allow-Headers": "Content-Type",
 }
 _STORAGE_MARK = "data-tabby-preview-storage"
+_BROWSER_MARK = "data-tabby-preview-browser"
 
 _tokens: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -239,11 +240,9 @@ def _storage_shim(storage: dict[str, str], persist_url: str) -> str:
     )
 
 
-def inject_storage_shim(html: str, storage: dict[str, str], persist_url: str) -> str:
-    """Put Storage on sandboxed previews before page scripts run."""
-    if _STORAGE_MARK in html:
+def _inject_after_open(html: str, mark: str, snippet: str) -> str:
+    if mark in html:
         return html
-    shim = _storage_shim(storage, persist_url)
     lower = html.lower()
     for tag in ("<head", "<html"):
         start = lower.find(tag)
@@ -252,14 +251,98 @@ def inject_storage_shim(html: str, storage: dict[str, str], persist_url: str) ->
         end = html.find(">", start)
         if end == -1:
             continue
-        return html[: end + 1] + shim + html[end + 1 :]
-    return shim + html
+        return html[: end + 1] + snippet + html[end + 1 :]
+    return snippet + html
+
+
+def inject_storage_shim(html: str, storage: dict[str, str], persist_url: str) -> str:
+    """Put Storage on sandboxed previews before page scripts run."""
+    return _inject_after_open(html, _STORAGE_MARK, _storage_shim(storage, persist_url))
+
+
+def _browser_shim() -> str:
+    """Tell the console about title, URL, and window.open so the preview can tab."""
+    return (
+        f'<script {_BROWSER_MARK}="1">'
+        "(function(){"
+        "function pageTitle(){"
+        "if(document.title)return String(document.title);"
+        "try{"
+        "var parts=String(location.pathname||'').split('/');"
+        "return decodeURIComponent(parts[parts.length-1]||'')||String(location.href||'');"
+        "}catch(err){return String(location.href||'');}"
+        "}"
+        "function report(kind,extra){"
+        "var msg={source:'tabby-preview',kind:kind,href:String(location.href||''),title:pageTitle()};"
+        "if(extra){for(var k in extra){if(Object.prototype.hasOwnProperty.call(extra,k))msg[k]=extra[k];}}"
+        "try{parent.postMessage(msg,'*');}catch(err){}"
+        "}"
+        "window.open=function(url,target){"
+        "var href=url==null||url===''?'':String(url);"
+        "try{href=new URL(href,location.href).href;}catch(err){}"
+        "report('open',{href:href,target:String(target||'')});"
+        "return {closed:false,close:function(){this.closed=true;},focus:function(){},blur:function(){},"
+        "opener:window,location:{href:href,assign:function(){},replace:function(){},reload:function(){}},"
+        "postMessage:function(){}};"
+        "};"
+        "function onClick(ev){"
+        "var a=ev.target&&ev.target.closest?ev.target.closest('a[href]'):null;"
+        "if(!a)return;"
+        "var t=String(a.getAttribute('target')||'').toLowerCase();"
+        "if(t==='_top'||t==='_parent'){"
+        "ev.preventDefault();"
+        "try{location.href=a.href;}catch(err){}"
+        "return;"
+        "}"
+        "if(!(t==='_blank'||t==='_new'||ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1))return;"
+        "ev.preventDefault();"
+        "ev.stopPropagation();"
+        "var href='';"
+        "try{href=a.href;}catch(err){href=a.getAttribute('href')||'';}"
+        "report('open',{href:href});"
+        "}"
+        "document.addEventListener('click',onClick,true);"
+        "document.addEventListener('auxclick',onClick,true);"
+        "window.addEventListener('message',function(ev){"
+        "var d=ev.data;"
+        "if(!d||d.source!=='tabby-preview-host')return;"
+        "if(d.kind==='back')history.back();"
+        "if(d.kind==='forward')history.forward();"
+        "if(d.kind==='reload')location.reload();"
+        "});"
+        "var push=history.pushState;"
+        "var replace=history.replaceState;"
+        "if(push)history.pushState=function(){var r=push.apply(this,arguments);report('nav');return r;};"
+        "if(replace)history.replaceState=function(){var r=replace.apply(this,arguments);report('nav');return r;};"
+        "window.addEventListener('hashchange',function(){report('nav');});"
+        "window.addEventListener('popstate',function(){report('nav');});"
+        "window.addEventListener('load',function(){report('nav');});"
+        "try{"
+        "var head=document.head||document.documentElement;"
+        "var last=document.title;"
+        "new MutationObserver(function(){"
+        "if(document.title===last)return;"
+        "last=document.title;"
+        "report('title');"
+        "}).observe(head,{subtree:true,childList:true,characterData:true});"
+        "}catch(err){}"
+        "report('ready');"
+        "})();"
+        "</script>"
+    )
+
+
+def inject_browser_shim(html: str) -> str:
+    """Open target=_blank and window.open as tabs in the console preview."""
+    return _inject_after_open(html, _BROWSER_MARK, _browser_shim())
 
 
 def html_preview_bytes(
     path: Path, *, username: str, chat_id: str, persist_url: str
 ) -> bytes:
     text = path.read_text(encoding="utf-8", errors="replace")
-    return inject_storage_shim(
-        text, load_storage(username, chat_id), persist_url
-    ).encode("utf-8")
+    # Browser shim last so it sits first in <head> and patches window.open
+    # before page scripts (storage injects first, then this prepends).
+    text = inject_storage_shim(text, load_storage(username, chat_id), persist_url)
+    text = inject_browser_shim(text)
+    return text.encode("utf-8")
