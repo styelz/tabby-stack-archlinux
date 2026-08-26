@@ -1213,16 +1213,24 @@ button.chip {
   background: var(--hover-fill);
   outline: none;
 }
-.chat-nav.is-active {
+.chat-nav.is-active,
+.chat-nav.is-workspace.is-current {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   box-shadow: inset 0.125rem 0 0 var(--accent);
 }
-.chat-nav.is-current:not(.is-active) {
-  box-shadow: inset 0.125rem 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
-}
 .chat-nav.is-active:hover,
-.chat-nav.is-active:focus-visible {
+.chat-nav.is-active:focus-visible,
+.chat-nav.is-workspace.is-current:hover,
+.chat-nav.is-workspace.is-current:focus-visible {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.chat-nav.is-child.is-active {
+  background: color-mix(in srgb, var(--accent-2) 18%, transparent);
+  box-shadow: inset 0.125rem 0 0 var(--accent-2);
+}
+.chat-nav.is-child.is-active:hover,
+.chat-nav.is-child.is-active:focus-visible {
+  background: color-mix(in srgb, var(--accent-2) 24%, transparent);
 }
 .chat-nav.is-busy .chat-nav-when { color: var(--accent); font-weight: 600; }
 .chat-nav.is-workspace {
@@ -1278,7 +1286,9 @@ button.chip {
   grid-column: 3;
 }
 .chat-nav.is-child {
-  padding: 0.3125rem 4rem 0.3125rem 1.5rem;
+  margin-left: 1.125rem;
+  width: calc(100% - 1.125rem);
+  padding: 0.3125rem 3.75rem 0.3125rem 0.75rem;
   min-height: 2.125rem;
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
