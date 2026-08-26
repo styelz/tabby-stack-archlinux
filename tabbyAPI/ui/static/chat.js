@@ -1007,7 +1007,8 @@ function mountChat(root) {
         return false;
       })
       .sort((a, b) => {
-        const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+        const pin = Number(Boolean(isWorkspaceRoot(b) && b.pinned))
+          - Number(Boolean(isWorkspaceRoot(a) && a.pinned));
         if (pin) return pin;
         return (b.updatedAt || 0) - (a.updatedAt || 0);
       });
@@ -1090,7 +1091,13 @@ function mountChat(root) {
       titleEl.title = "Click to rename";
     }
     const pinBtn = moreMenu && moreMenu.querySelector('[data-more="pin"]');
-    if (pinBtn) pinBtn.textContent = chat && chat.pinned ? "Unpin" : "Pin";
+    if (pinBtn) {
+      const root = activeMode() === "code"
+        ? store.chats.find((item) => item.id === activeWorkspaceId() && isWorkspaceRoot(item))
+        : null;
+      pinBtn.hidden = !root;
+      if (root) pinBtn.textContent = root.pinned ? "Unpin workspace" : "Pin workspace";
+    }
     const threadBtn = moreMenu && moreMenu.querySelector('[data-more="thread"]');
     if (threadBtn) {
       threadBtn.hidden = activeMode() !== "code";
@@ -1287,11 +1294,13 @@ function mountChat(root) {
     const thread = kind === "root"
       ? `<button type="button" class="btn ghost chat-icon" data-nav="thread" aria-label="New chat in this workspace" title="New chat">${FILES_NEW_SVG}</button>`
       : "";
+    const pin = kind === "root"
+      ? `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${pinned ? "Unpin workspace" : "Pin workspace"}" title="${pinned ? "Unpin workspace" : "Pin workspace"}">${NAV_STAR_SVG}</button>`
+      : "";
     const delLabel = kind === "root" ? "Delete workspace" : "Delete chat";
-    const pinLabel = pinned ? "Unpin" : "Pin";
     return `<span class="chat-nav-tools">`
       + thread
-      + `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${pinLabel}" title="${pinLabel}">${NAV_STAR_SVG}</button>`
+      + pin
       + `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename" title="Rename">${NAV_RENAME_SVG}</button>`
       + `<button type="button" class="btn ghost chat-icon danger" data-nav="delete" aria-label="${delLabel}" title="${delLabel}">${NAV_CLOSE_SVG}</button>`
       + `</span>`;
@@ -1308,7 +1317,7 @@ function mountChat(root) {
     }
     const fallback = kind === "root" ? "New workspace" : "New chat";
     const title = kind === "root" ? workspaceDisplayTitle(item) : (item.title || fallback);
-    const pin = item.pinned
+    const pin = kind === "root" && item.pinned
       ? `<span class="chat-nav-pin" title="Pinned">${NAV_STAR_SVG}</span>`
       : "";
     return twist
@@ -1329,7 +1338,7 @@ function mountChat(root) {
     btn.className = "chat-nav"
       + (selected ? " is-active" : "")
       + (current ? " is-current" : "")
-      + (item.pinned ? " is-pinned" : "")
+      + (isRoot && item.pinned ? " is-pinned" : "")
       + (inFlight && item.id === flightChatId ? " is-busy" : "")
       + (row.kind === "child" ? " is-child" : "")
       + (isRoot ? " is-workspace" : "")
@@ -4088,8 +4097,15 @@ function mountChat(root) {
     field.addEventListener("blur", () => finish(true));
   }
 
-  function togglePin(id) {
+  function workspacePinTarget(id) {
     const chat = store.chats.find((item) => item.id === (id || store.activeId));
+    if (!chat || chatMode(chat) !== "code") return null;
+    const root = store.chats.find((item) => item.id === workspaceId(chat));
+    return root && isWorkspaceRoot(root) ? root : null;
+  }
+
+  function togglePin(id) {
+    const chat = workspacePinTarget(id);
     if (!chat) return;
     chat.pinned = !chat.pinned;
     persist();
@@ -7200,7 +7216,7 @@ function mountChat(root) {
         if (!root) loadChat(id);
         beginRename(id);
       } },
-      { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) },
+      root ? { label: chat.pinned ? "Unpin workspace" : "Pin workspace", run: () => togglePin(id) } : null,
     ];
     if (!root) {
       items.push(
@@ -7584,9 +7600,10 @@ function mountChat(root) {
 
     if (event.target.closest("#chat-title")) {
       const chat = activeChat();
+      const root = workspacePinTarget(store.activeId);
       openCtx(event, [
         { label: "Rename", run: () => beginRename() },
-        chat ? { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin() } : null,
+        root ? { label: root.pinned ? "Unpin workspace" : "Pin workspace", run: () => togglePin(root.id) } : null,
         activeMode() === "code" ? { label: "New chat in this workspace", run: () => startNestedChat(workspaceId(chat)) } : null,
         { label: "Copy conversation", run: () => copyText(conversationMarkdown()) },
         { label: "Export markdown", run: () => exportChat() },
