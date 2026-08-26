@@ -544,8 +544,11 @@ function mountChat(root) {
 
   function addCodeWorkspace() {
     const root = emptyChat("code");
+    const chat = emptyChat("code", root.id);
     store.chats.unshift(root);
-    return root;
+    store.chats.unshift(chat);
+    expandWorkspace(root.id);
+    return chat;
   }
 
   function emptyLastByMode(raw) {
@@ -780,25 +783,42 @@ function mountChat(root) {
     if (!chats.some((chat) => chat.id === lastByMode.code && chatMode(chat) === "code")) {
       lastByMode.code = "";
     }
+    chats.filter((chat) => isWorkspaceRoot(chat) && hasUserTurn(chat)).forEach((root) => {
+      const lifted = emptyChat("code", root.id);
+      lifted.messages = cloneMessages(root.messages);
+      lifted.title = titleFromMessages(lifted.messages, lifted);
+      lifted.updatedAt = root.updatedAt || Date.now();
+      root.messages = [{ ...SYSTEM }];
+      chats.unshift(lifted);
+      if (activeId === root.id) activeId = lifted.id;
+      if (lastByMode.code === root.id) lastByMode.code = lifted.id;
+    });
     const isEmptyThread = (chat) => (
       Boolean(chatParentId(chat))
       && !hasUserTurn(chat)
       && !chat.pinned
       && isPlaceholderTitle(chat.title)
     );
-    const parentOf = (chat) => {
-      const parent = chatParentId(chat);
-      return parent ? chats.find((item) => item.id === parent) || null : null;
+    const threadForRoot = (rootId) => {
+      const kids = chats
+        .filter((chat) => chatParentId(chat) === rootId)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      return kids.find((item) => hasUserTurn(item) || item.pinned) || kids[0] || null;
     };
     const active = chats.find((chat) => chat.id === activeId);
-    if (active && isEmptyThread(active)) {
-      const parent = parentOf(active);
-      if (parent) activeId = parent.id;
+    if (active && isWorkspaceRoot(active)) {
+      let thread = threadForRoot(active.id);
+      if (!thread) {
+        thread = emptyChat("code", active.id);
+        chats.unshift(thread);
+      }
+      activeId = thread.id;
     }
     if (lastByMode.code) {
       const remembered = chats.find((chat) => chat.id === lastByMode.code);
-      if (remembered && isEmptyThread(remembered)) {
-        lastByMode.code = chatParentId(remembered) || "";
+      if (remembered && isWorkspaceRoot(remembered)) {
+        const thread = threadForRoot(remembered.id);
+        lastByMode.code = thread ? thread.id : "";
       }
     }
     for (let i = chats.length - 1; i >= 0; i -= 1) {
@@ -953,7 +973,7 @@ function mountChat(root) {
   function persist() {
     rememberActiveMode();
     const chat = activeChat();
-    if (chat) {
+    if (chat && !isWorkspaceRoot(chat)) {
       chat.messages = cloneMessages(messages);
       if (!chat.titleLocked) chat.title = titleFromMessages(chat.messages, chat);
     }
@@ -1158,8 +1178,13 @@ function mountChat(root) {
 
   function workspaceDisplayTitle(root) {
     const raw = String((root && root.title) || "").trim();
-    if (!raw || isPlaceholderTitle(raw)) return "New workspace";
-    return raw;
+    if (raw && !isPlaceholderTitle(raw)) return raw;
+    const kids = nestedChats(root && root.id)
+      .filter((item) => hasUserTurn(item) || item.pinned)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const fromChild = String((kids[0] && kids[0].title) || "").trim();
+    if (fromChild && !isPlaceholderTitle(fromChild)) return fromChild;
+    return "New workspace";
   }
 
   function listedWorkspaceKids(rootId, listed) {
@@ -1250,10 +1275,8 @@ function mountChat(root) {
   function navRowEl(row, active) {
     const item = row.chat;
     const isRoot = row.kind === "root";
-    const current = isRoot && Boolean(active) && (
-      chatParentId(active) === item.id || (active.id === item.id && row.kids > 0)
-    );
-    const selected = item.id === store.activeId && !(isRoot && row.kids > 0);
+    const current = isRoot && Boolean(active) && chatParentId(active) === item.id;
+    const selected = item.id === store.activeId && !isRoot;
     const canExpand = isRoot && row.kids > 0;
     const expanded = canExpand && workspaceExpanded(item.id);
     const btn = document.createElement("div");
@@ -1281,14 +1304,14 @@ function mountChat(root) {
     if (kids.length) {
       if (!workspaceExpanded(id)) expandWorkspace(id);
       const current = activeChat();
-      if (current && workspaceId(current) === id) {
+      if (current && !isWorkspaceRoot(current) && workspaceId(current) === id) {
         renderSidebar();
         return;
       }
       loadChat(kids[0].id);
       return;
     }
-    loadChat(id);
+    startNestedChat(id);
   }
 
   function renderSidebar() {
@@ -1311,7 +1334,7 @@ function mountChat(root) {
         group.className = "chat-nav-group"
           + (row.showKids ? " is-open" : "")
           + (row.kids > 0 ? " is-branch" : "")
-          + (row.chat.id === store.activeId || (active && chatParentId(active) === row.chat.id) ? " is-current" : "");
+          + (active && chatParentId(active) === row.chat.id ? " is-current" : "");
         group.dataset.id = row.chat.id;
         group.setAttribute("role", "group");
         group.setAttribute("aria-label", workspaceDisplayTitle(row.chat));
@@ -5643,6 +5666,11 @@ function mountChat(root) {
   }
 
   function loadChat(id, stickToEnd) {
+    const target = store.chats.find((item) => item.id === id);
+    if (target && isWorkspaceRoot(target)) {
+      openWorkspaceNav(target.id);
+      return;
+    }
     if (id === store.activeId) {
       if (stickToEnd !== false) stickLog(true);
       jumpSidebarSearch();
@@ -5717,10 +5745,11 @@ function mountChat(root) {
         messages = cloneMessages(sibling.messages);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       } else if (!root && parentId && store.chats.some((item) => item.id === parentId)) {
-        const parent = store.chats.find((item) => item.id === parentId);
-        store.activeId = parent.id;
-        messages = cloneMessages(parent.messages);
-        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+        const chat = emptyChat("code", parentId);
+        store.chats.unshift(chat);
+        store.activeId = chat.id;
+        messages = cloneMessages(chat.messages);
+        expandWorkspace(parentId);
       } else if (other) {
         store.activeId = other.id;
         messages = cloneMessages(other.messages);
@@ -5744,7 +5773,8 @@ function mountChat(root) {
   function startNestedChat(parentId) {
     const parent = store.chats.find((item) => item.id === parentId) || activeChat();
     const rootId = parent ? workspaceId(parent) : "";
-    if (!rootId || activeMode() !== "code") return;
+    const root = store.chats.find((item) => item.id === rootId);
+    if (!root || !isWorkspaceRoot(root)) return;
     if (flightIsHere()) abortSession("stop");
     persist();
     cancelEdit();
@@ -5851,7 +5881,7 @@ function mountChat(root) {
   }
 
   function renderHistoryMenu(keepIndex) {
-    historyItems = listedChats();
+    historyItems = listedChats().filter((item) => !isWorkspaceRoot(item));
     if (!historyItems.length) {
       hideHistoryMenu();
       return;
@@ -7141,7 +7171,7 @@ function mountChat(root) {
       } },
       { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) },
     ];
-    if (!root || kidCount === 0) {
+    if (!root) {
       items.push(
         { sep: true },
         { label: "Copy conversation", run: () => copyText(conversationMarkdown(id)) },
@@ -7526,7 +7556,7 @@ function mountChat(root) {
       openCtx(event, [
         { label: "Rename", run: () => beginRename() },
         chat ? { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin() } : null,
-        isWorkspaceRoot(chat) ? { label: "New chat in this workspace", run: () => startNestedChat(chat.id) } : null,
+        activeMode() === "code" ? { label: "New chat in this workspace", run: () => startNestedChat(workspaceId(chat)) } : null,
         { label: "Copy conversation", run: () => copyText(conversationMarkdown()) },
         { label: "Export markdown", run: () => exportChat() },
         { sep: true },
