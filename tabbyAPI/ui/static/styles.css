@@ -1301,6 +1301,7 @@ button.chip {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   gap: 0.625rem;
   padding: 0.75rem 1rem 1rem;
@@ -1727,6 +1728,7 @@ button.chip {
 .chat-view {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   gap: 0.5rem;
 }
@@ -1740,6 +1742,7 @@ button.chip {
 .chat-stage {
   display: flex;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   gap: 0.5rem;
 }
@@ -2153,6 +2156,7 @@ button.chip {
 .code-hl .tok-punct { color: var(--tok-punct); }
 .chat-log-wrap {
   position: relative;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -2198,6 +2202,7 @@ button.chip {
   background: rgba(var(--accent-rgb), 0.08);
 }
 .chat-log {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--line);
@@ -2256,6 +2261,7 @@ button.chip {
   flex-direction: column;
   align-items: flex-end;
   gap: 0.25rem;
+  min-width: 0;
   max-width: min(760px, 92%);
   margin-left: auto;
 }
@@ -2296,11 +2302,13 @@ button.chip {
 }
 .bubble {
   max-width: 100%;
+  min-width: 0;
   padding: 0.5rem 0.625rem;
   border-radius: 0.625rem;
   font-size: 0.8125rem;
   line-height: 1.45;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 .bubble.user { margin-left: auto; background: rgba(var(--accent-rgb),0.16); }
 .bubble.assistant {
@@ -2338,6 +2346,8 @@ button.chip {
 }
 .md-code {
   margin: 0.65em 0;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 0.625rem;
   background: var(--log-bg);
@@ -2478,6 +2488,7 @@ button.chip {
   flex-direction: column;
   align-items: flex-start;
   gap: 0.5rem;
+  min-width: 0;
   max-width: min(760px, 92%);
 }
 .chat-turn .bubble.assistant {
@@ -2633,7 +2644,7 @@ button.chip {
     transform: none;
   }
 }
-.chat-compose { position: relative; flex: 0 0 auto; }
+.chat-compose { position: relative; flex: 0 0 auto; min-width: 0; }
 .slash-menu {
   position: absolute;
   left: 0;
