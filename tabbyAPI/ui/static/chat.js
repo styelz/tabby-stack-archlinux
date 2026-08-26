@@ -1186,9 +1186,12 @@ function mountChat(root) {
   function navRowHtml(item, kind, kidCount) {
     const canExpand = kind === "root" && kidCount > 0;
     const expanded = canExpand && workspaceExpanded(item.id);
-    const twist = canExpand
-      ? `<button type="button" class="btn ghost chat-icon chat-nav-twist${expanded ? " is-open" : ""}" data-nav="twist" aria-label="${expanded ? "Collapse workspace" : "Expand workspace"}">${CHEVRON_SVG}</button>`
-      : "";
+    let twist = "";
+    if (kind === "root") {
+      twist = canExpand
+        ? `<button type="button" class="chat-nav-twist${expanded ? " is-open" : ""}" data-nav="twist" aria-label="${expanded ? "Collapse workspace" : "Expand workspace"}"></button>`
+        : `<span class="chat-nav-twist is-empty" aria-hidden="true"></span>`;
+    }
     const fallback = kind === "root" ? "New workspace" : "New chat";
     const title = kind === "root" ? workspaceDisplayTitle(item) : (item.title || fallback);
     const pin = item.pinned

@@ -1225,42 +1225,61 @@ button.chip {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .chat-nav.is-busy .chat-nav-when { color: var(--accent); font-weight: 600; }
-.chat-nav.is-workspace.is-branch {
-  grid-template-columns: 1.125rem minmax(0, 1fr) auto;
-  padding-left: 0.375rem;
+.chat-nav.is-workspace {
+  grid-template-columns: 0.875rem minmax(0, 1fr) auto;
+  padding: 0.375rem 4.75rem 0.375rem 0.375rem;
+  min-height: 2.375rem;
 }
 .chat-nav-twist {
   grid-row: 1 / span 2;
   grid-column: 1;
-  width: 1.125rem;
-  height: 1.125rem;
+  align-self: center;
+  width: 0.875rem;
+  height: 1.25rem;
+  min-height: 0;
+  margin: 0;
   padding: 0;
+  border: 0;
+  border-radius: 0.1875rem;
+  background: transparent;
   color: var(--muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
 }
-.chat-nav-twist svg {
-  width: 0.6875rem;
-  height: 0.6875rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transform: rotate(180deg);
-  transform-origin: center;
+.chat-nav-twist::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 0.28rem solid currentColor;
+  border-top: 0.22rem solid transparent;
+  border-bottom: 0.22rem solid transparent;
+  opacity: 0.72;
+  transform: rotate(0deg);
+  transform-origin: 35% 50%;
   transition: transform 0.12s ease;
 }
-.chat-nav-twist.is-open svg { transform: rotate(-90deg); }
-.chat-nav.is-workspace.is-branch .chat-nav-title,
-.chat-nav.is-workspace.is-branch .chat-nav-when {
+.chat-nav-twist.is-open::before { transform: rotate(90deg); }
+.chat-nav-twist.is-empty {
+  visibility: hidden;
+  pointer-events: none;
+  cursor: default;
+}
+.chat-nav-twist:hover { color: var(--text); }
+.chat-nav-twist:focus-visible {
+  outline: 0.125rem solid rgba(var(--accent-rgb), 0.45);
+  outline-offset: 1px;
+}
+.chat-nav.is-workspace .chat-nav-title,
+.chat-nav.is-workspace .chat-nav-when {
   grid-column: 2;
 }
-.chat-nav.is-workspace.is-branch .chat-nav-pin {
+.chat-nav.is-workspace .chat-nav-pin {
   grid-column: 3;
 }
 .chat-nav.is-child {
-  padding-left: 1.75rem;
-  padding-right: 4rem;
-  min-height: 2.5rem;
+  padding: 0.3125rem 4rem 0.3125rem 1.5rem;
+  min-height: 2.125rem;
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
 .chat-nav.is-child .chat-nav-title { font-weight: 450; }
