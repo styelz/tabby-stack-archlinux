@@ -713,6 +713,7 @@ function mountChat(root) {
         const agent = normalizeAgent(item.agent);
         if (agent === "ask" || agent === "plan") out.agent = agent;
       }
+      if (item.hidden) out.hidden = true;
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
         out.imageData = String(item.imageData);
@@ -752,8 +753,16 @@ function mountChat(root) {
     return !raw || raw === "New chat" || raw === "New workspace";
   }
 
+  function isHiddenUserTurn(item) {
+    if (!item || item.role !== "user") return false;
+    if (item.hidden) return true;
+    return String(item.content || "").trim() === BUILD_PROMPT;
+  }
+
   function titleFromMessages(list, chat) {
-    const first = (list || []).find((item) => item.role === "user" && userTurnHasContent(item));
+    const first = (list || []).find(
+      (item) => item.role === "user" && !isHiddenUserTurn(item) && userTurnHasContent(item)
+    );
     if (!first) return chat ? defaultChatTitle(chat) : "New chat";
     const text = String(first.content || "").replace(/\s+/g, " ").trim();
     if (text) return text.slice(0, 56);
@@ -4465,7 +4474,7 @@ function mountChat(root) {
 
   function canBuildPlan(idx) {
     if (activeMode() !== "code") return false;
-    if (modelLoading) return false;
+    if (modelLoading || inFlight) return false;
     const item = messages[idx];
     if (!item || item.role !== "assistant") return false;
     if (normalizeAgent(item.agent) !== "plan") return false;
@@ -4494,7 +4503,7 @@ function mountChat(root) {
     if (inFlight || modelLoading) return;
     setCodeAgent("agent");
     hidePopovers();
-    runLoop(BUILD_PROMPT).catch((err) => {
+    runLoop(BUILD_PROMPT, { hidden: true }).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
     });
@@ -4608,7 +4617,10 @@ function mountChat(root) {
 
   function conversationMarkdown(id) {
     return chatMessages(id)
-      .filter((item) => item.role === "user" || item.role === "assistant")
+      .filter((item) => {
+        if (item.role === "assistant") return true;
+        return item.role === "user" && !isHiddenUserTurn(item);
+      })
       .map((item) => {
         const who = item.role === "user" ? "You" : "Assistant";
         const body = item.role === "assistant" && TabbyUI.formatAssistantContent
@@ -5838,6 +5850,9 @@ function mountChat(root) {
         note: "Preparing the GPU.",
       };
     }
+    if (raw === BUILD_PROMPT) {
+      return { label: "Building", kind: "chat", processing: true };
+    }
     if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
       return { label: "Working", kind: "cmd", processing: true };
     }
@@ -6309,8 +6324,10 @@ function mountChat(root) {
     }
     log.replaceChildren();
     messages.forEach((item, idx) => {
-      if (item.role === "user") addBubble("user", item.content, false, null, idx, item);
-      else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx, item);
+      if (item.role === "user") {
+        if (isHiddenUserTurn(item)) return;
+        addBubble("user", item.content, false, null, idx, item);
+      } else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx, item);
     });
     if (inFlight && store.activeId === flightChatId && flightWorking && flightWorking.isLive()) {
       log.appendChild(flightWorking.node);
@@ -6764,7 +6781,9 @@ function mountChat(root) {
   }
 
   function userSentTexts() {
-    return messages.filter((item) => item.role === "user").map((item) => item.content);
+    return messages
+      .filter((item) => item.role === "user" && !isHiddenUserTurn(item))
+      .map((item) => item.content);
   }
 
   function resetRecall() {
@@ -7466,6 +7485,7 @@ function mountChat(root) {
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       }
       const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
+      if ((opts && opts.hidden) || outboundText === BUILD_PROMPT) userItem.hidden = true;
       if (pendingImage) {
         userItem.imageData = pendingImage.dataUrl;
         userItem.imagePreview = pendingImage.preview || pendingImage.dataUrl;
