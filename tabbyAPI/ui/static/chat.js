@@ -560,10 +560,9 @@ function mountChat(root) {
 
   function addCodeWorkspace() {
     const root = emptyChat("code");
-    const chat = emptyChat("code", root.id);
-    store.chats.unshift(root, chat);
+    store.chats.unshift(root);
     expandWorkspace(root.id);
-    return chat;
+    return root;
   }
 
   function emptyLastByMode(raw) {
@@ -655,6 +654,11 @@ function mountChat(root) {
     return "New chat";
   }
 
+  function isPlaceholderTitle(title) {
+    const raw = String(title || "").trim();
+    return !raw || raw === "New chat" || raw === "New workspace";
+  }
+
   function titleFromMessages(list, chat) {
     const first = (list || []).find((item) => item.role === "user" && userTurnHasContent(item));
     if (!first) return chat ? defaultChatTitle(chat) : "New chat";
@@ -690,7 +694,7 @@ function mountChat(root) {
     chats.forEach((chat) => {
       if (!isWorkspaceRoot(chat)) return;
       const title = String(chat.title || "").trim();
-      if (!title || title === "New chat" || title === "New workspace") return;
+      if (isPlaceholderTitle(title)) return;
       const key = `${title}\0${Number(chat.updatedAt) || 0}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(chat);
@@ -715,7 +719,7 @@ function mountChat(root) {
     chats.forEach((chat) => {
       if (!isWorkspaceRoot(chat) || drop.has(chat.id)) return;
       const title = String(chat.title || "").trim();
-      if (title && title !== "New chat" && title !== "New workspace") return;
+      if (!isPlaceholderTitle(title)) return;
       if (protect.has(chat.id) || kids.has(chat.id)) return;
       drop.add(chat.id);
     });
@@ -771,26 +775,6 @@ function mountChat(root) {
     );
     chats.length = 0;
     chats.push(...collapsed.chats);
-    const lifted = [];
-    chats.forEach((chat) => {
-      if (!isWorkspaceRoot(chat) || !hasUserTurn(chat)) return;
-      let nested = chats.find((item) => chatParentId(item) === chat.id);
-      if (!nested) {
-        nested = emptyChat("code", chat.id);
-        lifted.push(nested);
-      } else if (!hasUserTurn(nested)) {
-        nested.messages = cloneMessages(chat.messages);
-        nested.title = titleFromMessages(nested.messages, nested);
-        nested.updatedAt = chat.updatedAt;
-        nested.titleLocked = Boolean(chat.titleLocked);
-      }
-      chat.messages = [{ ...SYSTEM }];
-      chat.titleLocked = true;
-      if (!String(chat.title || "").trim() || chat.title === "New chat") {
-        chat.title = "New workspace";
-      }
-    });
-    if (lifted.length) chats.unshift(...lifted);
     if (!chats.length) chats.push(emptyChat());
     let activeId = collapsed.activeId || String((raw && raw.activeId) || "");
     if (!chats.some((chat) => chat.id === activeId)) activeId = chats[0].id;
@@ -801,22 +785,30 @@ function mountChat(root) {
     if (!chats.some((chat) => chat.id === lastByMode.code && chatMode(chat) === "code")) {
       lastByMode.code = "";
     }
-    const threadUnder = (rootId) => chats.find((item) => chatParentId(item) === rootId) || null;
+    const isEmptyThread = (chat) => (
+      Boolean(chatParentId(chat))
+      && !hasUserTurn(chat)
+      && !chat.pinned
+      && isPlaceholderTitle(chat.title)
+    );
+    const parentOf = (chat) => {
+      const parent = chatParentId(chat);
+      return parent ? chats.find((item) => item.id === parent) || null : null;
+    };
     const active = chats.find((chat) => chat.id === activeId);
-    if (active && isWorkspaceRoot(active)) {
-      let thread = threadUnder(activeId);
-      if (!thread) {
-        thread = emptyChat("code", activeId);
-        chats.unshift(thread);
-      }
-      activeId = thread.id;
+    if (active && isEmptyThread(active)) {
+      const parent = parentOf(active);
+      if (parent) activeId = parent.id;
     }
     if (lastByMode.code) {
       const remembered = chats.find((chat) => chat.id === lastByMode.code);
-      if (remembered && isWorkspaceRoot(remembered)) {
-        const thread = threadUnder(remembered.id);
-        if (thread) lastByMode.code = thread.id;
+      if (remembered && isEmptyThread(remembered)) {
+        lastByMode.code = chatParentId(remembered) || "";
       }
+    }
+    for (let i = chats.length - 1; i >= 0; i -= 1) {
+      if (chats[i].id === activeId || chats[i].id === lastByMode.code) continue;
+      if (isEmptyThread(chats[i])) chats.splice(i, 1);
     }
     return { version: 1, activeId, chats, lastByMode };
   }
@@ -1023,14 +1015,23 @@ function mountChat(root) {
     if (root) root.updatedAt = now;
   }
 
+  function toolbarNamedChat() {
+    const chat = activeChat();
+    if (!chat) return null;
+    if (isWorkspaceRoot(chat)) return chat;
+    if (isPlaceholderTitle(chat.title) && !hasUserTurn(chat)) {
+      const parent = store.chats.find((item) => item.id === chatParentId(chat));
+      if (parent) return parent;
+    }
+    return chat;
+  }
+
   function paintToolbar() {
     const chat = activeChat();
-    const parent = chat && chatParentId(chat)
-      ? store.chats.find((item) => item.id === chatParentId(chat))
-      : null;
-    const title = parent
-      ? `${parent.title || "Workspace"} / ${chat.title || "New chat"}`
-      : ((chat && chat.title) || (activeMode() === "code" ? "New workspace" : "New chat"));
+    const named = toolbarNamedChat();
+    const title = named
+      ? (isWorkspaceRoot(named) ? workspaceDisplayTitle(named) : (named.title || "New chat"))
+      : (activeMode() === "code" ? "New workspace" : "New chat");
     if (!renaming) {
       titleEl.textContent = title;
       titleEl.title = "Click to rename";
@@ -1179,12 +1180,9 @@ function mountChat(root) {
 
   function workspaceDisplayTitle(root) {
     const raw = String((root && root.title) || "").trim();
-    if (raw && raw !== "New workspace" && raw !== "New chat") return raw;
+    if (!isPlaceholderTitle(raw)) return raw;
     const named = nestedChats(root && root.id)
-      .filter((item) => {
-        const title = String(item.title || "").trim();
-        return title && title !== "New chat";
-      })
+      .filter((item) => !isPlaceholderTitle(item.title))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
     if (named) return String(named.title).trim();
     return raw || "New workspace";
@@ -1216,10 +1214,14 @@ function mountChat(root) {
       const kids = list
         .filter((chat) => chatParentId(chat) === root.id)
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      const showKids = workspaceShowsKids(kids.length) && workspaceExpanded(root.id);
-      rows.push({ chat: root, kind: "root", kids: kids.length, showKids });
+      const realKids = kids.filter((chat) => hasUserTurn(chat) || chat.pinned);
+      const visible = realKids.length
+        ? kids.filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
+        : [];
+      const showKids = workspaceShowsKids(visible.length) && workspaceExpanded(root.id);
+      rows.push({ chat: root, kind: "root", kids: visible.length, showKids });
       if (showKids) {
-        kids.forEach((child) => rows.push({ chat: child, kind: "child", kids: 0, showKids: false }));
+        visible.forEach((child) => rows.push({ chat: child, kind: "child", kids: 0, showKids: false }));
       }
     });
     return rows;
@@ -3988,7 +3990,8 @@ function mountChat(root) {
   }
 
   function beginRename(id) {
-    const chat = store.chats.find((item) => item.id === (id || store.activeId));
+    const named = id ? null : toolbarNamedChat();
+    const chat = store.chats.find((item) => item.id === (id || (named && named.id) || store.activeId));
     if (!chat || renaming) return;
     renaming = true;
     const field = document.createElement("input");
@@ -5649,15 +5652,6 @@ function mountChat(root) {
   }
 
   function loadChat(id, stickToEnd) {
-    const wanted = store.chats.find((item) => item.id === id);
-    const existing = wanted && isWorkspaceRoot(wanted) ? latestNestedChat(wanted.id) : null;
-    if (wanted && isWorkspaceRoot(wanted) && existing && existing.id === store.activeId) {
-      if (stickToEnd !== false) stickLog(true);
-      jumpSidebarSearch();
-      input.focus();
-      setSidebarOpen(false);
-      return;
-    }
     if (id === store.activeId) {
       if (stickToEnd !== false) stickLog(true);
       jumpSidebarSearch();
@@ -5666,11 +5660,7 @@ function mountChat(root) {
       return;
     }
     persist();
-    let chat = store.chats.find((item) => item.id === id);
-    if (chat && isWorkspaceRoot(chat)) {
-      chat = ensureNestedChat(chat.id);
-      id = chat.id;
-    }
+    const chat = store.chats.find((item) => item.id === id);
     if (!chat) return;
     store.activeId = id;
     messages = cloneMessages(chat.messages);
@@ -5786,17 +5776,6 @@ function mountChat(root) {
     cancelEdit();
     clearPendingImage();
     if (activeMode() === "code") {
-      const current = activeChat();
-      if (current && isWorkspaceRoot(current)) {
-        startNestedChat(current.id);
-        return;
-      }
-      if (!hasUserTurn({ messages })) {
-        resetRecall();
-        renderLog();
-        input.focus();
-        return;
-      }
       const chat = addCodeWorkspace();
       store.activeId = chat.id;
       messages = cloneMessages(chat.messages);

@@ -1213,24 +1213,29 @@ button.chip {
   background: var(--hover-fill);
   outline: none;
 }
-.chat-nav.is-active,
-.chat-nav.is-workspace.is-current {
+.chat-nav.is-active {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   box-shadow: inset 0.125rem 0 0 var(--accent);
 }
+.chat-nav.is-current:not(.is-active) {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 0.125rem 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
+}
 .chat-nav.is-active:hover,
-.chat-nav.is-active:focus-visible,
-.chat-nav.is-workspace.is-current:hover,
-.chat-nav.is-workspace.is-current:focus-visible {
+.chat-nav.is-active:focus-visible {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
+.chat-nav.is-current:not(.is-active):hover,
+.chat-nav.is-current:not(.is-active):focus-visible {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
 .chat-nav.is-child.is-active {
-  background: color-mix(in srgb, var(--accent-2) 18%, transparent);
-  box-shadow: inset 0.125rem 0 0 var(--accent-2);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0.125rem 0 0 var(--accent);
 }
 .chat-nav.is-child.is-active:hover,
 .chat-nav.is-child.is-active:focus-visible {
-  background: color-mix(in srgb, var(--accent-2) 24%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .chat-nav.is-busy .chat-nav-when { color: var(--accent); font-weight: 600; }
 .chat-nav.is-workspace {
@@ -1391,7 +1396,7 @@ button.chip {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  max-width: min(280px, 28vw);
+  max-width: min(420px, 42vw);
 }
 .chat-mode {
   display: inline-flex;
