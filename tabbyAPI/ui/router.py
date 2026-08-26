@@ -376,20 +376,30 @@ async def ui_workspaces(_user: str = Depends(require_ui_user)):
     return {"code": chats_with_files(_user, ids)}
 
 
-def _workspace_chat_id(chat_id: str) -> str:
-    from ui.workspace import safe_name
+def _workspace_chat_id(chat_id: str, username: str, *, adopt: bool = True) -> str:
+    from ui.chats import workspace_root_chat_id, workspace_thread_ids
+    from ui.workspace import merge_workspace_dirs, safe_name
 
     raw = str(chat_id or "").strip()
     if not raw:
         raise HTTPException(400, "Invalid chat id")
-    return safe_name(raw)
+    try:
+        root_id = workspace_root_chat_id(username, raw)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid chat id") from exc
+    cid = safe_name(root_id)
+    if adopt:
+        merge_workspace_dirs(username, cid, workspace_thread_ids(username, root_id))
+        if cid != safe_name(raw):
+            merge_workspace_dirs(username, cid, [raw])
+    return cid
 
 
 @router.get("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import listing, site_entry
 
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     return {**listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
@@ -402,7 +412,7 @@ async def ui_workspace_file(
     if not path:
         raise HTTPException(400, "path is required")
     try:
-        file_path = resolve_file(_user, _workspace_chat_id(chat_id), path)
+        file_path = resolve_file(_user, _workspace_chat_id(chat_id, _user), path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
@@ -427,7 +437,7 @@ async def ui_workspace_write_file(
     contents = body.get("contents")
     if not isinstance(contents, str):
         raise HTTPException(400, "contents must be a string")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     if not is_text_path(path):
         raise HTTPException(400, "Only text files can be edited here.")
     try:
@@ -458,7 +468,7 @@ async def ui_workspace_upload_file(
         data = base64.b64decode(raw_b64, validate=True)
     except Exception as exc:
         raise HTTPException(400, "bytes_b64 must be base64") from exc
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         written = add_upload(_user, cid, path, data, filename=path)
     except ValueError as exc:
@@ -476,7 +486,7 @@ async def ui_workspace_delete_file(
 
     if not path:
         raise HTTPException(400, "path is required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         delete_file(_user, cid, path)
     except ValueError as exc:
@@ -500,7 +510,7 @@ async def ui_workspace_rename_file(
     dest = str(body.get("to") or "")
     if not path or not dest:
         raise HTTPException(400, "path and to are required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         written = rename_file(_user, cid, path, dest)
     except ValueError as exc:
@@ -520,7 +530,7 @@ async def ui_workspace_mkdir(
 
     if not path:
         raise HTTPException(400, "path is required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         written = mkdir(_user, cid, path)
     except ValueError as exc:
@@ -538,7 +548,7 @@ async def ui_workspace_delete_folder(
 
     if not path:
         raise HTTPException(400, "path is required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         delete_prefix(_user, cid, path)
     except ValueError as exc:
@@ -564,7 +574,7 @@ async def ui_workspace_rename_folder(
     dest = str(body.get("to") or "")
     if not path or not dest:
         raise HTTPException(400, "path and to are required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         moved = rename_prefix(_user, cid, path, dest)
     except ValueError as exc:
@@ -589,7 +599,7 @@ async def ui_workspace_history(
 
     if not path:
         raise HTTPException(400, "path is required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         versions = list_history(_user, cid, path)
     except ValueError as exc:
@@ -605,7 +615,7 @@ async def ui_workspace_history_rev(
 
     if not path or not id:
         raise HTTPException(400, "path and id are required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         return history_revision(_user, cid, path, id)
     except ValueError as exc:
@@ -628,7 +638,7 @@ async def ui_workspace_history_restore(
     rev_id = str(body.get("id") or "")
     if not path or not rev_id:
         raise HTTPException(400, "path and id are required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         written = restore_revision(_user, cid, path, rev_id)
     except ValueError as exc:
@@ -648,7 +658,7 @@ async def ui_workspace_preview(
     from ui.preview import mint
     from ui.workspace import site_entry
 
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         body = await request.json()
     except Exception:
@@ -666,7 +676,7 @@ async def ui_workspace_preview(
 async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import zip_bytes
 
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     data = zip_bytes(_user, cid)
     filename = f"{cid}.zip"
     return Response(
@@ -680,7 +690,7 @@ async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
 async def ui_workspace_drafts(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import load_drafts
 
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     return {"ok": True, "drafts": load_drafts(_user, cid)}
 
 
@@ -694,7 +704,7 @@ async def ui_workspace_save_drafts(
         body = await request.json()
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     try:
         drafts = save_drafts(_user, cid, body.get("drafts"))
     except ValueError as exc:
@@ -711,7 +721,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
         await websocket.close(code=4401)
         return
     try:
-        cid = _workspace_chat_id(chat_id)
+        cid = _workspace_chat_id(chat_id, user)
     except HTTPException:
         await websocket.close(code=4400)
         return
@@ -789,7 +799,7 @@ async def ui_workspace_lsp_http(
         raise HTTPException(400, "JSON body required") from exc
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object required")
-    cid = _workspace_chat_id(chat_id)
+    cid = _workspace_chat_id(chat_id, _user)
     events: list[dict] = []
 
     def on_event(event: dict) -> None:
@@ -822,7 +832,7 @@ async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
         await websocket.close(code=4401)
         return
     try:
-        cid = _workspace_chat_id(chat_id)
+        cid = _workspace_chat_id(chat_id, user)
     except HTTPException:
         await websocket.close(code=4400)
         return
@@ -861,10 +871,25 @@ async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
 @router.delete("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui import lsp, shell
+    from ui.chats import is_workspace_root, load_store
     from ui.preview import drop_chat
-    from ui.workspace import delete_workspace
+    from ui.workspace import delete_workspace, safe_name
 
-    cid = _workspace_chat_id(chat_id)
+    raw = str(chat_id or "").strip()
+    if not raw:
+        raise HTTPException(400, "Invalid chat id")
+    store = load_store(_user)
+    chat = next(
+        (
+            item
+            for item in store.get("chats") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == raw
+        ),
+        None,
+    )
+    if chat and not is_workspace_root(chat):
+        return {"ok": True, "files": [], "bytes": 0, "count": 0}
+    cid = safe_name(raw)
     delete_workspace(_user, cid)
     drop_chat(_user, cid)
     shell.drop_chat(_user, cid)

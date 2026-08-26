@@ -859,12 +859,7 @@ function mountChat(root) {
   function chatIsKept(item, chats) {
     if (!item) return false;
     if (item.id === store.activeId || hasUserTurn(item) || item.pinned) return true;
-    if (isWorkspaceRoot(item)) {
-      return (chats || []).some((child) => (
-        chatParentId(child) === item.id
-        && (child.id === store.activeId || hasUserTurn(child) || child.pinned)
-      ));
-    }
+    if (isWorkspaceRoot(item)) return true;
     return false;
   }
 
@@ -910,14 +905,21 @@ function mountChat(root) {
     }
     const previous = store.chats.slice();
     store.chats = store.chats.filter((item) => chatIsKept(item, store.chats));
-    if (store.chats.length > MAX_CHATS) {
-      const extras = store.chats
-        .filter((item) => item.id !== store.activeId && !item.pinned)
+    const units = store.chats.filter((item) => !chatParentId(item));
+    if (units.length > MAX_CHATS) {
+      const extras = units
+        .filter((item) => (
+          item.id !== store.activeId
+          && item.id !== activeWorkspaceId()
+          && !item.pinned
+        ))
         .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
       const drop = new Set();
+      let remaining = units.length;
       extras.forEach((item) => {
-        if (store.chats.length - drop.size <= MAX_CHATS) return;
+        if (remaining <= MAX_CHATS) return;
         drop.add(item.id);
+        remaining -= 1;
         if (isWorkspaceRoot(item)) {
           store.chats.forEach((child) => {
             if (chatParentId(child) === item.id) drop.add(child.id);
@@ -1100,14 +1102,13 @@ function mountChat(root) {
   function workspaceExpanded(id) {
     const q = String((searchEl && searchEl.value) || "").trim();
     if (q) return true;
+    if (id && id === activeWorkspaceId()) return true;
     if (Object.prototype.hasOwnProperty.call(wsOpen, id)) return wsOpen[id] === true;
     return false;
   }
 
   function workspaceShowsKids(kidCount) {
-    const q = String((searchEl && searchEl.value) || "").trim();
-    if (q) return kidCount > 0;
-    return kidCount >= 2;
+    return kidCount > 0;
   }
 
   function workspaceDisplayTitle(root) {
@@ -1160,7 +1161,7 @@ function mountChat(root) {
 
   function navRowMeta(item, kind, kidCount) {
     const bits = [];
-    if (kind === "root" && kidCount >= 2) {
+    if (kind === "root" && kidCount > 0) {
       bits.push(`${kidCount} chat${kidCount === 1 ? "" : "s"}`);
     }
     if (inFlight && item.id === flightChatId) bits.push("Generating");
@@ -1183,11 +1184,11 @@ function mountChat(root) {
   }
 
   function navRowHtml(item, kind, kidCount) {
-    const canExpand = kind === "root" && kidCount >= 2;
+    const canExpand = kind === "root" && kidCount > 0;
     const expanded = canExpand && workspaceExpanded(item.id);
     const twist = canExpand
       ? `<button type="button" class="btn ghost chat-icon chat-nav-twist${expanded ? " is-open" : ""}" data-nav="twist" aria-label="${expanded ? "Collapse workspace" : "Expand workspace"}">${CHEVRON_SVG}</button>`
-      : (kind === "child" ? `<span class="chat-nav-twist" aria-hidden="true"></span>` : "");
+      : "";
     const fallback = kind === "root" ? "New workspace" : "New chat";
     const title = kind === "root" ? workspaceDisplayTitle(item) : (item.title || fallback);
     const pin = item.pinned
@@ -1229,7 +1230,7 @@ function mountChat(root) {
         + (inFlight && item.id === flightChatId ? " is-busy" : "")
         + (row.kind === "child" ? " is-child" : "")
         + (row.kind === "root" ? " is-workspace" : "")
-        + (row.kind === "root" && row.kids >= 2 ? " is-branch" : "");
+        + (row.kind === "root" && row.kids > 0 ? " is-branch" : "");
       btn.dataset.id = item.id;
       btn.setAttribute("role", "button");
       btn.tabIndex = 0;

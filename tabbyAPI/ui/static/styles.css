@@ -1113,7 +1113,8 @@ button.chip {
   row-gap: 0.0625rem;
   align-items: center;
   width: 100%;
-  padding: 0.5rem 0.625rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 4.75rem 0.5rem 0.625rem;
   border: 0;
   border-radius: 0.5rem;
   background: transparent;
@@ -1224,9 +1225,9 @@ button.chip {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .chat-nav.is-busy .chat-nav-when { color: var(--accent); font-weight: 600; }
-.chat-nav.is-workspace.is-branch,
-.chat-nav.is-child {
+.chat-nav.is-workspace.is-branch {
   grid-template-columns: 1.125rem minmax(0, 1fr) auto;
+  padding-left: 0.375rem;
 }
 .chat-nav-twist {
   grid-row: 1 / span 2;
@@ -1250,17 +1251,16 @@ button.chip {
 }
 .chat-nav-twist.is-open svg { transform: rotate(-90deg); }
 .chat-nav.is-workspace.is-branch .chat-nav-title,
-.chat-nav.is-workspace.is-branch .chat-nav-when,
-.chat-nav.is-child .chat-nav-title,
-.chat-nav.is-child .chat-nav-when {
+.chat-nav.is-workspace.is-branch .chat-nav-when {
   grid-column: 2;
 }
-.chat-nav.is-workspace.is-branch .chat-nav-pin,
-.chat-nav.is-child .chat-nav-pin {
+.chat-nav.is-workspace.is-branch .chat-nav-pin {
   grid-column: 3;
 }
 .chat-nav.is-child {
-  padding-left: 0.5rem;
+  padding-left: 1.75rem;
+  padding-right: 4rem;
+  min-height: 2.5rem;
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
 .chat-nav.is-child .chat-nav-title { font-weight: 450; }

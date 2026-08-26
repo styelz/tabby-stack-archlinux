@@ -164,6 +164,34 @@ def is_workspace_root(chat: Any) -> bool:
     return not str(chat.get("parentId") or "").strip()
 
 
+def workspace_root_chat_id(username: str, chat_id: str) -> str:
+    """The Code-mode workspace id that owns this chat's project folder."""
+    raw = str(chat_id or "").strip()
+    if not raw:
+        raise ValueError("Invalid chat id")
+    for chat in load_store(username).get("chats") or []:
+        if not isinstance(chat, dict):
+            continue
+        if str(chat.get("id") or "") != raw:
+            continue
+        parent = str(chat.get("parentId") or "").strip()
+        return parent or raw
+    return raw
+
+
+def workspace_thread_ids(username: str, root_id: str) -> list[str]:
+    raw = str(root_id or "").strip()
+    if not raw:
+        return []
+    return [
+        str(chat.get("id") or "")
+        for chat in load_store(username).get("chats") or []
+        if isinstance(chat, dict)
+        and str(chat.get("parentId") or "").strip() == raw
+        and str(chat.get("id") or "").strip()
+    ]
+
+
 def save_store(username: str, raw: Any) -> dict[str, Any]:
     previous = load_store(username)
     store = normalize_store(raw)

@@ -205,6 +205,61 @@ def chats_with_files(username: str, chat_ids: list[str]) -> list[str]:
     return [str(cid) for cid in chat_ids if str(cid).strip() and has_files(username, str(cid))]
 
 
+def _merge_tree(src: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in sorted(src.rglob("*")):
+        if path.is_symlink():
+            continue
+        try:
+            rel = path.relative_to(src)
+        except ValueError:
+            continue
+        target = dest / rel
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not path.is_file() or target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.replace(target)
+        except OSError:
+            try:
+                target.write_bytes(path.read_bytes())
+            except OSError:
+                continue
+
+
+def merge_workspace_dirs(username: str, dest_id: str, source_ids: list[str]) -> None:
+    """Move project files saved under nested chat ids into the workspace folder."""
+    dest_name = safe_name(dest_id)
+    dest = workspace_root(username, dest_name, create=False, box=False)
+    try:
+        dest_resolved = dest.resolve() if dest.exists() else dest
+    except OSError:
+        dest_resolved = dest
+    for raw in source_ids:
+        src_name = safe_name(raw)
+        if not src_name or src_name == dest_name:
+            continue
+        src = workspace_root(username, src_name, create=False, box=False)
+        if not src.is_dir():
+            continue
+        try:
+            if src.resolve() == dest_resolved:
+                continue
+        except OSError:
+            continue
+        if not dest.is_dir():
+            dest = workspace_root(username, dest_name, create=True, box=False)
+            try:
+                dest_resolved = dest.resolve()
+            except OSError:
+                dest_resolved = dest
+        _merge_tree(src, dest)
+        shutil.rmtree(src, ignore_errors=True)
+
+
 def _check_caps(root: Path, *, extra_bytes: int = 0, extra_files: int = 0) -> None:
     count, total = _stats(root)
     if count + extra_files > MAX_FILES:

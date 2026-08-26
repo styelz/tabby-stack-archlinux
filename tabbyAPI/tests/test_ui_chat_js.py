@@ -182,7 +182,7 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("New chat in this workspace", self.src)
         self.assertIn('data-nav="thread"', self.src)
         self.assertIn('data-nav="twist"', self.src)
-        self.assertIn("kidCount >= 2", self.src)
+        self.assertIn("kidCount > 0", self.src)
         self.assertIn("body.chat_id = activeWorkspaceId()", self.src)
         self.assertIn("parentId", self.src)
         self.assertIn("isWorkspaceRoot(item)", self.src)
