@@ -45,6 +45,12 @@
   --tok-attr: #7dcfff;
   --tok-var: #f7768e;
   --tok-punct: #89b4fa;
+  --diff-add-line: rgba(var(--ok-rgb), 0.3);
+  --diff-del-line: rgba(var(--bad-rgb), 0.3);
+  --diff-add-text: rgba(var(--ok-rgb), 0.45);
+  --diff-del-text: rgba(var(--bad-rgb), 0.45);
+  --diff-add-gutter: rgba(var(--ok-rgb), 0.75);
+  --diff-del-gutter: rgba(var(--bad-rgb), 0.75);
   --shadow: 0 1.125rem 3.125rem rgba(0, 0, 0, 0.35);
   --radius: 0.875rem;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
@@ -364,6 +370,9 @@ html[data-theme="moss-dark"] {
   --tok-attr: #a8d4b0;
   --tok-var: #e07a7a;
   --tok-punct: #7dba8a;
+  --diff-add-line: rgba(158, 206, 106, 0.34);
+  --diff-add-text: rgba(158, 206, 106, 0.5);
+  --diff-add-gutter: rgba(158, 206, 106, 0.85);
   --shadow: 0 1.125rem 3.125rem rgba(0, 0, 0, 0.4);
 }
 html[data-theme="moss-light"] {
@@ -464,6 +473,12 @@ html[data-theme="contrast-dark"] {
   --tok-attr: #ffffff;
   --tok-var: #ff3355;
   --tok-punct: #ffe600;
+  --diff-add-line: rgba(var(--ok-rgb), 0.4);
+  --diff-del-line: rgba(var(--bad-rgb), 0.4);
+  --diff-add-text: rgba(var(--ok-rgb), 0.58);
+  --diff-del-text: rgba(var(--bad-rgb), 0.58);
+  --diff-add-gutter: var(--ok);
+  --diff-del-gutter: var(--bad);
   --shadow: 0 1.125rem 3.125rem rgba(0, 0, 0, 0.6);
 }
 html[data-theme="contrast-light"] {
@@ -534,6 +549,20 @@ html {
 }
 html[data-theme$="-light"] {
   color-scheme: light;
+  --diff-add-line: rgba(var(--ok-rgb), 0.22);
+  --diff-del-line: rgba(var(--bad-rgb), 0.22);
+  --diff-add-text: rgba(var(--ok-rgb), 0.34);
+  --diff-del-text: rgba(var(--bad-rgb), 0.34);
+  --diff-add-gutter: rgba(var(--ok-rgb), 0.85);
+  --diff-del-gutter: rgba(var(--bad-rgb), 0.85);
+}
+html[data-theme="contrast-light"] {
+  --diff-add-line: rgba(var(--ok-rgb), 0.28);
+  --diff-del-line: rgba(var(--bad-rgb), 0.28);
+  --diff-add-text: rgba(var(--ok-rgb), 0.4);
+  --diff-del-text: rgba(var(--bad-rgb), 0.4);
+  --diff-add-gutter: var(--ok);
+  --diff-del-gutter: var(--bad);
 }
 /* Author display rules outrank the UA sheet, so hidden needs to win here. */
 [hidden] {
@@ -2363,8 +2392,8 @@ button.chip {
   padding: 0 0.75rem;
   white-space: pre;
 }
-.code-diff-line.is-del { background: rgba(247, 118, 142, 0.14); }
-.code-diff-line.is-add { background: rgba(158, 206, 106, 0.14); }
+.code-diff-line.is-del { background: var(--diff-del-line); }
+.code-diff-line.is-add { background: var(--diff-add-line); }
 .code-diff-mark {
   flex: 0 0 1em;
   color: var(--editor-muted);
