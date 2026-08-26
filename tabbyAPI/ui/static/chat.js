@@ -849,8 +849,16 @@ function mountChat(root) {
     }
     for (let i = chats.length - 1; i >= 0; i -= 1) {
       if (chats[i].id === activeId || chats[i].id === lastByMode.code) continue;
-      if (isEmptyThread(chats[i])) chats.splice(i, 1);
+      if (!isEmptyThread(chats[i])) continue;
+      const parent = chatParentId(chats[i]);
+      const others = chats.some((item, idx) => idx !== i && chatParentId(item) === parent);
+      if (!others) continue;
+      chats.splice(i, 1);
     }
+    chats.filter((chat) => isWorkspaceRoot(chat)).forEach((root) => {
+      if (threadForRoot(root.id)) return;
+      chats.unshift(emptyChat("code", root.id));
+    });
     return { version: 1, activeId, chats, lastByMode };
   }
 
@@ -956,11 +964,23 @@ function mountChat(root) {
     return store.chats.find((chat) => chat.id === store.activeId);
   }
 
+  function lastWorkspaceThread(parentId, chats) {
+    const siblings = (chats || []).filter((other) => chatParentId(other) === parentId);
+    if (!siblings.length) return null;
+    if (siblings.some((other) => other.id === store.activeId || hasUserTurn(other) || other.pinned)) {
+      return null;
+    }
+    return siblings.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+  }
+
   function chatIsKept(item, chats) {
     if (!item) return false;
     if (item.id === store.activeId || hasUserTurn(item) || item.pinned) return true;
     if (isWorkspaceRoot(item)) return true;
-    return false;
+    const parent = chatParentId(item);
+    if (!parent) return false;
+    const last = lastWorkspaceThread(parent, chats || store.chats);
+    return Boolean(last && last.id === item.id);
   }
 
   function listedChats() {
@@ -1203,7 +1223,7 @@ function mountChat(root) {
     const q = String((searchEl && searchEl.value) || "").trim();
     if (q) return true;
     if (Object.prototype.hasOwnProperty.call(wsOpen, id)) return wsOpen[id] === true;
-    return false;
+    return true;
   }
 
   function workspaceDisplayTitle(root) {
@@ -1219,13 +1239,8 @@ function mountChat(root) {
 
   function listedWorkspaceKids(rootId, listed) {
     const pool = Array.isArray(listed) && listed.length ? listed : store.chats;
-    const kids = pool
+    return pool
       .filter((chat) => chatParentId(chat) === rootId)
-      .filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    if (kids.length) return kids;
-    return nestedChats(rootId)
-      .filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
 
