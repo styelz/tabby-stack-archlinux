@@ -437,6 +437,7 @@ function mountChat(root) {
   const TERM_H_MIN = 80;
   const TERM_H_DEFAULT = 220;
   const COMPOSE_H_MIN = 56;
+  const COMPOSE_ROWS_MAX = 10;
   const FILES_SPLIT_MIN = 64;
   const CHAT_COL_MIN = 280;
   const HISTORY_KEY = "tabby-ui-chat-history";
@@ -3304,15 +3305,14 @@ function mountChat(root) {
   }
 
   function resizeInput() {
+    const maxH = composeMax();
     if (composeH > 0) {
-      input.style.height = `${composeH}px`;
-      input.style.maxHeight = "none";
+      input.style.height = `${Math.min(composeH, maxH)}px`;
+      input.style.maxHeight = `${maxH}px`;
     } else {
-      input.style.maxHeight = "";
+      input.style.maxHeight = `${maxH}px`;
       input.style.height = "auto";
       const minH = parseFloat(getComputedStyle(input).minHeight) || 0;
-      const cap = parseFloat(getComputedStyle(input).maxHeight);
-      const maxH = Number.isFinite(cap) && cap > 0 ? cap : 180;
       input.style.height = `${Math.min(Math.max(input.scrollHeight, minH), maxH)}px`;
     }
     if (countEl) {
@@ -3463,17 +3463,33 @@ function mountChat(root) {
   }
 
   function composeMax() {
+    const style = input ? getComputedStyle(input) : null;
+    const line = style ? parseFloat(style.lineHeight) : NaN;
+    const size = style ? parseFloat(style.fontSize) : NaN;
+    const row = Number.isFinite(line) && line > 0
+      ? line
+      : (Number.isFinite(size) && size > 0 ? size * 1.45 : 13);
+    const pad = style
+      ? (parseFloat(style.paddingTop) || 0)
+        + (parseFloat(style.paddingBottom) || 0)
+        + (parseFloat(style.borderTopWidth) || 0)
+        + (parseFloat(style.borderBottomWidth) || 0)
+      : 22;
+    const rows = row * COMPOSE_ROWS_MAX + pad;
     const wrap = root.querySelector(".chat-wrap");
     const h = wrap ? wrap.clientHeight : 0;
-    return Math.max(COMPOSE_H_MIN, (h || 400) - 180);
+    const room = Math.max(COMPOSE_H_MIN, (h || 400) - 180);
+    return Math.max(COMPOSE_H_MIN, Math.min(rows, room));
   }
 
   function applyComposeH() {
     const handle = root.querySelector("#chat-compose-resize");
     if (composeH > 0) {
-      shell.style.setProperty("--chat-input-h", `${composeH}px`);
-      input.style.maxHeight = "none";
-      input.style.height = `${composeH}px`;
+      const cap = composeMax();
+      const h = Math.min(composeH, cap);
+      shell.style.setProperty("--chat-input-h", `${h}px`);
+      input.style.maxHeight = `${cap}px`;
+      input.style.height = `${h}px`;
     } else {
       shell.style.removeProperty("--chat-input-h");
       input.style.maxHeight = "";
