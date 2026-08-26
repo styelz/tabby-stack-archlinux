@@ -45,6 +45,12 @@ function tabbyLooksLikeChatNotImage(raw) {
 // or "expand" on whichever side they sit.
 const CHEVRON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 5-7 7 7 7" /></svg>';
+const NAV_STAR_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m8 1.8 1.85 3.75 4.15.6-3 2.92.7 4.13L8 11.3l-3.7 1.9.7-4.13-3-2.92 4.15-.6z" /></svg>';
+const NAV_RENAME_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 12.5 12 4l1.5 1.5-8.5 8.5H3.5z" /></svg>';
+const NAV_CLOSE_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8" /></svg>';
 const TREE_FOLDER_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H7l1.2 1.5H12.5A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" /></svg>';
 const TREE_FILE_SVG =
@@ -1094,10 +1100,27 @@ function mountChat(root) {
   function workspaceExpanded(id) {
     const q = String((searchEl && searchEl.value) || "").trim();
     if (q) return true;
-    const active = activeChat();
-    if (active && chatParentId(active) === id) return true;
     if (Object.prototype.hasOwnProperty.call(wsOpen, id)) return wsOpen[id] === true;
-    return activeWorkspaceId() === id;
+    return false;
+  }
+
+  function workspaceShowsKids(kidCount) {
+    const q = String((searchEl && searchEl.value) || "").trim();
+    if (q) return kidCount > 0;
+    return kidCount >= 2;
+  }
+
+  function workspaceDisplayTitle(root) {
+    const raw = String((root && root.title) || "").trim();
+    if (raw && raw !== "New workspace" && raw !== "New chat") return raw;
+    const named = nestedChats(root && root.id)
+      .filter((item) => {
+        const title = String(item.title || "").trim();
+        return title && title !== "New chat";
+      })
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    if (named) return String(named.title).trim();
+    return raw || "New workspace";
   }
 
   function listedWorkspaceRows() {
@@ -1126,40 +1149,68 @@ function mountChat(root) {
       const kids = list
         .filter((chat) => chatParentId(chat) === root.id)
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      rows.push({ chat: root, kind: "root", kids: kids.length });
-      if (workspaceExpanded(root.id)) {
-        kids.forEach((child) => rows.push({ chat: child, kind: "child" }));
+      const showKids = workspaceShowsKids(kids.length) && workspaceExpanded(root.id);
+      rows.push({ chat: root, kind: "root", kids: kids.length, showKids });
+      if (showKids) {
+        kids.forEach((child) => rows.push({ chat: child, kind: "child", kids: 0, showKids: false }));
       }
     });
     return rows;
   }
 
-  function navRowHtml(item, kind, kidCount) {
-    const expanded = kind === "root" && workspaceExpanded(item.id);
-    const twist = kind === "root"
-      ? `<button type="button" class="btn ghost chat-icon chat-nav-twist${expanded ? " is-open" : ""}${kidCount ? "" : " is-empty"}" data-nav="twist" aria-label="${expanded ? "Collapse workspace" : "Expand workspace"}">${CHEVRON_SVG}</button>`
-      : `<span class="chat-nav-twist" aria-hidden="true"></span>`;
+  function navRowMeta(item, kind, kidCount) {
+    const bits = [];
+    if (kind === "root" && kidCount >= 2) {
+      bits.push(`${kidCount} chat${kidCount === 1 ? "" : "s"}`);
+    }
+    if (inFlight && item.id === flightChatId) bits.push("Generating");
+    else bits.push(timeLabel(item.updatedAt));
+    return bits.filter(Boolean).join(" · ");
+  }
+
+  function navRowTools(kind, pinned) {
     const thread = kind === "root"
-      ? `<button type="button" class="btn ghost chat-icon" data-nav="thread" aria-label="New chat in this workspace">+</button>`
+      ? `<button type="button" class="btn ghost chat-icon" data-nav="thread" aria-label="New chat in this workspace" title="New chat">${FILES_NEW_SVG}</button>`
       : "";
     const delLabel = kind === "root" ? "Delete workspace" : "Delete chat";
-    const fallback = kind === "root" ? "New workspace" : "New chat";
-    return twist
-      + `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>`
-      + `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || fallback)}</span>`
-      + `<span class="chat-nav-when">${inFlight && item.id === flightChatId ? "Generating" : TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>`
-      + `<span class="chat-nav-tools">`
+    const pinLabel = pinned ? "Unpin" : "Pin";
+    return `<span class="chat-nav-tools">`
       + thread
-      + `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${item.pinned ? "Unpin" : "Pin"}">★</button>`
-      + `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename">✎</button>`
-      + `<button type="button" class="btn ghost chat-icon danger" data-nav="delete" aria-label="${delLabel}">×</button>`
+      + `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${pinLabel}" title="${pinLabel}">${NAV_STAR_SVG}</button>`
+      + `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename" title="Rename">${NAV_RENAME_SVG}</button>`
+      + `<button type="button" class="btn ghost chat-icon danger" data-nav="delete" aria-label="${delLabel}" title="${delLabel}">${NAV_CLOSE_SVG}</button>`
       + `</span>`;
+  }
+
+  function navRowHtml(item, kind, kidCount) {
+    const canExpand = kind === "root" && kidCount >= 2;
+    const expanded = canExpand && workspaceExpanded(item.id);
+    const twist = canExpand
+      ? `<button type="button" class="btn ghost chat-icon chat-nav-twist${expanded ? " is-open" : ""}" data-nav="twist" aria-label="${expanded ? "Collapse workspace" : "Expand workspace"}">${CHEVRON_SVG}</button>`
+      : (kind === "child" ? `<span class="chat-nav-twist" aria-hidden="true"></span>` : "");
+    const fallback = kind === "root" ? "New workspace" : "New chat";
+    const title = kind === "root" ? workspaceDisplayTitle(item) : (item.title || fallback);
+    const pin = item.pinned
+      ? `<span class="chat-nav-pin" title="Pinned">${NAV_STAR_SVG}</span>`
+      : "";
+    return twist
+      + `<span class="chat-nav-title">${TabbyUI.escapeHtml(title)}</span>`
+      + pin
+      + `<span class="chat-nav-when">${TabbyUI.escapeHtml(navRowMeta(item, kind, kidCount))}</span>`
+      + navRowTools(kind, item.pinned);
+  }
+
+  function navRowIsActive(item, kind, showKids) {
+    if (item.id === store.activeId) return true;
+    if (kind !== "root" || showKids) return false;
+    const active = activeChat();
+    return Boolean(active && workspaceId(active) === item.id);
   }
 
   function renderSidebar() {
     if (!navList) return;
     const code = activeMode() === "code";
-    const rows = code ? listedWorkspaceRows() : listedChats().map((chat) => ({ chat, kind: "flat", kids: 0 }));
+    const rows = code ? listedWorkspaceRows() : listedChats().map((chat) => ({ chat, kind: "flat", kids: 0, showKids: false }));
     if (!rows.length) {
       navList.innerHTML = code
         ? '<div class="chat-nav-empty">No workspaces match.</div>'
@@ -1169,26 +1220,20 @@ function mountChat(root) {
     const frag = document.createDocumentFragment();
     rows.forEach((row) => {
       const item = row.chat;
+      const current = row.kind === "root" && workspaceId(activeChat()) === item.id;
       const btn = document.createElement("div");
       btn.className = "chat-nav"
-        + (item.id === store.activeId ? " is-active" : "")
+        + (navRowIsActive(item, row.kind, row.showKids) ? " is-active" : "")
+        + (current ? " is-current" : "")
         + (item.pinned ? " is-pinned" : "")
         + (inFlight && item.id === flightChatId ? " is-busy" : "")
         + (row.kind === "child" ? " is-child" : "")
-        + (row.kind === "root" ? " is-workspace" : "");
+        + (row.kind === "root" ? " is-workspace" : "")
+        + (row.kind === "root" && row.kids >= 2 ? " is-branch" : "");
       btn.dataset.id = item.id;
       btn.setAttribute("role", "button");
       btn.tabIndex = 0;
-      btn.innerHTML = row.kind === "flat"
-        ? `<span class="chat-nav-pin" aria-hidden="true">${item.pinned ? "★" : "☆"}</span>`
-          + `<span class="chat-nav-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span>`
-          + `<span class="chat-nav-when">${inFlight && item.id === flightChatId ? "Generating" : TabbyUI.escapeHtml(timeLabel(item.updatedAt))}</span>`
-          + `<span class="chat-nav-tools">`
-          + `<button type="button" class="btn ghost chat-icon" data-nav="pin" aria-label="${item.pinned ? "Unpin" : "Pin"}">★</button>`
-          + `<button type="button" class="btn ghost chat-icon" data-nav="rename" aria-label="Rename">✎</button>`
-          + `<button type="button" class="btn ghost chat-icon danger" data-nav="delete" aria-label="Delete chat">×</button>`
-          + `</span>`
-        : navRowHtml(item, row.kind, row.kids || 0);
+      btn.innerHTML = navRowHtml(item, row.kind, row.kids || 0);
       frag.appendChild(btn);
     });
     navList.replaceChildren(frag);
