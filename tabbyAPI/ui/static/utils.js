@@ -1400,12 +1400,18 @@
       }
       this.lastGpuStatus = data;
       const queue = data.stack_queue || {};
+      const holderTitle = String(queue.hint || "The stack is being used")
+        .replace(/\s*You are in a queue\.?/gi, "")
+        .replace(/\s*You are number \d+\.?/gi, "")
+        .replace(/\s*Your previous request is still running\.?/gi, "")
+        .replace(/\s*Your request will wait\.?/gi, "")
+        .trim();
       if (data.gpu_waiting) {
         const name = data.switch_target || data.profile || "model";
         const text = `WAITING · ${name}`;
         labelEl.textContent = text;
         chip.className = "chip warn is-busy";
-        chip.title = queue.hint || `Waiting to switch to ${name}`;
+        chip.title = holderTitle || `Waiting to switch to ${name}`;
         chip.setAttribute("aria-label", text);
         window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
         return;
@@ -1433,7 +1439,7 @@
         const text = `IN USE · ${kindLabel}`;
         labelEl.textContent = text;
         chip.className = "chip warn";
-        chip.title = queue.hint || "The stack is being used";
+        chip.title = holderTitle || "The stack is being used";
         chip.setAttribute("aria-label", text);
         window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: data }));
         return;

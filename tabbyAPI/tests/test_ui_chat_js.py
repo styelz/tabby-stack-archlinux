@@ -132,9 +132,9 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
 
     def test_stack_occupancy_banner_and_chip(self):
         self.assertIn('id="chat-waiting-mark"', self.src)
-        self.assertIn('function applyStackOccupancy(data)', self.src)
-        self.assertIn('function showIdleOccupancy(hint)', self.src)
-        self.assertIn('textContent = "In use"', self.src)
+        self.assertIn('function applyStackOccupancy(data, working, kind)', self.src)
+        self.assertNotIn("function showIdleOccupancy(hint)", self.src)
+        self.assertIn("queued && !(mine && here && !stackWaiting)", self.src)
         utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
         app = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.js"
         status = Path(__file__).resolve().parents[1] / "ui" / "static" / "status.js"
@@ -144,9 +144,13 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("IN USE · ${kindLabel}", utils_src)
         self.assertIn("WAITING · ${name}", utils_src)
         self.assertIn("gpu_waiting", utils_src)
+        self.assertIn("You are in a queue", utils_src)
         self.assertIn("stack_queue.busy || data.stack_queue.queued", app_src)
         self.assertIn('occupied && !switchLocked && current !== name ? "Wait"', app_src)
         self.assertIn("function occupancyLabel(data)", status_src)
+        self.assertIn('if (queue.queued) return queue.hint || "You are in a queue"', status_src)
+        self.assertIn('if (queue.mine) return queue.hint || "Your session is running"', status_src)
+        self.assertIn('if (queue.busy) return "In use"', status_src)
         self.assertIn('fact("Stack"', status_src)
 
     def test_tree_drag_and_editor_find(self):

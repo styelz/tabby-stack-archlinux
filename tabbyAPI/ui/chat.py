@@ -280,7 +280,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         except Exception:
             await gate.release()
             raise
-        if isinstance(result, EventSourceResponse) and data.stream:
+        if isinstance(result, EventSourceResponse):
             return _sse(_stream_held_result(gate, result))
         await gate.release()
         return result
@@ -307,11 +307,16 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
             if info is None:
                 break
             await wait_tick(1.0)
-        return await _run_console_work(
+        result = await _run_console_work(
             request, data, username, chat_id, code, saved_images, api_base, disconnect_handler
         )
-    finally:
+    except Exception:
         await gate.release()
+        raise
+    if isinstance(result, EventSourceResponse):
+        return _sse(_stream_held_result(gate, result))
+    await gate.release()
+    return result
 
 
 run_console_chat = run_console_chat

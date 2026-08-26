@@ -5694,17 +5694,10 @@ function mountChat(root) {
         const data = await TabbyUI.api("status");
         if (stopped) return;
         rememberGpu(data);
-        applyStackOccupancy(data);
+        applyStackOccupancy(data, working, kind);
         const queue = data && data.stack_queue;
-        if (queue && queue.queued) {
-          showStackQueue(queue.hint || "", working);
+        if (queue && queue.queued && (!queue.mine || stackWaiting)) {
           return;
-        }
-        if (stackWaiting && !(queue && queue.queued)) {
-          hideStackQueue(working, {
-            label: kind === "image" ? "Starting the picture" : "Thinking",
-            processing: kind === "image",
-          });
         }
         if (kind === "image") {
           const job = data && data.job;
@@ -5762,7 +5755,6 @@ function mountChat(root) {
   let modelLoadTicker = null;
   let loadingHintText = "";
   let stackWaiting = false;
-  let stackIdleBusy = false;
   let stackWaitStarted = 0;
   let stackWaitTicker = null;
   let stackWaitHint = "";
@@ -5924,7 +5916,6 @@ function mountChat(root) {
   }
 
   function showStackQueue(hint, working) {
-    stackIdleBusy = false;
     stackWaitHint = String(hint || "").trim() || STACK_QUEUE_HINT;
     stackWaiting = true;
     if (waitingMark) waitingMark.textContent = "Queued";
@@ -5937,38 +5928,24 @@ function mountChat(root) {
     paintCompose();
   }
 
-  function showIdleOccupancy(hint) {
-    if (stackWaiting) return;
-    stackIdleBusy = true;
-    stackWaitHint = String(hint || "").trim() || "The stack is being used. Your request will wait.";
-    if (waitingMark) waitingMark.textContent = "In use";
-    if (waitingTimeEl) waitingTimeEl.textContent = "";
-    if (waitingTextEl) waitingTextEl.textContent = stackWaitHint;
-    if (waitingBar) waitingBar.hidden = false;
-    paintCompose();
-  }
-
-  function hideIdleOccupancy() {
-    if (!stackIdleBusy) return;
-    stackIdleBusy = false;
+  function applyStackOccupancy(data, working, kind) {
+    const queue = data && data.stack_queue;
+    const queued = Boolean(queue && queue.queued);
+    const mine = Boolean(queue && queue.mine);
+    const here = flightIsHere();
+    const live = working || (here ? flightWorking : null);
+    if (queued && !(mine && here && !stackWaiting)) {
+      showStackQueue((queue && queue.hint) || "", live);
+      return;
+    }
     if (!stackWaiting) {
       if (waitingBar) waitingBar.hidden = true;
-      if (waitingMark) waitingMark.textContent = "Queued";
-    }
-    paintCompose();
-  }
-
-  function applyStackOccupancy(data) {
-    const queue = data && data.stack_queue;
-    if (queue && queue.queued) {
-      showStackQueue(queue.hint || "", flightIsHere() ? flightWorking : null);
       return;
     }
-    if (queue && queue.busy && !queue.mine && !stackWaiting) {
-      showIdleOccupancy(queue.hint || "");
-      return;
-    }
-    if (!stackWaiting) hideIdleOccupancy();
+    hideStackQueue(live, {
+      label: kind === "image" ? "Starting the picture" : "Thinking",
+      processing: kind === "image",
+    });
   }
 
   function hideStackQueue(working, resume) {
@@ -6138,7 +6115,7 @@ function mountChat(root) {
 
   function paintCompose() {
     if (form) form.classList.toggle("is-loading", modelLoading);
-    if (waitingBar) waitingBar.hidden = modelLoading || !(stackWaiting || stackIdleBusy);
+    if (waitingBar) waitingBar.hidden = modelLoading || !stackWaiting;
     const here = flightIsHere();
     const away = Boolean(inFlight && !here);
     if (flightAwayBar) {

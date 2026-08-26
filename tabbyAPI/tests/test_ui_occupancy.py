@@ -30,7 +30,8 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertIn("alice is generating images", text)
-        self.assertIn("Your request will wait", text)
+        self.assertNotIn("You are in a queue", text)
+        self.assertNotIn("Your request will wait", text)
 
     def test_queued_hint_includes_position(self):
         text = occupancy.queue_text(
@@ -45,9 +46,22 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("alice is chatting", text)
         self.assertIn("You are in a queue", text)
         self.assertIn("number 2", text)
+        self_wait = occupancy.queue_text(
+            {
+                "occupant": "alice",
+                "kind": "chat",
+                "who": "alice",
+                "queued": True,
+                "mine": True,
+            }
+        )
+        self.assertEqual(self_wait, occupancy.SELF_QUEUED_HINT)
+        self.assertNotIn("You are in a queue", self_wait)
 
     def test_plain_queue_hint_unchanged(self):
-        self.assertEqual(occupancy.queue_text({"position": 0}), occupancy.QUEUE_HINT)
+        text = occupancy.queue_text({"position": 0})
+        self.assertNotIn("You are in a queue", text)
+        self.assertEqual(text, "The stack is being used.")
 
     async def test_snapshot_includes_occupant_and_mine(self):
         with (
@@ -63,9 +77,13 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap["occupant"], "alice")
             self.assertEqual(snap["kind"], "chat")
             self.assertFalse(snap["queued"])
+            self.assertEqual(snap["hint"], occupancy.MINE_HINT)
+            self.assertNotIn("You are in a queue", snap["hint"])
             other = occupancy.snapshot("bob")
             self.assertFalse(other["mine"])
+            self.assertFalse(other["queued"])
             self.assertIn("alice is chatting", other["hint"])
+            self.assertNotIn("You are in a queue", other["hint"])
             await occupancy.release(oid)
 
     async def test_image_job_fills_snapshot_without_occupant(self):
@@ -76,7 +94,9 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap["kind"], "image")
         self.assertEqual(snap["occupant"], "alice")
         self.assertFalse(snap["mine"])
+        self.assertFalse(snap["queued"])
         self.assertIn("alice is generating images", snap["hint"])
+        self.assertNotIn("You are in a queue", snap["hint"])
 
     async def test_switch_lock_is_externally_busy(self):
         with mock.patch("common.phrase_switch.switch_lock_held", return_value=True):

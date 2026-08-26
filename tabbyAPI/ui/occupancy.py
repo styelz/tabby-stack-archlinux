@@ -10,6 +10,8 @@ from uuid import uuid4
 
 QUEUE_MARK = "tabby-stack-queue:"
 QUEUE_HINT = "The stack is being used. You are in a queue."
+MINE_HINT = "Your session is running."
+SELF_QUEUED_HINT = "Your previous request is still running."
 
 KIND_ACTIONS = {
     "chat": "chatting",
@@ -106,6 +108,7 @@ def snapshot(username: str = "") -> dict[str, Any]:
             break
     kind, occupant_name = _holder(occupant)
     now = time.time()
+    mine = bool(who and occupant_name and occupant_name == who)
     queued = position is not None
     busy = occupant is not None or bool(waiters) or _externally_busy()
     return {
@@ -115,7 +118,7 @@ def snapshot(username: str = "") -> dict[str, Any]:
         "waiters": len(waiters),
         "kind": kind,
         "occupant": occupant_name or None,
-        "mine": bool(who and occupant_name and occupant_name == who),
+        "mine": mine,
         "elapsed_s": int(now - occupant.started_at) if occupant else 0,
         "queued_elapsed_s": int(now - queued_at) if queued_at else 0,
         "hint": queue_text(
@@ -126,9 +129,21 @@ def snapshot(username: str = "") -> dict[str, Any]:
                 "kind": kind,
                 "occupant": occupant_name,
                 "who": who,
+                "mine": mine,
             }
         ),
     }
+
+
+def _holder_head(occupant: str, who: str, kind: str) -> str:
+    action = KIND_ACTIONS.get(kind, "")
+    if occupant and occupant != who:
+        return f"{occupant} is {action}." if action else f"{occupant} is using the stack."
+    if occupant and occupant == who:
+        return MINE_HINT
+    if action:
+        return f"The stack is {action}."
+    return "The stack is being used."
 
 
 def queue_text(info: Optional[dict[str, Any]] = None) -> str:
@@ -138,21 +153,23 @@ def queue_text(info: Optional[dict[str, Any]] = None) -> str:
     kind = str(info.get("kind") or "").strip()
     who = str(info.get("who") or "").strip()
     queued = bool(info.get("queued")) or position > 0
-    action = KIND_ACTIONS.get(kind, "")
-    if occupant and occupant != who:
-        head = f"{occupant} is {action}." if action else f"{occupant} is using the stack."
-    elif action:
-        head = f"The stack is {action}."
-    else:
-        head = "The stack is being used."
+    mine = bool(info.get("mine")) or bool(who and occupant and occupant == who)
+    head = _holder_head(occupant, who, kind)
     if queued:
-        line = QUEUE_HINT if head == "The stack is being used." else f"{head} You are in a queue."
+        if mine:
+            line = SELF_QUEUED_HINT
+        elif head == "The stack is being used.":
+            line = QUEUE_HINT
+        else:
+            line = f"{head} You are in a queue."
         if position > 1:
             return f"{line} You are number {position}."
         return line
+    if mine:
+        return MINE_HINT
     if info.get("busy") or occupant or kind:
-        return f"{head} Your request will wait."
-    return QUEUE_HINT
+        return head
+    return "The stack is being used."
 
 
 def queue_comment(info: Optional[dict[str, Any]] = None) -> str:

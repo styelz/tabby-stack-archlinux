@@ -86,7 +86,8 @@ function mountStatus(root) {
   function occupancyLabel(data) {
     const queue = (data && data.stack_queue) || {};
     if (queue.queued) return queue.hint || "You are in a queue";
-    if (queue.busy) return queue.hint || "In use";
+    if (queue.mine) return queue.hint || "Your session is running";
+    if (queue.busy) return "In use";
     return "Free";
   }
 
