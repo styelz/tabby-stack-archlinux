@@ -107,8 +107,7 @@ function mountChat(root) {
           </div>
           <button class="rail-toggle" type="button" id="chat-files-toggle" hidden aria-expanded="true" aria-controls="chat-files" aria-label="Hide files" title="Hide files">${CHEVRON_SVG}</button>
         </div>
-        <div class="chat-view">
-          <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Chat, files, and preview" hidden></div>
+          <div class="chat-view">
           <div class="chat-stage" id="chat-stage">
           <div class="chat-log-wrap" id="chat-log-wrap">
             <div class="chat-find" id="chat-find" hidden>
@@ -132,6 +131,7 @@ function mountChat(root) {
             <button class="btn chat-jump" type="button" id="chat-jump" hidden>Return to bottom</button>
           </div>
           <div class="chat-editor-col" id="chat-editor-col" hidden>
+            <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="Open files" hidden></div>
             <div class="chat-find" id="editor-find" hidden>
               <input id="editor-find-input" type="search" placeholder="Find in file" autocomplete="off" />
               <span class="chat-find-count" id="editor-find-count"></span>
@@ -1188,8 +1188,13 @@ function mountChat(root) {
   }
 
   function listedWorkspaceKids(rootId, listed) {
-    return listed
+    const pool = Array.isArray(listed) && listed.length ? listed : store.chats;
+    const kids = pool
       .filter((chat) => chatParentId(chat) === rootId)
+      .filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (kids.length) return kids;
+    return nestedChats(rootId)
       .filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
@@ -1957,7 +1962,7 @@ function mountChat(root) {
 
   function paintTabs() {
     if (!tabsBar) return;
-    const show = activeMode() === "code" && openTabs.length > 0;
+    const show = activeMode() === "code" && openTabs.length > 0 && Boolean(activeTab);
     tabsBar.hidden = !show;
     if (!show) return;
     const frag = document.createDocumentFragment();
@@ -5744,12 +5749,6 @@ function mountChat(root) {
         store.activeId = sibling.id;
         messages = cloneMessages(sibling.messages);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
-      } else if (!root && parentId && store.chats.some((item) => item.id === parentId)) {
-        const chat = emptyChat("code", parentId);
-        store.chats.unshift(chat);
-        store.activeId = chat.id;
-        messages = cloneMessages(chat.messages);
-        expandWorkspace(parentId);
       } else if (other) {
         store.activeId = other.id;
         messages = cloneMessages(other.messages);
@@ -5764,7 +5763,8 @@ function mountChat(root) {
     persist();
     resetRecall();
     renderLog();
-    renderHistoryMenu();
+    hideHistoryMenu();
+    hideMoreMenu();
     refreshFiles();
     paintCompose();
     input.focus();

@@ -1099,7 +1099,7 @@ button.chip {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 0.5rem 0.625rem;
+  padding: 0 0.75rem 0.625rem 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -1151,7 +1151,7 @@ button.chip {
   color: inherit;
   text-align: left;
   cursor: pointer;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: none;
 }
 .chat-nav-pin {
@@ -1191,13 +1191,13 @@ button.chip {
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 1;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 0.0625rem;
   padding: 0 0.25rem 0 1.25rem;
-  opacity: 0;
-  pointer-events: none;
+  opacity: 1;
+  pointer-events: auto;
   background: linear-gradient(90deg, transparent, var(--fade-base) 0.875rem);
 }
 .chat-nav-tools .chat-icon svg {
@@ -1211,16 +1211,16 @@ button.chip {
   stroke-linejoin: round;
 }
 .chat-nav-tools [data-nav="pin"] svg { fill: currentColor; stroke: none; }
-.chat-nav:hover .chat-nav-tools,
-.chat-nav:focus-within .chat-nav-tools {
-  opacity: 1;
-  pointer-events: auto;
-  background: linear-gradient(90deg, transparent, var(--fade-hover) 0.875rem);
-}
 .chat-nav:hover .chat-nav-when,
 .chat-nav:focus-within .chat-nav-when,
+.chat-nav.is-active .chat-nav-when,
+.chat-nav-group.is-current > .chat-nav.is-workspace .chat-nav-when,
+.chat-nav-group:hover > .chat-nav.is-workspace .chat-nav-when,
 .chat-nav:hover .chat-nav-pin,
-.chat-nav:focus-within .chat-nav-pin {
+.chat-nav:focus-within .chat-nav-pin,
+.chat-nav.is-active .chat-nav-pin,
+.chat-nav-group.is-current > .chat-nav.is-workspace .chat-nav-pin,
+.chat-nav-group:hover > .chat-nav.is-workspace .chat-nav-pin {
   visibility: hidden;
 }
 .chat-nav:hover,
@@ -1342,7 +1342,6 @@ button.chip {
   text-align: center;
 }
 @media (hover: none) {
-  .chat-nav-tools { opacity: 1; pointer-events: auto; }
   .chat-nav .chat-nav-when,
   .chat-nav .chat-nav-pin { visibility: hidden; }
 }
@@ -1842,7 +1841,7 @@ button.chip {
   .chat-file-tools { opacity: 1; pointer-events: auto; }
   .chat-file .chat-file-size { visibility: hidden; }
 }
-/* Chat and any open file share the main column; tabs pick which one shows. */
+/* File tabs sit on the editor, not above the chat log. */
 .chat-view {
   display: flex;
   flex-direction: column;
@@ -1997,7 +1996,7 @@ button.chip {
   border-color: rgba(var(--accent-rgb), 0.45);
   color: var(--accent);
 }
-.chat-tabs {
+.chat-editor-col .chat-tabs {
   display: flex;
   flex: 0 0 auto;
   gap: 0.25rem;

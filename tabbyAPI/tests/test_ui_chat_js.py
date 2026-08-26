@@ -182,6 +182,12 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function preferredCodeChat(", self.src)
         self.assertIn('emptyChat("code", root.id)', self.src)
         self.assertIn("startNestedChat(id)", self.src)
+        self.assertIn("hideHistoryMenu();", self.src)
+        self.assertNotIn("renderHistoryMenu();", self.src.split("async function deleteChat")[1].split("function startNestedChat")[0])
+        self.assertNotIn('emptyChat("code", parentId)', self.src.split("async function deleteChat")[1].split("function startNestedChat")[0])
+        self.assertIn('id="chat-tabs"', self.src)
+        self.assertIn("chat-editor-col", self.src)
+        self.assertIn("Boolean(activeTab)", self.src)
         self.assertIn("New workspace", self.src)
         self.assertIn("New chat in this workspace", self.src)
         self.assertIn('data-nav="thread"', self.src)
@@ -206,7 +212,7 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn(".chat-shell.is-code .chat-nav-group", css)
         self.assertIn(".chat-shell.is-code .chat-nav-list", css)
         self.assertIn(".chat-nav.is-current:not(.is-active)", css)
-        self.assertNotIn(".chat-nav.is-active .chat-nav-tools {", css)
+        self.assertIn(".chat-nav-tools", css)
 
 
 if __name__ == "__main__":
