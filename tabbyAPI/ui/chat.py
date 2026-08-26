@@ -160,6 +160,7 @@ async def _run_console_work(
         owner=username or None,
         code=code,
         chat_id=chat_id or None,
+        agent=agent,
     )
     if image_response is not None:
         return image_response

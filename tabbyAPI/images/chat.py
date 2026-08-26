@@ -46,6 +46,12 @@ FILE_WRITE_NAMES = (
     "edit_notebook",
     "edit_file",
 )
+READONLY_AGENTS = frozenset({"ask", "plan"})
+
+
+def _readonly_agent(agent: str | None) -> bool:
+    """UI Ask/Plan: inspect only. Do not start Comfy or write files."""
+    return str(agent or "").strip().lower() in READONLY_AGENTS
 
 
 def _content_text(content) -> str:
@@ -512,18 +518,22 @@ async def _stream_code_then_images(
     chat_id: str,
     items: Optional[list[dict[str, str]]] = None,
     job=None,
+    agent: str = "agent",
 ):
     from common.phrase_switch import stream_text
     from ui.code_agent import final_code_text, iter_code_turns
 
     workspace = (owner, chat_id)
     sync = data.model_copy(update={"stream": False})
+    start_new = bool(items) and not _readonly_agent(agent)
 
     async def _body():
         written: list[str] = []
         text = ""
         yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
-        async for event in iter_code_turns(sync, disconnect_handler, owner, chat_id):
+        async for event in iter_code_turns(
+            sync, disconnect_handler, owner, chat_id, agent=agent
+        ):
             kind = event[0]
             if kind == "status":
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
@@ -531,7 +541,7 @@ async def _stream_code_then_images(
                 text = event[1] or ""
                 written = list(event[2] or [])
         started = job
-        if items:
+        if start_new:
             started = await _start_mixed_job(
                 items, api_base or "", start=True, owner=owner, chat_id=chat_id
             )
@@ -570,12 +580,14 @@ async def _stream_code_then_images(
         )
     written: list[str] = []
     text = ""
-    async for event in iter_code_turns(sync, disconnect_handler, owner, chat_id):
+    async for event in iter_code_turns(
+        sync, disconnect_handler, owner, chat_id, agent=agent
+    ):
         if event[0] == "done":
             text = event[1] or ""
             written = list(event[2] or [])
     started = job
-    if items:
+    if start_new:
         started = await _start_mixed_job(
             items, api_base or "", start=True, owner=owner, chat_id=chat_id
         )
@@ -613,6 +625,7 @@ async def handle(
     owner: str | None = None,
     code: bool = False,
     chat_id: str | None = None,
+    agent: str = "agent",
 ):
     """Mixed generate writes the page first, then holds until PNGs exist.
 
@@ -623,6 +636,9 @@ async def handle(
     console=True (management UI) still generates images but never emits
     Write/StrReplace tool calls unless code=True, which writes into a
     per-chat host workspace instead.
+
+    agent=ask|plan (UI Code mode) does not start a new Comfy job. In-flight
+    jobs still hold until they finish.
     """
     from common.phrase_switch import requested_image_prompt, text_response
 
@@ -660,6 +676,7 @@ async def handle(
                 owner=owner or "",
                 chat_id=chat_id or "",
                 job=job,
+                agent=agent,
             )
         if console:
             await _launch_mixed_job(job)
@@ -686,6 +703,9 @@ async def handle(
     if role in ("tool", "function"):
         if job and job.status in ("done", "error"):
             _inject_dest_facts(data, job)
+        return None
+
+    if _readonly_agent(agent):
         return None
 
     if llm_ready:
@@ -716,6 +736,7 @@ async def handle(
                     owner=owner or "",
                     chat_id=chat_id or "",
                     items=plan.items,
+                    agent=agent,
                 )
             if console:
                 started = await _start_mixed_job(
