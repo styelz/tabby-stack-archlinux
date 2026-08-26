@@ -1237,6 +1237,43 @@ function mountChat(root) {
       + navRowTools(kind, item.pinned);
   }
 
+  function navRowEl(row, active) {
+    const item = row.chat;
+    const current = row.kind === "root" && Boolean(active) && chatParentId(active) === item.id;
+    const canExpand = row.kind === "root" && row.kids > 0;
+    const expanded = canExpand && workspaceExpanded(item.id);
+    const btn = document.createElement("div");
+    btn.className = "chat-nav"
+      + (item.id === store.activeId ? " is-active" : "")
+      + (current ? " is-current" : "")
+      + (item.pinned ? " is-pinned" : "")
+      + (inFlight && item.id === flightChatId ? " is-busy" : "")
+      + (row.kind === "child" ? " is-child" : "")
+      + (row.kind === "root" ? " is-workspace" : "")
+      + (canExpand ? " is-branch" : "")
+      + (expanded ? " is-open" : "");
+    btn.dataset.id = item.id;
+    btn.setAttribute("role", "button");
+    btn.tabIndex = 0;
+    if (row.kind === "root") {
+      btn.setAttribute("aria-expanded", canExpand ? (expanded ? "true" : "false") : "false");
+    }
+    btn.innerHTML = navRowHtml(item, row.kind, row.kids || 0);
+    return btn;
+  }
+
+  function openWorkspaceNav(id) {
+    const kids = listedWorkspaceKids(id, listedChats());
+    if (kids.length && !workspaceExpanded(id)) {
+      expandWorkspace(id);
+      if (id === store.activeId) {
+        renderSidebar();
+        return;
+      }
+    }
+    loadChat(id);
+  }
+
   function renderSidebar() {
     if (!navList) return;
     const code = activeMode() === "code";
@@ -1249,22 +1286,27 @@ function mountChat(root) {
     }
     const active = activeChat();
     const frag = document.createDocumentFragment();
+    let group = null;
     rows.forEach((row) => {
-      const item = row.chat;
-      const current = row.kind === "root" && Boolean(active) && chatParentId(active) === item.id;
-      const btn = document.createElement("div");
-      btn.className = "chat-nav"
-        + (item.id === store.activeId ? " is-active" : "")
-        + (current ? " is-current" : "")
-        + (item.pinned ? " is-pinned" : "")
-        + (inFlight && item.id === flightChatId ? " is-busy" : "")
-        + (row.kind === "child" ? " is-child" : "")
-        + (row.kind === "root" ? " is-workspace" : "")
-        + (row.kind === "root" && row.kids > 0 ? " is-branch" : "");
-      btn.dataset.id = item.id;
-      btn.setAttribute("role", "button");
-      btn.tabIndex = 0;
-      btn.innerHTML = navRowHtml(item, row.kind, row.kids || 0);
+      const btn = navRowEl(row, active);
+      if (row.kind === "root") {
+        group = document.createElement("div");
+        group.className = "chat-nav-group"
+          + (row.showKids ? " is-open" : "")
+          + (row.kids > 0 ? " is-branch" : "")
+          + (row.chat.id === store.activeId || (active && chatParentId(active) === row.chat.id) ? " is-current" : "");
+        group.dataset.id = row.chat.id;
+        group.setAttribute("role", "group");
+        group.setAttribute("aria-label", workspaceDisplayTitle(row.chat));
+        group.appendChild(btn);
+        frag.appendChild(group);
+        return;
+      }
+      if (row.kind === "child" && group) {
+        group.appendChild(btn);
+        return;
+      }
+      group = null;
       frag.appendChild(btn);
     });
     navList.replaceChildren(frag);
@@ -7069,8 +7111,12 @@ function mountChat(root) {
     const chat = store.chats.find((item) => item.id === id);
     if (!chat) return [];
     const root = isWorkspaceRoot(chat);
+    const kidCount = root ? listedWorkspaceKids(id, listedChats()).length : 0;
+    const expanded = root && workspaceExpanded(id);
     const items = [
       { label: "Open", run: () => loadChat(id) },
+      root ? { label: "Expand", disabled: kidCount === 0 || expanded, run: () => setWorkspaceOpen(id, true) } : null,
+      root ? { label: "Collapse", disabled: kidCount === 0 || !expanded, run: () => setWorkspaceOpen(id, false) } : null,
       root ? { label: "New chat in this workspace", run: () => startNestedChat(id) } : null,
       { label: "Rename", run: () => { loadChat(id); beginRename(id); } },
       { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) },
@@ -7322,6 +7368,11 @@ function mountChat(root) {
     const nav = event.target.closest(".chat-nav");
     if (nav && navList.contains(nav) && nav.dataset.id) {
       openCtx(event, navMenuItems(nav.dataset.id));
+      return;
+    }
+    const group = event.target.closest(".chat-nav-group");
+    if (group && navList.contains(group) && group.dataset.id) {
+      openCtx(event, navMenuItems(group.dataset.id));
       return;
     }
     if (event.target.closest("#chat-nav-list, #chat-sidebar")) {
@@ -7582,9 +7633,11 @@ function mountChat(root) {
   navList.addEventListener("click", (event) => {
     const tool = event.target.closest("[data-nav]");
     const row = event.target.closest(".chat-nav");
-    if (!row) return;
-    const id = row.dataset.id;
+    const group = event.target.closest(".chat-nav-group");
     if (tool) {
+      const host = row || group;
+      if (!host) return;
+      const id = host.dataset.id;
       event.preventDefault();
       event.stopPropagation();
       if (tool.dataset.nav === "twist") {
@@ -7603,13 +7656,25 @@ function mountChat(root) {
       if (tool.dataset.nav === "delete") deleteChat(id);
       return;
     }
-    loadChat(id);
+    if (row) {
+      if (row.classList.contains("is-workspace")) {
+        openWorkspaceNav(row.dataset.id);
+        return;
+      }
+      loadChat(row.dataset.id);
+      return;
+    }
+    if (group && group.dataset.id) openWorkspaceNav(group.dataset.id);
   });
   navList.addEventListener("keydown", (event) => {
     const row = event.target.closest(".chat-nav");
     if (!row || event.target.closest("[data-nav]")) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
+      if (row.classList.contains("is-workspace")) {
+        openWorkspaceNav(row.dataset.id);
+        return;
+      }
       loadChat(row.dataset.id);
     }
   });
