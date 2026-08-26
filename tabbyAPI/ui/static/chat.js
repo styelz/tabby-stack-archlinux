@@ -551,6 +551,32 @@ function mountChat(root) {
     return chat;
   }
 
+  function newestModeChat(mode, pred) {
+    return store.chats
+      .filter((item) => chatMode(item) === mode && pred(item))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
+  }
+
+  function fallbackCodeChat(preferParentId) {
+    const parentId = String(preferParentId || "").trim();
+    if (parentId) {
+      const sibling = newestModeChat("code", (item) => chatParentId(item) === parentId);
+      if (sibling) return sibling;
+    }
+    const other = newestModeChat("code", (item) => Boolean(chatParentId(item)));
+    if (other) return other;
+    const parent = parentId
+      && store.chats.find((item) => item.id === parentId && isWorkspaceRoot(item));
+    const root = parent || newestModeChat("code", isWorkspaceRoot);
+    if (root) {
+      const chat = emptyChat("code", root.id);
+      store.chats.unshift(chat);
+      expandWorkspace(root.id);
+      return chat;
+    }
+    return addCodeWorkspace();
+  }
+
   function emptyLastByMode(raw) {
     const last = raw && raw.lastByMode && typeof raw.lastByMode === "object" ? raw.lastByMode : {};
     return {
@@ -5737,28 +5763,18 @@ function mountChat(root) {
     if (root) dropWorkspace(id);
     if (ids.has(store.activeId)) {
       const parentId = chatParentId(chat);
-      const sibling = parentId
-        ? store.chats
-          .filter((item) => chatMode(item) === mode && chatParentId(item) === parentId)
+      const next = mode === "code"
+        ? fallbackCodeChat(parentId)
+        : store.chats
+          .filter((item) => chatMode(item) === mode && (hasUserTurn(item) || item.pinned))
           .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]
-        : null;
-      const other = store.chats
-        .filter((item) => chatMode(item) === mode && !isWorkspaceRoot(item) && (hasUserTurn(item) || item.pinned))
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-      if (sibling) {
-        store.activeId = sibling.id;
-        messages = cloneMessages(sibling.messages);
-        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
-      } else if (other) {
-        store.activeId = other.id;
-        messages = cloneMessages(other.messages);
-        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
-      } else {
-        const fresh = mode === "code" ? addCodeWorkspace() : emptyChat(mode);
-        if (mode !== "code") store.chats.unshift(fresh);
-        store.activeId = fresh.id;
-        messages = cloneMessages(fresh.messages);
+          || emptyChat(mode);
+      if (mode !== "code" && !store.chats.some((item) => item.id === next.id)) {
+        store.chats.unshift(next);
       }
+      store.activeId = next.id;
+      messages = cloneMessages(next.messages);
+      if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
     }
     persist();
     resetRecall();
