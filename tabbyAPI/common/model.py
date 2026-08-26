@@ -18,6 +18,7 @@ from common.tabby_config import config
 from common.optional_dependencies import dependencies
 from common.transformers_utils import HFModel
 from common.utils import deep_merge_dicts, unwrap
+from common.vram_recover import reset_cuda_memory
 
 if dependencies.exllamav3:
     from backends.exllamav3.model import ExllamaV3Container
@@ -243,6 +244,7 @@ async def load_model_gen(model_path: pathlib.Path, **kwargs):
                 await new_container.unload(skip_wait=True)
             except Exception as unload_exc:
                 xlogger.warning(f"Could not unload leftover model after a failed load: {unload_exc}")
+            reset_cuda_memory()
             raise
         finally:
             progress.stop()

@@ -26,6 +26,43 @@ def is_vram_error(exc: object) -> bool:
     return any(marker in text for marker in VRAM_MARKERS)
 
 
+def reset_cuda_memory() -> None:
+    """Lift ExLlama's per-process VRAM cap and return cached blocks to the driver.
+
+    Autosplit sets torch.cuda.set_per_process_memory_fraction from free VRAM at
+    load start, and only resets it after a successful load. A mid-load OOM
+    leaves the cap in place so the next attempt still sees a shrunken budget.
+    """
+    try:
+        import gc
+
+        import torch
+    except ImportError:
+        return
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        return
+    try:
+        device_count = int(torch.cuda.device_count() or 0)
+    except Exception:
+        device_count = 0
+    for index in range(device_count):
+        try:
+            torch.cuda.set_per_process_memory_fraction(1.0, device=index)
+        except Exception:
+            break
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+    if callable(ipc_collect):
+        try:
+            ipc_collect()
+        except Exception:
+            pass
+
+
 def health_timeout_s(profile: str) -> float:
     """Wait long enough for a cold load after a bounce, with a hard cap."""
     return min(360.0, max(180.0, float(ready_seconds(profile)) + 90.0))

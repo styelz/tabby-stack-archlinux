@@ -46,6 +46,7 @@ from common.tabby_config import config
 from common.templating import PromptTemplate, find_prompt_template
 from common.transformers_utils import HFModel
 from common.utils import coalesce, unwrap
+from common.vram_recover import reset_cuda_memory
 from endpoints.OAI.types.chat_completion import ChatCompletionLogprob, ChatCompletionLogprobLeaf
 from endpoints.core.types.model import ModelCard, ModelCardParameters
 from endpoints.OAI.utils.tools import is_supported_format
@@ -818,8 +819,7 @@ class ExllamaV3Container:
                 self.vision_model = None
 
             self.loaded = False
-            gc.collect()
-            torch.cuda.empty_cache()
+            reset_cuda_memory()
 
             xlogger.info("Model unloaded.")
         finally:

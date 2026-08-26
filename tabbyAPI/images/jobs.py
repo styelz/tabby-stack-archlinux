@@ -30,7 +30,7 @@ from common.gpu_mode import (
     write_mode,
 )
 from common.logger import xlogger
-from common.vram_recover import FALLBACK_PROFILE, is_vram_error, mark_fallback
+from common.vram_recover import FALLBACK_PROFILE, is_vram_error, mark_fallback, reset_cuda_memory
 from common.tabby_config import config
 from endpoints.core.types.model import ModelLoadRequest
 from endpoints.core.utils.model import stream_model_load
@@ -228,31 +228,41 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
     set_switch_lock(profile_name)
     try:
         await asyncio.to_thread(stop_comfy)
+        load_exc: Optional[BaseException] = None
         try:
             await _load_profile(profile_name)
         except RuntimeError as exc:
             if not is_vram_error(exc):
                 raise
+            load_exc = exc
+
+        if load_exc is not None:
             xlogger.warning("LLM load hit leftover VRAM; stopping Comfy and retrying")
             await asyncio.to_thread(stop_comfy)
             if loaded_tabby_name():
                 await model.unload_model(skip_wait=True)
+            reset_cuda_memory()
+            load_exc = None
             await asyncio.sleep(2)
+            retry_exc: Optional[BaseException] = None
             try:
                 await _load_profile(profile_name)
-            except RuntimeError as retry_exc:
-                dest = FALLBACK_PROFILE
-                if (
-                    not is_vram_error(retry_exc)
-                    or dest == profile_name
-                    or dest not in names
-                ):
+            except RuntimeError as exc:
+                if not is_vram_error(exc):
                     raise
+                retry_exc = exc
+
+            if retry_exc is not None:
+                dest = FALLBACK_PROFILE
+                if dest == profile_name or dest not in names:
+                    raise retry_exc
                 xlogger.warning(
                     f"Falling back to {dest} after VRAM fail on {profile_name}"
                 )
                 if loaded_tabby_name():
                     await model.unload_model(skip_wait=True)
+                reset_cuda_memory()
+                retry_exc = None
                 await _load_profile(dest)
                 mark_fallback(profile_name, dest)
                 profile_name = dest

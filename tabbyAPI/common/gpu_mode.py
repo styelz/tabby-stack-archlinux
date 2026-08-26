@@ -333,6 +333,57 @@ def stop_comfy_via_systemd() -> bool:
     return True
 
 
+VRAM_DRAIN_MAX_MIB = 2048
+VRAM_DRAIN_TIMEOUT_S = 12.0
+
+
+def gpu_used_mib() -> Optional[int]:
+    """nvidia-smi used VRAM on GPU 0, or None if the query fails."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        )
+        return int(out.strip().splitlines()[0])
+    except (
+        OSError,
+        ValueError,
+        IndexError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ):
+        return None
+
+
+def wait_gpu_vram_drain(
+    timeout: float = VRAM_DRAIN_TIMEOUT_S,
+    max_used_mib: int = VRAM_DRAIN_MAX_MIB,
+) -> None:
+    """Wait until driver-reported used VRAM drops after Comfy exits."""
+    deadline = time.time() + timeout
+    used = gpu_used_mib()
+    if used is None:
+        time.sleep(1)
+        return
+    while True:
+        if used <= max_used_mib:
+            print(f"  GPU VRAM {used} MiB")
+            return
+        if time.time() >= deadline:
+            print(f"  GPU VRAM still {used} MiB after stop; LLM load may hit VRAM")
+            return
+        time.sleep(0.4)
+        nxt = gpu_used_mib()
+        if nxt is None:
+            return
+        used = nxt
+
+
 def stop_comfy(timeout: float = 30) -> None:
     """Give the GPU back before an LLM load.
 
@@ -351,7 +402,7 @@ def stop_comfy(timeout: float = 30) -> None:
     while time.time() < deadline:
         if not comfy_up() and not comfy_pids():
             print("  ComfyUI is down")
-            time.sleep(1)
+            wait_gpu_vram_drain()
             return
         time.sleep(0.4)
     if comfy_up() or not stopped or comfy_pids():
@@ -359,7 +410,7 @@ def stop_comfy(timeout: float = 30) -> None:
         kill_comfy_process()
     if not comfy_up() and not comfy_pids():
         print("  ComfyUI is down")
-        time.sleep(1)
+        wait_gpu_vram_drain()
         return
     print("  ComfyUI still answering after stop; LLM load may hit VRAM")
 
