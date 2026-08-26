@@ -42,6 +42,42 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(label, "Tool error")
         self.assertIn("Unknown tool", text)
 
+    def test_plan_preamble_is_not_complete(self):
+        self.assertFalse(
+            code_agent.plan_looks_complete(
+                "I have read the project directory. It is empty. "
+                "I will now design a comprehensive plan for the space travel "
+                "company website."
+            )
+        )
+
+    def test_plan_with_headings_is_complete(self):
+        text = (
+            "## Goal\n"
+            "Build a space-travel marketing site.\n\n"
+            "## Files\n"
+            "- index.html — page shell and sections\n"
+            "- styles.css — layout and theme\n"
+            "- app.js — nav and starfield\n\n"
+            "## Steps\n"
+            "1. Write index.html with hero, packages, and booking form.\n"
+            "2. Add styles.css for a dark space theme.\n"
+            "3. Add app.js for the canvas starfield.\n\n"
+            "## Assets\n"
+            "- images/logo.png — qwen-image logo\n"
+            "- images/hero.png — Flux nebula photograph\n\n"
+            "## Risks\n"
+            "Readable logo text needs Qwen-Image, not Flux."
+        )
+        self.assertTrue(code_agent.plan_looks_complete(text))
+
+    def test_attach_plan_contract_once(self):
+        messages = [{"role": "user", "content": "design a site"}]
+        code_agent.attach_plan_user_contract(messages)
+        code_agent.attach_plan_user_contract(messages)
+        self.assertEqual(messages[0]["content"].count(code_agent.PLAN_CONTRACT_MARK), 1)
+        self.assertTrue(messages[0]["content"].startswith("design a site"))
+
 
 if __name__ == "__main__":
     unittest.main()

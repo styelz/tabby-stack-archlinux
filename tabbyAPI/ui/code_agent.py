@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncIterator, Optional
 
 from common.logger import xlogger
@@ -12,6 +13,7 @@ from ui import workspace
 
 MAX_CODE_TURNS = 16
 MAX_BRIEF_FILES = 80
+MAX_PLAN_NUDGES = 2
 AGENT_KINDS = ("agent", "ask", "plan")
 CODE_SYSTEM = (
     "You are coding in a workspace project folder on this Tabby Stack host. "
@@ -36,12 +38,47 @@ ASK_SYSTEM = (
     "Do not implement changes. Answer clearly from the project."
 )
 PLAN_SYSTEM = (
-    "You are planning work in a workspace project folder on this Tabby Stack "
+    "You are Plan mode for a workspace project folder on this Tabby Stack "
     "host. This conversation is one thread in that workspace; extra chats "
-    "share the same files. Use Read and List if you need context. Do not "
-    "create, edit, delete, rename, or optimize files, and do not run Shell. "
-    "Write a concrete plan with steps. Do not implement. The user will click "
-    "Build when they want the plan carried out."
+    "share the same files. A workspace file list is already in this prompt; "
+    "only Read a file if you need its contents. Do not List just to confirm "
+    "an empty project. Do not create, edit, delete, rename, or optimize "
+    "files, and do not run Shell. "
+    "Your assistant message is the plan the user will review, then click "
+    "Build to implement. Never say you will write a plan — write it now. "
+    "Use markdown with these headings:\n"
+    "## Goal\n## Files\n## Steps\n## Assets\n## Risks\n"
+    "Files: concrete relative paths and what each one is for. "
+    "Steps: numbered and specific enough to implement without asking again. "
+    "Assets: dest paths for images (logo/text vs photo), or None. "
+    "Do not implement."
+)
+PLAN_CONTRACT_MARK = "<plan_mode>"
+PLAN_USER_SUFFIX = (
+    "\n\n<plan_mode>\n"
+    "Write the full implementation plan now as markdown with headings Goal, "
+    "Files, Steps, Assets, and Risks. Name concrete relative paths. Number "
+    "the steps. Do not implement. Do not announce a plan — this reply is "
+    "the plan. The user will click Build later.\n"
+    "</plan_mode>"
+)
+PLAN_RETRY = (
+    "That reply was not a plan. Write the complete implementation plan now "
+    "as markdown with headings Goal, Files, Steps, Assets, and Risks. "
+    "Include concrete file paths and numbered steps. Do not implement. "
+    "Do not call tools unless you must Read a specific existing file. "
+    "Do not say you will write a plan later."
+)
+_PLAN_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
+_PLAN_STEPS = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+\S|[-*]\s+\S.{8,})")
+_PLAN_PATH = re.compile(
+    r"\b[\w./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|json|md|py|svg|png|jpe?g|webp|gif)\b",
+    re.I,
+)
+_PLAN_PREAMBLE = re.compile(
+    r"(?is)\b(?:i will now|i(?:'m| am) (?:going to|about to)|"
+    r"let me (?:now )?(?:design|write|create|plan)|"
+    r"i have (?:read|listed|checked) (?:the )?(?:project|directory|workspace))\b"
 )
 _MUTATE_KINDS = frozenset(
     ("write", "replace", "delete", "rename", "optimize", "shell")
@@ -65,6 +102,63 @@ def _system_for_agent(agent: str) -> str:
     if kind == "plan":
         return PLAN_SYSTEM
     return CODE_SYSTEM
+
+
+def _content_has_mark(content: Any, mark: str) -> bool:
+    if isinstance(content, str):
+        return mark in content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and mark in str(part.get("text") or ""):
+                return True
+            if isinstance(part, str) and mark in part:
+                return True
+    return False
+
+
+def _append_text_content(content: Any, extra: str) -> Any:
+    if isinstance(content, list):
+        parts = [part if isinstance(part, dict) else part for part in content]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = str(part.get("text") or "") + extra
+                return parts
+        return [{"type": "text", "text": extra.lstrip()}] + parts
+    return str(content or "") + extra
+
+
+def attach_plan_user_contract(messages: list) -> None:
+    """Pin the plan-mode contract on the last user turn (server-only)."""
+    for item in reversed(messages):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        if _content_has_mark(item.get("content"), PLAN_CONTRACT_MARK):
+            return
+        item["content"] = _append_text_content(item.get("content"), PLAN_USER_SUFFIX)
+        return
+
+
+def _strip_think(text: str) -> str:
+    return re.sub(r"(?is)<think>.*?</think>", " ", text or "").strip()
+
+
+def plan_looks_complete(text: str) -> bool:
+    """True when the reply is a reviewable plan, not a promise to write one."""
+    body = _strip_think(text)
+    if not body:
+        return False
+    headings = len(_PLAN_HEADING.findall(body))
+    steps = len(_PLAN_STEPS.findall(body))
+    paths = len(_PLAN_PATH.findall(body))
+    if _PLAN_PREAMBLE.search(body) and headings < 2 and steps < 3:
+        return False
+    if headings >= 3 and len(body) >= 160:
+        return True
+    if headings >= 2 and steps >= 3 and len(body) >= 160:
+        return True
+    if steps >= 5 and paths >= 1 and len(body) >= 240:
+        return True
+    return False
 
 
 def workspace_file_brief(username: str, chat_id: str) -> str:
@@ -498,17 +592,19 @@ async def iter_code_turns(
         return
 
     kind = normalize_agent(agent)
+    empty = "empty project" in workspace_file_brief(username, chat_id)
     working = data.model_copy(
         update={
             "stream": False,
             "n": 1,
             "tools": code_tool_specs(kind),
-            "tool_choice": "auto",
+            "tool_choice": "none" if kind == "plan" and empty else "auto",
             "messages": list(data.messages or []),
         }
     )
     written: list[str] = []
     last_text = ""
+    plan_nudges = 0
     nested = DisconnectHandler(
         request=request,
         description="ui code tools",
@@ -534,6 +630,18 @@ async def iter_code_turns(
         last_text = _content_text(getattr(message, "content", None))
         pairs = _tool_pairs(message)
         if not pairs:
+            if (
+                kind == "plan"
+                and plan_nudges < MAX_PLAN_NUDGES
+                and not plan_looks_complete(last_text)
+            ):
+                plan_nudges += 1
+                working.messages.append(message)
+                working.messages.append(
+                    ChatCompletionMessage(role="user", content=PLAN_RETRY)
+                )
+                yield ("status", "Writing plan")
+                continue
             yield ("done", last_text, written)
             return
         working.messages.append(message)
