@@ -622,6 +622,9 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
         "messages": clean_messages,
         "stream": bool(body.get("stream", True)),
     }
+    conv = str(body.get("conversation_id") or "").strip()[:80]
+    if conv:
+        payload["conversation_id"] = conv
     if body.get("temperature") is not None:
         payload["temperature"] = body["temperature"]
     if body.get("max_tokens") is not None:

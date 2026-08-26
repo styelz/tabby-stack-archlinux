@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from sse_starlette import EventSourceResponse, ServerSentEvent
@@ -38,6 +41,14 @@ from endpoints.OAI.utils.chat_completion import (
 )
 from common.pasted_images import materialize_pasted_images
 from images.chat import STATUS_MARK, handle as handle_image_chat
+from ui.flight import (
+    ConsoleFlight,
+    abort_flight,
+    close_flight,
+    get_flight,
+    register_flight,
+    stream_response,
+)
 from ui.manager import sanitize_chat_payload, sanitize_code_payload
 from ui.occupancy import StackGate, queue_comment, wait_tick
 
@@ -211,54 +222,15 @@ async def _run_console_work(
         raise HTTPException(422, str(exc)) from exc
 
 
+def _proxy_request(request: Request):
+    req_id = getattr(getattr(request, "state", None), "id", None) or uuid4().hex
+    return SimpleNamespace(state=SimpleNamespace(id=req_id))
+
+
 async def _stream_held_result(gate: StackGate, result):
     try:
         async for item in _iter_sse(result):
             yield item
-    finally:
-        await gate.release()
-
-
-async def _queued_console_events(
-    request: Request,
-    data: ChatCompletionRequest,
-    username: str,
-    chat_id: str,
-    code: bool,
-    saved_images: list,
-    api_base: str,
-    disconnect_handler,
-    gate: StackGate,
-    first_info: dict[str, Any],
-    agent: str = "agent",
-):
-    try:
-        info: dict[str, Any] | None = first_info
-        while info is not None:
-            yield ServerSentEvent(comment=queue_comment(info))
-            await wait_tick(1.0)
-            info = await gate.step(disconnect_handler)
-        result = await _run_console_work(
-            request,
-            data,
-            username,
-            chat_id,
-            code,
-            saved_images,
-            api_base,
-            disconnect_handler,
-            agent,
-        )
-        if isinstance(result, EventSourceResponse):
-            async for item in _iter_sse(result):
-                yield item
-            return
-        text = _completion_text(result)
-        if text:
-            async for chunk in stream_text(data, text):
-                yield chunk
-    except HTTPException as exc:
-        yield ServerSentEvent(data=json.dumps({"error": {"message": str(exc.detail)}}))
     finally:
         await gate.release()
 
@@ -271,7 +243,76 @@ def _sse(content):
     )
 
 
+async def _pump_console_result(
+    flight: ConsoleFlight, result, data: ChatCompletionRequest
+) -> None:
+    if isinstance(result, EventSourceResponse):
+        async for item in _iter_sse(result):
+            await flight.publish(item)
+        return
+    text = _completion_text(result)
+    if text:
+        async for chunk in stream_text(data, text):
+            await flight.publish(chunk)
+
+
+async def _run_console_job(
+    flight: ConsoleFlight,
+    request: Request,
+    data: ChatCompletionRequest,
+    username: str,
+    workspace_id: str,
+    code: bool,
+    saved_images: list,
+    api_base: str,
+    agent: str,
+    gate: StackGate,
+) -> None:
+    handler = DisconnectHandler(None, "/v1/ui/chat", abort_event=flight.abort_event)
+    proxy = _proxy_request(request)
+    try:
+        info = await gate.step(handler)
+        while info is not None:
+            try:
+                event = ServerSentEvent(comment=queue_comment(info), sep="\n")
+            except TypeError:
+                event = ServerSentEvent(comment=queue_comment(info))
+            await flight.publish(event)
+            await wait_tick(1.0)
+            info = await gate.step(handler)
+        result = await _run_console_work(
+            proxy,
+            data,
+            username,
+            workspace_id,
+            code,
+            saved_images,
+            api_base,
+            handler,
+            agent,
+        )
+        await _pump_console_result(flight, result, data)
+    except asyncio.CancelledError:
+        pass
+    except HTTPException as exc:
+        await flight.publish(json.dumps({"error": {"message": str(exc.detail)}}))
+    except Exception as exc:
+        from common.logger import xlogger
+
+        xlogger.error("Console chat job failed", str(exc))
+        await flight.publish(json.dumps({"error": {"message": str(exc)}}))
+    finally:
+        await gate.release()
+        await close_flight(flight)
+
+
 async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
+    if body.get("cancel"):
+        abort_flight(username)
+        return {"ok": True}
+    if body.get("resume"):
+        return stream_response(get_flight(username))
+
     code = is_code_request(body)
     try:
         payload = (
@@ -280,7 +321,8 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    chat_id = str(payload.get("chat_id") or "") if code else ""
+    workspace_id = str(payload.get("chat_id") or "") if code else ""
+    conversation_id = str(payload.get("conversation_id") or "").strip()
     agent = str(payload.get("agent") or "agent") if code else "agent"
     data = completion_request_from_payload(payload)
     saved_images = materialize_pasted_images(data)
@@ -289,47 +331,30 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     if switched is not None:
         return switched
 
-    disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
-    gate = StackGate(username, kind="code" if code else "chat")
-    info = await gate.step(disconnect_handler)
-    if info is None:
-        try:
-            result = await _run_console_work(
-                request,
-                data,
-                username,
-                chat_id,
-                code,
-                saved_images,
-                api_base,
-                disconnect_handler,
-                agent,
-            )
-        except Exception:
-            await gate.release()
-            raise
-        if isinstance(result, EventSourceResponse):
-            return _sse(_stream_held_result(gate, result))
-        await gate.release()
-        return result
-
+    kind = "code" if code else "chat"
+    gate = StackGate(username, kind=kind, chat_id=conversation_id)
     if data.stream:
-        return _sse(
-            _queued_console_events(
+        flight = ConsoleFlight(
+            username, conversation_id, kind, last_user_text(data)
+        )
+        register_flight(flight)
+        flight.task = asyncio.create_task(
+            _run_console_job(
+                flight,
                 request,
                 data,
                 username,
-                chat_id,
+                workspace_id,
                 code,
                 saved_images,
                 api_base,
-                disconnect_handler,
-                gate,
-                info,
                 agent,
+                gate,
             )
         )
+        return stream_response(flight)
 
+    disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
     try:
         while True:
             info = await gate.step(disconnect_handler)
@@ -340,7 +365,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
             request,
             data,
             username,
-            chat_id,
+            workspace_id,
             code,
             saved_images,
             api_base,
@@ -354,6 +379,3 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         return _sse(_stream_held_result(gate, result))
     await gate.release()
     return result
-
-
-run_console_chat = run_console_chat

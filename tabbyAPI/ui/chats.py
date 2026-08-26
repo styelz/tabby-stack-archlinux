@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -340,6 +341,42 @@ def workspace_thread_ids(username: str, root_id: str) -> list[str]:
     ]
 
 
+def _message_key(item: Any) -> Optional[tuple[str, str]]:
+    if not isinstance(item, dict):
+        return None
+    role = str(item.get("role") or "")
+    if role not in ("system", "user", "assistant"):
+        return None
+    return (role, str(item.get("content") or ""))
+
+
+def _preserve_server_assistant(old_msgs: Any, new_msgs: Any) -> list:
+    """Keep a reply the server wrote if a stale PUT arrives without it."""
+    incoming = new_msgs if isinstance(new_msgs, list) else []
+    previous = old_msgs if isinstance(old_msgs, list) else []
+    if not previous:
+        return incoming
+    last = previous[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return incoming
+    if last.get("origin") != "server":
+        return incoming
+    if incoming:
+        new_last = incoming[-1]
+        if (
+            isinstance(new_last, dict)
+            and new_last.get("role") == "assistant"
+            and str(new_last.get("content") or "") == str(last.get("content") or "")
+        ):
+            return incoming
+    head = previous[:-1]
+    if len(incoming) != len(head):
+        return incoming
+    if any(_message_key(a) != _message_key(b) for a, b in zip(incoming, head)):
+        return incoming
+    return incoming + [last]
+
+
 def save_store(username: str, raw: Any) -> dict[str, Any]:
     with _LOCK:
         disk = _read_disk(username)
@@ -354,6 +391,14 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
         chat_id = str(chat.get("id") or "")
         if chat_id and chat_id not in old_chats:
             old_chats[chat_id] = chat
+    for chat in store.get("chats") or []:
+        chat_id = str(chat.get("id") or "")
+        old = old_chats.get(chat_id)
+        if not old:
+            continue
+        chat["messages"] = _preserve_server_assistant(
+            old.get("messages"), chat.get("messages")
+        )
     new_ids = {str(chat.get("id") or "") for chat in store.get("chats") or []}
     remaining_roots = [
         chat for chat in store.get("chats") or [] if is_workspace_root(chat)
@@ -388,6 +433,59 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
             delete_workspace(username, chat_id)
             drop_chat(username, safe_name(chat_id))
     return store
+
+
+def append_flight_assistant(
+    username: str,
+    chat_id: str,
+    *,
+    content: str,
+    reasoning: str = "",
+    elapsed_s: Optional[int] = None,
+    status_label: str = "",
+) -> None:
+    """Write a finished console reply so a reload can show it."""
+    cid = str(chat_id or "").strip()
+    if not cid:
+        return
+    text = str(content or "")
+    thought = str(reasoning or "")
+    if not text.strip() and not thought.strip():
+        return
+    store = load_store(username)
+    for chat in store.get("chats") or []:
+        if str(chat.get("id") or "") != cid:
+            continue
+        messages = chat.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+            chat["messages"] = messages
+        if messages:
+            last = messages[-1]
+            if (
+                isinstance(last, dict)
+                and last.get("role") == "assistant"
+                and str(last.get("content") or "") == text
+                and str(last.get("reasoning") or "") == thought
+            ):
+                return
+        item: dict[str, Any] = {
+            "role": "assistant",
+            "content": text,
+            "createdAt": int(time.time() * 1000),
+            "origin": "server",
+        }
+        if thought.strip():
+            item["reasoning"] = thought
+        if elapsed_s:
+            item["elapsed_s"] = int(elapsed_s)
+        label = str(status_label or "").strip()
+        if label:
+            item["status_label"] = label
+        messages.append(item)
+        chat["updatedAt"] = item["createdAt"]
+        save_store(username, store)
+        return
 
 
 def chat_count(username: str) -> int:

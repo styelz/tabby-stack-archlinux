@@ -712,6 +712,7 @@ function mountChat(root) {
         if (status) out.status_label = status;
         const agent = normalizeAgent(item.agent);
         if (agent === "ask" || agent === "plan") out.agent = agent;
+        if (item.origin) out.origin = String(item.origin);
       }
       if (item.hidden) out.hidden = true;
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
@@ -951,6 +952,7 @@ function mountChat(root) {
   }
 
   let persistReady = false;
+  let sessionRestoring = true;
   let store = normalizeStore(null);
   let messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
   let pendingEditIndex = -1;
@@ -1135,7 +1137,7 @@ function mountChat(root) {
     const kept = new Set(store.chats.map((item) => item.id));
     paintToolbar();
     renderSidebar();
-    if (!persistReady) return;
+    if (!persistReady) return persistTail;
     previous.forEach((item) => {
       if (kept.has(item.id)) return;
       forgetTabs(item.id);
@@ -1147,6 +1149,7 @@ function mountChat(root) {
         return TabbyUI.api("chats", { method: "PUT", body: store });
       })
       .catch(() => {});
+    return persistTail;
   }
 
   function workspaceActivity(item) {
@@ -7360,6 +7363,7 @@ function mountChat(root) {
 
   function abortSession(kind) {
     stopKind = kind || "stop";
+    TabbyUI.api("chat", { method: "POST", body: { cancel: true } }).catch(() => {});
     if (abortController) abortController.abort();
   }
 
@@ -7451,6 +7455,7 @@ function mountChat(root) {
     if (agentBtn) agentBtn.disabled = Boolean(modelLoading || away);
     paintCodeAgent();
     if (editBar) editBar.hidden = pendingEditIndex < 0;
+    if (sessionRestoring) sendBtn.disabled = true;
     paintComfyHint();
   }
 
@@ -7469,14 +7474,40 @@ function mountChat(root) {
     persist();
   }
 
+  async function refreshChatFromServer(chatId) {
+    try {
+      const incoming = await TabbyUI.api("chats");
+      store = normalizeStore(incoming);
+      const chat = store.chats.find((item) => item.id === chatId) || activeChat();
+      if (chat && !isWorkspaceRoot(chat)) {
+        store.activeId = chat.id;
+        messages = cloneMessages(chat.messages);
+      }
+      renderLog();
+      paintToolbar();
+      renderSidebar();
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function send(text, opts) {
     const replay = Boolean(opts && opts.replay);
+    const resume = Boolean(opts && opts.resume);
     const sendAgent = activeMode() === "code" ? codeAgent : "";
     const chatId = store.activeId;
     flightChatId = chatId;
     abortController = new AbortController();
     const outboundText = expandSlash(text);
-    if (!replay) {
+    if (resume) {
+      const prompt = String((opts && opts.prompt) || "").trim();
+      if (prompt && !hasUserTurn({ messages })) {
+        messages.push({ role: "user", content: prompt, createdAt: Date.now() });
+        touchActive();
+        persist();
+      }
+      renderLog();
+    } else if (!replay) {
       if (pendingEditIndex >= 0) {
         const idx = pendingEditIndex;
         pendingEditIndex = -1;
@@ -7503,7 +7534,13 @@ function mountChat(root) {
       persist();
       renderLog();
     }
-    const activity = activityFromPrompt(outboundText);
+    const activity = resume
+      ? {
+        label: "Thinking",
+        kind: (opts && opts.kind) || "chat",
+        processing: (opts && opts.kind) === "image",
+      }
+      : activityFromPrompt(outboundText);
     const working = addWorkingReply(activity);
     flightWorking = working;
     const poll = startStatusPoll(working, activity.kind);
@@ -7511,14 +7548,16 @@ function mountChat(root) {
     let reasoning = "";
     let elapsedSec = null;
     let statusLabel = "";
-    const outbound = outboundMessages();
-    const body = { messages: outbound, stream: true };
-    if (settings.temperature != null) body.temperature = settings.temperature;
-    if (sendAgent) {
+    const body = resume
+      ? { resume: true, conversation_id: chatId, stream: true }
+      : { messages: outboundMessages(), stream: true, conversation_id: chatId };
+    if (!resume && settings.temperature != null) body.temperature = settings.temperature;
+    if (!resume && sendAgent) {
       body.mode = "code";
       body.chat_id = activeWorkspaceId();
       body.agent = sendAgent;
     }
+    await persist();
     try {
       const response = await fetch(TabbyUI.path("chat"), {
         method: "POST",
@@ -7626,7 +7665,10 @@ function mountChat(root) {
       await ensureModelWait(working, activity);
     }
     stoppedEmpty = Boolean(stopKind) && !waitingOnModel && !String(assembled || "").trim() && !reasoning;
-    if (stoppedEmpty) {
+    if (resume && !stopKind && !String(assembled || "").trim() && !reasoning) {
+      working.discard();
+      await refreshChatFromServer(chatId);
+    } else if (stoppedEmpty) {
       working.discard();
     } else {
       const done = working.finish({ content: assembled, reasoning });
@@ -7640,8 +7682,12 @@ function mountChat(root) {
       if (elapsedSec) item.elapsed_s = elapsedSec;
       if (statusLabel) item.status_label = statusLabel;
       if (sendAgent === "ask" || sendAgent === "plan") item.agent = sendAgent;
-      appendAssistantToChat(chatId, item);
-      if (store.activeId === chatId && !stoppedEmpty) {
+      const last = messages.length ? messages[messages.length - 1] : null;
+      const already = Boolean(
+        last && last.role === "assistant" && String(last.content || "") === assembled
+      );
+      if (!already) appendAssistantToChat(chatId, item);
+      if (store.activeId === chatId && !stoppedEmpty && working.node && working.node.isConnected) {
         attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
         attachPlanBuild(working.node, messages.length - 1);
         stickLog();
@@ -7670,6 +7716,11 @@ function mountChat(root) {
     try {
       let next = firstText;
       let sendOpts = opts;
+      if (opts && opts.resume) {
+        await send("", opts);
+        sendOpts = undefined;
+        next = takeQueue();
+      }
       while (next) {
         stopKind = "";
         await send(next, sendOpts);
@@ -7710,6 +7761,7 @@ function mountChat(root) {
     event.preventDefault();
     stopMic();
     if (modelLoading) return;
+    if (sessionRestoring) return;
     if (!menu.hidden && menuItems[menuIndex]) {
       if (!applyCommand(menuItems[menuIndex])) return;
     }
@@ -9166,6 +9218,43 @@ function mountChat(root) {
     });
   }
 
+  async function resumeLiveFlight() {
+    let data;
+    try {
+      data = await TabbyUI.api("status");
+    } catch {
+      return;
+    }
+    rememberGpu(data);
+    applyStackOccupancy(data);
+    const queue = (data && data.stack_queue) || {};
+    if (!queue.live) return;
+    const chatId = String(queue.chat_id || "").trim();
+    if (chatId) {
+      const exists = store.chats.some((item) => item.id === chatId);
+      if (exists) {
+        if (store.activeId !== chatId) loadChat(chatId, true);
+      } else {
+        const mode = queue.kind === "code" ? "code" : "chat";
+        const parent = mode === "code" ? activeWorkspaceId() : "";
+        const chat = emptyChat(mode, parent);
+        chat.id = chatId;
+        store.chats.unshift(chat);
+        store.activeId = chatId;
+        messages = cloneMessages(chat.messages);
+      }
+    }
+    runLoop("", {
+      replay: true,
+      resume: true,
+      prompt: queue.prompt || "",
+      kind: queue.kind || "chat",
+    }).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+      persist();
+    });
+  }
+
   window.addEventListener("beforeunload", warnDirtyUnload);
   window.addEventListener("message", onPreviewMessage);
   document.addEventListener("pointerdown", onPointerDownAway);
@@ -9202,6 +9291,9 @@ function mountChat(root) {
     resizeInput();
     refreshFiles();
     startGatePoll();
+    await resumeLiveFlight();
+    sessionRestoring = false;
+    paintCompose();
   }
   window.addEventListener("tabby-gpu-status", onGpuStatus);
   loadStore();

@@ -31,6 +31,7 @@ class Occupant:
     username: str
     started_at: float
     kind: str = "chat"
+    chat_id: str = ""
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Waiter:
     username: str
     queued_at: float
     kind: str = "chat"
+    chat_id: str = ""
 
 
 def _image_job():
@@ -111,6 +113,27 @@ def snapshot(username: str = "") -> dict[str, Any]:
     mine = bool(who and occupant_name and occupant_name == who)
     queued = position is not None
     busy = occupant is not None or bool(waiters) or _externally_busy()
+    chat_id = ""
+    prompt = ""
+    live = False
+    if occupant and who and occupant.username == who:
+        chat_id = occupant.chat_id or ""
+    elif position is not None:
+        for waiter in waiters:
+            if who and waiter.username == who:
+                chat_id = waiter.chat_id or ""
+                break
+    try:
+        from ui.flight import snapshot_for
+
+        info = snapshot_for(who)
+    except Exception:
+        info = None
+    if info:
+        live = bool(info.get("live"))
+        chat_id = str(info.get("chat_id") or chat_id or "")
+        prompt = str(info.get("prompt") or "")
+        kind = str(info.get("kind") or kind or "") or kind
     return {
         "busy": busy,
         "queued": queued,
@@ -119,6 +142,9 @@ def snapshot(username: str = "") -> dict[str, Any]:
         "kind": kind,
         "occupant": occupant_name or None,
         "mine": mine,
+        "chat_id": chat_id,
+        "prompt": prompt,
+        "live": live,
         "elapsed_s": int(now - occupant.started_at) if occupant else 0,
         "queued_elapsed_s": int(now - queued_at) if queued_at else 0,
         "hint": queue_text(
@@ -176,7 +202,9 @@ def queue_comment(info: Optional[dict[str, Any]] = None) -> str:
     return f"{QUEUE_MARK} {queue_text(info)}"
 
 
-async def try_acquire(username: str, *, kind: str = "chat") -> Optional[str]:
+async def try_acquire(
+    username: str, *, kind: str = "chat", chat_id: str = ""
+) -> Optional[str]:
     """Take the slot if nothing else is waiting or running."""
     global _occupant
     async with _cond:
@@ -187,18 +215,20 @@ async def try_acquire(username: str, *, kind: str = "chat") -> Optional[str]:
             username=username or "",
             started_at=time.time(),
             kind=kind,
+            chat_id=chat_id or "",
         )
         _occupant = occupant
         return occupant.id
 
 
-async def enqueue(username: str, *, kind: str = "chat") -> Waiter:
+async def enqueue(username: str, *, kind: str = "chat", chat_id: str = "") -> Waiter:
     async with _cond:
         waiter = Waiter(
             id=uuid4().hex,
             username=username or "",
             queued_at=time.time(),
             kind=kind,
+            chat_id=chat_id or "",
         )
         _waiters.append(waiter)
         return waiter
@@ -219,6 +249,7 @@ async def promote(waiter: Waiter) -> Optional[str]:
             username=waiter.username,
             started_at=time.time(),
             kind=waiter.kind,
+            chat_id=waiter.chat_id,
         )
         _occupant = occupant
         return occupant.id
@@ -252,14 +283,18 @@ def reset_for_tests() -> None:
     global _occupant
     _occupant = None
     _waiters.clear()
+    from ui.flight import reset_for_tests as reset_flights
+
+    reset_flights()
 
 
 class StackGate:
     """One UI chat or GPU request: take the GPU slot or wait in line."""
 
-    def __init__(self, username: str, *, kind: str = "chat"):
+    def __init__(self, username: str, *, kind: str = "chat", chat_id: str = ""):
         self.username = username or ""
         self.kind = kind
+        self.chat_id = chat_id or ""
         self.occupant_id: Optional[str] = None
         self.waiter: Optional[Waiter] = None
 
@@ -268,10 +303,14 @@ class StackGate:
         if self.occupant_id:
             return None
         if self.waiter is None:
-            self.occupant_id = await try_acquire(self.username, kind=self.kind)
+            self.occupant_id = await try_acquire(
+                self.username, kind=self.kind, chat_id=self.chat_id
+            )
             if self.occupant_id:
                 return None
-            self.waiter = await enqueue(self.username, kind=self.kind)
+            self.waiter = await enqueue(
+                self.username, kind=self.kind, chat_id=self.chat_id
+            )
         await disconnect_handler.poll()
         occupant_id = await promote(self.waiter)
         if occupant_id:
