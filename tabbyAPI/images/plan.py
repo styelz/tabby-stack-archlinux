@@ -46,17 +46,20 @@ MIXED_PLAN_SCHEMA = {
 }
 CLASSIFY_SYSTEM = (
     "You organize image work for a local GPU. JSON only, no markdown. "
-    "Read the whole conversation, especially This turn and any files already "
-    "generated in this chat.\n"
+    "Read the whole conversation, especially This turn, the last assistant "
+    "plan, and any files already in the project or generated in this chat.\n"
     "action:\n"
-    "- generate: they want NEW raster PNGs rendered now (create, draw, redo, "
-    "recreate, replace, or improve photos/logos/icons as part of a page or "
-    "app). Fill images with one object per file.\n"
-    "- reuse: they only want existing PNGs used in HTML/CSS/the page "
-    "(implement, add, wire, point img src, put the new images on the page). "
-    "images must be []. Do not render.\n"
-    "- none: ordinary coding, questions, or a single standalone "
-    "generate-an-image line with no website/page. images must be [].\n"
+    "- generate: this turn (or the approved plan, if This turn is Implement "
+    "the approved plan) explicitly asks to render NEW rasters now: generate/"
+    "draw/render/recreate/replace a picture, qwen-image:, a new logo, or a "
+    "new hero photo. Fill images with one object per new file. Do not infer "
+    "generate from a landing page, website, or HTML/CSS that mentions a logo "
+    "or header. Those are page parts.\n"
+    "- reuse: files already exist (Already in the project / Already generated) "
+    "and they only want them used in HTML/CSS. images must be []. Do not render.\n"
+    "- none: ordinary coding, CSS/layout/overlay/opacity/z-index, an image "
+    "that is not showing because of CSS, Build of a CSS plan, questions, or "
+    "a standalone generate-an-image line with no website/page. images must be [].\n"
     "images (generate only): filename is a basename like logo.png or mars.png, "
     "or a project path like pbptours/images/logo.png. prompt is the full Comfy "
     "prompt. Logos, wordmarks, posters, buttons, and readable text start with "
@@ -140,9 +143,13 @@ def classify_blob(data, prior_facts: str = "") -> str:
     from common.phrase_switch import last_user_text
 
     chunks: list[str] = []
-    if prior_facts:
-        chunks.append(f"Already generated in this chat:\n{prior_facts}")
+    facts = (prior_facts or "").strip()
+    if facts:
+        if not facts.lower().startswith("already"):
+            facts = f"Already generated in this chat:\n{facts}"
+        chunks.append(facts)
     history: list[str] = []
+    last_assistant = ""
     for message in getattr(data, "messages", None) or []:
         role = (getattr(message, "role", None) or "").lower()
         text = _content_text(getattr(message, "content", None)).strip()
@@ -150,8 +157,12 @@ def classify_blob(data, prior_facts: str = "") -> str:
             continue
         if role == "user":
             history.append(f"user: {text[:2000]}")
-        elif role == "assistant" and "tabby-image-job:" in text:
-            history.append(f"assistant: {text[:500]}")
+        elif role == "assistant":
+            last_assistant = text
+            if "tabby-image-job:" in text:
+                history.append(f"assistant: {text[:500]}")
+    if last_assistant and "tabby-image-job:" not in last_assistant:
+        history.append(f"assistant: {last_assistant[:2000]}")
     if history:
         chunks.append("Conversation:\n" + "\n".join(history[-8:]))
     this_turn = (last_user_text(data) or "").strip()

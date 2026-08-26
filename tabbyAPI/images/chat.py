@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from typing import Optional
 
 from common.logger import xlogger
@@ -47,11 +49,150 @@ FILE_WRITE_NAMES = (
     "edit_file",
 )
 READONLY_AGENTS = frozenset({"ask", "plan"})
+BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
+_HERO_STEMS = frozenset(
+    {"header", "hero", "banner", "hero-background", "hero_background"}
+)
+_EXPLICIT_NEW_RE = re.compile(
+    r"(?is)(?:"
+    r"qwen-image:|"
+    r"\b(?:generate|draw|render)\s+an?\s+(?:image|picture|photo|pic)\b|"
+    r"\b(?:redo|recreate)\b|"
+    r"\breplace\s+the\s+(?:logo|hero(?:\s+(?:image|photo))?|header\s+(?:image|photo)|image|photo)\b|"
+    r"\bnew\s+(?:logo|hero(?:\s+photo)?|header\s+photo)\b"
+    r")"
+)
+_RASTER_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 
 
 def _readonly_agent(agent: str | None) -> bool:
     """UI Ask/Plan: inspect only. Do not start Comfy or write files."""
     return str(agent or "").strip().lower() in READONLY_AGENTS
+
+
+def workspace_raster_paths(owner: str | None, chat_id: str | None) -> list[str]:
+    """Relative image paths already in this UI Code workspace."""
+    if not owner or not chat_id:
+        return []
+    try:
+        from ui.workspace import IMAGE_SUFFIXES, list_files
+    except Exception:
+        return []
+    try:
+        rows = list_files(owner, chat_id)
+    except Exception:
+        return []
+    suffixes = IMAGE_SUFFIXES or _RASTER_SUFFIXES
+    found: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("path") or "").strip().replace("\\", "/")
+        if not path:
+            continue
+        kind = str(row.get("kind") or "")
+        if kind == "image" or Path(path).suffix.lower() in suffixes:
+            found.append(path)
+    return found
+
+
+def workspace_raster_facts(paths: list[str]) -> str:
+    if not paths:
+        return ""
+    return "Already in the project: " + ", ".join(paths) + "."
+
+
+def _raster_stem(path: str) -> str:
+    return Path(str(path or "").replace("\\", "/")).stem.lower().replace("_", "-")
+
+
+def _dest_exists(dest: str, existing: list[str]) -> bool:
+    wanted = str(dest or "").strip().replace("\\", "/").lstrip("/")
+    if not wanted or not existing:
+        return False
+    dest_name = Path(wanted).name.lower()
+    dest_stem = _raster_stem(wanted)
+    dest_stems = {dest_stem}
+    if dest_stem in _HERO_STEMS:
+        dest_stems |= _HERO_STEMS
+    for path in existing:
+        have = str(path or "").strip().replace("\\", "/").lstrip("/")
+        if not have:
+            continue
+        if have == wanted or have.endswith("/" + wanted) or wanted.endswith("/" + have):
+            return True
+        name = Path(have).name.lower()
+        if name == dest_name:
+            return True
+        stem = _raster_stem(have)
+        if stem == dest_stem:
+            return True
+        if dest_stem in dest_stems and stem in dest_stems:
+            return True
+    return False
+
+
+def _existing_raster_paths(job, workspace_paths: list[str]) -> list[str]:
+    found = list(workspace_paths)
+    if job is None:
+        return found
+    for _url, dest in living_download_pairs(job):
+        if dest:
+            found.append(dest)
+    return found
+
+
+def _all_dests_exist(items: list[dict[str, str]], existing: list[str]) -> bool:
+    dests = [str(row.get("output_path") or "").strip() for row in items or []]
+    dests = [dest for dest in dests if dest]
+    if not dests or not existing:
+        return False
+    return all(_dest_exists(dest, existing) for dest in dests)
+
+
+def _last_assistant_text(data: ChatCompletionRequest) -> str:
+    for message in reversed(data.messages or []):
+        if (message.role or "").lower() == "assistant":
+            return _content_text(message.content)
+    return ""
+
+
+def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
+    from common.phrase_switch import last_user_text, requested_image_prompt
+
+    if requested_image_prompt(data, explicit_only=True):
+        return True
+    text = (last_user_text(data) or "").strip()
+    if _EXPLICIT_NEW_RE.search(text):
+        return True
+    if text == BUILD_PROMPT:
+        return bool(_EXPLICIT_NEW_RE.search(_last_assistant_text(data) or ""))
+    return False
+
+
+def _classify_prior_facts(job, workspace_paths: list[str]) -> str:
+    parts: list[str] = []
+    if job and job.status in ("done", "error"):
+        dests = dest_fact_list(living_download_pairs(job))
+        if dests:
+            parts.append(dests)
+    raster = workspace_raster_facts(workspace_paths)
+    if raster:
+        parts.append(raster)
+    return "\n".join(parts)
+
+
+def _inject_existing_image_facts(
+    data: ChatCompletionRequest, job, workspace_paths: list[str]
+) -> None:
+    if job:
+        _inject_dest_facts(data, job)
+    facts = workspace_raster_facts(workspace_paths)
+    if facts:
+        _append_user_facts(
+            data,
+            facts + " Use those local paths. Do not generate images.",
+        )
 
 
 def _content_text(content) -> str:
@@ -630,8 +771,10 @@ async def handle(
     """Mixed generate writes the page first, then holds until PNGs exist.
 
     File-write tool calls go out while the LLM stays loaded. Comfy starts
-    only after a coding turn has no more file tools. Always wins over the
-    9B while this conversation's job is still running.
+    only after a coding turn has no more file tools, and only when this
+    turn explicitly asks for new rasters. Existing workspace or job dests
+    are reuse. Always wins over the 9B while this conversation's job is
+    still running.
 
     console=True (management UI) still generates images but never emits
     Write/StrReplace tool calls unless code=True, which writes into a
@@ -709,15 +852,22 @@ async def handle(
         return None
 
     if llm_ready:
-        prior = ""
-        if job and job.status in ("done", "error"):
-            prior = dest_fact_list(living_download_pairs(job))
+        rasters = workspace_raster_paths(owner, chat_id) if workspace else []
+        prior = _classify_prior_facts(job, rasters)
         plan = await classify_image_turn(
             data, disconnect_handler=disconnect_handler, prior_facts=prior
         )
         if plan.action == "reuse":
-            if job:
-                _inject_dest_facts(data, job)
+            _inject_existing_image_facts(data, job, rasters)
+            return None
+        existing = _existing_raster_paths(job, rasters)
+        if (
+            plan.action == "generate"
+            and plan.items
+            and _all_dests_exist(plan.items, existing)
+            and not _explicit_new_rasters(data)
+        ):
+            _inject_existing_image_facts(data, job, rasters)
             return None
         if plan.action == "generate" and plan.items:
             busy = active_mcp_image_job()
