@@ -1470,6 +1470,17 @@ function mountChat(root) {
     return window.TabbyHighlight ? window.TabbyHighlight.pathLanguage(path) : "";
   }
 
+  function editorLangLabel(tab, view) {
+    if (isHistoryTab(tab)) return "vs previous";
+    const suffix = fileSuffix(tab.path).replace(/^\./, "");
+    if (view === "image" || tab.kind === "image" || IMAGE_SUFFIXES.has(fileSuffix(tab.path))) {
+      if (suffix === "jpg" || suffix === "jpeg") return "jpeg";
+      return suffix || "image";
+    }
+    if (view === "binary") return suffix || "binary";
+    return fileLang(tab.path) || (window.TabbyMonaco ? window.TabbyMonaco.languageFor(tab.path) : "");
+  }
+
   function fileHighlight(path, text) {
     return window.TabbyHighlight
       ? window.TabbyHighlight.highlight(fileLang(path), text)
@@ -1627,9 +1638,7 @@ function mountChat(root) {
     }
     editorPane.dataset.key = key;
     const title = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
-    const lang = isHistoryTab(tab)
-      ? "vs previous"
-      : fileLang(tab.path) || (window.TabbyMonaco ? window.TabbyMonaco.languageFor(tab.path) : "");
+    const lang = editorLangLabel(tab, view);
     const tools =
       view === "ready" || view === "diff"
         ? (view === "diff"
