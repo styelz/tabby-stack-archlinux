@@ -2492,6 +2492,7 @@ button.chip {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-elev);

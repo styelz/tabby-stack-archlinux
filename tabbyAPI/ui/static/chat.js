@@ -2497,8 +2497,11 @@ function mountChat(root) {
     if (window.TabbyMonaco) window.TabbyMonaco.dispose();
     // display:none drops the scroll offset, so put the log back where it was.
     if (logWasHidden && showLog) {
-      log.scrollTop = followLog ? log.scrollHeight : logScroll;
-      paintJump();
+      if (followLog) stickLog();
+      else {
+        log.scrollTop = logScroll;
+        paintJump();
+      }
     }
   }
 
@@ -3774,9 +3777,11 @@ function mountChat(root) {
   }
 
   let followLog = true;
+  let pinningLog = false;
+  let pinLogRaf = 0;
 
   function nearBottom() {
-    return log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
   }
 
   function paintJump() {
@@ -3785,10 +3790,39 @@ function mountChat(root) {
     jumpBtn.hidden = !overflow || followLog || nearBottom();
   }
 
+  function pinLogNow() {
+    pinningLog = true;
+    log.scrollTop = log.scrollHeight;
+    pinningLog = false;
+  }
+
   function stickLog(force) {
     if (force) followLog = true;
-    if (followLog) log.scrollTop = log.scrollHeight;
-    paintJump();
+    if (!followLog) {
+      paintJump();
+      return;
+    }
+    pinLogNow();
+    if (pinLogRaf) cancelAnimationFrame(pinLogRaf);
+    pinLogRaf = requestAnimationFrame(() => {
+      pinLogRaf = requestAnimationFrame(() => {
+        pinLogRaf = 0;
+        if (followLog) pinLogNow();
+        paintJump();
+      });
+    });
+  }
+
+  const logSizeObs = window.ResizeObserver
+    ? new ResizeObserver(() => {
+        if (followLog) stickLog();
+        else paintJump();
+      })
+    : null;
+  if (logSizeObs) logSizeObs.observe(log);
+
+  function watchLogChild(node) {
+    if (logSizeObs && node) logSizeObs.observe(node);
   }
 
   function resizeInput() {
@@ -5734,6 +5768,7 @@ function mountChat(root) {
       attachSwitchLlm(turn.bubble || turn.node, text);
       attachMsgActions(turn.node, "assistant", idx, text);
       attachPlanBuild(turn.node, idx);
+      watchLogChild(turn.node);
       if (stick !== false) stickLog(true);
       return turn.node;
     }
@@ -5774,6 +5809,7 @@ function mountChat(root) {
     row.appendChild(node);
     attachMsgActions(row, "user", idx, text);
     log.appendChild(row);
+    watchLogChild(row);
     if (stick !== false) stickLog(true);
     return row;
   }
@@ -6082,6 +6118,7 @@ function mountChat(root) {
     });
 
     log.appendChild(turn);
+    watchLogChild(turn);
 
     return {
       node: turn,
@@ -6266,6 +6303,10 @@ function mountChat(root) {
   }
 
   function renderLog(stickToEnd) {
+    if (logSizeObs) {
+      logSizeObs.disconnect();
+      logSizeObs.observe(log);
+    }
     log.replaceChildren();
     messages.forEach((item, idx) => {
       if (item.role === "user") addBubble("user", item.content, false, null, idx, item);
@@ -6273,6 +6314,7 @@ function mountChat(root) {
     });
     if (inFlight && store.activeId === flightChatId && flightWorking && flightWorking.isLive()) {
       log.appendChild(flightWorking.node);
+      watchLogChild(flightWorking.node);
     }
     paintEmpty();
     paintFindHits();
@@ -7582,6 +7624,7 @@ function mountChat(root) {
       if (store.activeId === chatId && !stoppedEmpty) {
         attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
         attachPlanBuild(working.node, messages.length - 1);
+        stickLog();
       }
     } else if (store.activeId === chatId) {
       persist();
@@ -8340,9 +8383,13 @@ function mountChat(root) {
     input.focus();
   });
   log.addEventListener("scroll", () => {
+    if (pinningLog) return;
     followLog = nearBottom();
     paintJump();
   }, { passive: true });
+  log.addEventListener("load", (event) => {
+    if (event.target && event.target.tagName === "IMG" && followLog) stickLog();
+  }, true);
   if (jumpBtn) {
     jumpBtn.addEventListener("click", () => {
       stickLog(true);
@@ -9158,6 +9205,8 @@ function mountChat(root) {
       hideStackQueue();
       if (filesRefreshTimer) clearTimeout(filesRefreshTimer);
       if (highlightFrame) cancelAnimationFrame(highlightFrame);
+      if (pinLogRaf) cancelAnimationFrame(pinLogRaf);
+      if (logSizeObs) logSizeObs.disconnect();
       persist();
       hideHistoryMenu();
       hideMoreMenu();
