@@ -631,7 +631,7 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
 
 def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str, Any]:
     """Chat sanitizer, but force the Code-mode system prompt and keep chat_id."""
-    from ui.code_agent import code_system_for
+    from ui.code_agent import code_system_for, normalize_agent
     from ui.workspace import safe_name
 
     payload = sanitize_chat_payload(body)
@@ -639,9 +639,11 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
     if not raw_id:
         raise ValueError("chat_id is required in Code mode")
     chat_id = safe_name(raw_id)
+    agent = normalize_agent(body.get("agent"))
     messages = [item for item in payload["messages"] if item.get("role") != "system"]
-    messages.insert(0, {"role": "system", "content": code_system_for(username, chat_id)})
+    messages.insert(0, {"role": "system", "content": code_system_for(username, chat_id, agent)})
     payload["messages"] = messages
     payload["chat_id"] = chat_id
     payload["mode"] = "code"
+    payload["agent"] = agent
     return payload

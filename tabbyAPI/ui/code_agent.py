@@ -12,6 +12,7 @@ from ui import workspace
 
 MAX_CODE_TURNS = 16
 MAX_BRIEF_FILES = 80
+AGENT_KINDS = ("agent", "ask", "plan")
 CODE_SYSTEM = (
     "You are coding in a workspace project folder on this Tabby Stack host. "
     "This conversation is one thread in that workspace; extra chats share the "
@@ -27,6 +28,43 @@ CODE_SYSTEM = (
     "web-optimized files and their code references are updated after rendering. "
     "When you are done, give a short summary of what you wrote or optimized."
 )
+ASK_SYSTEM = (
+    "You are answering questions about a workspace project folder on this "
+    "Tabby Stack host. This conversation is one thread in that workspace; "
+    "extra chats share the same files. Use Read and List to inspect files. "
+    "Do not create, edit, delete, rename, or optimize files. Do not run Shell. "
+    "Do not implement changes. Answer clearly from the project."
+)
+PLAN_SYSTEM = (
+    "You are planning work in a workspace project folder on this Tabby Stack "
+    "host. This conversation is one thread in that workspace; extra chats "
+    "share the same files. Use Read and List if you need context. Do not "
+    "create, edit, delete, rename, or optimize files, and do not run Shell. "
+    "Write a concrete plan with steps. Do not implement. The user will click "
+    "Build when they want the plan carried out."
+)
+_MUTATE_KINDS = frozenset(
+    ("write", "replace", "delete", "rename", "optimize", "shell")
+)
+_READONLY_TOOLS = frozenset(("read", "list"))
+_READONLY_REFUSE = (
+    "This prompt mode is read-only. Use Read or List, or switch to Agent to "
+    "change files."
+)
+
+
+def normalize_agent(value: Any) -> str:
+    kind = str(value or "").strip().lower()
+    return kind if kind in AGENT_KINDS else "agent"
+
+
+def _system_for_agent(agent: str) -> str:
+    kind = normalize_agent(agent)
+    if kind == "ask":
+        return ASK_SYSTEM
+    if kind == "plan":
+        return PLAN_SYSTEM
+    return CODE_SYSTEM
 
 
 def workspace_file_brief(username: str, chat_id: str) -> str:
@@ -56,11 +94,12 @@ def workspace_file_brief(username: str, chat_id: str) -> str:
     return f"Workspace files ({count}): {text}."
 
 
-def code_system_for(username: str, chat_id: str) -> str:
+def code_system_for(username: str, chat_id: str, agent: str = "agent") -> str:
+    base = _system_for_agent(agent)
     brief = workspace_file_brief(username, chat_id)
     if not brief:
-        return CODE_SYSTEM
-    return f"{CODE_SYSTEM}\n\n{brief}"
+        return base
+    return f"{base}\n\n{brief}"
 
 
 _WRITE_NAMES = (
@@ -83,8 +122,8 @@ _OPTIMIZE_NAMES = ("optimizeimage", "optimize_image", "compress_image", "resize_
 _SHELL_NAMES = ("shell", "bash", "run_command", "run_terminal_cmd")
 
 
-def code_tool_specs() -> list[ToolSpec]:
-    return [
+def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
+    specs = [
         ToolSpec(
             type="function",
             function=Function(
@@ -248,6 +287,9 @@ def code_tool_specs() -> list[ToolSpec]:
             ),
         ),
     ]
+    if normalize_agent(agent) == "agent":
+        return specs
+    return [spec for spec in specs if _kind(spec.function.name) in _READONLY_TOOLS]
 
 
 def _arg_path(args: dict) -> str:
@@ -317,9 +359,17 @@ def _kind(name: str) -> str:
     return ""
 
 
-def execute_tool(username: str, chat_id: str, name: str, args: dict) -> tuple[str, str]:
+def execute_tool(
+    username: str,
+    chat_id: str,
+    name: str,
+    args: dict,
+    agent: str = "agent",
+) -> tuple[str, str]:
     """Run one tool. Returns (status_label, result_text)."""
     kind = _kind(name)
+    if normalize_agent(agent) != "agent" and kind in _MUTATE_KINDS:
+        return "Tool error", _READONLY_REFUSE
     rel = _arg_path(args)
     if kind == "shell":
         command = str(args.get("command") or args.get("cmd") or "").strip()
@@ -426,6 +476,7 @@ async def iter_code_turns(
     disconnect_handler,
     username: str,
     chat_id: str,
+    agent: str = "agent",
 ) -> AsyncIterator[tuple[str, Any]]:
     """Yield ('status', label) then ('done', text, written_paths)."""
     from common import model
@@ -446,11 +497,12 @@ async def iter_code_turns(
         yield ("done", "No model is loaded, so files were not written.", [])
         return
 
+    kind = normalize_agent(agent)
     working = data.model_copy(
         update={
             "stream": False,
             "n": 1,
-            "tools": code_tool_specs(),
+            "tools": code_tool_specs(kind),
             "tool_choice": "auto",
             "messages": list(data.messages or []),
         }
@@ -487,7 +539,7 @@ async def iter_code_turns(
         working.messages.append(message)
         for name, args, call_id in pairs:
             try:
-                label, result = execute_tool(username, chat_id, name, args)
+                label, result = execute_tool(username, chat_id, name, args, agent=kind)
             except (ValueError, FileNotFoundError, OSError) as exc:
                 label, result = "Tool error", str(exc)
             if (

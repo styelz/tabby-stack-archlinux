@@ -64,16 +64,25 @@ async def stream_code_only(
     disconnect_handler,
     username: str,
     chat_id: str,
+    agent: str = "agent",
 ):
-    from ui.code_agent import final_code_text, iter_code_turns
+    from ui.code_agent import final_code_text, iter_code_turns, normalize_agent
 
+    kind = normalize_agent(agent)
+    start = "Updating project"
+    if kind == "ask":
+        start = "Reading project"
+    elif kind == "plan":
+        start = "Planning"
     sync = data.model_copy(update={"stream": False})
 
     async def _body():
         text = ""
         written: list[str] = []
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
-        async for event in iter_code_turns(sync, disconnect_handler, username, chat_id):
+        yield ServerSentEvent(comment=f"{STATUS_MARK} {start}")
+        async for event in iter_code_turns(
+            sync, disconnect_handler, username, chat_id, agent=kind
+        ):
             if event[0] == "status":
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
             elif event[0] == "done":
@@ -90,7 +99,9 @@ async def stream_code_only(
         )
     text = ""
     written: list[str] = []
-    async for event in iter_code_turns(sync, disconnect_handler, username, chat_id):
+    async for event in iter_code_turns(
+        sync, disconnect_handler, username, chat_id, agent=kind
+    ):
         if event[0] == "done":
             text = event[1] or ""
             written = list(event[2] or [])
@@ -130,6 +141,7 @@ async def _run_console_work(
     saved_images: list,
     api_base: str,
     disconnect_handler,
+    agent: str = "agent",
 ):
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     await disconnect_handler.poll()
@@ -161,7 +173,9 @@ async def _run_console_work(
         return await llm_not_ready_response(data, console=True)
 
     if code and chat_id:
-        return await stream_code_only(data, disconnect_handler, username, chat_id)
+        return await stream_code_only(
+            data, disconnect_handler, username, chat_id, agent=agent
+        )
 
     await check_model_container()
     if not (model.container and getattr(model.container, "model_dir", None)):
@@ -215,6 +229,7 @@ async def _queued_console_events(
     disconnect_handler,
     gate: StackGate,
     first_info: dict[str, Any],
+    agent: str = "agent",
 ):
     try:
         info: dict[str, Any] | None = first_info
@@ -223,7 +238,15 @@ async def _queued_console_events(
             await wait_tick(1.0)
             info = await gate.step(disconnect_handler)
         result = await _run_console_work(
-            request, data, username, chat_id, code, saved_images, api_base, disconnect_handler
+            request,
+            data,
+            username,
+            chat_id,
+            code,
+            saved_images,
+            api_base,
+            disconnect_handler,
+            agent,
         )
         if isinstance(result, EventSourceResponse):
             async for item in _iter_sse(result):
@@ -257,6 +280,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         raise HTTPException(400, str(exc)) from exc
 
     chat_id = str(payload.get("chat_id") or "") if code else ""
+    agent = str(payload.get("agent") or "agent") if code else "agent"
     data = completion_request_from_payload(payload)
     saved_images = materialize_pasted_images(data)
     api_base = public_api_base(request)
@@ -278,6 +302,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
                 saved_images,
                 api_base,
                 disconnect_handler,
+                agent,
             )
         except Exception:
             await gate.release()
@@ -300,6 +325,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
                 disconnect_handler,
                 gate,
                 info,
+                agent,
             )
         )
 
@@ -310,7 +336,15 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
                 break
             await wait_tick(1.0)
         result = await _run_console_work(
-            request, data, username, chat_id, code, saved_images, api_base, disconnect_handler
+            request,
+            data,
+            username,
+            chat_id,
+            code,
+            saved_images,
+            api_base,
+            disconnect_handler,
+            agent,
         )
     except Exception:
         await gate.release()

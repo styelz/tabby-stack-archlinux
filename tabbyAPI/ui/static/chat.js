@@ -225,6 +225,14 @@ function mountChat(root) {
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-label="Voice input" title="Voice input">🎤</button>
               <span id="chat-count"></span>
               <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
+              <div class="chat-agent" id="chat-agent" hidden>
+                <button type="button" class="btn ghost chat-agent-btn" id="chat-agent-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Code prompt mode">Agent</button>
+                <div class="chat-agent-menu" id="chat-agent-menu" hidden role="menu">
+                  <button type="button" role="menuitem" data-agent="agent">Agent</button>
+                  <button type="button" role="menuitem" data-agent="ask">Ask</button>
+                  <button type="button" role="menuitem" data-agent="plan">Plan</button>
+                </div>
+              </div>
               <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
             </div>
           </form>
@@ -288,6 +296,9 @@ function mountChat(root) {
   const form = root.querySelector("#chat-form");
   const input = root.querySelector("#chat-input");
   const sendBtn = root.querySelector("#chat-send");
+  const agentWrap = root.querySelector("#chat-agent");
+  const agentBtn = root.querySelector("#chat-agent-btn");
+  const agentMenu = root.querySelector("#chat-agent-menu");
   const queueBar = root.querySelector("#chat-queue");
   const queueTextEl = root.querySelector("#chat-queue-text");
   const steerBtn = root.querySelector("#chat-steer");
@@ -420,6 +431,38 @@ function mountChat(root) {
   const titleEl = root.querySelector("#chat-title");
   const SYSTEM = { role: "system", content: "Console chat. No file tools." };
   const CODE_PLACEHOLDER = "Describe the page or files to create, or attach files from the Files pane.";
+  const ASK_PLACEHOLDER = "Ask about the project. Files will not be changed.";
+  const PLAN_PLACEHOLDER = "Describe what to plan. Review it, then click Build to implement.";
+  const BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation.";
+  const AGENT_KEY = "tabby-ui-code-agent";
+  const AGENT_LABELS = { agent: "Agent", ask: "Ask", plan: "Plan" };
+
+  function normalizeAgent(value) {
+    const kind = String(value || "").trim().toLowerCase();
+    return AGENT_LABELS[kind] ? kind : "agent";
+  }
+
+  function readCodeAgent() {
+    try {
+      return normalizeAgent(localStorage.getItem(AGENT_KEY));
+    } catch {
+      return "agent";
+    }
+  }
+
+  let codeAgent = readCodeAgent();
+
+  function hideAgentMenu() {
+    if (!agentMenu || !agentBtn) return;
+    agentMenu.hidden = true;
+    agentBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function codePlaceholder() {
+    if (codeAgent === "ask") return ASK_PLACEHOLDER;
+    if (codeAgent === "plan") return PLAN_PLACEHOLDER;
+    return CODE_PLACEHOLDER;
+  }
   const TEXT_SUFFIXES = new Set([
     ".html", ".htm", ".css", ".js", ".mjs", ".json", ".jsx", ".ts", ".tsx",
     ".md", ".txt", ".svg", ".xml", ".yml", ".yaml", ".csv", ".py", ".sh",
@@ -662,6 +705,8 @@ function mountChat(root) {
         if (Number.isFinite(elapsed) && elapsed > 0) out.elapsed_s = Math.round(elapsed);
         const status = tabbyCleanStatusLabel(item.status_label);
         if (status) out.status_label = status;
+        const agent = normalizeAgent(item.agent);
+        if (agent === "ask" || agent === "plan") out.agent = agent;
       }
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
@@ -1171,6 +1216,34 @@ function mountChat(root) {
     if (newBtn) newBtn.textContent = code ? "New workspace" : "New chat";
     paintTabs();
     paintFilesToggle();
+    paintCodeAgent();
+  }
+
+  function paintCodeAgent() {
+    const code = activeMode() === "code";
+    if (agentWrap) agentWrap.hidden = !code;
+    if (agentBtn) {
+      const label = AGENT_LABELS[codeAgent] || "Agent";
+      agentBtn.textContent = label;
+      agentBtn.setAttribute("aria-label", `Code prompt mode: ${label}`);
+    }
+    if (agentMenu) {
+      agentMenu.querySelectorAll("[data-agent]").forEach((item) => {
+        item.classList.toggle("is-on", item.dataset.agent === codeAgent);
+      });
+    }
+  }
+
+  function setCodeAgent(agent) {
+    codeAgent = normalizeAgent(agent);
+    try {
+      localStorage.setItem(AGENT_KEY, codeAgent);
+    } catch {
+      /* ignore */
+    }
+    hideAgentMenu();
+    paintCodeAgent();
+    paintCompose();
   }
 
   function paintFilesToggle() {
@@ -3752,6 +3825,7 @@ function mountChat(root) {
     hideFilesMoreMenu();
     hideAttachMenu();
     hideUploadMenu();
+    hideAgentMenu();
     if (TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
   }
 
@@ -4346,6 +4420,44 @@ function mountChat(root) {
       meta.appendChild(actions);
     }
     host.appendChild(meta);
+    attachPlanBuild(host, idx);
+  }
+
+  function canBuildPlan(idx) {
+    if (activeMode() !== "code") return false;
+    if (modelLoading) return false;
+    const item = messages[idx];
+    if (!item || item.role !== "assistant") return false;
+    if (normalizeAgent(item.agent) !== "plan") return false;
+    return idx === lastAssistantIndex();
+  }
+
+  function attachPlanBuild(host, idx) {
+    if (!host) return;
+    host.querySelectorAll(".chat-plan-build").forEach((node) => node.remove());
+    if (!canBuildPlan(idx)) return;
+    const bar = document.createElement("div");
+    bar.className = "chat-plan-build";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn primary";
+    btn.dataset.act = "build";
+    btn.dataset.idx = String(idx);
+    btn.textContent = "Build";
+    btn.title = "Implement this plan";
+    btn.setAttribute("aria-label", "Implement this plan");
+    bar.appendChild(btn);
+    host.appendChild(bar);
+  }
+
+  function buildApprovedPlan() {
+    if (inFlight || modelLoading) return;
+    setCodeAgent("agent");
+    hidePopovers();
+    runLoop(BUILD_PROMPT).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+      persist();
+    });
   }
 
   function cancelEdit() {
@@ -5615,6 +5727,7 @@ function mountChat(root) {
       if (idx != null && idx >= 0) turn.node.dataset.msgIdx = String(idx);
       attachSwitchLlm(turn.bubble || turn.node, text);
       attachMsgActions(turn.node, "assistant", idx, text);
+      attachPlanBuild(turn.node, idx);
       if (stick !== false) stickLog(true);
       return turn.node;
     }
@@ -6440,6 +6553,15 @@ function mountChat(root) {
     ) {
       hideAttachMenu();
     }
+    if (
+      agentMenu &&
+      agentBtn &&
+      !agentMenu.hidden &&
+      !agentMenu.contains(target) &&
+      !agentBtn.contains(target)
+    ) {
+      hideAgentMenu();
+    }
   }
 
   function editorHasFocus() {
@@ -7218,6 +7340,8 @@ function mountChat(root) {
       sendBtn.textContent = "Loading";
       input.disabled = true;
       input.placeholder = loadingHintText || "The model is loading. Chat is paused until it is ready.";
+      if (agentBtn) agentBtn.disabled = true;
+      paintCodeAgent();
       if (editBar) editBar.hidden = pendingEditIndex < 0;
       return;
     }
@@ -7251,8 +7375,10 @@ function mountChat(root) {
         : comfyOwnsGpu()
           ? "Describe a picture, or type a question to switch back to the LLM."
           : activeMode() === "code"
-            ? CODE_PLACEHOLDER
+            ? codePlaceholder()
             : DEFAULT_PLACEHOLDER;
+    if (agentBtn) agentBtn.disabled = Boolean(modelLoading || away);
+    paintCodeAgent();
     if (editBar) editBar.hidden = pendingEditIndex < 0;
     paintComfyHint();
   }
@@ -7274,6 +7400,7 @@ function mountChat(root) {
 
   async function send(text, opts) {
     const replay = Boolean(opts && opts.replay);
+    const sendAgent = activeMode() === "code" ? codeAgent : "";
     const chatId = store.activeId;
     flightChatId = chatId;
     abortController = new AbortController();
@@ -7315,9 +7442,10 @@ function mountChat(root) {
     const outbound = outboundMessages();
     const body = { messages: outbound, stream: true };
     if (settings.temperature != null) body.temperature = settings.temperature;
-    if (activeMode() === "code") {
+    if (sendAgent) {
       body.mode = "code";
       body.chat_id = activeWorkspaceId();
+      body.agent = sendAgent;
     }
     try {
       const response = await fetch(TabbyUI.path("chat"), {
@@ -7439,9 +7567,11 @@ function mountChat(root) {
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
       if (statusLabel) item.status_label = statusLabel;
+      if (sendAgent === "ask" || sendAgent === "plan") item.agent = sendAgent;
       appendAssistantToChat(chatId, item);
       if (store.activeId === chatId && !stoppedEmpty) {
         attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
+        attachPlanBuild(working.node, messages.length - 1);
       }
     } else if (store.activeId === chatId) {
       persist();
@@ -7644,6 +7774,7 @@ function mountChat(root) {
       hideHistoryMenu();
       hideMenu();
       hideMoreMenu();
+      hideAgentMenu();
       if (pendingEditIndex >= 0) cancelEdit();
       return;
     }
@@ -8179,6 +8310,7 @@ function mountChat(root) {
       if (act === "delete") deleteTurn(idx);
       if (act === "split") splitAfterTurn(idx);
       if (act === "regen" || act === "retry") regenerateLast();
+      if (act === "build") buildApprovedPlan();
       return;
     }
     const btn = event.target.closest(".md-code-copy");
@@ -8297,6 +8429,20 @@ function mountChat(root) {
     if (!btn || modelLoading) return;
     setChatMode(btn.dataset.mode);
   });
+  if (agentBtn && agentMenu) {
+    agentBtn.addEventListener("click", () => {
+      if (modelLoading || agentBtn.disabled) return;
+      const open = agentMenu.hidden;
+      hidePopovers();
+      agentMenu.hidden = !open;
+      agentBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    agentMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-agent]");
+      if (!btn) return;
+      setCodeAgent(btn.dataset.agent);
+    });
+  }
   if (filesTree) {
     filesTree.addEventListener("dragstart", (event) => {
       const row = event.target.closest(".chat-file");
