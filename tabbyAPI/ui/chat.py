@@ -250,7 +250,9 @@ def _sse(content):
 async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
     code = is_code_request(body)
     try:
-        payload = sanitize_code_payload(body) if code else sanitize_chat_payload(body)
+        payload = (
+            sanitize_code_payload(body, username) if code else sanitize_chat_payload(body)
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

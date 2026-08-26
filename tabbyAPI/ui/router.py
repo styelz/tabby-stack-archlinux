@@ -368,7 +368,11 @@ async def ui_workspaces(_user: str = Depends(require_ui_user)):
     from ui.chats import load_store
     from ui.workspace import chats_with_files
 
-    ids = [str(chat.get("id") or "") for chat in load_store(_user).get("chats") or []]
+    ids = [
+        str(chat.get("id") or "")
+        for chat in load_store(_user).get("chats") or []
+        if isinstance(chat, dict) and not str(chat.get("parentId") or "").strip()
+    ]
     return {"code": chats_with_files(_user, ids)}
 
 

@@ -170,6 +170,23 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function openTerm()", self.src)
         self.assertIn("window.TabbyLsp", self.src)
 
+    def test_code_mode_workspaces_nest_chats(self):
+        self.assertIn("function workspaceId(", self.src)
+        self.assertIn("function chatParentId(", self.src)
+        self.assertIn("function startNestedChat(", self.src)
+        self.assertIn("function listedWorkspaceRows(", self.src)
+        self.assertIn("function chatsShareWorkspace(", self.src)
+        self.assertIn("New workspace", self.src)
+        self.assertIn("New chat in this workspace", self.src)
+        self.assertIn('data-nav="thread"', self.src)
+        self.assertIn('data-nav="twist"', self.src)
+        self.assertIn("body.chat_id = activeWorkspaceId()", self.src)
+        self.assertIn("parentId", self.src)
+        self.assertIn("isWorkspaceRoot(item)", self.src)
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        self.assertIn(".chat-nav.is-child", css)
+        self.assertIn(".chat-nav.is-workspace", css)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,20 +11,57 @@ from endpoints.OAI.types.tools import Function, ToolSpec
 from ui import workspace
 
 MAX_CODE_TURNS = 16
+MAX_BRIEF_FILES = 80
 CODE_SYSTEM = (
-    "You are coding in a per-chat project folder on this Tabby Stack host. "
-    "The user can create, upload, and attach files; attached files are included "
-    "in their message. Use the file tools (Write, StrReplace, Read, Rename, "
-    "Delete, List) to create and edit text files. Use OptimizeImage to compress, resize, or "
-    "convert project images. Use Shell to run project commands in this chat's "
-    "container (cwd is /work). Do not create placeholder files when an attached "
-    "project image can be processed with OptimizeImage. Do not dump whole files "
-    "in chat. Do not try to run the site for the user; they have preview. Point img src "
-    "at the planned local paths. Generated assets for an HTML website are "
-    "automatically converted to web-optimized files and their code references "
-    "are updated after rendering. When you are done, give a short summary of "
-    "what you wrote or optimized."
+    "You are coding in a workspace project folder on this Tabby Stack host. "
+    "This conversation is one thread in that workspace; extra chats share the "
+    "same files. The user can create, upload, and attach files; attached files "
+    "are included in their message. Use the file tools (Write, StrReplace, Read, "
+    "Rename, Delete, List) to create and edit text files. Use OptimizeImage to "
+    "compress, resize, or convert project images. Use Shell to run project "
+    "commands in this workspace's container (cwd is /work). Do not create "
+    "placeholder files when an attached project image can be processed with "
+    "OptimizeImage. Do not dump whole files in chat. Do not try to run the site "
+    "for the user; they have preview. Point img src at the planned local paths. "
+    "Generated assets for an HTML website are automatically converted to "
+    "web-optimized files and their code references are updated after rendering. "
+    "When you are done, give a short summary of what you wrote or optimized."
 )
+
+
+def workspace_file_brief(username: str, chat_id: str) -> str:
+    """Short path list so a fresh workspace thread is not blind."""
+    if not username or not chat_id:
+        return ""
+    try:
+        data = workspace.listing(username, chat_id)
+    except Exception:
+        return ""
+    files = [
+        str(row.get("path") or "")
+        for row in data.get("files") or []
+        if isinstance(row, dict) and row.get("kind") != "dir" and row.get("path")
+    ]
+    if not files:
+        return "Workspace files: (empty project)."
+    files.sort()
+    extra = 0
+    if len(files) > MAX_BRIEF_FILES:
+        extra = len(files) - MAX_BRIEF_FILES
+        files = files[:MAX_BRIEF_FILES]
+    count = int(data.get("count") or len(files) + extra)
+    text = ", ".join(files)
+    if extra:
+        text += f", …and {extra} more"
+    return f"Workspace files ({count}): {text}."
+
+
+def code_system_for(username: str, chat_id: str) -> str:
+    brief = workspace_file_brief(username, chat_id)
+    if not brief:
+        return CODE_SYSTEM
+    return f"{CODE_SYSTEM}\n\n{brief}"
+
 
 _WRITE_NAMES = (
     "write",
@@ -52,7 +89,7 @@ def code_tool_specs() -> list[ToolSpec]:
             type="function",
             function=Function(
                 name="Write",
-                description="Create or overwrite a text file in this chat's project.",
+                    description="Create or overwrite a text file in this workspace's project.",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -195,7 +232,7 @@ def code_tool_specs() -> list[ToolSpec]:
             function=Function(
                 name="Shell",
                 description=(
-                    "Run a command in this chat's project container. cwd is /work. "
+                    "Run a command in this workspace's project container. cwd is /work. "
                     "Use for installs, builds, and checks. Prefer file tools for edits."
                 ),
                 parameters={

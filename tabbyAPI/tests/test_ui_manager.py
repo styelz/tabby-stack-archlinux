@@ -103,6 +103,34 @@ class UiManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             manager.sanitize_chat_payload({"messages": []})
 
+    def test_sanitize_code_requires_chat_id_and_names_workspace(self):
+        with self.assertRaises(ValueError):
+            manager.sanitize_code_payload({"messages": [{"role": "user", "content": "hi"}]})
+        payload = manager.sanitize_code_payload(
+            {"messages": [{"role": "user", "content": "hi"}], "chat_id": "w1"}
+        )
+        self.assertEqual(payload["chat_id"], "w1")
+        self.assertEqual(payload["mode"], "code")
+        self.assertIn("workspace", payload["messages"][0]["content"].lower())
+        self.assertNotIn("per-chat project", payload["messages"][0]["content"])
+
+    def test_sanitize_code_appends_workspace_file_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            from ui import workspace
+
+            workspace.set_workspaces_dir(folder)
+            try:
+                workspace.write_text("u", "w1", "index.html", "<p>hi</p>")
+                payload = manager.sanitize_code_payload(
+                    {"messages": [{"role": "user", "content": "hi"}], "chat_id": "w1"},
+                    username="u",
+                )
+            finally:
+                workspace.set_workspaces_dir(None)
+        self.assertIn("index.html", payload["messages"][0]["content"])
+        self.assertIn("Workspace files", payload["messages"][0]["content"])
+
     def test_update_missing_script(self):
         missing = Path("/tmp/does-not-exist-tabby-update.sh")
         with mock.patch.object(manager, "STACK_ROOT", missing.parent):

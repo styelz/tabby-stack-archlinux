@@ -83,6 +83,11 @@ def normalize_store(raw: Any) -> dict[str, Any]:
         mode = str(item.get("mode") or "chat").strip().lower()
         if mode not in ("chat", "code"):
             mode = "chat"
+        parent_id = ""
+        if mode == "code":
+            parent_id = str(item.get("parentId") or "").strip()
+            if parent_id == chat_id:
+                parent_id = ""
         cleaned.append(
             {
                 "id": chat_id,
@@ -91,9 +96,20 @@ def normalize_store(raw: Any) -> dict[str, Any]:
                 "pinned": bool(item.get("pinned")),
                 "titleLocked": bool(item.get("titleLocked")),
                 "mode": mode,
+                "parentId": parent_id,
                 "messages": messages,
             }
         )
+    roots = {
+        chat["id"]
+        for chat in cleaned
+        if chat["mode"] == "code" and not chat["parentId"]
+    }
+    cleaned = [
+        chat
+        for chat in cleaned
+        if not chat["parentId"] or chat["parentId"] in roots
+    ]
     active = str(raw.get("activeId") or "")
     if cleaned and active not in {c["id"] for c in cleaned}:
         active = cleaned[0]["id"]
@@ -139,12 +155,25 @@ def load_store(username: str) -> dict[str, Any]:
     return normalize_store(raw)
 
 
+def is_workspace_root(chat: Any) -> bool:
+    """True for a Code-mode chat that owns the project folder."""
+    if not isinstance(chat, dict):
+        return False
+    if str(chat.get("mode") or "chat").strip().lower() != "code":
+        return False
+    return not str(chat.get("parentId") or "").strip()
+
+
 def save_store(username: str, raw: Any) -> dict[str, Any]:
     previous = load_store(username)
     store = normalize_store(raw)
-    old_ids = {str(chat.get("id") or "") for chat in previous.get("chats") or []}
+    old_chats = {
+        str(chat.get("id") or ""): chat
+        for chat in previous.get("chats") or []
+        if isinstance(chat, dict) and str(chat.get("id") or "").strip()
+    }
     new_ids = {str(chat.get("id") or "") for chat in store.get("chats") or []}
-    dropped = [chat_id for chat_id in old_ids - new_ids if chat_id]
+    dropped = [chat_id for chat_id in old_chats if chat_id not in new_ids]
     payload = json.dumps(store, ensure_ascii=False) + "\n"
     with _LOCK:
         _atomic_write(chat_path(username), payload)
@@ -154,6 +183,9 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
         from ui.workspace import delete_workspace, safe_name
 
         for chat_id in dropped:
+            # Nested chats share the parent folder; never wipe it with the thread.
+            if not is_workspace_root(old_chats.get(chat_id)):
+                continue
             shell.drop_chat(username, chat_id)
             lsp.drop_chat(username, chat_id)
             delete_workspace(username, chat_id)
