@@ -76,7 +76,11 @@ def _collapse_key(chat: dict[str, Any]) -> Optional[tuple[str, int]]:
 def _collapse_duplicate_workspaces(
     chats: list[dict[str, Any]], protect: Optional[set[str]] = None
 ) -> list[dict[str, Any]]:
-    """Keep one Code workspace per (title, updatedAt) and drop empty New-chat shells."""
+    """Merge clone-on-reload leftovers that share a title and timestamp.
+
+    Distinct projects with the same name are kept. Empty unprotected
+    New-workspace shells without nested chats are dropped.
+    """
     guarded = {item for item in (protect or set()) if item}
     kids: dict[str, list[dict[str, Any]]] = {}
     for chat in chats:

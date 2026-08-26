@@ -1156,21 +1156,6 @@ button.chip {
   font-size: 0.6875rem;
   line-height: 1.3;
 }
-.chat-nav-tag {
-  padding: 0 0.3125rem;
-  border-radius: 999px;
-  background: rgba(var(--accent-rgb), 0.16);
-  color: var(--accent);
-  font-size: 0.625rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-/* Files but not in Code mode right now: present, not the current state. */
-.chat-nav-tag.is-quiet {
-  background: rgba(154, 163, 181, 0.14);
-  color: var(--muted);
-}
 .chat-nav-tools {
   position: absolute;
   top: 0;

@@ -364,7 +364,7 @@ async def ui_chats_put(request: Request, _user: str = Depends(require_ui_user)):
 
 @router.get("/workspaces", include_in_schema=False)
 async def ui_workspaces(_user: str = Depends(require_ui_user)):
-    """Chats that own project files, so the chat list can badge them in any mode."""
+    """Code workspace ids whose project folders are not empty."""
     from ui.chats import load_store
     from ui.workspace import chats_with_files
 

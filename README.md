@@ -64,7 +64,7 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 <img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/1ef6e2a8-6ff7-4dd0-b5be-6e814e8b83e7" />
 
-**Code** gives every conversation its own project folder. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
+**Code** is a workspace per project folder. Extra chats under that workspace share the same files. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
 <img width="1919" height="1120" alt="image" src="https://github.com/user-attachments/assets/3f9c0a4b-a028-4e8e-b5b7-9511aa0ec2a3" />
 

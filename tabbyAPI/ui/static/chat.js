@@ -395,9 +395,6 @@ function mountChat(root) {
   let draftsTimer = 0;
   let draftsChat = "";
   const TREE_DRAG = "application/x-tabby-path";
-  // Chat ids the server says own project files. Drives the sidebar badge in
-  // both modes, so it survives a reload and covers chats not opened yet.
-  let codeChats = new Set();
   const menu = root.querySelector("#slash-menu");
   const historyMenu = root.querySelector("#history-menu");
   const titleEl = root.querySelector("#chat-title");
@@ -535,19 +532,6 @@ function mountChat(root) {
     return store.chats.filter((item) => chatParentId(item) === rootId);
   }
 
-  function latestNestedChat(rootId) {
-    return nestedChats(rootId).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || null;
-  }
-
-  function ensureNestedChat(rootId) {
-    if (!rootId) return null;
-    const existing = latestNestedChat(rootId);
-    if (existing) return existing;
-    const chat = emptyChat("code", rootId);
-    store.chats.unshift(chat);
-    return chat;
-  }
-
   function expandWorkspace(rootId) {
     if (!rootId) return;
     wsOpen[rootId] = true;
@@ -561,7 +545,6 @@ function mountChat(root) {
   function addCodeWorkspace() {
     const root = emptyChat("code");
     store.chats.unshift(root);
-    expandWorkspace(root.id);
     return root;
   }
 
@@ -679,6 +662,8 @@ function mountChat(root) {
     return (chat.messages || []).some((item) => userTurnHasContent(item));
   }
 
+  // Clone-on-reload leftovers share a title and timestamp. This is not
+  // "one folder per title" — distinct projects with the same name stay.
   function collapseDuplicateWorkspaces(chats, activeId, lastByMode) {
     const last = lastByMode && typeof lastByMode === "object" ? lastByMode : emptyLastByMode(null);
     const kids = new Map();
@@ -1015,22 +1000,10 @@ function mountChat(root) {
     if (root) root.updatedAt = now;
   }
 
-  function toolbarNamedChat() {
-    const chat = activeChat();
-    if (!chat) return null;
-    if (isWorkspaceRoot(chat)) return chat;
-    if (isPlaceholderTitle(chat.title) && !hasUserTurn(chat)) {
-      const parent = store.chats.find((item) => item.id === chatParentId(chat));
-      if (parent) return parent;
-    }
-    return chat;
-  }
-
   function paintToolbar() {
     const chat = activeChat();
-    const named = toolbarNamedChat();
-    const title = named
-      ? (isWorkspaceRoot(named) ? workspaceDisplayTitle(named) : (named.title || "New chat"))
+    const title = chat
+      ? (isWorkspaceRoot(chat) ? workspaceDisplayTitle(chat) : (chat.title || "New chat"))
       : (activeMode() === "code" ? "New workspace" : "New chat");
     if (!renaming) {
       titleEl.textContent = title;
@@ -1169,23 +1142,21 @@ function mountChat(root) {
   function workspaceExpanded(id) {
     const q = String((searchEl && searchEl.value) || "").trim();
     if (q) return true;
-    if (id && id === activeWorkspaceId()) return true;
     if (Object.prototype.hasOwnProperty.call(wsOpen, id)) return wsOpen[id] === true;
     return false;
   }
 
-  function workspaceShowsKids(kidCount) {
-    return kidCount > 0;
-  }
-
   function workspaceDisplayTitle(root) {
     const raw = String((root && root.title) || "").trim();
-    if (!isPlaceholderTitle(raw)) return raw;
-    const named = nestedChats(root && root.id)
-      .filter((item) => !isPlaceholderTitle(item.title))
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-    if (named) return String(named.title).trim();
-    return raw || "New workspace";
+    if (!raw || isPlaceholderTitle(raw)) return "New workspace";
+    return raw;
+  }
+
+  function listedWorkspaceKids(rootId, listed) {
+    return listed
+      .filter((chat) => chatParentId(chat) === rootId)
+      .filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
 
   function listedWorkspaceRows() {
@@ -1198,7 +1169,7 @@ function mountChat(root) {
       if (seen.has(rootId)) return;
       seen.add(rootId);
       const root = byId.get(rootId);
-      if (root) roots.push(root);
+      if (root && isWorkspaceRoot(root)) roots.push(root);
     });
     roots.sort((a, b) => {
       const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
@@ -1211,17 +1182,11 @@ function mountChat(root) {
     });
     const rows = [];
     roots.forEach((root) => {
-      const kids = list
-        .filter((chat) => chatParentId(chat) === root.id)
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      const realKids = kids.filter((chat) => hasUserTurn(chat) || chat.pinned);
-      const visible = realKids.length
-        ? kids.filter((chat) => hasUserTurn(chat) || chat.pinned || chat.id === store.activeId)
-        : [];
-      const showKids = workspaceShowsKids(visible.length) && workspaceExpanded(root.id);
-      rows.push({ chat: root, kind: "root", kids: visible.length, showKids });
+      const kids = listedWorkspaceKids(root.id, list);
+      const showKids = kids.length > 0 && workspaceExpanded(root.id);
+      rows.push({ chat: root, kind: "root", kids: kids.length, showKids });
       if (showKids) {
-        visible.forEach((child) => rows.push({ chat: child, kind: "child", kids: 0, showKids: false }));
+        kids.forEach((child) => rows.push({ chat: child, kind: "child", kids: 0, showKids: false }));
       }
     });
     return rows;
@@ -1272,13 +1237,6 @@ function mountChat(root) {
       + navRowTools(kind, item.pinned);
   }
 
-  function navRowIsActive(item, kind, showKids) {
-    if (item.id === store.activeId) return true;
-    if (kind !== "root" || showKids) return false;
-    const active = activeChat();
-    return Boolean(active && workspaceId(active) === item.id);
-  }
-
   function renderSidebar() {
     if (!navList) return;
     const code = activeMode() === "code";
@@ -1289,13 +1247,14 @@ function mountChat(root) {
         : '<div class="chat-nav-empty">No chats match.</div>';
       return;
     }
+    const active = activeChat();
     const frag = document.createDocumentFragment();
     rows.forEach((row) => {
       const item = row.chat;
-      const current = row.kind === "root" && workspaceId(activeChat()) === item.id;
+      const current = row.kind === "root" && Boolean(active) && chatParentId(active) === item.id;
       const btn = document.createElement("div");
       btn.className = "chat-nav"
-        + (navRowIsActive(item, row.kind, row.showKids) ? " is-active" : "")
+        + (item.id === store.activeId ? " is-active" : "")
         + (current ? " is-current" : "")
         + (item.pinned ? " is-pinned" : "")
         + (inFlight && item.id === flightChatId ? " is-busy" : "")
@@ -1338,29 +1297,8 @@ function mountChat(root) {
     }
   }
 
-  async function refreshCodeChats() {
-    try {
-      const data = await TabbyUI.api("workspaces");
-      const next = new Set(Array.isArray(data.code) ? data.code.map(String) : []);
-      if (next.size === codeChats.size && [...next].every((id) => codeChats.has(id))) return;
-      codeChats = next;
-      renderSidebar();
-    } catch {
-      /* the badge is cosmetic; leave what we already know */
-    }
-  }
-
-  /** A listing we just fetched is authoritative for that one chat. */
-  function noteChatFiles(chatId, hasFiles) {
-    if (!chatId || codeChats.has(chatId) === Boolean(hasFiles)) return;
-    if (hasFiles) codeChats.add(chatId);
-    else codeChats.delete(chatId);
-    renderSidebar();
-  }
-
   function dropWorkspace(chatId) {
     if (!chatId) return;
-    codeChats.delete(chatId);
     forgetTabs(chatId);
     TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
   }
@@ -1563,7 +1501,6 @@ function mountChat(root) {
   function applyListing(data) {
     filesListing = Array.isArray(data.files) ? data.files : filesListing;
     filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
-    noteChatFiles(activeWorkspaceId(), filesListing.length > 0);
     paintFiles();
   }
 
@@ -2606,7 +2543,6 @@ function mountChat(root) {
       if (chatId !== activeWorkspaceId()) return;
       filesListing = Array.isArray(data.files) ? data.files : filesListing;
       filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
-      noteChatFiles(chatId, filesListing.length > 0);
       const live = findTab(path) || tab;
       live.original = contents;
       live.text = contents;
@@ -3181,7 +3117,6 @@ function mountChat(root) {
       if (chatId !== activeWorkspaceId()) return;
       filesListing = Array.isArray(data.files) ? data.files : [];
       filesEntry = typeof data.entry === "string" ? data.entry : "";
-      noteChatFiles(chatId, filesListing.length > 0);
       if (filesSelected && !filesListing.some((row) => row.path === filesSelected)) {
         filesSelected = "";
       }
@@ -3990,13 +3925,12 @@ function mountChat(root) {
   }
 
   function beginRename(id) {
-    const named = id ? null : toolbarNamedChat();
-    const chat = store.chats.find((item) => item.id === (id || (named && named.id) || store.activeId));
+    const chat = store.chats.find((item) => item.id === (id || store.activeId));
     if (!chat || renaming) return;
     renaming = true;
     const field = document.createElement("input");
     field.className = "chat-title-edit";
-    field.value = chat.title || "New chat";
+    field.value = chat.title || defaultChatTitle(chat);
     field.setAttribute("aria-label", "Chat title");
     titleEl.replaceWith(field);
     field.focus();
@@ -4398,7 +4332,6 @@ function mountChat(root) {
       );
       filesListing = Array.isArray(data.files) ? data.files : [];
       filesEntry = typeof data.entry === "string" ? data.entry : "";
-      noteChatFiles(activeWorkspaceId(), filesListing.length > 0);
       const open = findTab(path);
       if (open) open.dirty = false;
       filesSelected = path;
@@ -4664,7 +4597,6 @@ function mountChat(root) {
       resetTabs();
       if (tabsChat) tabsByChat[tabsChat] = { openTabs, activeTab };
       resetFilesTreeState();
-      noteChatFiles(activeWorkspaceId(), false);
       paintAttach();
       paintFiles();
     } catch (err) {
@@ -5665,6 +5597,8 @@ function mountChat(root) {
     store.activeId = id;
     messages = cloneMessages(chat.messages);
     if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
+    const parent = chatParentId(chat);
+    if (parent) expandWorkspace(parent);
     cancelEdit();
     clearPendingImage();
     persist();
@@ -5724,10 +5658,10 @@ function mountChat(root) {
         messages = cloneMessages(sibling.messages);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       } else if (!root && parentId && store.chats.some((item) => item.id === parentId)) {
-        const fresh = emptyChat("code", parentId);
-        store.chats.unshift(fresh);
-        store.activeId = fresh.id;
-        messages = cloneMessages(fresh.messages);
+        const parent = store.chats.find((item) => item.id === parentId);
+        store.activeId = parent.id;
+        messages = cloneMessages(parent.messages);
+        if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       } else if (other) {
         store.activeId = other.id;
         messages = cloneMessages(other.messages);
@@ -5858,7 +5792,7 @@ function mountChat(root) {
   }
 
   function renderHistoryMenu(keepIndex) {
-    historyItems = listedChats().filter((item) => !isWorkspaceRoot(item));
+    historyItems = listedChats();
     if (!historyItems.length) {
       hideHistoryMenu();
       return;
@@ -5874,7 +5808,10 @@ function mountChat(root) {
       const when = timeLabel(item.updatedAt);
       const main = document.createElement("span");
       main.className = "history-main";
-      main.innerHTML = `<span class="history-title">${TabbyUI.escapeHtml(item.title || "New chat")}</span><span class="slash-hint">${TabbyUI.escapeHtml(when)}</span>`;
+      const label = isWorkspaceRoot(item)
+        ? workspaceDisplayTitle(item)
+        : (item.title || "New chat");
+      main.innerHTML = `<span class="history-title">${TabbyUI.escapeHtml(label)}</span><span class="slash-hint">${TabbyUI.escapeHtml(when)}</span>`;
       const del = document.createElement("button");
       del.type = "button";
       del.className = "history-delete";
@@ -8261,7 +8198,6 @@ function mountChat(root) {
     paintCompose();
     resizeInput();
     refreshFiles();
-    refreshCodeChats();
     startGatePoll();
   }
   window.addEventListener("tabby-gpu-status", onGpuStatus);
@@ -8276,7 +8212,6 @@ function mountChat(root) {
     resume() {
       startGatePoll();
       refreshFiles();
-      refreshCodeChats();
     },
     destroy() {
       abortSession("stop");
