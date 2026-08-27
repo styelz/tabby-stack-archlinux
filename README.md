@@ -79,7 +79,7 @@ Other pages:
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/1b7ab6fe-6a12-4947-b1bd-23bae0175447" />
 
-<img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/0975f116-f71f-4cca-8439-c78a64614ece" />
+<img width="1919" height="1121" alt="image" src="https://github.com/user-attachments/assets/da850f29-b171-4883-9924-4b1a0ed8f210" />
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/db17067e-e5da-46ea-aec7-bfe4b1086a85" />
 
