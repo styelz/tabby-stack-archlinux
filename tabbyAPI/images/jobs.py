@@ -304,6 +304,7 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
                 # Keep last.json / config.yml on the intended profile. A 9B
                 # fallback is the wrong model, not a recovery.
                 write_mode("llm", profile=profile_name)
+                await _unload_tabby_leftovers()
                 if from_job:
                     raise RuntimeError(
                         f"Insufficient VRAM reloading {profile_name}"
@@ -1076,8 +1077,6 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.phase = "done"
         copy_job_to_workspace(job)
         _signal(job)
-        if bounce_llm:
-            _bounce_after_vram_fail(restore_name or "qwen")
     except asyncio.CancelledError:
         if job.status not in ("done", "error"):
             job.status = "error"
@@ -1097,6 +1096,10 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
     finally:
         if _MCP_JOB_ID == job.id:
             _MCP_JOB_ID = None
+        # Render failures used to skip the bounce below job.status = "done",
+        # so leftover VRAM left the UI on "Loading qwen36" with no model.
+        if bounce_llm:
+            _bounce_after_vram_fail(restore_name or "qwen")
 
 
 async def reset_mcp_image_jobs_for_tests() -> None:

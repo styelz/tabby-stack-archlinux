@@ -7907,6 +7907,7 @@ function mountChat(root) {
     }
     // An API restart has no useful client-side timeout: keep the composer
     // locked and the reconnecting message visible until status answers again.
+    let idleFails = 0;
     while (kind === "restart" || Date.now() < deadline) {
       try {
         const data = await TabbyUI.api("status");
@@ -7915,6 +7916,7 @@ function mountChat(root) {
         const nextKind = data && data.restarting ? "restart" : kind;
         if (statusIsBusy(data)) {
           sawBusy = true;
+          idleFails = 0;
           setLoadingBanner(loadingHint(nextKind, name));
           if (working) {
             working.setActivity(loadingLabel(nextKind, name), {
@@ -7927,6 +7929,19 @@ function mountChat(root) {
           const readyNote = dest === "comfy" || dest === "flux" ? "Comfy is ready." : "The model is ready.";
           if (working) working.setActivity("Ready", { processing: false, note: readyNote });
           return true;
+        } else if (sawBusy && kind !== "restart") {
+          // Reload finished but no model came up (VRAM fail after Comfy).
+          // Do not keep the composer locked until the 4-minute deadline.
+          idleFails += 1;
+          if (idleFails >= 2) {
+            if (working) {
+              working.setActivity("Load failed", {
+                processing: false,
+                note: "The model did not come back. Try switch to qwen, or restart.",
+              });
+            }
+            return false;
+          }
         }
       } catch {
         sawBusy = true;

@@ -132,6 +132,17 @@ GPU_ALIASES = {
 }
 
 
+def _is_http_timeout(exc: BaseException) -> bool:
+    """True for urlopen socket timeouts, including those wrapped in URLError."""
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    text = str(reason if reason is not None else exc).lower()
+    return "timed out" in text
+
+
 def request_json(
     method: str,
     url: str,
@@ -821,7 +832,23 @@ def generate_image(
     prompt_id = queued["prompt_id"]
     deadline = time.time() + timeout
     while time.time() < deadline:
-        history = request_json("GET", f"{COMFY_URL}/history/{prompt_id}", timeout=15)
+        try:
+            # Qwen-Image can block Comfy's HTTP thread for tens of seconds
+            # after "prompt executed" while it writes the PNG. A 15s socket
+            # timeout used to abort the whole job with a bare "timed out".
+            history = request_json(
+                "GET", f"{COMFY_URL}/history/{prompt_id}", timeout=60
+            )
+        except TimeoutError:
+            time.sleep(0.5)
+            continue
+        except HTTPError:
+            raise
+        except URLError as exc:
+            if not _is_http_timeout(exc):
+                raise
+            time.sleep(0.5)
+            continue
         if isinstance(history, dict) and prompt_id in history:
             item = history[prompt_id]
             status = item.get("status") or {}
