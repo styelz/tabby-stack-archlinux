@@ -344,26 +344,24 @@ async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
     """One coding completion while the LLM is still loaded. None if it cannot run."""
     from common import model
     from common.assistant_text import strip_response_apologies
-    from common.networking import DisconnectHandler
+    from common.networking import DisconnectHandler, generation_request
     from endpoints.OAI.utils.chat_completion import (
         apply_chat_template,
         generate_chat_completion,
     )
 
-    request = getattr(disconnect_handler, "request", None) if disconnect_handler else None
     container = getattr(model, "container", None)
-    if request is None or not container or not getattr(container, "loaded", False):
-        xlogger.info("Mixed chat code pass skipped: no request or loaded model")
+    if not container or not getattr(container, "loaded", False):
+        xlogger.info("Mixed chat code pass skipped: no loaded model")
         return None
     if getattr(container, "prompt_template", None) is None:
         return None
     model_path = getattr(container, "model_dir", None)
     if model_path is None:
         return None
-    state = getattr(request, "state", None)
-    if state is None or not getattr(state, "id", None):
-        xlogger.info("Mixed chat code pass skipped: request has no id")
-        return None
+    request = generation_request(
+        getattr(disconnect_handler, "request", None) if disconnect_handler else None
+    )
     nested = DisconnectHandler(
         request=request,
         description="mixed site code",

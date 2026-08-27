@@ -280,8 +280,10 @@ async def _run_console_work(
 
 
 def _proxy_request(request: Request):
+    from common.networking import generation_request
+
     req_id = getattr(getattr(request, "state", None), "id", None) or uuid4().hex
-    return SimpleNamespace(state=SimpleNamespace(id=req_id))
+    return generation_request(SimpleNamespace(state=SimpleNamespace(id=req_id)))
 
 
 async def _stream_held_result(gate: StackGate, result):
@@ -328,8 +330,8 @@ async def _run_console_job(
     agent: str,
     gate: StackGate,
 ) -> None:
-    handler = DisconnectHandler(None, "/v1/ui/chat", abort_event=flight.abort_event)
     proxy = _proxy_request(request)
+    handler = DisconnectHandler(proxy, "/v1/ui/chat", abort_event=flight.abort_event)
     try:
         info = await gate.step(handler)
         while info is not None:

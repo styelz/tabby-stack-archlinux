@@ -625,12 +625,11 @@ async def iter_code_turns(
     """Yield ('status', label), ('usage', usage), then ('done', text, written_paths)."""
     from common import model
     from common.assistant_text import strip_response_apologies
-    from common.networking import DisconnectHandler
+    from common.networking import DisconnectHandler, generation_request
     from endpoints.OAI.utils.chat_completion import apply_chat_template, generate_chat_completion
 
-    request = getattr(disconnect_handler, "request", None) if disconnect_handler else None
     container = getattr(model, "container", None)
-    if request is None or not container or not getattr(container, "loaded", False):
+    if not container or not getattr(container, "loaded", False):
         yield ("done", "No model is loaded, so files were not written.", [])
         return
     if getattr(container, "prompt_template", None) is None:
@@ -640,6 +639,9 @@ async def iter_code_turns(
     if model_path is None:
         yield ("done", "No model is loaded, so files were not written.", [])
         return
+    request = generation_request(
+        getattr(disconnect_handler, "request", None) if disconnect_handler else None
+    )
 
     kind = normalize_agent(agent)
     empty = "empty project" in workspace_file_brief(username, chat_id)

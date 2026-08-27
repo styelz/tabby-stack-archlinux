@@ -5,6 +5,7 @@ import json
 import socket
 import time
 import traceback
+from types import SimpleNamespace
 from fastapi import Depends, HTTPException, Request
 from starlette.requests import HTTPConnection
 from loguru import logger
@@ -77,6 +78,29 @@ def handle_request_disconnect(message: str):
     """Wrapper for handling for request disconnection."""
 
     xlogger.error(message)
+
+
+def generation_request(request=None):
+    """Object with ``state.id`` for ``generate_chat_completion``.
+
+    Background console flights keep the original HTTP request off
+    ``DisconnectHandler`` so poll() does not cancel after the SSE client
+    reconnects. Nested generate still needs a request id. A stand-in is
+    never disconnected; a real Starlette request is returned as-is.
+    """
+    req_id = getattr(getattr(request, "state", None), "id", None)
+    if request is not None and req_id and callable(
+        getattr(request, "is_disconnected", None)
+    ):
+        return request
+
+    async def is_disconnected():
+        return False
+
+    return SimpleNamespace(
+        state=SimpleNamespace(id=str(req_id or uuid4().hex)),
+        is_disconnected=is_disconnected,
+    )
 
 
 class DisconnectHandler:
