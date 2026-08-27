@@ -433,15 +433,7 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
     with _LOCK:
         _atomic_write(chat_path(username), payload)
     if dropped:
-        from ui import lsp, shell
-        from ui.preview import drop_chat
-        from ui.workspace import (
-            delete_workspace,
-            drop_drafts,
-            drop_history,
-            merge_workspace_dirs,
-            safe_name,
-        )
+        from ui.workspace import drop_drafts, drop_history, merge_workspace_dirs
 
         for chat_id in dropped:
             # Nested chats share the parent folder; never wipe it with the thread.
@@ -453,10 +445,9 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
                 drop_history(username, chat_id)
                 drop_drafts(username, chat_id)
                 continue
-            shell.drop_chat(username, chat_id)
-            lsp.drop_chat(username, chat_id)
-            delete_workspace(username, chat_id)
-            drop_chat(username, safe_name(chat_id))
+            # A PUT can omit a workspace after a proxy blip or another tab
+            # saving an older list. Never wipe the project folder for that.
+            # Explicit delete is DELETE /workspace/{id}.
     return store
 
 

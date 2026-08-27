@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +35,8 @@ from images.plan import classify_image_turn
 
 JOB_MARK = "tabby-image-job:"
 STATUS_MARK = "tabby-image-status:"
+NO_MODEL_WRITE = "No model is loaded, so files were not written."
+NO_TEMPLATE_WRITE = "Chat is disabled because no prompt template is set."
 MAX_CODE_TURNS = 16
 _ATTACHED_PROJECT_IMAGE_RE = re.compile(r"Attached project image:\s+`([^`]+)`")
 FILE_WRITE_NAMES = (
@@ -656,6 +660,34 @@ async def _hold_then_reply(
     )
 
 
+def _code_model_ready() -> bool:
+    from common import model
+
+    container = getattr(model, "container", None)
+    return bool(
+        container
+        and getattr(container, "loaded", False)
+        and getattr(container, "model_dir", None) is not None
+        and getattr(container, "prompt_template", None) is not None
+    )
+
+
+async def _wait_code_model(timeout_s: float) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        if _code_model_ready():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.4)
+
+
+def _code_pass_ran(text: str, written: list[str]) -> bool:
+    if written:
+        return True
+    return (text or "").strip() not in (NO_MODEL_WRITE, NO_TEMPLATE_WRITE)
+
+
 def _mixed_code_reply(text: str, written: list[str], picture: str) -> str:
     """Page write summary plus pictures. Keep a write error visible if nothing landed."""
     from ui.code_agent import final_code_text
@@ -688,9 +720,12 @@ async def _stream_code_then_images(
     start_new = bool(items) and not _readonly_agent(agent)
     written: list[str] = []
     text = ""
+    code_ran = False
 
-    async def take_code():
-        nonlocal written, text
+    async def take_code(*, wait_s: float = 0.0):
+        nonlocal written, text, code_ran
+        if wait_s and not _code_model_ready():
+            await _wait_code_model(wait_s)
         async for event in iter_code_turns(
             sync, disconnect_handler, owner, chat_id, agent=agent
         ):
@@ -700,6 +735,19 @@ async def _stream_code_then_images(
             elif kind == "done":
                 text = event[1] or ""
                 written = list(event[2] or [])
+                if _code_pass_ran(text, written):
+                    code_ran = True
+
+    async def retry_code_after_images():
+        if code_ran:
+            return
+        if not _code_model_ready():
+            yield ServerSentEvent(comment=f"{STATUS_MARK} Reloading the coding model")
+            if not await _wait_code_model(90.0):
+                return
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
+        async for item in take_code():
+            yield item
 
     async def start_or_launch():
         started = job
@@ -743,10 +791,8 @@ async def _stream_code_then_images(
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
             await wait_until_done(started)
             copied = _copy_workspace_pngs(started, workspace)
-            if not written:
-                yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
-                async for item in take_code():
-                    yield item
+            async for item in retry_code_after_images():
+                yield item
             out = picture_reply(started, copied)
         else:
             out = final_code_text(text, written)
@@ -765,9 +811,8 @@ async def _stream_code_then_images(
     if started is not None:
         await wait_until_done(started)
         copied = _copy_workspace_pngs(started, workspace)
-        if not written:
-            async for _item in take_code():
-                pass
+        async for _item in retry_code_after_images():
+            pass
         return _text(sync, picture_reply(started, copied))
     return _text(sync, final_code_text(text, written))
 

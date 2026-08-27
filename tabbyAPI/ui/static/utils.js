@@ -1375,6 +1375,8 @@
     followRestart,
     showShortcuts,
     escapeHtml,
+    looksLikeHtml,
+    httpErrorMessage,
     formatBytes,
     formatDuration,
     formatAssistantContent,

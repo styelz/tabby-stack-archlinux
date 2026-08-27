@@ -1204,6 +1204,16 @@ function mountChat(root) {
     if (chat && !isWorkspaceRoot(chat)) {
       chat.messages = cloneMessages(messages);
       if (!chat.titleLocked) chat.title = titleFromMessages(chat.messages, chat);
+      const root = store.chats.find((item) => item.id === workspaceId(chat));
+      if (
+        root
+        && isWorkspaceRoot(root)
+        && !root.titleLocked
+        && isPlaceholderTitle(root.title)
+        && !isPlaceholderTitle(chat.title)
+      ) {
+        root.title = chat.title;
+      }
     }
     const previous = store.chats.slice();
     store.chats = store.chats.filter((item) => chatIsKept(item, store.chats));
@@ -4223,8 +4233,7 @@ function mountChat(root) {
       }
     } catch {
       if (chatId !== activeWorkspaceId()) return;
-      filesListing = [];
-      filesEntry = "";
+      // A 502 during GPU switch used to wipe a good listing. Keep it.
     }
     paintFiles();
     if (chatId && draftsChat !== chatId) loadDrafts(chatId);
@@ -6713,8 +6722,10 @@ function mountChat(root) {
       }
     });
 
-    log.appendChild(turn);
-    watchLogChild(turn);
+    if (!live || store.activeId === flightChatId) {
+      log.appendChild(turn);
+      watchLogChild(turn);
+    }
 
     return {
       node: turn,
@@ -7659,7 +7670,7 @@ function mountChat(root) {
 
   let abortController = null;
   let inFlight = false;
-  let queuedText = "";
+  const queuedByChat = Object.create(null);
   let stopKind = "";
   let loopBusy = false;
   let flightChatId = "";
@@ -8036,15 +8047,27 @@ function mountChat(root) {
     return title || "another chat";
   }
 
-  function takeQueue() {
-    const text = queuedText;
-    queuedText = "";
+  function queuedTextFor(chatId) {
+    return String(queuedByChat[chatId] || "").trim();
+  }
+
+  function takeQueue(chatId) {
+    const id = chatId || flightChatId || store.activeId;
+    const text = queuedTextFor(id);
+    delete queuedByChat[id];
     return text;
   }
 
-  function queueFollowup(text) {
-    queuedText = String(text || "").trim();
+  function queueFollowup(text, chatId) {
+    const id = chatId || store.activeId;
+    if (!id) return;
+    queuedByChat[id] = String(text || "").trim();
     paintCompose();
+  }
+
+  function clearQueue(chatId) {
+    const id = chatId || store.activeId;
+    if (id) delete queuedByChat[id];
   }
 
   function paintCompose() {
@@ -8081,6 +8104,7 @@ function mountChat(root) {
     }
     input.disabled = false;
     if (loadingBar) loadingBar.hidden = true;
+    const queuedText = queuedTextFor(store.activeId);
     const action = tabbyChatComposeAction(here, input.value, queuedText);
     const hasQueue = Boolean(queuedText);
     if (queueBar) queueBar.hidden = !hasQueue || away;
@@ -8150,26 +8174,64 @@ function mountChat(root) {
     }
   }
 
+  function liveMessages(chatId) {
+    if (!chatId || chatId === store.activeId) return messages;
+    const chat = store.chats.find((item) => item.id === chatId);
+    if (!chat) return messages;
+    if (!Array.isArray(chat.messages)) chat.messages = [];
+    return chat.messages;
+  }
+
+  function outboundMessagesFor(chatId) {
+    return liveMessages(chatId)
+      .filter((item) => item.role !== "system")
+      .map((item) => {
+        if (item.role !== "user") return { role: item.role, content: item.content };
+        const text = outboundUserText(item);
+        const images = [];
+        if (item.imageData) images.push(item.imageData);
+        (item.attachedFiles || []).forEach((file) => {
+          if (file.kind === "image" && file.dataUrl && !images.includes(file.dataUrl)) {
+            images.push(file.dataUrl);
+          }
+        });
+        if (!images.length) return { role: "user", content: text };
+        const content = [];
+        if (text) content.push({ type: "text", text });
+        images.forEach((url) => content.push({ type: "image_url", image_url: { url } }));
+        return { role: "user", content };
+      });
+  }
+
+  function touchChat(chatId) {
+    const chat = store.chats.find((item) => item.id === chatId);
+    if (!chat || isWorkspaceRoot(chat)) return;
+    chat.updatedAt = Date.now();
+  }
+
   async function send(text, opts) {
     const replay = Boolean(opts && opts.replay);
     const resume = Boolean(opts && opts.resume);
-    const sendAgent = activeMode() === "code"
+    const chatId = (opts && opts.chatId) || flightChatId || store.activeId;
+    flightChatId = chatId;
+    const targetChat = store.chats.find((item) => item.id === chatId);
+    const sendAgent = chatMode(targetChat) === "code"
       ? normalizeAgent((opts && opts.agent) || codeAgent)
       : "";
-    const chatId = store.activeId;
-    flightChatId = chatId;
+    const viewing = store.activeId === chatId;
     abortController = new AbortController();
     const outboundText = expandSlash(text);
+    const list = liveMessages(chatId);
     if (resume) {
       const prompt = String((opts && opts.prompt) || "").trim();
-      if (prompt && !hasUserTurn({ messages })) {
-        messages.push({ role: "user", content: prompt, createdAt: Date.now() });
-        touchActive();
+      if (prompt && !hasUserTurn({ messages: list })) {
+        list.push({ role: "user", content: prompt, createdAt: Date.now() });
+        touchChat(chatId);
         persist();
       }
-      renderLog();
+      if (viewing) renderLog();
     } else if (!replay) {
-      if (pendingEditIndex >= 0) {
+      if (pendingEditIndex >= 0 && viewing) {
         const idx = pendingEditIndex;
         pendingEditIndex = -1;
         if (editBar) editBar.hidden = true;
@@ -8178,22 +8240,32 @@ function mountChat(root) {
       }
       const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
       if ((opts && opts.hidden) || isBuildPromptText(outboundText)) userItem.hidden = true;
-      if (pendingImage) {
+      if (viewing && pendingImage) {
         userItem.imageData = pendingImage.dataUrl;
         userItem.imagePreview = pendingImage.preview || pendingImage.dataUrl;
         userItem.imageName = pendingImage.name;
       }
-      if (pendingFiles.length) {
+      if (viewing && pendingFiles.length) {
         userItem.attachedFiles = pendingFiles.map((file) => ({ ...file }));
       }
-      messages.push(userItem);
-      clearPendingImage();
-      touchActive();
+      list.push(userItem);
+      if (viewing) {
+        clearPendingImage();
+        touchActive();
+        persist();
+        renderLog();
+      } else {
+        if (targetChat && !targetChat.titleLocked) {
+          targetChat.title = titleFromMessages(list, targetChat);
+        }
+        touchChat(chatId);
+        persist();
+      }
+    } else if (viewing) {
       persist();
       renderLog();
     } else {
       persist();
-      renderLog();
     }
     const activity = resume
       ? {
@@ -8211,11 +8283,11 @@ function mountChat(root) {
     let statusLabel = "";
     const body = resume
       ? { resume: true, conversation_id: chatId, stream: true }
-      : { messages: outboundMessages(), stream: true, conversation_id: chatId };
+      : { messages: outboundMessagesFor(chatId), stream: true, conversation_id: chatId };
     if (!resume && settings.temperature != null) body.temperature = settings.temperature;
     if (!resume && sendAgent) {
       body.mode = "code";
-      body.chat_id = activeWorkspaceId();
+      body.chat_id = workspaceId(targetChat) || activeWorkspaceId();
       body.agent = sendAgent;
     }
     await persist();
@@ -8235,23 +8307,25 @@ function mountChat(root) {
         return;
       }
       const type = response.headers.get("content-type") || "";
+      const unavailable = response.status === 502 || response.status === 503 || response.status === 504;
       if (!response.ok) {
+        let data = "";
         if (type.includes("application/json")) {
-          const data = await response.json().catch(() => ({}));
-          const detail = data.detail;
-          let msg = data.message || "Chat failed";
-          if (Array.isArray(detail) && detail.length) {
-            const first = detail[0];
-            msg = (first && (first.msg || first.message)) || String(first);
-          } else if (typeof detail === "string" && detail.trim()) {
-            msg = detail;
-          }
+          data = await response.json().catch(() => ({}));
+        } else {
+          data = await response.text().catch(() => "");
+        }
+        const msg = TabbyUI.httpErrorMessage
+          ? TabbyUI.httpErrorMessage(response, data)
+          : (unavailable ? `API unavailable (${response.status})` : "Chat failed");
+        if (unavailable) {
+          activity.kind = "restart";
+        } else {
           throw new Error(msg);
         }
-        const text = await response.text().catch(() => "");
-        throw new Error(text.trim() || `Chat failed (${response.status})`);
-      }
-      if (type.includes("application/json")) {
+      } else if (type.includes("text/html")) {
+        activity.kind = "restart";
+      } else if (type.includes("application/json")) {
         const data = await response.json();
         assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
         reasoning = data.choices?.[0]?.message?.reasoning_content || "";
@@ -8266,6 +8340,10 @@ function mountChat(root) {
           const { value, done } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
+          if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(buf) && !assembled) {
+            activity.kind = "restart";
+            break;
+          }
           buf = consumeSseBuffer(buf, (event) => {
             if (event.usage) applyUsage(event.usage, chatId);
             if (event.comment && event.comment.includes("tabby-context-usage:")) {
@@ -8299,8 +8377,8 @@ function mountChat(root) {
                 .pop() || "";
               const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
               if (label) working.setActivity(label, { processing: true });
+              if (chatsShareWorkspace(chatId)) refreshFilesSoon();
               if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
-                refreshFilesSoon();
                 const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
                 if (isChangePath(written)) {
                   reloadPreviewIfNeeded(written);
@@ -8329,9 +8407,15 @@ function mountChat(root) {
       const aborted = Boolean(err && err.name === "AbortError");
       if (aborted) {
         if (!stopKind) stopKind = "stop";
+      } else if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(err && err.message)) {
+        activity.kind = "restart";
       } else {
         assembled = assembled || `Error: ${err.message}`;
       }
+    }
+    if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(assembled)) {
+      assembled = "";
+      activity.kind = "restart";
     }
     let stoppedEmpty = false;
     poll.stop();
@@ -8389,37 +8473,55 @@ function mountChat(root) {
     inFlight = true;
     paintCompose();
     renderSidebar();
+    let filesTicker = 0;
+    if (activeMode() === "code") {
+      refreshFilesSoon();
+      filesTicker = setInterval(() => {
+        if (chatsShareWorkspace(flightChatId)) refreshFilesSoon();
+      }, 2500);
+    }
     try {
       let next = firstText;
       let sendOpts = opts;
       if (opts && opts.resume) {
-        await send("", opts);
+        await send("", Object.assign({}, opts, { chatId: flightChatId }));
         sendOpts = undefined;
-        next = takeQueue();
+        next = takeQueue(flightChatId);
       }
       while (next) {
         stopKind = "";
-        await send(next, sendOpts);
+        await send(next, Object.assign({}, sendOpts || {}, { chatId: flightChatId }));
         sendOpts = undefined;
         if (stopKind === "steer") {
-          next = takeQueue();
+          next = takeQueue(flightChatId);
           continue;
         }
         if (stopKind === "stop") {
-          if (queuedText && store.activeId === flightChatId && !input.value.trim()) {
-            input.value = takeQueue();
-          } else {
-            queuedText = "";
+          if (queuedTextFor(flightChatId) && store.activeId === flightChatId && !input.value.trim()) {
+            input.value = takeQueue(flightChatId);
+          } else if (store.activeId === flightChatId) {
+            clearQueue(flightChatId);
           }
           break;
         }
-        if (store.activeId !== flightChatId) {
-          queuedText = "";
-          break;
+        await syncModelGate();
+        if (chatMode(store.chats.find((item) => item.id === flightChatId)) === "code") {
+          try {
+            const data = await TabbyUI.api("status");
+            if (!data || data.down || !data.tabby_model) {
+              await ensureModelWait(null, {
+                kind: "switch",
+                target: (data && data.switch_target) || "llm",
+              });
+            }
+          } catch {
+            await ensureModelWait(null, { kind: "restart", target: "restart" });
+          }
         }
-        next = takeQueue();
+        next = takeQueue(flightChatId);
       }
     } finally {
+      if (filesTicker) clearInterval(filesTicker);
       inFlight = false;
       loopBusy = false;
       abortController = null;
@@ -8477,11 +8579,11 @@ function mountChat(root) {
     abortSession("stop");
   });
   steerBtn.addEventListener("click", () => {
-    if (!flightIsHere() || !queuedText) return;
+    if (!flightIsHere() || !queuedTextFor(flightChatId)) return;
     abortSession("steer");
   });
   queueClearBtn.addEventListener("click", () => {
-    queuedText = "";
+    clearQueue(store.activeId);
     paintCompose();
     input.focus();
   });
@@ -9051,11 +9153,11 @@ function mountChat(root) {
 
     if (event.target.closest("#chat-queue")) {
       openCtx(event, [
-        { label: "Steer now", disabled: !(inFlight && queuedText), run: () => {
+        { label: "Steer now", disabled: !(inFlight && queuedTextFor(flightChatId || store.activeId)), run: () => {
           if (steerBtn) steerBtn.click();
         } },
         { label: "Clear queue", run: () => {
-          queuedText = "";
+          clearQueue(store.activeId);
           paintCompose();
         } },
       ]);
