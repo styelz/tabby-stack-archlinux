@@ -76,7 +76,7 @@ class ShellSession:
             await loop.sock_sendall(self.sock, data)
             self.last_io = time.time()
         except OSError:
-            pass
+            self.close()
 
     def resize(self, cols: int, rows: int) -> None:
         if not self.exec_id:

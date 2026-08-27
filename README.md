@@ -60,7 +60,7 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 ## Use the browser UI
 
-**Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running.
+**Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account is already using the GPU, you wait in a queue.
 
 <img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/1ef6e2a8-6ff7-4dd0-b5be-6e814e8b83e7" />
 
@@ -72,7 +72,7 @@ Other pages:
 
 | Page | What it is for |
 |---|---|
-| **Status** | Loaded profile, GPU mode, health, CPU/RAM/NVIDIA metrics, model switching, restart, and updates |
+| **Status** | Loaded profile, GPU mode, occupancy queue, health, CPU/RAM/NVIDIA metrics, model switching, restart, and updates |
 | **Gallery** | Preview and download generated images; administrators can see all users |
 | **Logs** | Live and historical TabbyAPI and ComfyUI output |
 | **Users** | Administrator-only account creation, password reset, and deletion |
@@ -100,7 +100,7 @@ Some clients require HTTPS. The installer can configure a reverse SSH connection
 
 ## Commands
 
-Send commands as the entire message. For example, send `switch to qwen`, not “please switch to qwen.”
+Send commands as the entire message. `switch to qwen` is the usual form; `please switch to qwen` also works.
 
 | Message | Result |
 |---|---|

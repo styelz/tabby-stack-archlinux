@@ -83,12 +83,10 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("image job is finished", data.messages[-1].content)
 
     def test_shell_wait_polls_are_not_a_loop(self):
-        """Clients without get_image_job invent an identical Shell sleep+ls
-        wait command every turn (see image_paths.image_poll_wait_command).
-        That must not fire the anti-loop hint while the job is still
-        running — the hint text tells the model to stop and "give a short
-        status now", which stomps the image-wait turn and corrupts the
-        last-user-message context every image helper relies on."""
+        """Leftover in-flight Shell sleep+ls polls must not fire the anti-loop
+        hint. Live holds go through images.chat; this regex is for old
+        conversations that still carry that command (image_poll_wait_command).
+        """
         from unittest import mock
 
         wait_args = (

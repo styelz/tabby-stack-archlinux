@@ -96,10 +96,10 @@ class McpImagesTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
         )
-        self.assertEqual(guessed[0]["output_path"], "images/logo.png")
-        self.assertEqual(guessed[1]["output_path"], "images/header.png")
-        self.assertEqual(guessed[2]["output_path"], "images/generated.png")
-        self.assertEqual(guessed[3]["output_path"], "images/generated-2.png")
+        self.assertEqual(guessed[0]["output_path"], "images/generated.png")
+        self.assertEqual(guessed[1]["output_path"], "images/generated-2.png")
+        self.assertEqual(guessed[2]["output_path"], "images/generated-3.png")
+        self.assertEqual(guessed[3]["output_path"], "images/generated-4.png")
         self.assertIn("no website", guessed[1]["prompt"])
 
     def test_running_job_text_hides_finished_item_urls(self):

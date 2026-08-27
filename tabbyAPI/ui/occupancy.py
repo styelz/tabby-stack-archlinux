@@ -1,4 +1,4 @@
-"""Serialize UI console chat when the GPU or model is already in use."""
+"""Serialize UI Chat, Code, and GPU actions when the stack is already in use."""
 
 from __future__ import annotations
 

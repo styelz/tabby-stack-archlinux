@@ -174,7 +174,9 @@ INSTRUCTIONS = (
     "This server generates PNGs on the TabbyAPI GPU via ComfyUI. "
     "If you need several assets (logo, header, section photos), pass them "
     "ALL in one generate_image call using the images array "
-    "([{prompt, output_path}, ...]). Extra generate_image calls while a batch "
+    "([{prompt, output_path}, ...]). Always pass a distinct output_path "
+    "per image; omitted dests become images/generated.png, "
+    "images/generated-2.png, and so on. Extra generate_image calls while a batch "
     "is queued or generating are added to the same Comfy session — do not wait "
     "for one PNG before requesting the next. "
     "generate_image returns a job_id immediately — Cursor will time out if the "
@@ -258,7 +260,7 @@ def parse_image_items(arguments: Optional[dict[str, Any]]) -> list[dict[str, Any
                     seed = int(seed)
                 except (TypeError, ValueError):
                     seed = None
-            from common.image_paths import safe_rel_png_path
+            from images.paths import safe_rel_png_path
 
             items.append(
                 {
@@ -271,7 +273,7 @@ def parse_image_items(arguments: Optional[dict[str, Any]]) -> list[dict[str, Any
                     "seed": seed,
                 }
             )
-    from common.image_paths import resolve_output_paths
+    from images.paths import resolve_output_paths
 
     resolve_output_paths(items)
     from common.image_prompts import rewrite_comfy_prompt

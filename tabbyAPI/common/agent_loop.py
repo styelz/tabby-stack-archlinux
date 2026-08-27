@@ -39,14 +39,12 @@ POLL_TOOLS = {
     "get_image_job",
     "generate_image",
 }
-# gpu_busy_image_response invents a Shell "sleep N; echo job '<id>' still
-# running; ls -l ..." call (see common/image_paths.image_poll_wait_command)
-# whenever an MCP poll tool is not listed — which is the common case for
-# GitHub Copilot / Cursor Cloud. That command is identical turn after turn
-# by design, so it must be recognized as a poll, the same as get_image_job,
-# or the anti-loop hint fires mid-render and appends a fake "user" message
-# that makes every image-job helper misread the conversation (last_role /
-# last_user_text) as a plain, non-image turn.
+# Older mixed-chat holds invented a Shell "sleep N; echo job '<id>' still
+# running; ls -l ..." call (see common/image_paths.image_poll_wait_command).
+# Live holds go through images.chat and must not reintroduce that poll.
+# Recognize the old command as a poll anyway, the same as get_image_job,
+# so a leftover in-flight conversation does not trip the anti-loop hint
+# and append a fake "user" message that misreads last_role / last_user_text.
 _IMAGE_WAIT_ARGS_RE = re.compile(r"\bsleep\s+\d+\b.*\bstill running\b", re.I | re.S)
 EDIT_TOOLS = {
     "write",

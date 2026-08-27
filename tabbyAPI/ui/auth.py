@@ -233,10 +233,12 @@ def record_login_attempt(ip: str) -> None:
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else ""
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    # Trust X-Forwarded-For only from a local reverse proxy / SSH tunnel.
+    if peer in ("127.0.0.1", "::1", "localhost") and forwarded:
+        return forwarded
+    return peer or forwarded or "unknown"
 
 
 def set_session_cookie(response: Response, token: str, request: Request | None = None) -> None:

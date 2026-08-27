@@ -774,7 +774,8 @@ async def handle(
     only after a coding turn has no more file tools, and only when this
     turn explicitly asks for new rasters. Existing workspace or job dests
     are reuse. Always wins over the 9B while this conversation's job is
-    still running.
+    still running. Resume only via ``tabby-image-job: <uuid>`` in this
+    conversation — never by attaching a global coding job.
 
     console=True (management UI) still generates images but never emits
     Write/StrReplace tool calls unless code=True, which writes into a
@@ -789,17 +790,13 @@ async def handle(
     job_id = job_id_from_history(data)
     job = get_mcp_image_job(job_id) if job_id else None
     role = last_role(data)
-    if not job and role in ("tool", "function") and llm_ready:
-        busy = active_mcp_image_job()
-        if busy and busy.status == "coding":
-            job = busy
 
     if job and job.status in ("queued", "running"):
         if workspace:
             bound_owner, bound_chat = workspace
-            if bound_owner:
+            if bound_owner and (not job.owner or job.owner == bound_owner):
                 job.owner = bound_owner
-            if bound_chat:
+            if bound_chat and (not job.chat_id or job.chat_id == bound_chat):
                 job.chat_id = bound_chat
         return await _hold_then_reply(
             data,
@@ -872,6 +869,12 @@ async def handle(
         if plan.action == "generate" and plan.items:
             busy = active_mcp_image_job()
             if busy and not job_id:
+                if busy.status == "coding":
+                    return text_response(
+                        data,
+                        f"The stack is already writing a page for job {busy.id}. "
+                        "Wait until that chat finishes, then ask again.",
+                    )
                 return text_response(
                     data,
                     f"The GPU is already generating job {busy.id}. "

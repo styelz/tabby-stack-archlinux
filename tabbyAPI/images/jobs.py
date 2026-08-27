@@ -794,6 +794,8 @@ async def start_mcp_image_job(
 
     Extra generate_image calls while a batch is queued or generating are
     appended so Comfy stays up and the LLM reloads once at the end.
+    Append only when the owner matches, and when both sides have a chat id
+    they must be the same chat. Empty-identity MCP calls can still batch.
     Returns (job, "started"|"appended"|"busy"|"coding").
 
     `start=False` remembers dests in a coding-phase job and does not
@@ -814,9 +816,13 @@ async def start_mcp_image_job(
     chat_name = str(chat_id or "").strip()
     busy = active_mcp_image_job()
     if busy:
-        if str(busy.owner or "").strip() != owner_name:
+        busy_owner = str(busy.owner or "").strip()
+        busy_chat = str(busy.chat_id or "").strip()
+        if busy_owner != owner_name:
             return busy, "busy"
-        if chat_name and not str(busy.chat_id or "").strip():
+        if busy_chat and chat_name and busy_chat != chat_name:
+            return busy, "busy"
+        if chat_name and not busy_chat:
             busy.chat_id = chat_name
         async with busy.lock:
             if busy.accepting and busy.count + sum(

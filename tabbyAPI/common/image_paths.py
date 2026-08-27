@@ -1,4 +1,9 @@
-"""Relative PNG destinations for generated images on the coding machine."""
+"""Legacy PNG dest helpers (regex guess, sleep/ls poll).
+
+Live chat/MCP dests and curl commands live in ``images.paths`` (no
+``guess_output_path``). Keep this module for tests and leftover poll
+detection in ``agent_loop``. Do not wire it back into the control plane.
+"""
 
 from __future__ import annotations
 

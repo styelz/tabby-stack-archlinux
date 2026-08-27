@@ -544,6 +544,10 @@ RSYNC_EXCLUDES=(
   --exclude 'HANDOFF.md'
   --exclude '.cursor/'
   --exclude 'api_tokens.yml'
+  --exclude 'ui_users.json'
+  --exclude 'ui_sessions.json'
+  --exclude 'tabbyAPI/ui_users.json'
+  --exclude 'tabbyAPI/ui_sessions.json'
 )
 
 # Copy the git tree (including .git when present) to the install root so the
@@ -1752,19 +1756,23 @@ Start / stop
 
   API:     $API_URL
   Health:  GET $API_URL/health
-  UI:      $API_URL/v1/ui   (sign in with this Linux account)
+  UI:      $API_URL/v1/ui   (Linux account or a Tabby-only user)
   Manual:  $DEST/start.sh
 
   Do not run start.bat.
   If you used a USB cache you can unmount it.
 
 Management UI ($API_URL/v1/ui)
-  Sign in with the Linux user that runs tabbyapi.
+  Sign in with the Linux user that runs tabbyapi (admin), or a Tabby-only account.
+  Chat     conversations, vision, model commands, image generation; follow-up queue
+  Code     project folder on this host (Monaco, file tools, preview, container terminal)
+  Status   GPU mode, occupancy, profile, health; load LLM / Comfy; restart; Update git / Update all
+  Gallery  generated images (admin can see all users)
   Logs     live journalctl for TabbyAPI (and Comfy when up)
-  Chat     short console chat (no project file tools)
-  Status   GPU mode, profile, health; load LLM / Comfy; restart; Update git / Update all
-  Gallery  PNGs under tabbyAPI/pasted-images/
-  Day-to-day coding still happens in your editor pointed at /v1.
+  Users    admin-only: create/reset/delete Tabby accounts (not Linux users)
+  Extra users can use Chat, Code, Status, Gallery, and Logs.
+
+  Editor coding uses your editor pointed at /v1. Browser Code is the on-host alternative.
 
 Your editor or IDE
   Full notes (any editor):  $DEST/AGENTS.md
@@ -1775,7 +1783,7 @@ Your editor or IDE
   UI via tunnel: same /v1/ui path under your public /v1 prefix
 
 Switch models (warm 12 GB: qwen ~65s; qwen35 ~3 min; comfy ~35s)
-  In your editor or IDE chat, send only:
+  In chat (editor or /v1/ui), send only:
     help                    full usage guide
     list models
     restart                 bounce the API; last model reloads
@@ -1889,6 +1897,7 @@ ${START_NOTE:+
   Editor:  $API_URL/v1   model gpt-4o  (leave it — else your editor or IDE may sandbox / block tools)
   Agents:  $DEST/AGENTS.md
   Images:  chat “generate an image of …” or POST /v1/images/generations
+  UI:      Chat, Code, Status, Gallery, Logs (Users is admin-only)
 
 Chat phrases (send as the whole message)
   help

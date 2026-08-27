@@ -109,8 +109,8 @@ async def ui_login(request: Request):
         body = {}
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
-    record_login_attempt(ip)
     if not authenticate_user(username, password):
+        record_login_attempt(ip)
         raise HTTPException(401, "Invalid username or password.")
     try:
         from ui.users import record_login
@@ -839,7 +839,13 @@ async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
     await websocket.accept()
 
     def on_event(event: dict) -> None:
-        asyncio.create_task(websocket.send_json(event))
+        async def send():
+            try:
+                await websocket.send_json(event)
+            except Exception:
+                pass
+
+        asyncio.create_task(send())
 
     attached: list = []
     try:

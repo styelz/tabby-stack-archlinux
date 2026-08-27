@@ -554,11 +554,13 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         "",
         "- **Editor:** your project stays on your computer and the editor supplies its own tools.",
         "- **Browser Chat:** conversations, visual questions, model commands, and image generation.",
-        "- **Browser Code:** one private project folder per chat, with file tools, uploads, "
-        "a Monaco editor, Changes/diff, site preview, a per-chat container terminal, and zip download.",
-        "- **Status:** model switching, GPU mode, restart, updates, health, and resource graphs.",
+        "- **Browser Code:** one private project folder per workspace. Nested chats "
+        "share those files, with file tools, uploads, a Monaco editor, Changes/diff, "
+        "site preview, a per-chat container terminal, and zip download.",
+        "- **Status:** model switching, GPU occupancy, restart, updates, health, and resource graphs.",
         "- **Gallery:** generated output images only.",
         "- **Logs:** live and historical server output.",
+        "- **Users:** administrator-only Tabby accounts (not Linux users).",
         "",
         "## Connection",
         "",
@@ -568,7 +570,8 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         f"- CPU embeddings: `POST {embed}`",
         "",
         "The NVIDIA GPU runs either a language model or ComfyUI, never both at once. "
-        "CPU embeddings remain available in either mode.",
+        "CPU embeddings remain available in either mode. The browser UI queues you "
+        "if another account is chatting, coding, generating, or switching models.",
         "",
         "## Chat commands",
         "",

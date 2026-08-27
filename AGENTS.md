@@ -2,14 +2,21 @@
 
 Use **gpt-4o** as the model name in your editor, and leave it. That is not ChatGPT — it is only a name. Many editors sandbox or block tools unless they see a known OpenAI name. The GPU still runs the local model you switched to.
 
-This file is for **any** editor that talks to the TabbyAPI server. The coding workspace is a different computer. Treat this API like OpenAI: chat and HTTP only. Some editors only accept `https://`; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
+This file is for **any editor** that talks to the TabbyAPI server, and for anyone using the browser UI. An editor keeps the project on the computer that runs the editor. Browser **Code** keeps the project on this GPU host. Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
 
 ## API
 
 - Base URL: the `/v1` URL you configured (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
-- Management UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created. Logs, console chat, GPU/status, image gallery, restart, and update live there. Only the admin can create extra UI users. Coding and mixed page+images still go through this editor chat, not the UI console.
+- Browser UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created.
+  - **Chat** — conversations, vision, model commands, and image generation (searchable history, follow-up queue)
+  - **Code** — a project folder on this host with file tools, Monaco, preview, a per-chat container terminal, and zip download. Nested chats under a workspace share the same files
+  - **Status** — profile, GPU mode, occupancy, health, graphs, restart, and updates
+  - **Gallery** — generated images (the administrator can see every account)
+  - **Logs** — live TabbyAPI and ComfyUI output
+  - **Users** — administrator-only account creation. Extra users get Chat, Code, Status, Gallery, and Logs; they cannot create accounts
+- The GPU is shared. If another account is chatting, coding, generating, or switching models, the UI queues you.
 
 Do not SSH into the GPU host just to change models. Send a chat phrase, use Status in `/v1/ui`, or send `restart` to bounce the API.
 
@@ -45,9 +52,10 @@ The GPU server generates the PNG and returns a URL on **this same API host**. No
 
 A line like “create a webpage and generate a header and logo” is a **coding task**. Write HTML/CSS/JS first, then generate PNGs on the GPU. Do not use React/Vite boilerplate, SVG/CSS art, or Pillow/`generate_images.py`.
 
-1. Apply file tools. Point `img src` at planned paths such as `images/logo.png`. Do not dump the page in chat or overwrite those PNGs.
-2. After the page is written, the next reply holds until every planned PNG exists, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`, invent timestamps, or curl another chat’s leftovers. A 404 means the file is missing on the GPU host.
-3. Prefix `qwen-image:` for logos and readable text. Hero/header photos: a scene, not a website.
+- **Browser Code:** ask for the files and named PNGs together. The model writes the project, generates the images, and copies them into the Files pane.
+- **Editor:** apply file tools on your computer. Point `img src` at planned paths such as `images/logo.png`. Do not dump the page in chat or overwrite those PNGs. After the page is written, the next reply holds until every planned PNG exists, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`, invent timestamps, or curl another chat’s leftovers. A 404 means the file is missing on the GPU host.
+
+Prefix `qwen-image:` for logos and readable text. Hero/header photos: a scene, not a website.
 
 Several PNGs share one Comfy batch (Flux ~3 min each, Qwen-Image ~4 min, then ~65 s to reload the coding model once).
 
