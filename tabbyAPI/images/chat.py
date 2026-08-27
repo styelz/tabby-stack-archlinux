@@ -656,19 +656,17 @@ async def _hold_then_reply(
     )
 
 
-_CODE_FAIL_PREFIXES = (
-    "No model is loaded",
-    "Chat is disabled because no prompt template is set.",
-    "Coding stopped:",
-)
+def _mixed_code_reply(text: str, written: list[str], picture: str) -> str:
+    """Page write summary plus pictures. Keep a write error visible if nothing landed."""
+    from ui.code_agent import final_code_text
 
-
-def _code_pass_failed(text: str, written: list[str]) -> bool:
-    """True when the code agent aborted before writing files."""
+    pictures = (picture or "").strip()
     if written:
-        return False
-    body = (text or "").strip()
-    return any(body.startswith(prefix) for prefix in _CODE_FAIL_PREFIXES)
+        return pictures or final_code_text(text, written)
+    error = (text or "").strip()
+    if error and pictures:
+        return f"{error}\n\n{pictures}"
+    return pictures or final_code_text(text, written)
 
 
 async def _stream_code_then_images(
@@ -717,14 +715,26 @@ async def _stream_code_then_images(
             await _launch_mixed_job(started)
         return started
 
+    def picture_reply(started, copied: list[str]) -> str:
+        reply = _url_response(
+            sync,
+            started,
+            api_base,
+            console=True,
+            code=True,
+            extra_files=written + copied,
+        )
+        picture = ""
+        if reply is not None:
+            picture = getattr(
+                getattr(reply.choices[0], "message", None), "content", None
+            ) or ""
+        return _mixed_code_reply(text, written, picture)
+
     async def _body():
         yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
         async for item in take_code():
             yield item
-        if _code_pass_failed(text, written):
-            async for chunk in stream_text(data, text):
-                yield chunk
-            return
         started = await start_or_launch()
         if started is not None:
             yield ServerSentEvent(comment=f"{JOB_MARK} {started.id}")
@@ -737,23 +747,7 @@ async def _stream_code_then_images(
                 yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
                 async for item in take_code():
                     yield item
-            if _code_pass_failed(text, written):
-                picture = _console_ready_text(
-                    started, api_base, code=True, extra_files=copied
-                )
-                merged = f"{text.rstrip()}\n\n{picture}".strip() if picture else text
-                async for chunk in stream_text(data, merged):
-                    yield chunk
-                return
-            reply = _url_response(
-                sync,
-                started,
-                api_base,
-                console=True,
-                code=True,
-                extra_files=written + copied,
-            )
-            out = reply.choices[0].message.content or final_code_text(text, written)
+            out = picture_reply(started, copied)
         else:
             out = final_code_text(text, written)
         async for chunk in stream_text(data, out):
@@ -767,8 +761,6 @@ async def _stream_code_then_images(
         )
     async for _item in take_code():
         pass
-    if _code_pass_failed(text, written):
-        return _text(sync, text)
     started = await start_or_launch()
     if started is not None:
         await wait_until_done(started)
@@ -776,20 +768,7 @@ async def _stream_code_then_images(
         if not written:
             async for _item in take_code():
                 pass
-        if _code_pass_failed(text, written):
-            picture = _console_ready_text(
-                started, api_base, code=True, extra_files=copied
-            )
-            merged = f"{text.rstrip()}\n\n{picture}".strip() if picture else text
-            return _text(sync, merged)
-        return _url_response(
-            sync,
-            started,
-            api_base,
-            console=True,
-            code=True,
-            extra_files=written + copied,
-        )
+        return _text(sync, picture_reply(started, copied))
     return _text(sync, final_code_text(text, written))
 
 
