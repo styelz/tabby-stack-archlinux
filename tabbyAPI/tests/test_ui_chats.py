@@ -75,6 +75,35 @@ class ChatStoreNormalizeTests(unittest.TestCase):
         )
         self.assertEqual(store["chats"][0]["parentId"], "")
 
+    def test_keeps_context_usage(self):
+        store = normalize_store(
+            {
+                "chats": [
+                    {
+                        "id": "c1",
+                        "mode": "chat",
+                        "title": "Hi",
+                        "messages": [],
+                        "usage": {
+                            "prompt_tokens": 1200,
+                            "completion_tokens": 80,
+                            "total_tokens": 1280,
+                            "estimated": True,
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            store["chats"][0]["usage"],
+            {
+                "prompt_tokens": 1200,
+                "completion_tokens": 80,
+                "total_tokens": 1280,
+                "estimated": True,
+            },
+        )
+
     def test_drops_second_level_nesting(self):
         store = normalize_store(
             {

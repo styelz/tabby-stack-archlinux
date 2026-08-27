@@ -263,6 +263,12 @@ class ConsoleChatRequestTests(unittest.TestCase):
         self.assertIsNotNone(req.temperature)
         self.assertGreater(req.temperature, 0)
 
+    def test_ui_chat_requests_include_usage(self):
+        payload = sanitize_chat_payload({"messages": [{"role": "user", "content": "hello?"}]})
+        req = completion_request_from_payload(payload)
+        self.assertTrue(req.stream_options)
+        self.assertTrue(req.stream_options.include_usage)
+
     def test_explicit_null_temperature_is_coerced(self):
         req = ChatCompletionRequest(
             messages=[ChatCompletionMessage(role="user", content="hello?")],

@@ -99,7 +99,7 @@
       })();
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260827-gallery-attach";
+    window.TABBY_UI_ASSET_V = "20260827-context-usage";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
@@ -123,6 +123,24 @@
       <a href="#users" data-page="users" class="tab" id="tab-users" hidden>Users</a>
     </nav>
     <div class="header-meta">
+      <div class="context-menu" id="context-menu">
+        <button type="button" id="context-chip" class="context-usage-widget" hidden aria-haspopup="true" aria-expanded="false" aria-label="Context window usage">
+          <span class="icon-container" aria-hidden="true">
+            <svg class="circular-progress" viewBox="0 0 36 36">
+              <circle class="progress-bg" cx="18" cy="18" r="14"></circle>
+              <circle class="progress-arc" cx="18" cy="18" r="14" stroke-dasharray="87.9646" stroke-dashoffset="87.9646"></circle>
+            </svg>
+          </span>
+          <span class="percentage-label" id="context-chip-pct">0%</span>
+        </button>
+        <div class="user-menu-panel" id="context-menu-panel" hidden>
+          <p class="context-usage-head">Context window</p>
+          <p class="context-usage-tokens" id="context-usage-tokens"></p>
+          <p class="context-usage-pct" id="context-usage-pct"></p>
+          <p class="context-usage-note" id="context-usage-note" hidden>Quality may decline as limit nears.</p>
+          <p class="context-usage-est" id="context-usage-est" hidden>Estimated from this chat. A reply uses the real prompt size.</p>
+        </div>
+      </div>
       <div class="gpu-menu" id="gpu-menu">
         <button type="button" id="gpu-chip" class="chip" aria-haspopup="menu" aria-expanded="false" aria-label="GPU and model">
           <span id="gpu-chip-label">GPU …</span>

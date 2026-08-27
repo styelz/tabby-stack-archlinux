@@ -53,11 +53,59 @@ from ui.manager import sanitize_chat_payload, sanitize_code_payload
 from ui.occupancy import StackGate, queue_comment, wait_tick
 
 
+USAGE_MARK = "tabby-context-usage:"
+
+
+def usage_dict(usage: Any) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    raw = usage.model_dump(mode="json") if hasattr(usage, "model_dump") else usage
+    if not isinstance(raw, dict):
+        return None
+    try:
+        prompt = int(raw.get("prompt_tokens") or 0)
+        completion = int(raw.get("completion_tokens") or 0)
+        total = int(raw.get("total_tokens") or (prompt + completion))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        total = prompt + completion
+    if total <= 0:
+        return None
+    return {
+        "prompt_tokens": max(0, prompt),
+        "completion_tokens": max(0, completion),
+        "total_tokens": max(0, total),
+    }
+
+
+def usage_sse_data(usage: Any) -> str:
+    payload = usage_dict(usage)
+    if not payload:
+        return ""
+    return json.dumps(
+        {
+            "id": f"chatcmpl-{uuid4().hex}",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": payload,
+        }
+    )
+
+
+def usage_comment(usage: Any) -> str:
+    payload = usage_dict(usage)
+    if not payload:
+        return ""
+    return f"{USAGE_MARK} {json.dumps(payload, separators=(',', ':'))}"
+
+
 def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
     fields: dict[str, Any] = {
         "messages": payload["messages"],
         "stream": payload.get("stream", True),
         "tools": None,
+        "stream_options": {"include_usage": True},
     }
     if payload.get("temperature") is not None:
         fields["temperature"] = payload["temperature"]
@@ -90,17 +138,26 @@ async def stream_code_only(
     async def _body():
         text = ""
         written: list[str] = []
+        last_usage = None
         yield ServerSentEvent(comment=f"{STATUS_MARK} {start}")
         async for event in iter_code_turns(
             sync, disconnect_handler, username, chat_id, agent=kind
         ):
             if event[0] == "status":
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
+            elif event[0] == "usage":
+                last_usage = event[1]
+                note = usage_comment(last_usage)
+                if note:
+                    yield ServerSentEvent(comment=note)
             elif event[0] == "done":
                 text = event[1] or ""
                 written = list(event[2] or [])
         async for chunk in stream_text(data, final_code_text(text, written)):
             yield chunk
+        payload = usage_sse_data(last_usage)
+        if payload:
+            yield payload
 
     if data.stream:
         return EventSourceResponse(
@@ -254,6 +311,9 @@ async def _pump_console_result(
     if text:
         async for chunk in stream_text(data, text):
             await flight.publish(chunk)
+    payload = usage_sse_data(getattr(result, "usage", None))
+    if payload:
+        await flight.publish(payload)
 
 
 async def _run_console_job(

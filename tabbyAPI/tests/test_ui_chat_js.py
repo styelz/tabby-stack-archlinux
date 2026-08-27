@@ -232,6 +232,26 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn(".chat-nav.is-current:not(.is-active)", css)
         self.assertIn(".chat-nav-tools", css)
 
+    def test_context_usage_ring(self):
+        utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
+        html = Path(__file__).resolve().parents[1] / "ui" / "static" / "index.html"
+        app = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.js"
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        utils_src = utils.read_text(encoding="utf-8")
+        html_src = html.read_text(encoding="utf-8")
+        app_src = app.read_text(encoding="utf-8")
+        self.assertIn('id="context-chip"', html_src)
+        self.assertIn("paintContextUsage(", utils_src)
+        self.assertIn("if (json.usage) onEvent({ usage: json.usage })", self.src)
+        self.assertIn("tabby-context-usage:", self.src)
+        self.assertIn("function applyUsage(", self.src)
+        self.assertIn("function paintActiveContext(", self.src)
+        self.assertIn("function cloneUsage(", self.src)
+        self.assertIn(".context-usage-widget", css)
+        self.assertIn(".progress-arc", css)
+        self.assertIn("closeContextMenu()", app_src)
+        self.assertIn("openContextMenu()", app_src)
+
 
 if __name__ == "__main__":
     unittest.main()

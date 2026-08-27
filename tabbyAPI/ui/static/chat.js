@@ -745,6 +745,91 @@ function mountChat(root) {
     });
   }
 
+  function cloneUsage(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const prompt = Number(raw.prompt_tokens);
+    const completion = Number(raw.completion_tokens);
+    const total = Number(raw.total_tokens);
+    const used = Number.isFinite(total) && total > 0
+      ? Math.round(total)
+      : Math.max(0, Math.round((Number.isFinite(prompt) ? prompt : 0) + (Number.isFinite(completion) ? completion : 0)));
+    if (used <= 0) return null;
+    const out = {
+      prompt_tokens: Math.max(0, Math.round(Number.isFinite(prompt) ? prompt : 0)),
+      completion_tokens: Math.max(0, Math.round(Number.isFinite(completion) ? completion : 0)),
+      total_tokens: used,
+    };
+    if (raw.estimated) out.estimated = true;
+    return out;
+  }
+
+  function estimateTokensFromMessages(list) {
+    let chars = 0;
+    (Array.isArray(list) ? list : []).forEach((item) => {
+      if (!item || item.role === "system" || item.hidden) return;
+      chars += String(item.content || "").length;
+      if (item.reasoning) chars += String(item.reasoning).length;
+      (item.attachedFiles || []).forEach((file) => {
+        chars += String((file && file.path) || "").length;
+        chars += String((file && file.text) || "").length;
+      });
+    });
+    return Math.max(0, Math.round(chars / 4));
+  }
+
+  function contextWindowMax(data) {
+    const model = (data && data.model) || {};
+    const n = Number(model.max_seq_len);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function contextUsageHidden(data) {
+    if (!data || data.down) return true;
+    if (!contextWindowMax(data)) return true;
+    const mode = String(data.gpu_mode || "").toLowerCase();
+    if (mode === "comfy") return true;
+    if (data.comfy_up && !data.tabby_model) return true;
+    return !data.tabby_model;
+  }
+
+  function usageFromChat(chat, list) {
+    const stored = cloneUsage(chat && chat.usage);
+    if (stored) return stored;
+    const used = estimateTokensFromMessages(list || (chat && chat.messages) || []);
+    if (used <= 0) {
+      return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, estimated: true };
+    }
+    return { prompt_tokens: used, completion_tokens: 0, total_tokens: used, estimated: true };
+  }
+
+  function paintActiveContext() {
+    const data = TabbyUI.lastGpuStatus;
+    if (contextUsageHidden(data)) {
+      TabbyUI.paintContextUsage({ hide: true });
+      return;
+    }
+    const chat = activeChat();
+    const list = chat && chat.id === store.activeId ? messages : (chat && chat.messages);
+    const usage = usageFromChat(chat, list);
+    if (chat && usage.estimated && usage.total_tokens > 0 && !cloneUsage(chat.usage)) {
+      chat.usage = usage;
+    }
+    TabbyUI.paintContextUsage({
+      used: usage.total_tokens,
+      max: contextWindowMax(data),
+      estimated: Boolean(usage.estimated),
+    });
+  }
+
+  function applyUsage(raw, chatId) {
+    const usage = cloneUsage(raw);
+    if (!usage) return;
+    const id = chatId || store.activeId;
+    const chat = store.chats.find((item) => item.id === id);
+    if (chat) chat.usage = usage;
+    if (id === store.activeId) paintActiveContext();
+  }
+
   function defaultChatTitle(chat) {
     if (isWorkspaceRoot(chat)) return "New workspace";
     return "New chat";
@@ -852,7 +937,7 @@ function mountChat(root) {
       seen.add(id);
       const messages = cloneMessages(item.messages);
       if (!messages.some((msg) => msg.role === "system")) messages.unshift({ ...SYSTEM });
-      chats.push({
+      const row = {
         id,
         title: String(item.title || titleFromMessages(messages, item) || "New chat"),
         updatedAt: Number(item.updatedAt) || Date.now(),
@@ -861,10 +946,13 @@ function mountChat(root) {
         mode: item.mode === "code" ? "code" : "chat",
         parentId: "",
         messages,
-      });
-      if (chats[chats.length - 1].mode === "code") {
+      };
+      const usage = cloneUsage(item.usage);
+      if (usage) row.usage = usage;
+      chats.push(row);
+      if (row.mode === "code") {
         const parent = String(item.parentId || "").trim();
-        if (parent && parent !== id) chats[chats.length - 1].parentId = parent;
+        if (parent && parent !== id) row.parentId = parent;
       }
     });
     const roots = new Set(
@@ -1138,6 +1226,7 @@ function mountChat(root) {
     const kept = new Set(store.chats.map((item) => item.id));
     paintToolbar();
     renderSidebar();
+    paintActiveContext();
     if (!persistReady) return persistTail;
     previous.forEach((item) => {
       if (kept.has(item.id)) return;
@@ -7389,7 +7478,8 @@ function mountChat(root) {
       if (
         comment.includes("tabby-image-job:") ||
         comment.includes("tabby-image-status:") ||
-        comment.includes("tabby-stack-queue:")
+        comment.includes("tabby-stack-queue:") ||
+        comment.includes("tabby-context-usage:")
       ) {
         onEvent({ comment });
       }
@@ -7411,6 +7501,7 @@ function mountChat(root) {
         const msg = json.error.message || json.error;
         throw new Error(typeof msg === "string" ? msg : "Chat failed");
       }
+      if (json.usage) onEvent({ usage: json.usage });
       const choice = json.choices?.[0] || {};
       const delta = choice.delta || {};
       const message = choice.message || {};
@@ -7809,6 +7900,7 @@ function mountChat(root) {
   function onGpuStatus(event) {
     const data = event && event.detail;
     rememberGpu(data);
+    paintActiveContext();
     applyStackOccupancy(data);
     if (modelWait || !statusIsBusy(data) || (data && data.down)) return;
     const target = data.switch_target || (comfyIsStarting(data) ? "comfy" : "");
@@ -8057,6 +8149,7 @@ function mountChat(root) {
         reasoning = data.choices?.[0]?.message?.reasoning_content || "";
         if (reasoning) working.setReasoning(reasoning);
         if (assembled) working.setAnswer(assembled);
+        if (data.usage) applyUsage(data.usage, chatId);
       } else {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -8066,6 +8159,20 @@ function mountChat(root) {
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           buf = consumeSseBuffer(buf, (event) => {
+            if (event.usage) applyUsage(event.usage, chatId);
+            if (event.comment && event.comment.includes("tabby-context-usage:")) {
+              const raw = String(event.comment)
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter((line) => /tabby-context-usage:/i.test(line))
+                .pop() || "";
+              const json = raw.replace(/^[\s\S]*tabby-context-usage:\s*/i, "");
+              try {
+                applyUsage(JSON.parse(json), chatId);
+              } catch {
+                /* ignore */
+              }
+            }
             if (event.comment && event.comment.includes("tabby-stack-queue:")) {
               const raw = String(event.comment)
                 .split(/\r?\n/)
@@ -9782,6 +9889,7 @@ function mountChat(root) {
     renderLog();
     paintToolbar();
     renderSidebar();
+    paintActiveContext();
     paintCompose();
     resizeInput();
     refreshFiles();

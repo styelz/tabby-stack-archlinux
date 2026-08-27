@@ -706,6 +706,101 @@ input:focus, textarea:focus { outline: 0.125rem solid var(--focus-ring); border-
   border-color: var(--line);
 }
 .header-meta { display: flex; align-items: center; gap: 0.5rem; }
+.context-menu { position: relative; }
+.context-usage-widget {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0.1875rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.context-usage-widget[hidden] { display: none; }
+.context-usage-widget .icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+}
+.context-usage-widget:hover,
+.context-usage-widget:focus-visible,
+.context-usage-widget[aria-expanded="true"] {
+  background: var(--hover-fill);
+  outline: none;
+}
+.context-usage-widget:focus-visible {
+  outline: 0.125rem solid var(--focus-ring);
+  outline-offset: 0.125rem;
+}
+.context-usage-widget .circular-progress {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.context-usage-widget .progress-bg {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 4;
+  opacity: 0.5;
+}
+.context-usage-widget .progress-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  pointer-events: none;
+}
+.context-usage-widget.warning .progress-arc { stroke: var(--warn); }
+.context-usage-widget.error .progress-arc { stroke: var(--bad); }
+.context-usage-widget .percentage-label {
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-width 0.1s ease-out, opacity 0.1s ease-out;
+}
+.context-usage-widget:hover .percentage-label,
+.context-usage-widget:focus-visible .percentage-label,
+.context-usage-widget[aria-expanded="true"] .percentage-label {
+  max-width: 4em;
+  opacity: 1;
+}
+.context-menu .user-menu-panel {
+  min-width: 12rem;
+  padding: 0.625rem 0.75rem;
+}
+.context-usage-head {
+  margin: 0 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.context-usage-tokens,
+.context-usage-pct,
+.context-usage-note,
+.context-usage-est {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+}
+.context-usage-note { color: var(--warn); }
+.context-usage-est { color: var(--muted); }
+.context-usage-note[hidden],
+.context-usage-est[hidden] { display: none; }
 .gpu-menu { position: relative; }
 .gpu-menu .user-menu-panel {
   min-width: 16rem;

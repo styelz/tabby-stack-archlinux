@@ -187,6 +187,29 @@ def _kept_duplicate_root(old: Any, remaining: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _usage_payload(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        prompt = int(raw.get("prompt_tokens") or 0)
+        completion = int(raw.get("completion_tokens") or 0)
+        total = int(raw.get("total_tokens") or (prompt + completion))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        total = prompt + completion
+    if total <= 0:
+        return None
+    payload = {
+        "prompt_tokens": max(0, prompt),
+        "completion_tokens": max(0, completion),
+        "total_tokens": max(0, total),
+    }
+    if raw.get("estimated"):
+        payload["estimated"] = True
+    return payload
+
+
 def normalize_store(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {
@@ -218,18 +241,20 @@ def normalize_store(raw: Any) -> dict[str, Any]:
             parent_id = str(item.get("parentId") or "").strip()
             if parent_id == chat_id:
                 parent_id = ""
-        cleaned.append(
-            {
-                "id": chat_id,
-                "title": str(item.get("title") or "New chat"),
-                "updatedAt": int(item.get("updatedAt") or 0),
-                "pinned": bool(item.get("pinned")),
-                "titleLocked": bool(item.get("titleLocked")),
-                "mode": mode,
-                "parentId": parent_id,
-                "messages": messages,
-            }
-        )
+        row = {
+            "id": chat_id,
+            "title": str(item.get("title") or "New chat"),
+            "updatedAt": int(item.get("updatedAt") or 0),
+            "pinned": bool(item.get("pinned")),
+            "titleLocked": bool(item.get("titleLocked")),
+            "mode": mode,
+            "parentId": parent_id,
+            "messages": messages,
+        }
+        usage = _usage_payload(item.get("usage"))
+        if usage:
+            row["usage"] = usage
+        cleaned.append(row)
     roots = {
         chat["id"]
         for chat in cleaned

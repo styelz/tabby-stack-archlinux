@@ -594,7 +594,7 @@ async def iter_code_turns(
     chat_id: str,
     agent: str = "agent",
 ) -> AsyncIterator[tuple[str, Any]]:
-    """Yield ('status', label) then ('done', text, written_paths)."""
+    """Yield ('status', label), ('usage', usage), then ('done', text, written_paths)."""
     from common import model
     from common.assistant_text import strip_response_apologies
     from common.networking import DisconnectHandler
@@ -622,6 +622,7 @@ async def iter_code_turns(
             "tools": code_tool_specs(kind),
             "tool_choice": "none" if kind == "plan" and empty else "auto",
             "messages": list(data.messages or []),
+            "stream_options": {"include_usage": True},
         }
     )
     written: list[str] = []
@@ -645,6 +646,9 @@ async def iter_code_turns(
             xlogger.warning(f"UI code turn failed: {exc}")
             yield ("done", last_text or f"Coding stopped: {exc}", written)
             return
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            yield ("usage", usage)
         message = _assistant_message(response)
         if message is None:
             yield ("done", last_text or "The model returned an empty reply.", written)

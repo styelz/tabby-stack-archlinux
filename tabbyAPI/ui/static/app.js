@@ -19,6 +19,7 @@
     if (window.TabbyUI && TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
     closeUserMenu();
     closeGpuMenu();
+    closeContextMenu();
     const key = pages[name] ? name : "chat";
     Object.entries(pages).forEach(([id, page]) => {
       const on = id === key;
@@ -41,7 +42,11 @@
   const gpuChip = document.getElementById("gpu-chip");
   const gpuMenu = document.getElementById("gpu-menu");
   const gpuPanel = document.getElementById("gpu-menu-panel");
+  const contextChip = document.getElementById("context-chip");
+  const contextMenu = document.getElementById("context-menu");
+  const contextPanel = document.getElementById("context-menu-panel");
   let gpuMenuOpen = false;
+  let contextMenuOpen = false;
   let gpuSwitchBusy = false;
   let gpuSwitchTarget = "";
 
@@ -173,8 +178,24 @@
     if (gpuChip) gpuChip.setAttribute("aria-expanded", "false");
   }
 
+  function closeContextMenu() {
+    contextMenuOpen = false;
+    if (contextPanel) contextPanel.hidden = true;
+    if (contextChip) contextChip.setAttribute("aria-expanded", "false");
+  }
+
+  function openContextMenu() {
+    if (!contextChip || contextChip.hidden) return;
+    closeUserMenu();
+    closeGpuMenu();
+    contextMenuOpen = true;
+    if (contextPanel) contextPanel.hidden = false;
+    contextChip.setAttribute("aria-expanded", "true");
+  }
+
   async function openGpuMenu() {
     closeUserMenu();
+    closeContextMenu();
     gpuMenuOpen = true;
     if (gpuPanel) gpuPanel.hidden = false;
     if (gpuChip) gpuChip.setAttribute("aria-expanded", "true");
@@ -341,6 +362,7 @@
 
   function openUserMenu() {
     closeGpuMenu();
+    closeContextMenu();
     userMenuOpen = true;
     if (userPanel) userPanel.hidden = false;
     if (userChip) userChip.setAttribute("aria-expanded", "true");
@@ -469,14 +491,31 @@
     });
   }
 
+  if (contextChip) {
+    contextChip.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (contextMenuOpen) closeContextMenu();
+      else openContextMenu();
+    });
+    contextChip.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (contextMenuOpen) closeContextMenu();
+      else openContextMenu();
+    });
+  }
+
   document.addEventListener("pointerdown", (event) => {
     if (userMenuOpen && userMenu && !userMenu.contains(event.target)) closeUserMenu();
     if (gpuMenuOpen && gpuMenu && !gpuMenu.contains(event.target)) closeGpuMenu();
+    if (contextMenuOpen && contextMenu && !contextMenu.contains(event.target)) closeContextMenu();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (gpuMenuOpen) closeGpuMenu();
     if (userMenuOpen) closeUserMenu();
+    if (contextMenuOpen) closeContextMenu();
   });
 
   TabbyUI.api("auth/check")

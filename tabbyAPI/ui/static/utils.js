@@ -1393,6 +1393,49 @@
     THEME_MODES,
     MODE_LABELS,
     lastGpuStatus: null,
+    formatTokenCount(count) {
+      const n = Math.max(0, Number(count) || 0);
+      if (n >= 1000000 - 500) return `${(n / 1000000).toFixed(1)}M`;
+      if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+      return String(Math.round(n));
+    },
+    paintContextUsage(info) {
+      const chip = document.getElementById("context-chip");
+      if (!chip) return;
+      const max = Number(info && info.max);
+      if (!info || info.hide || !(max > 0)) {
+        chip.hidden = true;
+        chip.classList.remove("warning", "error");
+        chip.setAttribute("aria-expanded", "false");
+        const panel = document.getElementById("context-menu-panel");
+        if (panel) panel.hidden = true;
+        return;
+      }
+      const used = Math.max(0, Number(info.used) || 0);
+      const estimated = Boolean(info.estimated);
+      const pct = (used / max) * 100;
+      const clamped = Math.max(0, Math.min(100, pct));
+      const circ = 2 * Math.PI * 14;
+      const arc = chip.querySelector(".progress-arc");
+      if (arc) arc.setAttribute("stroke-dashoffset", String(circ - (clamped / 100) * circ));
+      chip.classList.toggle("warning", pct >= 75 && pct < 90);
+      chip.classList.toggle("error", pct >= 90);
+      const rounded = Math.min(100, Math.round(pct));
+      const pctLabel = document.getElementById("context-chip-pct");
+      if (pctLabel) pctLabel.textContent = `${rounded}%`;
+      const tokens = `${this.formatTokenCount(used)} / ${this.formatTokenCount(max)} tokens`;
+      chip.title = estimated ? `${tokens} (estimated)` : tokens;
+      chip.setAttribute("aria-label", `Context window usage: ${rounded}%`);
+      chip.hidden = false;
+      const tokenEl = document.getElementById("context-usage-tokens");
+      if (tokenEl) tokenEl.textContent = tokens;
+      const pctEl = document.getElementById("context-usage-pct");
+      if (pctEl) pctEl.textContent = `${rounded}%`;
+      const note = document.getElementById("context-usage-note");
+      if (note) note.hidden = pct < 75;
+      const est = document.getElementById("context-usage-est");
+      if (est) est.hidden = !estimated;
+    },
     paintGpuChip(data) {
       const chip = document.getElementById("gpu-chip");
       if (!chip) return;
