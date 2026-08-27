@@ -62,11 +62,11 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 **Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account is already using the GPU, you wait in a queue.
 
-<img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/1ef6e2a8-6ff7-4dd0-b5be-6e814e8b83e7" />
+<img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/03456b83-b6a5-46e9-a96f-9d752ed34fdb" />
 
 **Code** is a workspace per project folder. Extra chats under that workspace share the same files. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
-<img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/3e4266a6-77e3-4399-bff0-3603bd1fd4e4" />
+<img width="1919" height="1121" alt="image" src="https://github.com/user-attachments/assets/ace1814b-5932-4e7d-9df8-14f184054fcd" />
 
 Other pages:
 
