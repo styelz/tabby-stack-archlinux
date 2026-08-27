@@ -2308,6 +2308,56 @@ button.chip {
   height: auto;
   border-radius: 0.5rem;
 }
+.chat-editor-body.is-crop {
+  place-content: center;
+  user-select: none;
+  touch-action: none;
+}
+.chat-crop-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+.chat-crop-stage img {
+  pointer-events: none;
+}
+.chat-crop-shade {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.chat-crop-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  cursor: move;
+  touch-action: none;
+}
+.chat-crop-handle {
+  position: absolute;
+  width: 0.5rem;
+  height: 0.5rem;
+  padding: 0;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  border-radius: 1px;
+  box-sizing: border-box;
+}
+.chat-crop-handle[data-crop-handle="nw"] { left: -0.25rem; top: -0.25rem; cursor: nwse-resize; }
+.chat-crop-handle[data-crop-handle="ne"] { right: -0.25rem; top: -0.25rem; cursor: nesw-resize; }
+.chat-crop-handle[data-crop-handle="sw"] { left: -0.25rem; bottom: -0.25rem; cursor: nesw-resize; }
+.chat-crop-handle[data-crop-handle="se"] { right: -0.25rem; bottom: -0.25rem; cursor: nwse-resize; }
+.chat-crop-handle[data-crop-handle="n"] { left: 50%; top: -0.25rem; margin-left: -0.25rem; cursor: ns-resize; }
+.chat-crop-handle[data-crop-handle="s"] { left: 50%; bottom: -0.25rem; margin-left: -0.25rem; cursor: ns-resize; }
+.chat-crop-handle[data-crop-handle="w"] { left: -0.25rem; top: 50%; margin-top: -0.25rem; cursor: ew-resize; }
+.chat-crop-handle[data-crop-handle="e"] { right: -0.25rem; top: 50%; margin-top: -0.25rem; cursor: ew-resize; }
+.chat-crop-readout {
+  font-size: 0.6875rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
 .chat-editor-note {
   flex: 0 0 auto;
   margin: 0;

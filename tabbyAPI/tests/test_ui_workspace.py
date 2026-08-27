@@ -97,6 +97,69 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(result["dimensions"], "40x40")
         self.assertEqual(result["original_dimensions"], "80x80")
 
+    def _write_png(self, rel, width, height, fill="white", ink=None, ink_box=None):
+        from PIL import Image
+
+        import io
+
+        canvas = Image.new("RGB", (width, height), fill)
+        if ink and ink_box:
+            left, top, right, bottom = ink_box
+            for x in range(left, right):
+                for y in range(top, bottom):
+                    canvas.putpixel((x, y), ink)
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        workspace.copy_bytes("u", "c", rel, buf.getvalue())
+
+    def test_crop_image_png_box(self):
+        from PIL import Image
+
+        self._write_png(
+            "pic.png",
+            80,
+            60,
+            fill="white",
+            ink=(200, 10, 10),
+            ink_box=(10, 5, 50, 35),
+        )
+        result = workspace.crop_image("u", "c", "pic.png", 10, 5, 40, 30)
+        self.assertEqual(result["path"], "pic.png")
+        self.assertEqual(result["original_dimensions"], "80x60")
+        self.assertEqual(result["dimensions"], "40x30")
+        path = workspace.resolve_file("u", "c", "pic.png")
+        with Image.open(path) as cropped:
+            self.assertEqual(cropped.size, (40, 30))
+            self.assertEqual(cropped.getpixel((0, 0)), (200, 10, 10))
+
+    def test_crop_image_empty_box_after_clamp(self):
+        self._write_png("pic.png", 80, 60)
+        with self.assertRaises(ValueError):
+            workspace.crop_image("u", "c", "pic.png", 90, 0, 10, 10)
+        with self.assertRaises(ValueError):
+            workspace.crop_image("u", "c", "pic.png", 0, 0, 0, 10)
+        with self.assertRaises(ValueError):
+            workspace.crop_image("u", "c", "pic.png", 20, 10, -8, 10)
+
+    def test_crop_image_rejects_animated_gif(self):
+        from PIL import Image
+
+        import io
+
+        frames = [Image.new("RGB", (8, 8), color) for color in ("red", "blue")]
+        buf = io.BytesIO()
+        frames[0].save(
+            buf,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=100,
+            loop=0,
+        )
+        workspace.copy_bytes("u", "c", "spin.gif", buf.getvalue())
+        with self.assertRaises(ValueError):
+            workspace.crop_image("u", "c", "spin.gif", 0, 0, 4, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

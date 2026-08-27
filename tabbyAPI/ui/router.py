@@ -522,6 +522,47 @@ async def ui_workspace_rename_file(
     return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
+@router.post("/workspace/{chat_id}/crop", include_in_schema=False)
+async def ui_workspace_crop(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import crop_image, listing, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        result = crop_image(
+            _user,
+            cid,
+            path,
+            body.get("x"),
+            body.get("y"),
+            body.get("width"),
+            body.get("height"),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "path": result["path"],
+        "original_dimensions": result["original_dimensions"],
+        "dimensions": result["dimensions"],
+        "bytes": result["bytes"],
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
+
+
 @router.put("/workspace/{chat_id}/folder", include_in_schema=False)
 async def ui_workspace_mkdir(
     chat_id: str, path: str = "", _user: str = Depends(require_ui_user)

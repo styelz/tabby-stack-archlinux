@@ -2197,6 +2197,13 @@ function mountChat(root) {
     }
     const revert = editorPane.querySelector("[data-edit='revert']");
     if (revert) revert.hidden = !tab.dirty;
+    paintCropReadout(tab);
+    const apply = editorPane.querySelector("[data-edit='crop-apply']");
+    if (apply) {
+      const box = tab.cropBox;
+      apply.disabled = tab.busy || !box || box.w < 1 || box.h < 1;
+      apply.textContent = tab.busy ? "Cropping" : "Apply";
+    }
   }
 
   /** A reload keeps showing the text it already has instead of flashing. */
@@ -2218,7 +2225,21 @@ function mountChat(root) {
   function editorBodyHtml(tab, view) {
     if (view === "image") {
       const src = `${fileUrl(activeWorkspaceId(), tab.path)}&v=${tab.size}`;
-      return `<div class="chat-editor-body is-image"><img alt="" src="${TabbyUI.escapeHtml(src)}" /></div>`;
+      const img = `<img alt="" src="${TabbyUI.escapeHtml(src)}" />`;
+      if (!tab.cropping) {
+        return `<div class="chat-editor-body is-image">${img}</div>`;
+      }
+      const handles = ["nw", "n", "ne", "w", "e", "sw", "s", "se"]
+        .map((name) => `<button type="button" class="chat-crop-handle" data-crop-handle="${name}" aria-label="Resize ${name}"></button>`)
+        .join("");
+      return (
+        `<div class="chat-editor-body is-image is-crop"><div class="chat-crop-stage">${img}` +
+        '<div class="chat-crop-shade" data-crop-shade="n"></div>' +
+        '<div class="chat-crop-shade" data-crop-shade="s"></div>' +
+        '<div class="chat-crop-shade" data-crop-shade="e"></div>' +
+        '<div class="chat-crop-shade" data-crop-shade="w"></div>' +
+        `<div class="chat-crop-box" data-crop-box>${handles}</div></div></div>`
+      );
     }
     if (view === "binary") {
       return '<div class="chat-editor-body"><p class="muted">Download this file to open it.</p></div>';
@@ -2246,7 +2267,7 @@ function mountChat(root) {
     // Code turns repaint the listing every 600 ms; only rebuild when the file,
     // its state, or a reloaded revision actually changed, so typing survives.
     const view = tabView(tab);
-    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}`;
+    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}|${tab.cropping ? "crop" : ""}`;
     if (editorPane.dataset.key === key) {
       paintEditorHead();
       return;
@@ -2261,7 +2282,13 @@ function mountChat(root) {
             : '<button type="button" class="btn ghost" data-edit="compare">Changes</button>') +
           '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
           '<button type="button" class="btn primary" data-edit="save" disabled>Saved</button>'
-        : "";
+        : view === "image" && !isHistoryTab(tab)
+          ? (tab.cropping
+              ? '<span class="chat-crop-readout" data-crop-readout></span>' +
+                '<button type="button" class="btn ghost" data-edit="crop-cancel">Cancel</button>' +
+                '<button type="button" class="btn primary" data-edit="crop-apply">Apply</button>'
+              : '<button type="button" class="btn ghost" data-edit="crop">Crop</button>')
+          : "";
     editorPane.innerHTML =
       '<div class="chat-editor-head">' +
       `<strong>${TabbyUI.escapeHtml(title)}</strong>` +
@@ -2276,6 +2303,7 @@ function mountChat(root) {
       editorBodyHtml(tab, view) +
       '<p class="muted chat-editor-note"></p>';
     mountMonaco(tab, view);
+    if (view === "image" && tab.cropping) mountCropOverlay(tab);
     paintEditorHead();
   }
 
@@ -2802,6 +2830,317 @@ function mountChat(root) {
     syncTabs();
     paintTabsAndFiles();
     refreshHistory();
+  }
+
+  let cropDrag = null;
+  let cropResize = null;
+
+  function isImageTab(tab) {
+    return Boolean(tab && (tab.kind === "image" || IMAGE_SUFFIXES.has(fileSuffix(tab.path))));
+  }
+
+  function clampCropBox(box, nw, nh) {
+    let x = Math.round(box.x);
+    let y = Math.round(box.y);
+    let w = Math.round(box.w);
+    let h = Math.round(box.h);
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (x < 0) {
+      w += x;
+      x = 0;
+    }
+    if (y < 0) {
+      h += y;
+      y = 0;
+    }
+    if (x + w > nw) w = nw - x;
+    if (y + h > nh) h = nh - y;
+    if (w < 1) {
+      w = 1;
+      x = Math.max(0, Math.min(x, nw - 1));
+    }
+    if (h < 1) {
+      h = 1;
+      y = Math.max(0, Math.min(y, nh - 1));
+    }
+    return { x, y, w, h };
+  }
+
+  function resizeCropBox(origin, handle, dx, dy, natural, square) {
+    const nw = natural.w;
+    const nh = natural.h;
+    if (handle === "move") {
+      const w = origin.w;
+      const h = origin.h;
+      return {
+        x: Math.round(Math.max(0, Math.min(origin.x + dx, nw - w))),
+        y: Math.round(Math.max(0, Math.min(origin.y + dy, nh - h))),
+        w,
+        h,
+      };
+    }
+    let x = origin.x;
+    let y = origin.y;
+    let w = origin.w;
+    let h = origin.h;
+    const east = handle.includes("e");
+    const west = handle.includes("w");
+    const north = handle.includes("n");
+    const south = handle.includes("s");
+    if (east) w = origin.w + dx;
+    if (west) {
+      x = origin.x + dx;
+      w = origin.w - dx;
+    }
+    if (south) h = origin.h + dy;
+    if (north) {
+      y = origin.y + dy;
+      h = origin.h - dy;
+    }
+    if (w < 1) {
+      x = east ? origin.x + origin.w - 1 : origin.x;
+      w = 1;
+    }
+    if (h < 1) {
+      y = south ? origin.y + origin.h - 1 : origin.y;
+      h = 1;
+    }
+    if (square) {
+      const side = Math.max(1, Math.round(Math.max(Math.abs(w), Math.abs(h))));
+      if (west) x = origin.x + origin.w - side;
+      else if (!east) x = origin.x + (origin.w - side) / 2;
+      if (north) y = origin.y + origin.h - side;
+      else if (!south) y = origin.y + (origin.h - side) / 2;
+      w = side;
+      h = side;
+    }
+    return clampCropBox({ x, y, w, h }, nw, nh);
+  }
+
+  function paintCropReadout(tab) {
+    const readout = editorPane && editorPane.querySelector("[data-crop-readout]");
+    if (!readout || !tab || !tab.cropBox) return;
+    const natural = tab.cropNatural;
+    const box = tab.cropBox;
+    readout.textContent = natural
+      ? `${box.w} × ${box.h} of ${natural.w} × ${natural.h}`
+      : `${box.w} × ${box.h}`;
+  }
+
+  function paintCropOverlay(tab) {
+    const body = editorPane && editorPane.querySelector(".chat-editor-body.is-crop");
+    if (!body || !tab || !tab.cropBox) return;
+    const img = body.querySelector("img");
+    const boxEl = body.querySelector("[data-crop-box]");
+    if (!img || !boxEl || !img.naturalWidth) return;
+    const sx = img.clientWidth / img.naturalWidth;
+    const sy = img.clientHeight / img.naturalHeight;
+    const { x, y, w, h } = tab.cropBox;
+    boxEl.style.left = `${x * sx}px`;
+    boxEl.style.top = `${y * sy}px`;
+    boxEl.style.width = `${Math.max(1, w * sx)}px`;
+    boxEl.style.height = `${Math.max(1, h * sy)}px`;
+    const n = body.querySelector('[data-crop-shade="n"]');
+    const s = body.querySelector('[data-crop-shade="s"]');
+    const e = body.querySelector('[data-crop-shade="e"]');
+    const west = body.querySelector('[data-crop-shade="w"]');
+    if (n) {
+      n.style.left = "0";
+      n.style.top = "0";
+      n.style.right = "0";
+      n.style.height = `${Math.max(0, y * sy)}px`;
+    }
+    if (s) {
+      s.style.left = "0";
+      s.style.top = `${(y + h) * sy}px`;
+      s.style.right = "0";
+      s.style.bottom = "0";
+    }
+    if (west) {
+      west.style.left = "0";
+      west.style.top = `${y * sy}px`;
+      west.style.width = `${Math.max(0, x * sx)}px`;
+      west.style.height = `${Math.max(0, h * sy)}px`;
+    }
+    if (e) {
+      e.style.left = `${(x + w) * sx}px`;
+      e.style.top = `${y * sy}px`;
+      e.style.right = "0";
+      e.style.height = `${Math.max(0, h * sy)}px`;
+    }
+    paintCropReadout(tab);
+    const apply = editorPane.querySelector("[data-edit='crop-apply']");
+    if (apply) {
+      apply.disabled = tab.busy || w < 1 || h < 1;
+      apply.textContent = tab.busy ? "Cropping" : "Apply";
+    }
+  }
+
+  function defaultCropBox(nw, nh) {
+    const insetX = Math.max(1, Math.round(nw * 0.08));
+    const insetY = Math.max(1, Math.round(nh * 0.08));
+    return clampCropBox(
+      { x: insetX, y: insetY, w: nw - insetX * 2, h: nh - insetY * 2 },
+      nw,
+      nh
+    );
+  }
+
+  function mountCropOverlay(tab) {
+    if (cropResize) {
+      cropResize.disconnect();
+      cropResize = null;
+    }
+    const body = editorPane && editorPane.querySelector(".chat-editor-body.is-crop");
+    if (!body || !tab) return;
+    const stage = body.querySelector(".chat-crop-stage");
+    const img = body.querySelector("img");
+    if (!stage || !img) return;
+
+    const ready = () => {
+      const nw = img.naturalWidth;
+      const nh = img.naturalHeight;
+      if (!nw || !nh) return;
+      tab.cropNatural = { w: nw, h: nh };
+      if (!tab.cropBox) tab.cropBox = defaultCropBox(nw, nh);
+      paintCropOverlay(tab);
+    };
+    if (img.complete && img.naturalWidth) ready();
+    else img.addEventListener("load", ready, { once: true });
+
+    if (typeof ResizeObserver === "function") {
+      cropResize = new ResizeObserver(() => paintCropOverlay(tab));
+      cropResize.observe(img);
+    }
+
+    const naturalFromClient = (clientX, clientY) => {
+      const rect = img.getBoundingClientRect();
+      const width = rect.width || 1;
+      const height = rect.height || 1;
+      return {
+        x: ((clientX - rect.left) / width) * (img.naturalWidth || 1),
+        y: ((clientY - rect.top) / height) * (img.naturalHeight || 1),
+      };
+    };
+
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || tab.busy) return;
+      const handleEl = event.target.closest("[data-crop-handle]");
+      const onBox = event.target.closest("[data-crop-box]");
+      const natural = tab.cropNatural;
+      if (!natural) return;
+      event.preventDefault();
+      stage.setPointerCapture(event.pointerId);
+      const at = naturalFromClient(event.clientX, event.clientY);
+      if (!handleEl && !onBox) {
+        const x = Math.round(Math.max(0, Math.min(at.x, natural.w - 1)));
+        const y = Math.round(Math.max(0, Math.min(at.y, natural.h - 1)));
+        tab.cropBox = { x, y, w: 1, h: 1 };
+        cropDrag = {
+          tab,
+          handle: "se",
+          start: { x, y },
+          origin: { ...tab.cropBox },
+        };
+        paintCropOverlay(tab);
+        return;
+      }
+      cropDrag = {
+        tab,
+        handle: handleEl ? handleEl.dataset.cropHandle : "move",
+        start: at,
+        origin: { ...tab.cropBox },
+      };
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!cropDrag || cropDrag.tab !== tab || !tab.cropNatural) return;
+      const at = naturalFromClient(event.clientX, event.clientY);
+      tab.cropBox = resizeCropBox(
+        cropDrag.origin,
+        cropDrag.handle,
+        at.x - cropDrag.start.x,
+        at.y - cropDrag.start.y,
+        tab.cropNatural,
+        event.shiftKey
+      );
+      paintCropOverlay(tab);
+    });
+    const endDrag = (event) => {
+      if (!cropDrag || cropDrag.tab !== tab) return;
+      cropDrag = null;
+      try {
+        stage.releasePointerCapture(event.pointerId);
+      } catch {
+        /* already released */
+      }
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+  }
+
+  function beginCrop(tab) {
+    if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
+    tab.cropping = true;
+    tab.cropBox = null;
+    tab.cropNatural = null;
+    tab.note = "";
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  function beginCropPath(path) {
+    openFileTab(path);
+    const tab = findTab(path);
+    if (tab) beginCrop(tab);
+  }
+
+  function cancelCrop(tab) {
+    if (!tab || !tab.cropping) return;
+    tab.cropping = false;
+    tab.cropBox = null;
+    tab.cropNatural = null;
+    tab.note = "";
+    cropDrag = null;
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  async function applyCrop(tab) {
+    if (!tab || !tab.cropping || tab.busy || !tab.cropBox) return;
+    const { x, y, w, h } = tab.cropBox;
+    if (w < 1 || h < 1) return;
+    const chatId = activeWorkspaceId();
+    const path = tab.path;
+    tab.busy = true;
+    tab.note = "";
+    paintEditorHead();
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/crop`, {
+        method: "POST",
+        body: { path, x, y, width: w, height: h },
+      });
+      if (chatId !== activeWorkspaceId()) return;
+      tab.busy = false;
+      tab.cropping = false;
+      tab.cropBox = null;
+      tab.cropNatural = null;
+      cropDrag = null;
+      applyListing(data);
+      const live = findTab(path) || tab;
+      const saved = filesListing.find((item) => item.path === path);
+      live.size = saved ? Number(saved.size) || Number(data.bytes) || live.size : Number(data.bytes) || live.size;
+      live.state = "image";
+      live.rev += 1;
+      live.note = "Cropped.";
+      reloadPreviewIfNeeded();
+      if (editorPane) editorPane.dataset.key = "";
+      paintTabsAndFiles();
+    } catch (err) {
+      tab.busy = false;
+      tab.note = err.message;
+      paintEditorHead();
+    }
   }
 
   async function saveTab() {
@@ -6644,6 +6983,12 @@ function mountChat(root) {
 
   function onGlobalKey(event) {
     if (event.key === "Escape") {
+      const cropTab = activeTabRow();
+      if (cropTab && cropTab.cropping) {
+        cancelCrop(cropTab);
+        event.preventDefault();
+        return;
+      }
       if (editorFindBar && !editorFindBar.hidden) {
         closeEditorFind();
         event.preventDefault();
@@ -6676,6 +7021,17 @@ function mountChat(root) {
         event.preventDefault();
       }
       return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const cropTab = activeTabRow();
+      if (cropTab && cropTab.cropping) {
+        const tag = String((event.target && event.target.tagName) || "").toLowerCase();
+        if (tag !== "textarea" && tag !== "input" && tag !== "select" && !(event.target && event.target.isContentEditable)) {
+          event.preventDefault();
+          applyCrop(cropTab);
+          return;
+        }
+      }
     }
     if (previewHasFocus(event.target) && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "t") {
       event.preventDefault();
@@ -7992,6 +8348,7 @@ function mountChat(root) {
     const row = filesListing.find((item) => item.path === path);
     return [
       { label: "Open", run: () => openFileTab(path) },
+      row && row.kind === "image" ? { label: "Crop", run: () => beginCropPath(path) } : null,
       { label: attached ? "Remove from chat" : "Add to chat", run: () => {
         attachProjectFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
@@ -8748,6 +9105,9 @@ function mountChat(root) {
         saveUrl(fileUrl(activeWorkspaceId(), tab.path), tab.path.split("/").pop() || "file");
       }
       if (btn.dataset.edit === "retry-editor") remountEditor();
+      if (btn.dataset.edit === "crop" && tab) beginCrop(tab);
+      if (btn.dataset.edit === "crop-cancel" && tab) cancelCrop(tab);
+      if (btn.dataset.edit === "crop-apply" && tab) applyCrop(tab);
     });
   }
   if (filesSiteBtn) {

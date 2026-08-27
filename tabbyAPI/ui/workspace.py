@@ -865,6 +865,94 @@ def optimize_image(
     }
 
 
+_IMAGE_FORMATS = {
+    ".png": "PNG",
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".webp": "WEBP",
+    ".gif": "GIF",
+}
+
+
+def crop_image(
+    username: str,
+    chat_id: str,
+    rel: str,
+    x: Any,
+    y: Any,
+    width: Any,
+    height: Any,
+) -> dict[str, Any]:
+    """Crop a project raster in place to an axis-aligned pixel box."""
+    from PIL import Image, ImageOps
+
+    if not is_image_path(rel):
+        raise ValueError("Crop only supports PNG, JPEG, WebP, and GIF files.")
+    try:
+        left = int(x)
+        top = int(y)
+        box_w = int(width)
+        box_h = int(height)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Crop box must be integers.") from exc
+
+    source = resolve_file(username, chat_id, rel)
+    image_format = _IMAGE_FORMATS[source.suffix.lower()]
+    original_bytes = source.stat().st_size
+    try:
+        with Image.open(source) as opened:
+            if int(getattr(opened, "n_frames", 1) or 1) > 1:
+                raise ValueError("Animated images are not supported by crop.")
+            if opened.width * opened.height > 40_000_000:
+                raise ValueError("Image dimensions are too large to crop safely.")
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            original_size = (image.width, image.height)
+            right = max(0, min(left + box_w, image.width))
+            bottom = max(0, min(top + box_h, image.height))
+            left = max(0, min(left, image.width))
+            top = max(0, min(top, image.height))
+            if right <= left or bottom <= top:
+                raise ValueError("Crop box is empty.")
+            image = image.crop((left, top, right, bottom))
+            if image_format == "JPEG":
+                if image.mode in ("RGBA", "LA") or (
+                    image.mode == "P" and "transparency" in image.info
+                ):
+                    rgba = image.convert("RGBA")
+                    flattened = Image.new("RGB", rgba.size, "white")
+                    flattened.paste(rgba, mask=rgba.getchannel("A"))
+                    image = flattened
+                elif image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+            buffer = io.BytesIO()
+            save_options: dict[str, Any] = {"format": image_format}
+            if image_format == "PNG":
+                save_options.update(optimize=True, compress_level=9)
+            elif image_format == "JPEG":
+                save_options.update(quality=92, optimize=True, progressive=True)
+            elif image_format == "WEBP":
+                save_options.update(quality=82, method=6)
+            elif image_format == "GIF":
+                save_options.update(optimize=True)
+            image.save(buffer, **save_options)
+    except ValueError:
+        raise
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Could not crop {rel}: {exc}") from exc
+
+    encoded = buffer.getvalue()
+    written = copy_bytes(username, chat_id, rel, encoded)
+    return {
+        "path": written,
+        "format": image_format.lower(),
+        "original_dimensions": f"{original_size[0]}x{original_size[1]}",
+        "dimensions": f"{image.width}x{image.height}",
+        "original_bytes": original_bytes,
+        "bytes": len(encoded),
+    }
+
+
 def _generated_item_prompt(job, dest: str) -> str:
     for item in getattr(job, "items", None) or []:
         if str(getattr(item, "output_path", "") or "").strip() == dest:
