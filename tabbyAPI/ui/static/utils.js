@@ -1213,6 +1213,8 @@
         "</ul></section>" +
         '<section><h3>Workspace</h3><ul class="shortcuts-list">' +
         shortcutRow("Save file", "<kbd>Ctrl</kbd>+<kbd>S</kbd>") +
+        shortcutRow("Cycle Agent / Ask / Plan", "<kbd>Shift</kbd>+<kbd>Tab</kbd>") +
+        shortcutRow("Toggle terminal", "<kbd>Ctrl</kbd>+<kbd>`</kbd>") +
         shortcutRow("New preview tab", "<kbd>Ctrl</kbd>+<kbd>T</kbd>") +
         shortcutRow("Close preview tab", "<kbd>Ctrl</kbd>+<kbd>W</kbd>") +
         shortcutRow("Focus preview address", "<kbd>Ctrl</kbd>+<kbd>L</kbd>") +

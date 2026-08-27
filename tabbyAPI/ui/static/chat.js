@@ -229,7 +229,7 @@ function mountChat(root) {
               <span id="chat-count"></span>
               <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
               <div class="chat-agent" id="chat-agent" hidden>
-                <button type="button" class="btn ghost chat-agent-btn" id="chat-agent-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Code prompt mode">Agent</button>
+                <button type="button" class="btn ghost chat-agent-btn" id="chat-agent-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Code prompt mode" title="Agent / Ask / Plan (Shift+Tab)">Agent</button>
                 <div class="chat-agent-menu" id="chat-agent-menu" hidden role="menu">
                   <button type="button" role="menuitem" data-agent="agent">Agent</button>
                   <button type="button" role="menuitem" data-agent="ask">Ask</button>
@@ -268,7 +268,7 @@ function mountChat(root) {
             </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
             <button class="btn ghost chat-icon" type="button" id="chat-files-preview" aria-label="Preview">${FILES_PREVIEW_SVG}</button>
-            <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Term">${FILES_TERM_SVG}</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Terminal" aria-keyshortcuts="Control+`" title="Terminal (Ctrl+`)">${FILES_TERM_SVG}</button>
           </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
@@ -442,6 +442,7 @@ function mountChat(root) {
   const BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation.";
   const AGENT_KEY = "tabby-ui-code-agent";
   const AGENT_LABELS = { agent: "Agent", ask: "Ask", plan: "Plan" };
+  const AGENT_ORDER = ["agent", "ask", "plan"];
 
   function normalizeAgent(value) {
     const kind = String(value || "").trim().toLowerCase();
@@ -1334,6 +1335,8 @@ function mountChat(root) {
       agentBtn.textContent = label;
       agentBtn.dataset.agent = codeAgent;
       agentBtn.setAttribute("aria-label", `Code prompt mode: ${label}`);
+      agentBtn.setAttribute("aria-keyshortcuts", "Shift+Tab");
+      agentBtn.title = `${label} · Shift+Tab to cycle`;
     }
     if (agentMenu) {
       agentMenu.querySelectorAll("[data-agent]").forEach((item) => {
@@ -1352,6 +1355,14 @@ function mountChat(root) {
     hideAgentMenu();
     paintCodeAgent();
     paintCompose();
+  }
+
+  function cycleCodeAgent() {
+    if (activeMode() !== "code") return;
+    if (agentBtn && agentBtn.disabled) return;
+    const idx = AGENT_ORDER.indexOf(codeAgent);
+    const next = AGENT_ORDER[((idx < 0 ? 0 : idx) + 1) % AGENT_ORDER.length];
+    setCodeAgent(next);
   }
 
   function paintFilesToggle() {
@@ -4094,6 +4105,11 @@ function mountChat(root) {
       if (termGen !== gen || !termWanted) return;
       connectTerm(chatId, gen, 0);
     });
+  }
+
+  function toggleTerm() {
+    if (termOpen) closeTerm();
+    else openTerm();
   }
 
   function collectEditorFindHits(query) {
@@ -7175,6 +7191,52 @@ function mountChat(root) {
     );
   }
 
+  function codeViewActive() {
+    return !root.hidden && activeMode() === "code";
+  }
+
+  function shouldSkipAgentCycle(event) {
+    if (!menu.hidden && menuItems.length) return true;
+    const el = event.target;
+    if (!el || el === input) return false;
+    if (agentWrap && agentWrap.contains(el)) return false;
+    if (el.isContentEditable) return true;
+    const tag = String(el.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "select") return true;
+    if (tag === "input") {
+      const type = String(el.type || "text").toLowerCase();
+      return type !== "button" && type !== "checkbox" && type !== "radio"
+        && type !== "file" && type !== "submit" && type !== "reset"
+        && type !== "hidden" && type !== "range";
+    }
+    if (termPane && !termPane.hidden && termPane.contains(el)) return true;
+    return false;
+  }
+
+  function onCodeShortcut(event) {
+    if (event.repeat || event.isComposing || !codeViewActive()) return;
+    if (document.querySelector(".dialog-modal")) return;
+    const backquote = event.code === "Backquote" || event.key === "`" || event.key === "~";
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && backquote) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleTerm();
+      return;
+    }
+    if (
+      event.key === "Tab" &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      if (shouldSkipAgentCycle(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      cycleCodeAgent();
+    }
+  }
+
   function onGlobalKey(event) {
     if (event.key === "Escape") {
       const cropTab = activeTabRow();
@@ -8420,6 +8482,17 @@ function mountChat(root) {
       }
     }
     if (event.key === "Tab") {
+      if (
+        activeMode() === "code" &&
+        event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        cycleCodeAgent();
+        return;
+      }
       event.preventDefault();
       cycleHistory(event.shiftKey ? -1 : 1);
       return;
@@ -9380,10 +9453,7 @@ function mountChat(root) {
     });
   }
   if (filesTermBtn) {
-    filesTermBtn.addEventListener("click", () => {
-      if (termOpen && termSocket && termSocket.readyState === 1) closeTerm();
-      else openTerm();
-    });
+    filesTermBtn.addEventListener("click", () => toggleTerm());
   }
   if (termCloseBtn) termCloseBtn.addEventListener("click", () => closeTerm());
   if (editorFindInput) {
@@ -9861,6 +9931,7 @@ function mountChat(root) {
   window.addEventListener("message", onPreviewMessage);
   document.addEventListener("pointerdown", onPointerDownAway);
   document.addEventListener("keydown", onGlobalKey);
+  document.addEventListener("keydown", onCodeShortcut, true);
   async function loadStore() {
     let incoming = null;
     let fetched = false;
@@ -9930,6 +10001,7 @@ function mountChat(root) {
       hideMoreMenu();
       document.removeEventListener("pointerdown", onPointerDownAway);
       document.removeEventListener("keydown", onGlobalKey);
+      document.removeEventListener("keydown", onCodeShortcut, true);
       window.removeEventListener("tabby-gpu-status", onGpuStatus);
       window.removeEventListener("tabby-gallery-use", consumeGalleryUse);
       window.removeEventListener("beforeunload", warnDirtyUnload);
