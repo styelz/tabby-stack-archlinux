@@ -2309,18 +2309,28 @@ button.chip {
   border-radius: 0.5rem;
 }
 .chat-editor-body.is-crop {
-  place-content: center;
+  container-type: size;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow: hidden;
+  padding: 1rem;
   user-select: none;
   touch-action: none;
 }
 .chat-crop-stage {
   position: relative;
-  display: inline-block;
+  display: block;
   max-width: 100%;
   line-height: 0;
 }
 .chat-crop-stage img {
   pointer-events: none;
+  max-width: 100%;
+  max-height: calc(100cqh - 0.75rem);
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 .chat-crop-shade {
   position: absolute;
