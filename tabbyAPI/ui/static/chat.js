@@ -263,6 +263,7 @@ function mountChat(root) {
               <div class="chat-more-menu" id="chat-files-upload-menu" hidden>
                 <button type="button" data-upload="files">Files</button>
                 <button type="button" data-upload="folder">Folder</button>
+                <button type="button" data-upload="gallery">From gallery</button>
               </div>
             </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
@@ -5118,6 +5119,7 @@ function mountChat(root) {
       frag.appendChild(btn);
     };
     add("image", "Attach image");
+    add("gallery", "From gallery");
     if (activeMode() !== "code") {
       add("context", "Attach files");
       attachMenu.replaceChildren(frag);
@@ -5125,6 +5127,7 @@ function mountChat(root) {
     }
     add("upload", "Upload files to project");
     add("upload-folder", "Upload folder to project");
+    add("upload-gallery", "Upload from gallery");
     const fileRows = filesListing.filter((row) => row.kind !== "dir");
     if (fileRows.length) {
       const mark = document.createElement("div");
@@ -5177,6 +5180,108 @@ function mountChat(root) {
       pendingFiles = pendingFiles.filter((file) => file.path !== key);
     }
     paintAttach();
+  }
+
+  function uniqueProjectPath(rel) {
+    const path = String(rel || "").replace(/^\/+/, "");
+    const names = new Set(filesListing.map((row) => row.path));
+    if (!names.has(path)) return path;
+    const suffix = fileSuffix(path);
+    const stem = suffix && path.endsWith(suffix) ? path.slice(0, -suffix.length) : path;
+    for (let i = 2; i < 100; i += 1) {
+      const next = `${stem}-${i}${suffix}`;
+      if (!names.has(next)) return next;
+    }
+    return `${stem}-${Date.now()}${suffix}`;
+  }
+
+  async function attachGalleryItems(items) {
+    if (modelLoading) return;
+    const list = Array.isArray(items) ? items : [];
+    let overflow = false;
+    for (const item of list) {
+      if (pendingFiles.length >= MAX_ATTACH) {
+        overflow = true;
+        break;
+      }
+      const name = String((item && item.name) || "image.png");
+      const url = TabbyUI.resolveUiUrl((item && item.url) || "");
+      if (!url) continue;
+      const path = uniqueAttachPath(name);
+      if (isPendingFile(path)) continue;
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (!res.ok) throw new Error("Could not read that image.");
+      const dataUrl = await blobToDataUrl(await res.blob());
+      const preview = await resizeDataUrl(dataUrl, 320, 0.72);
+      const compact = await resizeDataUrl(dataUrl, 1280, 0.82);
+      pendingFiles.push({ path, kind: "image", dataUrl: compact, preview });
+    }
+    paintAttach();
+    if (overflow) addBubble("assistant", "Error: Too many attached files.");
+    if (input) input.focus();
+  }
+
+  async function uploadGalleryItems(items, { attach = false, open = false } = {}) {
+    if (activeMode() !== "code") {
+      await attachGalleryItems(items);
+      return;
+    }
+    const chatId = activeWorkspaceId();
+    const prefix = filesFocusDir ? `${String(filesFocusDir).replace(/\/+$/, "")}/` : "images/";
+    const list = Array.isArray(items) ? items : [];
+    let lastPath = "";
+    let written = 0;
+    for (const item of list) {
+      const name = String((item && item.name) || "image.png");
+      const url = TabbyUI.resolveUiUrl((item && item.url) || "");
+      if (!url) continue;
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (!res.ok) throw new Error("Could not read that image.");
+      const blob = await res.blob();
+      if (blob.size > 8 * 1024 * 1024) {
+        addBubble("assistant", `Error: ${name} must be under 8 MB.`);
+        continue;
+      }
+      const path = uniqueProjectPath(prefix + name);
+      const data = await TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/file`,
+        { method: "POST", body: { path, bytes_b64: await blobToBase64(blob) } }
+      );
+      applyListing(data);
+      const writtenPath = data.path || path;
+      written += 1;
+      lastPath = writtenPath;
+      if (attach) await attachProjectFile(writtenPath, { toggle: false });
+    }
+    if (open && lastPath && written === 1) openFileTab(lastPath);
+  }
+
+  async function pickAndAttachGallery() {
+    if (!TabbyUI.pickGallery) return;
+    const items = await TabbyUI.pickGallery({ title: "Attach from gallery", confirm: "Attach" });
+    if (!items || !items.length) return;
+    await attachGalleryItems(items);
+  }
+
+  async function pickAndUploadGallery({ attach = false } = {}) {
+    if (!TabbyUI.pickGallery) return;
+    const items = await TabbyUI.pickGallery({
+      title: attach ? "Add from gallery" : "Upload from gallery",
+      confirm: "Add to project",
+    });
+    if (!items || !items.length) return;
+    await uploadGalleryItems(items, { attach, open: !attach && items.length === 1 });
+  }
+
+  async function consumeGalleryUse() {
+    const job = TabbyUI.takeGalleryUse && TabbyUI.takeGalleryUse();
+    if (!job || !Array.isArray(job.items) || !job.items.length) return;
+    try {
+      if (job.action === "upload") await uploadGalleryItems(job.items, { attach: false, open: job.items.length === 1 });
+      else await attachGalleryItems(job.items);
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
   }
 
   function blobToDataUrl(blob) {
@@ -8383,6 +8488,10 @@ function mountChat(root) {
       { label: "Upload folder", run: () => {
         pickLocalFiles({ dir: path, folder: true }).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
+      { label: "From gallery", run: () => {
+        filesFocusDir = path;
+        pickAndUploadGallery().catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
       { sep: true },
       { label: open ? "Collapse" : "Expand", run: () => toggleFolder(path) },
       { label: "Expand all", run: () => expandAllFolders() },
@@ -8407,6 +8516,9 @@ function mountChat(root) {
       } },
       { label: "Upload folder", run: () => {
         pickLocalFiles({ folder: true }).catch((err) => addBubble("assistant", `Error: ${err.message}`));
+      } },
+      { label: "From gallery", run: () => {
+        pickAndUploadGallery().catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
       { label: "Refresh", run: () => refreshFiles() },
       { sep: true },
@@ -8497,6 +8609,11 @@ function mountChat(root) {
     return [
       { label: "Clear", disabled: !input.value, run: () => { setCompose(""); input.focus(); } },
       { label: "Attach image", run: () => { if (fileInput) fileInput.click(); } },
+      { label: "From gallery", run: () => {
+        pickAndAttachGallery().catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+      } },
       activeMode() === "code"
         ? { label: "Attach project file", run: () => toggleAttachMenu() }
         : { label: "Attach files", run: () => {
@@ -9213,6 +9330,12 @@ function mountChat(root) {
       const btn = event.target.closest("[data-upload]");
       if (!btn) return;
       hideUploadMenu();
+      if (btn.dataset.upload === "gallery") {
+        pickAndUploadGallery().catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
       pickLocalFiles({ folder: btn.dataset.upload === "folder" }).catch((err) => {
         addBubble("assistant", `Error: ${err.message}`);
       });
@@ -9319,6 +9442,12 @@ function mountChat(root) {
         if (fileInput) fileInput.click();
         return;
       }
+      if (btn.dataset.attach === "gallery") {
+        pickAndAttachGallery().catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
       if (btn.dataset.attach === "context") {
         pickLocalFiles({ context: true }).catch((err) => {
           addBubble("assistant", `Error: ${err.message}`);
@@ -9333,6 +9462,12 @@ function mountChat(root) {
       }
       if (btn.dataset.attach === "upload-folder") {
         pickLocalFiles({ attach: true, folder: true }).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
+        return;
+      }
+      if (btn.dataset.attach === "upload-gallery") {
+        pickAndUploadGallery({ attach: true }).catch((err) => {
           addBubble("assistant", `Error: ${err.message}`);
         });
         return;
@@ -9656,7 +9791,9 @@ function mountChat(root) {
     paintCompose();
   }
   window.addEventListener("tabby-gpu-status", onGpuStatus);
+  window.addEventListener("tabby-gallery-use", consumeGalleryUse);
   loadStore();
+  consumeGalleryUse();
   return {
     pause() {
       stopMic();
@@ -9668,6 +9805,7 @@ function mountChat(root) {
     resume() {
       startGatePoll();
       refreshFiles();
+      consumeGalleryUse();
     },
     destroy() {
       stopMic();
@@ -9685,6 +9823,7 @@ function mountChat(root) {
       document.removeEventListener("pointerdown", onPointerDownAway);
       document.removeEventListener("keydown", onGlobalKey);
       window.removeEventListener("tabby-gpu-status", onGpuStatus);
+      window.removeEventListener("tabby-gallery-use", consumeGalleryUse);
       window.removeEventListener("beforeunload", warnDirtyUnload);
     },
   };

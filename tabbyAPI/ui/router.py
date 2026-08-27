@@ -32,6 +32,7 @@ from ui.auth import (
 )
 from ui.manager import (
     gallery_listing,
+    gallery_upload,
     install_log_sink,
     journalctl_history,
     start_stack_restart,
@@ -1056,6 +1057,27 @@ async def ui_gallery_list(
         username=_user,
         is_admin=is_admin_username(_user),
     )
+
+
+@router.post("/gallery/upload", include_in_schema=False)
+async def ui_gallery_upload(request: Request, _user: str = Depends(require_ui_user)):
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    raw_b64 = body.get("bytes_b64")
+    if not isinstance(raw_b64, str) or not raw_b64.strip():
+        raise HTTPException(400, "bytes_b64 is required")
+    try:
+        data = base64.b64decode(raw_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(400, "bytes_b64 must be base64") from exc
+    try:
+        return gallery_upload(data, _user)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/gallery/delete", include_in_schema=False)

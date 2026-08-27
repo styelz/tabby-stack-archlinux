@@ -15,6 +15,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/v1/ui/assets/{name}", paths)
         self.assertIn("/v1/ui/auth/login", paths)
         self.assertIn("/v1/ui/gallery/file/{name}", paths)
+        self.assertIn("/v1/ui/gallery/upload", paths)
         self.assertIn("/v1/ui/metrics", paths)
         self.assertIn("/v1/ui/users", paths)
         self.assertIn("/v1/ui/chats", paths)

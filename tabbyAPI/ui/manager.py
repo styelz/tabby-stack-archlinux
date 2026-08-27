@@ -379,6 +379,20 @@ def gallery_listing(
     }
 
 
+def gallery_upload(raw: bytes, username: str) -> dict[str, Any]:
+    from common.gpu_mode import gallery_thumb_href, png_bytes_from_upload, save_generated_image
+
+    png = png_bytes_from_upload(raw)
+    dest = save_generated_image(png, owner=username, as_latest=False)
+    return {
+        "ok": True,
+        "name": dest.name,
+        "url": f"/v1/ui/gallery/file/{dest.name}",
+        "thumb": f"/v1/ui/gallery/thumb/{dest.name}",
+        "public_thumb": gallery_thumb_href(dest.name),
+    }
+
+
 UPDATE_PROMPT_NAME = "tabby-update-prompt.json"
 GIT_UPDATE_TIMEOUT_S = 300
 

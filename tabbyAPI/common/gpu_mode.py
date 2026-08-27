@@ -74,6 +74,9 @@ def persisted_jobs_block_llm_load(path: Optional[Path] = None) -> bool:
     )
 GALLERY_THUMB_MAX = 480
 GALLERY_THUMB_QUALITY = 72
+GALLERY_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
+GALLERY_UPLOAD_MAX_PIXELS = 40_000_000
+GALLERY_UPLOAD_MAX_EDGE = 2048
 CHECKPOINT_NAME = "flux1-schnell-fp8.safetensors"
 QWEN_IMAGE_UNET = "qwen-image-Q4_K_M.gguf"
 QWEN_IMAGE_CLIP = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
@@ -832,7 +835,47 @@ def generate_image(
     raise TimeoutError(f"ComfyUI job {prompt_id} timed out after {timeout:.0f}s")
 
 
-def save_generated_image(raw: bytes, owner: str | None = None) -> Path:
+def png_bytes_from_upload(raw: bytes) -> bytes:
+    """Turn a PNG/JPEG/WebP/GIF upload into gallery PNG bytes."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    data = raw if isinstance(raw, (bytes, bytearray)) else bytes(raw or b"")
+    if len(data) > GALLERY_UPLOAD_MAX_BYTES:
+        raise ValueError("Image must be under 8 MB.")
+    if len(data) < 32:
+        raise ValueError("That file is not a valid image.")
+    try:
+        with Image.open(io.BytesIO(data)) as opened:
+            opened.seek(0)
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            if image.width * image.height > GALLERY_UPLOAD_MAX_PIXELS:
+                raise ValueError("Image dimensions are too large.")
+            if max(image.width, image.height) > GALLERY_UPLOAD_MAX_EDGE:
+                image.thumbnail(
+                    (GALLERY_UPLOAD_MAX_EDGE, GALLERY_UPLOAD_MAX_EDGE),
+                    Image.Resampling.LANCZOS,
+                )
+            if image.mode in ("RGBA", "LA") or (
+                image.mode == "P" and "transparency" in image.info
+            ):
+                image = image.convert("RGBA")
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG", optimize=True)
+            return buffer.getvalue()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Upload a PNG, JPEG, WebP, or GIF.") from exc
+
+
+def save_generated_image(
+    raw: bytes, owner: str | None = None, *, as_latest: bool = True
+) -> Path:
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dest = GENERATED_DIR / f"generated-{stamp}-{os.getpid()}.png"
@@ -842,8 +885,9 @@ def save_generated_image(raw: bytes, owner: str | None = None) -> Path:
         )
     raw = strip_png_text(raw)
     dest.write_bytes(raw)
-    latest = GENERATED_DIR / "generated-latest.png"
-    latest.write_bytes(raw)
+    if as_latest:
+        latest = GENERATED_DIR / "generated-latest.png"
+        latest.write_bytes(raw)
     ensure_gallery_thumb(dest)
     if owner:
         from common.gallery_owners import record_owner
