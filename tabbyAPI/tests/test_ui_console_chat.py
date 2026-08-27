@@ -198,6 +198,62 @@ class ConsoleImageReplyTests(unittest.TestCase):
 
         asyncio.run(go())
 
+    def test_remove_border_starts_img2img_job(self):
+        import tempfile
+        from pathlib import Path
+
+        from PIL import Image
+        from common.phrase_switch import border_edit_prompt, wants_border_trim
+
+        self.assertTrue(wants_border_trim("remove the white border from this image"))
+        self.assertFalse(wants_border_trim("remove the border-radius on the button"))
+        self.assertIn("no white border", border_edit_prompt("remove the white border"))
+
+        canvas = Image.new("RGB", (80, 80), "white")
+        source = Path(tempfile.gettempdir()) / "source-trim-test.png"
+        canvas.save(source, format="PNG")
+
+        async def go():
+            data = ChatCompletionRequest(
+                messages=[
+                    ChatCompletionMessage(
+                        role="user",
+                        content="remove the white border from this image",
+                    )
+                ],
+                stream=False,
+            )
+            started = mock.Mock(id="job-img2img")
+            with (
+                mock.patch.object(
+                    images_chat, "_start_prompt_job", new=mock.AsyncMock(return_value=started)
+                ) as start,
+                mock.patch.object(
+                    images_chat, "_hold_then_reply", new=mock.AsyncMock(return_value="held")
+                ) as hold,
+                mock.patch.object(
+                    images_chat, "classify_image_turn", new=mock.AsyncMock()
+                ) as classify,
+            ):
+                result = await images_chat.handle(
+                    data,
+                    api_base="http://x",
+                    source_image=source,
+                    llm_ready=True,
+                    console=True,
+                )
+            classify.assert_not_called()
+            start.assert_awaited()
+            kwargs = start.await_args.kwargs
+            self.assertEqual(Path(kwargs.get("source_image")), source)
+            self.assertEqual(kwargs.get("denoise"), 0.85)
+            self.assertIn("no white border", start.await_args.args[0])
+            hold.assert_awaited()
+            self.assertTrue(hold.await_args.kwargs.get("console"))
+            self.assertEqual(result, "held")
+
+        asyncio.run(go())
+
 
 class ConsoleChatRequestTests(unittest.TestCase):
     def test_missing_temperature_uses_default(self):

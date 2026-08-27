@@ -246,6 +246,8 @@ class GpuModeTests(unittest.TestCase):
         graph = build_img2img_prompt("cartoon style", "photo.png")
         self.assertEqual(graph["9"]["class_type"], "LoadImage")
         self.assertEqual(graph["6"]["inputs"]["denoise"], 0.75)
+        stronger = build_img2img_prompt("cartoon style", "photo.png", denoise=0.85)
+        self.assertEqual(stronger["6"]["inputs"]["denoise"], 0.85)
 
     def test_wants_qwen_image_for_text_and_prefix(self):
         self.assertTrue(wants_qwen_image("qwen-image: login form with Submit"))

@@ -74,6 +74,29 @@ class WorkspaceTests(unittest.TestCase):
         workspace.delete_workspace("u", "c")
         self.assertFalse(workspace.drafts_path("u", "c").exists())
 
+    def test_optimize_image_trims_white_border(self):
+        from PIL import Image
+
+        from images.trim import trim_image
+
+        canvas = Image.new("RGB", (80, 80), "white")
+        for x in range(20, 60):
+            for y in range(20, 60):
+                canvas.putpixel((x, y), (10, 20, 180))
+        cropped, box = trim_image(canvas, color=(255, 255, 255))
+        self.assertEqual(box, (20, 20, 60, 60))
+        self.assertEqual(cropped.size, (40, 40))
+
+        import io
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        workspace.copy_bytes("u", "c", "star.png", buf.getvalue())
+        result = workspace.optimize_image("u", "c", "star.png", trim_border=True)
+        self.assertTrue(result["trimmed"])
+        self.assertEqual(result["dimensions"], "40x40")
+        self.assertEqual(result["original_dimensions"], "80x80")
+
 
 if __name__ == "__main__":
     unittest.main()

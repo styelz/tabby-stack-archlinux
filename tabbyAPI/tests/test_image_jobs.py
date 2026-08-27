@@ -501,6 +501,22 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(items[0].prompt.lower().startswith("qwen-image:"))
         self.assertFalse(items[1].prompt.lower().startswith("qwen-image:"))
 
+    def test_new_items_keep_source_image(self):
+        from endpoints.core.image_jobs import _new_items
+
+        items = _new_items(
+            items=[
+                {
+                    "prompt": "same scene, no border",
+                    "output_path": "images/generated.png",
+                    "source_image": "/tmp/star.png",
+                    "denoise": 0.85,
+                }
+            ]
+        )
+        self.assertEqual(items[0].source_image, "/tmp/star.png")
+        self.assertEqual(items[0].denoise, 0.85)
+
     async def test_mixed_chat_removed_from_phrase_switch(self):
         import common.phrase_switch as ps
 

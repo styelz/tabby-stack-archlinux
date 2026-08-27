@@ -68,6 +68,8 @@ class McpImageItem:
     size: str = "1024x1024"
     count: int = 1
     seed: Optional[int] = None
+    source_image: str = ""
+    denoise: Optional[float] = None
     status: str = "queued"
     urls: list[str] = field(default_factory=list)
     error: str = ""
@@ -345,7 +347,7 @@ def _persist_path() -> Path:
 
 
 def _item_to_persist(item: McpImageItem) -> dict:
-    return {
+    data = {
         "prompt": item.prompt,
         "output_path": item.output_path,
         "size": item.size,
@@ -355,6 +357,11 @@ def _item_to_persist(item: McpImageItem) -> dict:
         "urls": list(item.urls),
         "error": item.error,
     }
+    if item.source_image:
+        data["source_image"] = item.source_image
+    if item.denoise is not None:
+        data["denoise"] = item.denoise
+    return data
 
 
 def _item_from_persist(data: dict) -> McpImageItem:
@@ -369,6 +376,8 @@ def _item_from_persist(data: dict) -> McpImageItem:
         size=str(data.get("size") or "1024x1024"),
         count=max(1, int(data.get("count") or 1)),
         seed=seed,
+        source_image=_item_source_path(data),
+        denoise=_item_denoise(data),
         status=str(data.get("status") or "queued"),
         urls=[str(u) for u in (data.get("urls") or []) if u],
         error=str(data.get("error") or ""),
@@ -608,6 +617,9 @@ async def _render_specs(
         spec_seed = spec.get("seed")
         base_seed = spec_seed if spec_seed is not None else random.randint(0, 2**31 - 1)
         spec_source = spec.get("source_image")
+        if spec_source:
+            spec_source = Path(spec_source)
+        denoise = spec.get("denoise")
         for index in range(n):
             raw = await asyncio.to_thread(
                 generate_image,
@@ -616,6 +628,7 @@ async def _render_specs(
                 base_seed + index,
                 timeout,
                 spec_source if index == 0 else None,
+                denoise,
             )
             saved.append(save_generated_image(raw, owner=owner))
     return saved
@@ -720,6 +733,31 @@ def _remember_mcp_job(job: McpImageJob) -> None:
             _MCP_JOBS.pop(old, None)
 
 
+def _item_source_path(raw) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        raw = raw.get("source_image")
+    if not raw:
+        return ""
+    return str(Path(raw))
+
+
+def _item_denoise(raw) -> Optional[float]:
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("denoise")
+    if value is None or value == "":
+        return None
+    try:
+        strength = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= strength <= 1.0:
+        return None
+    return strength
+
+
 def _new_items(
     *,
     prompt: str = "",
@@ -746,6 +784,8 @@ def _new_items(
                     size=str(raw.get("size") or size or "1024x1024"),
                     count=max(1, min(int(raw.get("count") or raw.get("n") or 1), 4)),
                     seed=raw.get("seed", seed),
+                    source_image=_item_source_path(raw),
+                    denoise=_item_denoise(raw),
                 )
             )
     if prompt.strip():
@@ -999,6 +1039,8 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                                 "size": item.size,
                                 "seed": item.seed,
                                 "count": item.count,
+                                "source_image": item.source_image or None,
+                                "denoise": item.denoise,
                             }
                         ],
                         owner=job.owner or None,

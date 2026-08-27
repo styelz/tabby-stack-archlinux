@@ -24,7 +24,9 @@ UPDATE_UNIT = "tabby-stack-update"
 CONSOLE_SYSTEM = (
     "You are chatting in the Tabby Stack web console. Answer in this conversation "
     "only. Do not write project files, HTML, CSS, or scripts to disk. "
-    "If the user asks for an image, describe or generate it; the UI will show PNGs."
+    "If the user asks for an image, describe or generate it; the UI will show PNGs. "
+    "If they attach a picture and ask to remove a border or crop a frame, the GPU "
+    "regenerates a new PNG. Do not claim CSS or JavaScript changes."
 )
 PROCESS_LOGS: deque[str] = deque(maxlen=4000)
 _SINK_ID: Optional[int] = None

@@ -786,6 +786,7 @@ def generate_image(
     seed: int = 0,
     timeout: float = 300,
     source_image: Optional[Path] = None,
+    denoise: Optional[float] = None,
 ) -> bytes:
     from common.image_prompts import rewrite_comfy_prompt, wants_transparent
     from common.png_alpha import apply_requested_alpha
@@ -797,7 +798,15 @@ def generate_image(
     width, height = parse_size(size)
     if source_image:
         uploaded = upload_input_image(Path(source_image))
-        graph = build_img2img_prompt(prompt, uploaded, width=width, height=height, seed=seed)
+        strength = 0.75 if denoise is None else float(denoise)
+        graph = build_img2img_prompt(
+            prompt,
+            uploaded,
+            width=width,
+            height=height,
+            seed=seed,
+            denoise=strength,
+        )
     elif wants_qwen_image(prompt):
         timeout = max(timeout, QWEN_IMAGE_TIMEOUT)
         graph = build_qwen_image_prompt(prompt, width=width, height=height, seed=seed)

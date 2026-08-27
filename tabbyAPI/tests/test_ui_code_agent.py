@@ -26,6 +26,13 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(code_agent._kind("optimize_image"), "optimize")
         self.assertEqual(code_agent._kind("run_command"), "shell")
 
+    def test_optimize_image_schema_has_trim_border(self):
+        specs = code_agent.code_tool_specs("agent")
+        optimize = next(spec for spec in specs if spec.function.name == "OptimizeImage")
+        params = optimize.function.parameters
+        props = params["properties"] if isinstance(params, dict) else params.get("properties")
+        self.assertIn("trim_border", props)
+
     def test_write_rename_delete(self):
         label, text = code_agent.execute_tool("u", "c", "Write", {"path": "a.txt", "contents": "hi"})
         self.assertTrue(label.startswith("Writing"))

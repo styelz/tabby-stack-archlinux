@@ -751,8 +751,9 @@ def optimize_image(
     quality: int = 82,
     output_format: str = "original",
     lossless: bool = False,
+    trim_border: bool = False,
 ) -> dict[str, Any]:
-    """Compress, resize, or convert one raster image in a chat workspace."""
+    """Compress, resize, convert, or crop a uniform border from one raster."""
     from PIL import Image, ImageOps
 
     source = resolve_file(username, chat_id, rel)
@@ -810,6 +811,12 @@ def optimize_image(
             image = ImageOps.exif_transpose(opened)
             image.load()
             original_size = (image.width, image.height)
+            trimmed = False
+            if trim_border:
+                from images.trim import trim_image
+
+                image, box = trim_image(image)
+                trimmed = box is not None
             if width_limit is not None or height_limit is not None:
                 bounds = (
                     width_limit or image.width,
@@ -854,6 +861,7 @@ def optimize_image(
         "original_bytes": original_bytes,
         "bytes": len(encoded),
         "saved_bytes": original_bytes - len(encoded),
+        "trimmed": trimmed,
     }
 
 

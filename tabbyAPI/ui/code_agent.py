@@ -21,7 +21,9 @@ CODE_SYSTEM = (
     "same files. The user can create, upload, and attach files; attached files "
     "are included in their message. Use the file tools (Write, StrReplace, Read, "
     "Rename, Delete, List) to create and edit text files. Use OptimizeImage to "
-    "compress, resize, or convert project images. Use Shell to run project "
+    "compress, resize, or convert project images. If they attach a picture and "
+    "ask to remove a border or frame, wait for the new GPU PNG; do not fake it "
+    "with CSS, background-size, or JavaScript. Use Shell to run project "
     "commands in this workspace's container (cwd is /work). Do not create "
     "placeholder files when an attached project image can be processed with "
     "OptimizeImage. Do not dump whole files in chat. Do not try to run the site "
@@ -309,8 +311,10 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
             function=Function(
                 name="OptimizeImage",
                 description=(
-                    "Optimize, resize, or convert one existing project image. "
-                    "Omit output_path and format to safely optimize it in place."
+                    "Optimize, resize, convert, or crop a uniform border from one "
+                    "existing project image. Omit output_path and format to safely "
+                    "optimize it in place. Set trim_border to crop a white or black "
+                    "frame; do not use CSS for that."
                 ),
                 parameters={
                     "type": "object",
@@ -354,6 +358,14 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
                             "type": "boolean",
                             "default": False,
                             "description": "Use lossless encoding when writing WebP.",
+                        },
+                        "trim_border": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Crop a uniform edge color (white card frame, letterbox) "
+                                "before optimizing."
+                            ),
                         },
                     },
                     "required": ["path"],
@@ -407,6 +419,15 @@ def _arg_dest(args: dict) -> str:
         if value:
             return str(value).strip()
     return ""
+
+
+def _arg_bool(args: dict, key: str, default: bool = False) -> bool:
+    if key not in args or args.get(key) is None:
+        return default
+    value = args.get(key)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def _tool_pairs(message) -> list[tuple[str, dict, str]]:
@@ -525,7 +546,8 @@ def execute_tool(
             max_height=args.get("max_height"),
             quality=args.get("quality", 82),
             output_format=str(args.get("format") or "original"),
-            lossless=bool(args.get("lossless", False)),
+            lossless=_arg_bool(args, "lossless", False),
+            trim_border=_arg_bool(args, "trim_border", False),
         )
         return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
     return (

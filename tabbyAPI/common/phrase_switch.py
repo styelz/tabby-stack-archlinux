@@ -651,6 +651,8 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
             "",
             "- Attach or paste an image with a question to inspect it with a vision-capable profile.",
             "- Attach a source image with an image-generation prompt to use Flux img2img.",
+            "- Ask to remove a white border or crop a frame on an attached picture; "
+            "Flux img2img regenerates a new PNG.",
             "- An attached source or reference image is **not** a generated result and is not "
             "added to the Gallery.",
             "",
@@ -1041,6 +1043,14 @@ IMAGE_NOUN_RE = re.compile(
     r"icons?|logos?|banners?|pngs?|qwen-images?"
     r")\b"
 )
+BORDER_TRIM_RE = re.compile(
+    r"(?is)\b(?:"
+    r"(?:remove|strip|crop(?:\s+off)?|trim(?:\s+off)?|cut(?:\s+off)?|"
+    r"delete|erase|drop|get rid of)\b"
+    r".{0,60}?\b(?:border|frame|letterbox|mat|bezel)s?(?!-)"
+    r"|\b(?:crop|trim)\b.{0,24}\b(?:image|picture|photo|png)\b"
+    r")"
+)
 CODING_TASK_RE = re.compile(
     r"(?is)\b("
     r"web\s*page|website|web\s*site|html|css|javascript|typescript|"
@@ -1247,6 +1257,22 @@ def requested_image_prompt(
     if explicit_only:
         return None
     return text
+
+
+def wants_border_trim(text: str) -> bool:
+    """True when they asked to take a frame off an existing picture."""
+    return bool(BORDER_TRIM_RE.search(text or ""))
+
+
+def border_edit_prompt(text: str) -> str:
+    """Flux img2img prompt: same picture, full bleed, no card frame."""
+    color = "black" if re.search(r"(?i)\bblack\b", text or "") else "white"
+    return (
+        "flux: the same photograph filling the entire frame edge to edge, "
+        f"no {color} border, no {color} frame, no rounded rectangle, "
+        "no mat, no padding, no letterbox, no card, full bleed, "
+        "no UI, no website"
+    )
 
 
 def looks_like_chat_not_image(text: str) -> bool:

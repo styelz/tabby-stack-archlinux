@@ -34,6 +34,7 @@ from images.plan import classify_image_turn
 JOB_MARK = "tabby-image-job:"
 STATUS_MARK = "tabby-image-status:"
 MAX_CODE_TURNS = 16
+_ATTACHED_PROJECT_IMAGE_RE = re.compile(r"Attached project image:\s+`([^`]+)`")
 FILE_WRITE_NAMES = (
     "write",
     "write_file",
@@ -413,10 +414,16 @@ async def _start_prompt_job(
     *,
     restore: bool,
     source_image=None,
+    denoise=None,
     owner: str | None = None,
     chat_id: str | None = None,
 ):
-    items = [{"prompt": prompt, "output_path": "images/generated.png"}]
+    item: dict = {"prompt": prompt, "output_path": "images/generated.png"}
+    if source_image is not None:
+        item["source_image"] = str(Path(source_image))
+    if denoise is not None:
+        item["denoise"] = denoise
+    items = [item]
     job, kind = await start_mcp_image_job(
         items=items,
         seed=None,
@@ -754,6 +761,27 @@ async def _stream_code_then_images(
     return _text(sync, final_code_text(text, written))
 
 
+def _attached_project_image_rel(text: str) -> str:
+    matches = _ATTACHED_PROJECT_IMAGE_RE.findall(text or "")
+    return str(matches[-1]).strip() if matches else ""
+
+
+def _resolve_edit_source(source_image, owner: str | None, chat_id: str | None, text: str):
+    if source_image is not None:
+        path = Path(source_image)
+        if path.is_file():
+            return path
+    rel = _attached_project_image_rel(text)
+    if rel and owner and chat_id:
+        from ui.workspace import resolve_file
+
+        try:
+            return resolve_file(owner, chat_id, rel)
+        except ValueError:
+            return None
+    return None
+
+
 async def handle(
     data: ChatCompletionRequest,
     api_base: Optional[str] = None,
@@ -784,7 +812,13 @@ async def handle(
     agent=ask|plan (UI Code mode) does not start a new Comfy job. In-flight
     jobs still hold until they finish.
     """
-    from common.phrase_switch import requested_image_prompt, text_response
+    from common.phrase_switch import (
+        border_edit_prompt,
+        last_user_text,
+        requested_image_prompt,
+        text_response,
+        wants_border_trim,
+    )
 
     workspace = (owner, chat_id) if code and owner and chat_id else None
     job_id = job_id_from_history(data)
@@ -847,6 +881,28 @@ async def handle(
 
     if _readonly_agent(agent):
         return None
+
+    ask = last_user_text(data) or ""
+    if wants_border_trim(ask):
+        source = _resolve_edit_source(source_image, owner, chat_id, ask)
+        if source is not None:
+            started = await _start_prompt_job(
+                border_edit_prompt(ask),
+                api_base or "",
+                restore=bool(llm_ready),
+                source_image=source,
+                denoise=0.85,
+                owner=owner,
+                chat_id=chat_id if workspace else None,
+            )
+            return await _hold_then_reply(
+                data,
+                started,
+                mixed=False,
+                api_base=api_base,
+                console=console,
+                workspace=workspace,
+            )
 
     if llm_ready:
         rasters = workspace_raster_paths(owner, chat_id) if workspace else []
