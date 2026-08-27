@@ -231,9 +231,9 @@ function mountChat(root) {
               <div class="chat-agent" id="chat-agent" hidden>
                 <button type="button" class="btn ghost chat-agent-btn" id="chat-agent-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Code prompt mode" title="Agent / Ask / Plan (Shift+Tab)">Agent</button>
                 <div class="chat-agent-menu" id="chat-agent-menu" hidden role="menu">
-                  <button type="button" role="menuitem" data-agent="agent">Agent</button>
-                  <button type="button" role="menuitem" data-agent="ask">Ask</button>
-                  <button type="button" role="menuitem" data-agent="plan">Plan</button>
+                  <button type="button" role="menuitem" data-agent="agent">Agent<span class="chat-agent-hint">Edit files</span></button>
+                  <button type="button" role="menuitem" data-agent="ask">Ask<span class="chat-agent-hint">Read-only</span></button>
+                  <button type="button" role="menuitem" data-agent="plan">Plan<span class="chat-agent-hint">Design, then Build</span></button>
                 </div>
               </div>
               <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
@@ -447,6 +447,10 @@ function mountChat(root) {
   function normalizeAgent(value) {
     const kind = String(value || "").trim().toLowerCase();
     return AGENT_LABELS[kind] ? kind : "agent";
+  }
+
+  function isBuildPromptText(text) {
+    return String(text || "").trim().startsWith(BUILD_PROMPT);
   }
 
   function readCodeAgent() {
@@ -767,7 +771,7 @@ function mountChat(root) {
   function estimateTokensFromMessages(list) {
     let chars = 0;
     (Array.isArray(list) ? list : []).forEach((item) => {
-      if (!item || item.role === "system" || item.hidden) return;
+      if (!item || item.role === "system") return;
       chars += String(item.content || "").length;
       if (item.reasoning) chars += String(item.reasoning).length;
       (item.attachedFiles || []).forEach((file) => {
@@ -844,7 +848,7 @@ function mountChat(root) {
   function isHiddenUserTurn(item) {
     if (!item || item.role !== "user") return false;
     if (item.hidden) return true;
-    return String(item.content || "").trim() === BUILD_PROMPT;
+    return isBuildPromptText(item.content);
   }
 
   function titleFromMessages(list, chat) {
@@ -866,7 +870,9 @@ function mountChat(root) {
   }
 
   function hasUserTurn(chat) {
-    return (chat.messages || []).some((item) => userTurnHasContent(item));
+    return (chat.messages || []).some(
+      (item) => userTurnHasContent(item) && !isHiddenUserTurn(item)
+    );
   }
 
   // Clone-on-reload leftovers share a title and timestamp. This is not
@@ -1630,7 +1636,9 @@ function mountChat(root) {
 
   function paintEmpty() {
     if (!emptyEl) return;
-    const empty = !messages.some((item) => item.role === "assistant" || userTurnHasContent(item));
+    const empty = !messages.some((item) => (
+      item.role === "assistant" || (userTurnHasContent(item) && !isHiddenUserTurn(item))
+    ));
     emptyEl.hidden = !empty;
     if (!empty) return;
     const code = activeMode() === "code";
@@ -1640,7 +1648,7 @@ function mountChat(root) {
     if (title) title.textContent = code ? "Code mode" : "Console chat";
     if (copy) {
       copy.textContent = code
-        ? "A workspace is a project folder. Chats under it share those files. Ask for a page, logo, or set of files, or create them in the Files pane."
+        ? "A workspace is a project folder. Chats under it share those files. Agent edits files, Ask answers without changing them, and Plan writes a design you Build. Or create files in the Files pane."
         : "Talk to the loaded model. Slash commands switch models and start pictures. Attach files for this chat only. Pasted images stay on this host.";
     }
     if (suggests) {
@@ -4920,13 +4928,23 @@ function mountChat(root) {
     attachPlanBuild(host, idx);
   }
 
+  function lastUnbuiltPlanIndex() {
+    let latest = -1;
+    for (let i = 0; i < messages.length; i += 1) {
+      const item = messages[i];
+      if (!item) continue;
+      if (item.role === "assistant" && normalizeAgent(item.agent) === "plan") {
+        latest = i;
+      }
+      if (item.role === "user" && isBuildPromptText(item.content)) latest = -1;
+    }
+    return latest;
+  }
+
   function canBuildPlan(idx) {
     if (activeMode() !== "code") return false;
     if (modelLoading || inFlight) return false;
-    const item = messages[idx];
-    if (!item || item.role !== "assistant") return false;
-    if (normalizeAgent(item.agent) !== "plan") return false;
-    return idx === lastAssistantIndex();
+    return idx === lastUnbuiltPlanIndex();
   }
 
   function attachPlanBuild(host, idx) {
@@ -4947,11 +4965,18 @@ function mountChat(root) {
     host.appendChild(bar);
   }
 
-  function buildApprovedPlan() {
+  function buildApprovedPlan(idx) {
     if (inFlight || modelLoading) return;
+    const planIdx = Number.isInteger(idx) && idx >= 0 ? idx : lastUnbuiltPlanIndex();
+    const plan = planIdx >= 0 ? messages[planIdx] : null;
+    if (!plan || plan.role !== "assistant" || normalizeAgent(plan.agent) !== "plan") return;
+    const body = String(plan.content || "").trim();
+    const prompt = body
+      ? `${BUILD_PROMPT}\n\n<approved_plan>\n${body}\n</approved_plan>`
+      : BUILD_PROMPT;
     setCodeAgent("agent");
     hidePopovers();
-    runLoop(BUILD_PROMPT, { hidden: true }).catch((err) => {
+    runLoop(prompt, { hidden: true }).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
     });
@@ -5050,14 +5075,18 @@ function mountChat(root) {
 
   function regenerateLast() {
     if (inFlight || modelLoading) return;
+    let replayAgent = "";
     if (messages.length && messages[messages.length - 1].role === "assistant") {
-      messages.pop();
+      const popped = messages.pop();
+      if (activeMode() === "code") replayAgent = normalizeAgent(popped && popped.agent);
     }
     const lastUser = [...messages].reverse().find((item) => item.role === "user");
     if (!lastUser) return;
     persist();
     renderLog();
-    runLoop(lastUser.content, { replay: true }).catch((err) => {
+    const opts = { replay: true };
+    if (replayAgent) opts.agent = replayAgent;
+    runLoop(lastUser.content, opts).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
       persist();
     });
@@ -6402,7 +6431,7 @@ function mountChat(root) {
         note: "Preparing the GPU.",
       };
     }
-    if (raw === BUILD_PROMPT) {
+    if (isBuildPromptText(raw)) {
       return { label: "Building", kind: "chat", processing: true };
     }
     if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
@@ -8109,7 +8138,9 @@ function mountChat(root) {
   async function send(text, opts) {
     const replay = Boolean(opts && opts.replay);
     const resume = Boolean(opts && opts.resume);
-    const sendAgent = activeMode() === "code" ? codeAgent : "";
+    const sendAgent = activeMode() === "code"
+      ? normalizeAgent((opts && opts.agent) || codeAgent)
+      : "";
     const chatId = store.activeId;
     flightChatId = chatId;
     abortController = new AbortController();
@@ -8131,7 +8162,7 @@ function mountChat(root) {
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       }
       const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
-      if ((opts && opts.hidden) || outboundText === BUILD_PROMPT) userItem.hidden = true;
+      if ((opts && opts.hidden) || isBuildPromptText(outboundText)) userItem.hidden = true;
       if (pendingImage) {
         userItem.imageData = pendingImage.dataUrl;
         userItem.imagePreview = pendingImage.preview || pendingImage.dataUrl;
@@ -9090,7 +9121,7 @@ function mountChat(root) {
       if (act === "delete") deleteTurn(idx);
       if (act === "split") splitAfterTurn(idx);
       if (act === "regen" || act === "retry") regenerateLast();
-      if (act === "build") buildApprovedPlan();
+      if (act === "build") buildApprovedPlan(idx);
       return;
     }
     const btn = event.target.closest(".md-code-copy");

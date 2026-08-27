@@ -85,6 +85,43 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"].count(code_agent.PLAN_CONTRACT_MARK), 1)
         self.assertTrue(messages[0]["content"].startswith("design a site"))
 
+    def test_ask_and_plan_tools_are_read_only(self):
+        for kind in ("ask", "plan"):
+            names = {spec.function.name for spec in code_agent.code_tool_specs(kind)}
+            self.assertEqual(names, {"Read", "List"})
+        agent_names = {spec.function.name for spec in code_agent.code_tool_specs("agent")}
+        self.assertIn("Write", agent_names)
+        self.assertIn("Shell", agent_names)
+
+    def test_ask_and_plan_refuse_writes(self):
+        for kind in ("ask", "plan"):
+            label, text = code_agent.execute_tool(
+                "u", "c", "Write", {"path": "a.txt", "contents": "no"}, agent=kind
+            )
+            self.assertEqual(label, "Tool error")
+            self.assertIn("read-only", text.lower())
+        self.assertEqual(workspace.list_files("u", "c"), [])
+
+    def test_system_prompt_follows_agent(self):
+        ask = code_agent.code_system_for("u", "c", "ask")
+        plan = code_agent.code_system_for("u", "c", "plan")
+        agent = code_agent.code_system_for("u", "c", "agent")
+        self.assertIn("earlier Plan or Ask", ask)
+        self.assertIn("conversation and the project", ask)
+        self.assertIn("revise that plan", plan)
+        self.assertIn("<approved_plan>", agent)
+
+    def test_attach_plan_contract_skips_build(self):
+        quoted = (
+            f"{code_agent.BUILD_PROMPT}\n\n<approved_plan>\n"
+            "## Goal\nShip it.\n</approved_plan>"
+        )
+        messages = [{"role": "user", "content": quoted}]
+        code_agent.attach_plan_user_contract(messages)
+        self.assertEqual(messages[0]["content"], quoted)
+        self.assertFalse(code_agent.is_build_prompt("design a site"))
+        self.assertTrue(code_agent.is_build_prompt(quoted))
+
 
 if __name__ == "__main__":
     unittest.main()

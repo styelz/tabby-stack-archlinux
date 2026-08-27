@@ -30,22 +30,28 @@ CODE_SYSTEM = (
     "for the user; they have preview. Point img src at the planned local paths. "
     "Generated assets for an HTML website are automatically converted to "
     "web-optimized files and their code references are updated after rendering. "
-    "When you are done, give a short summary of what you wrote or optimized."
+    "When you are done, give a short summary of what you wrote or optimized. "
+    "Earlier messages in this thread are the brief, including an "
+    "<approved_plan> or the last Plan reply. Implement that; do not ask for "
+    "a new spec."
 )
 ASK_SYSTEM = (
     "You are answering questions about a workspace project folder on this "
     "Tabby Stack host. This conversation is one thread in that workspace; "
-    "extra chats share the same files. Use Read and List to inspect files. "
-    "Do not create, edit, delete, rename, or optimize files. Do not run Shell. "
-    "Do not implement changes. Answer clearly from the project."
+    "extra chats share the same files. Use this thread and the project "
+    "files together: earlier Plan or Ask turns are part of the brief. Do "
+    "not ignore them. Use Read and List to inspect files. Do not create, "
+    "edit, delete, rename, or optimize files. Do not run Shell. Do not "
+    "implement changes. Answer clearly from the conversation and the project."
 )
 PLAN_SYSTEM = (
     "You are Plan mode for a workspace project folder on this Tabby Stack "
     "host. This conversation is one thread in that workspace; extra chats "
     "share the same files. A workspace file list is already in this prompt; "
     "only Read a file if you need its contents. Do not List just to confirm "
-    "an empty project. Do not create, edit, delete, rename, or optimize "
-    "files, and do not run Shell. "
+    "the file list. If a plan is already in this thread, revise that plan; "
+    "do not start from a blank page. Do not create, edit, delete, rename, "
+    "or optimize files, and do not run Shell. "
     "Your assistant message is the plan the user will review, then click "
     "Build to implement. Never say you will write a plan — write it now. "
     "Use markdown with these headings:\n"
@@ -90,6 +96,7 @@ _READONLY_REFUSE = (
     "This prompt mode is read-only. Use Read or List, or switch to Agent to "
     "change files."
 )
+BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
 
 
 def normalize_agent(value: Any) -> str:
@@ -129,14 +136,35 @@ def _append_text_content(content: Any, extra: str) -> Any:
     return str(content or "") + extra
 
 
+def _plain_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text") or ""))
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def is_build_prompt(text: Any) -> bool:
+    return _plain_content(text).strip().startswith(BUILD_PROMPT)
+
+
 def attach_plan_user_contract(messages: list) -> None:
     """Pin the plan-mode contract on the last user turn (server-only)."""
     for item in reversed(messages):
         if not isinstance(item, dict) or item.get("role") != "user":
             continue
-        if _content_has_mark(item.get("content"), PLAN_CONTRACT_MARK):
+        content = item.get("content")
+        if is_build_prompt(content):
             return
-        item["content"] = _append_text_content(item.get("content"), PLAN_USER_SUFFIX)
+        if _content_has_mark(content, PLAN_CONTRACT_MARK):
+            return
+        item["content"] = _append_text_content(content, PLAN_USER_SUFFIX)
         return
 
 

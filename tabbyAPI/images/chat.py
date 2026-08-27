@@ -50,7 +50,6 @@ FILE_WRITE_NAMES = (
     "edit_file",
 )
 READONLY_AGENTS = frozenset({"ask", "plan"})
-BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
 _HERO_STEMS = frozenset(
     {"header", "hero", "banner", "hero-background", "hero_background"}
 )
@@ -163,10 +162,12 @@ def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
 
     if requested_image_prompt(data, explicit_only=True):
         return True
+    from ui.code_agent import is_build_prompt
+
     text = (last_user_text(data) or "").strip()
     if _EXPLICIT_NEW_RE.search(text):
         return True
-    if text == BUILD_PROMPT:
+    if is_build_prompt(text):
         return bool(_EXPLICIT_NEW_RE.search(_last_assistant_text(data) or ""))
     return False
 

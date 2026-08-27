@@ -252,6 +252,21 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("closeContextMenu()", app_src)
         self.assertIn("openContextMenu()", app_src)
 
+    def test_code_agent_ask_plan_uses_thread(self):
+        self.assertIn('data-agent="agent"', self.src)
+        self.assertIn('data-agent="ask"', self.src)
+        self.assertIn('data-agent="plan"', self.src)
+        self.assertIn("Implement the approved plan above. Do not wait for more confirmation.", self.src)
+        self.assertIn("function isBuildPromptText(text)", self.src)
+        self.assertIn("function lastUnbuiltPlanIndex()", self.src)
+        self.assertIn("function canBuildPlan(idx)", self.src)
+        self.assertIn("<approved_plan>", self.src)
+        self.assertIn("opts.agent = replayAgent", self.src)
+        self.assertIn("normalizeAgent((opts && opts.agent) || codeAgent)", self.src)
+        self.assertIn("Agent edits files, Ask answers without changing them", self.src)
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        self.assertIn(".chat-agent-hint", css)
+
 
 if __name__ == "__main__":
     unittest.main()

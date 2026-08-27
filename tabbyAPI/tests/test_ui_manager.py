@@ -131,6 +131,36 @@ class UiManagerTests(unittest.TestCase):
         self.assertIn("index.html", payload["messages"][0]["content"])
         self.assertIn("Workspace files", payload["messages"][0]["content"])
 
+    def test_sanitize_code_plan_injects_contract(self):
+        from ui import code_agent
+
+        payload = manager.sanitize_code_payload(
+            {
+                "messages": [{"role": "user", "content": "design a site"}],
+                "chat_id": "w1",
+                "agent": "plan",
+            }
+        )
+        self.assertEqual(payload["agent"], "plan")
+        self.assertIn("Plan mode", payload["messages"][0]["content"])
+        self.assertIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
+        self.assertTrue(payload["messages"][-1]["content"].startswith("design a site"))
+
+    def test_sanitize_code_ask_skips_plan_contract(self):
+        from ui import code_agent
+
+        payload = manager.sanitize_code_payload(
+            {
+                "messages": [{"role": "user", "content": "what files are here?"}],
+                "chat_id": "w1",
+                "agent": "ask",
+            }
+        )
+        self.assertEqual(payload["agent"], "ask")
+        self.assertIn("answering questions", payload["messages"][0]["content"])
+        self.assertNotIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
+        self.assertEqual(payload["messages"][-1]["content"], "what files are here?")
+
     def test_update_missing_script(self):
         missing = Path("/tmp/does-not-exist-tabby-update.sh")
         with mock.patch.object(manager, "STACK_ROOT", missing.parent):
