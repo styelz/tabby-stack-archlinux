@@ -29,7 +29,7 @@ from endpoints.OAI.types.chat_completion import (
     ChatCompletionRespChoice,
     ChatCompletionResponse,
 )
-from endpoints.OAI.types.common import UsageStats
+from endpoints.OAI.types.common import UsageStats, wants_stream_usage
 from endpoints.OAI.utils.completion import _parse_gen_request_id
 from endpoints.OAI.utils.stream_parser import (
     CONTENT,
@@ -829,7 +829,7 @@ async def stream_generate_chat_completion(
 
     gen_queue = asyncio.Queue()
     gen_tasks: List[asyncio.Task] = []
-    return_usage = data.stream_options and data.stream_options.include_usage
+    return_usage = wants_stream_usage(data.stream_options)
 
     try:
         xlogger.info(
@@ -933,7 +933,7 @@ async def generate_chat_completion(
     disconnect_handler: DisconnectHandler,
 ):
     gen_tasks: List[asyncio.Task] = []
-    return_usage = data.stream_options and data.stream_options.include_usage
+    return_usage = wants_stream_usage(data.stream_options)
 
     try:
         xlogger.info(

@@ -28,6 +28,19 @@ class ChatCompletionStreamOptions(BaseModel):
     include_usage: Optional[bool] = False
 
 
+def wants_stream_usage(options) -> bool:
+    """True when the client asked for a usage payload on the completion.
+
+    ``model_copy(update={"stream_options": {"include_usage": True}})`` leaves a
+    dict: Pydantic v2 does not re-validate nested values. Read both shapes.
+    """
+    if not options:
+        return False
+    if isinstance(options, dict):
+        return bool(options.get("include_usage"))
+    return bool(getattr(options, "include_usage", False))
+
+
 class CommonCompletionRequest(BaseSamplerRequest):
     """Represents a common completion request."""
 

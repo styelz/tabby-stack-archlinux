@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Optional
 
 from common.logger import xlogger
 from endpoints.OAI.types.chat_completion import ChatCompletionMessage, ChatCompletionRequest
+from endpoints.OAI.types.common import ChatCompletionStreamOptions
 from endpoints.OAI.types.tools import Function, ToolSpec
 from ui import workspace
 
@@ -652,7 +653,7 @@ async def iter_code_turns(
             "tools": code_tool_specs(kind),
             "tool_choice": "none" if kind == "plan" and empty else "auto",
             "messages": list(data.messages or []),
-            "stream_options": {"include_usage": True},
+            "stream_options": ChatCompletionStreamOptions(include_usage=True),
         }
     )
     written: list[str] = []

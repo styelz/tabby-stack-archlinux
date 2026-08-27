@@ -29,7 +29,7 @@ from endpoints.OAI.types.completion import (
     CompletionRespChoice,
     chat_logprobs_to_completion_logprobs,
 )
-from endpoints.OAI.types.common import UsageStats
+from endpoints.OAI.types.common import UsageStats, wants_stream_usage
 from endpoints.OAI.utils.common_ import aggregate_usage_stats, get_usage_stats
 
 
@@ -250,7 +250,7 @@ async def stream_generate_completion(
 
     gen_queue = asyncio.Queue()
     gen_tasks: List[asyncio.Task] = []
-    return_usage = data.stream_options and data.stream_options.include_usage
+    return_usage = wants_stream_usage(data.stream_options)
 
     try:
         xlogger.info(
@@ -356,7 +356,7 @@ async def generate_completion(
     """Non-streaming generate for completions"""
 
     gen_tasks: List[asyncio.Task] = []
-    return_usage = data.stream_options and data.stream_options.include_usage
+    return_usage = wants_stream_usage(data.stream_options)
 
     if isinstance(prompts, str):
         prompts = [prompts]

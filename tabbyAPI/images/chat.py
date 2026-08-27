@@ -656,6 +656,21 @@ async def _hold_then_reply(
     )
 
 
+_CODE_FAIL_PREFIXES = (
+    "No model is loaded",
+    "Chat is disabled because no prompt template is set.",
+    "Coding stopped:",
+)
+
+
+def _code_pass_failed(text: str, written: list[str]) -> bool:
+    """True when the code agent aborted before writing files."""
+    if written:
+        return False
+    body = (text or "").strip()
+    return any(body.startswith(prefix) for prefix in _CODE_FAIL_PREFIXES)
+
+
 async def _stream_code_then_images(
     data: ChatCompletionRequest,
     *,
@@ -667,17 +682,17 @@ async def _stream_code_then_images(
     job=None,
     agent: str = "agent",
 ):
-    from common.phrase_switch import stream_text
+    from common.phrase_switch import stream_text, text_response as _text
     from ui.code_agent import final_code_text, iter_code_turns
 
     workspace = (owner, chat_id)
     sync = data.model_copy(update={"stream": False})
     start_new = bool(items) and not _readonly_agent(agent)
+    written: list[str] = []
+    text = ""
 
-    async def _body():
-        written: list[str] = []
-        text = ""
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
+    async def take_code():
+        nonlocal written, text
         async for event in iter_code_turns(
             sync, disconnect_handler, owner, chat_id, agent=agent
         ):
@@ -687,17 +702,30 @@ async def _stream_code_then_images(
             elif kind == "done":
                 text = event[1] or ""
                 written = list(event[2] or [])
+
+    async def start_or_launch():
         started = job
         if start_new:
-            started = await _start_mixed_job(
+            return await _start_mixed_job(
                 items, api_base or "", start=True, owner=owner, chat_id=chat_id
             )
-        elif started is not None and getattr(started, "status", "") == "coding":
+        if started is not None and getattr(started, "status", "") == "coding":
             if chat_id:
                 started.chat_id = chat_id
             if owner:
                 started.owner = owner
             await _launch_mixed_job(started)
+        return started
+
+    async def _body():
+        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
+        async for item in take_code():
+            yield item
+        if _code_pass_failed(text, written):
+            async for chunk in stream_text(data, text):
+                yield chunk
+            return
+        started = await start_or_launch()
         if started is not None:
             yield ServerSentEvent(comment=f"{JOB_MARK} {started.id}")
             line = job_progress_line(started)
@@ -705,6 +733,18 @@ async def _stream_code_then_images(
                 yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
             await wait_until_done(started)
             copied = _copy_workspace_pngs(started, workspace)
+            if not written:
+                yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
+                async for item in take_code():
+                    yield item
+            if _code_pass_failed(text, written):
+                picture = _console_ready_text(
+                    started, api_base, code=True, extra_files=copied
+                )
+                merged = f"{text.rstrip()}\n\n{picture}".strip() if picture else text
+                async for chunk in stream_text(data, merged):
+                    yield chunk
+                return
             reply = _url_response(
                 sync,
                 started,
@@ -713,10 +753,10 @@ async def _stream_code_then_images(
                 code=True,
                 extra_files=written + copied,
             )
-            text = reply.choices[0].message.content or final_code_text(text, written)
+            out = reply.choices[0].message.content or final_code_text(text, written)
         else:
-            text = final_code_text(text, written)
-        async for chunk in stream_text(data, text):
+            out = final_code_text(text, written)
+        async for chunk in stream_text(data, out):
             yield chunk
 
     if data.stream:
@@ -725,28 +765,23 @@ async def _stream_code_then_images(
             ping=get_sse_ping_interval(),
             sep="\n",
         )
-    written: list[str] = []
-    text = ""
-    async for event in iter_code_turns(
-        sync, disconnect_handler, owner, chat_id, agent=agent
-    ):
-        if event[0] == "done":
-            text = event[1] or ""
-            written = list(event[2] or [])
-    started = job
-    if start_new:
-        started = await _start_mixed_job(
-            items, api_base or "", start=True, owner=owner, chat_id=chat_id
-        )
-    elif started is not None and getattr(started, "status", "") == "coding":
-        if chat_id:
-            started.chat_id = chat_id
-        if owner:
-            started.owner = owner
-        await _launch_mixed_job(started)
+    async for _item in take_code():
+        pass
+    if _code_pass_failed(text, written):
+        return _text(sync, text)
+    started = await start_or_launch()
     if started is not None:
         await wait_until_done(started)
         copied = _copy_workspace_pngs(started, workspace)
+        if not written:
+            async for _item in take_code():
+                pass
+        if _code_pass_failed(text, written):
+            picture = _console_ready_text(
+                started, api_base, code=True, extra_files=copied
+            )
+            merged = f"{text.rstrip()}\n\n{picture}".strip() if picture else text
+            return _text(sync, merged)
         return _url_response(
             sync,
             started,
@@ -755,8 +790,6 @@ async def _stream_code_then_images(
             code=True,
             extra_files=written + copied,
         )
-    from common.phrase_switch import text_response as _text
-
     return _text(sync, final_code_text(text, written))
 
 
