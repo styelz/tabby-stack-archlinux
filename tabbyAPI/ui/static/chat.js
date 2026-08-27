@@ -268,7 +268,7 @@ function mountChat(root) {
             </div>
             <button class="btn" type="button" id="chat-files-site">Open site</button>
             <button class="btn ghost chat-icon" type="button" id="chat-files-preview" aria-label="Preview">${FILES_PREVIEW_SVG}</button>
-            <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Terminal" aria-keyshortcuts="Control+`" title="Terminal (Ctrl+`)">${FILES_TERM_SVG}</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Terminal" aria-keyshortcuts="Control+\`" title="Terminal (Ctrl+\`)">${FILES_TERM_SVG}</button>
           </div>
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
