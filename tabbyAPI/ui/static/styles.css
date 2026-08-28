@@ -2917,6 +2917,13 @@ button.chip {
   border: 1px solid var(--line);
   white-space: normal;
 }
+.bubble.assistant.is-stopped {
+  color: var(--muted);
+  font-style: italic;
+  background: transparent;
+  border: 0;
+  padding: 0.15rem 0;
+}
 .bubble.assistant p { margin: 0 0 0.55em; }
 .bubble.assistant p:last-child { margin-bottom: 0; }
 .bubble.assistant h1,

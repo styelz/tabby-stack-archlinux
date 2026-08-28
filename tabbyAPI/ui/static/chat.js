@@ -7405,7 +7405,8 @@ function mountChat(root) {
 
   // Labels a settled header may keep across a reload. Anything else was a
   // transient live status ("Rendering image 2 of 3", "Writing index.html").
-  const SETTLED_LABEL = /^(Generated|Replied|Thought|Restarted|Loaded |Still loading$)/;
+  const SETTLED_LABEL = /^(Generated|Replied|Thought|Restarted|Stopped|Loaded |Still loading$)/;
+  const STOPPED_NOTE = "Generation stopped.";
 
   function settledLabel({ kind, target, reasoning, answer }) {
     if (kind === "image") return looksLikeImageReply(answer) ? "Generated" : "Replied";
@@ -7469,6 +7470,7 @@ function mountChat(root) {
       const markup = String(html || "").trim();
       if (!markup) return false;
       if (raw != null) answerText = String(raw);
+      bubble.classList.remove("is-stopped");
       ensureBubble();
       bubble.innerHTML = markup;
       bubble.hidden = false;
@@ -7477,9 +7479,12 @@ function mountChat(root) {
       return true;
     }
 
-    turn.append(head, thought);
-    if (visibleAnswerText(content)) {
-      showAnswer(displayAnswer(content), content);
+    function showStoppedNote() {
+      bubble.classList.add("is-stopped");
+      bubble.textContent = STOPPED_NOTE;
+      ensureBubble();
+      bubble.hidden = false;
+      turn.classList.add("has-answer");
     }
 
     let reasoningText = reasoning ? String(reasoning) : "";
@@ -7492,6 +7497,14 @@ function mountChat(root) {
     const target = (activity && activity.target) || "";
     const storedLabel = tabbyCleanStatusLabel(status_label);
     const keptLabel = !live && SETTLED_LABEL.test(storedLabel) ? storedLabel : "";
+    let wasStopped = storedLabel === "Stopped";
+
+    turn.append(head, thought);
+    if (visibleAnswerText(content)) {
+      showAnswer(displayAnswer(content), content);
+    } else if (!live && wasStopped) {
+      showStoppedNote();
+    }
     let statusNotes = [];
     let lastNote = "";
     const storedElapsed = Number(elapsed_s);
@@ -7513,6 +7526,7 @@ function mountChat(root) {
 
     function headLabel() {
       if (keptLabel) return keptLabel;
+      if (wasStopped) return "Stopped";
       if (label.textContent === "Still loading") return "Still loading";
       return settledLabel({ kind, target, reasoning: reasoningText, answer: answerText });
     }
@@ -7656,12 +7670,13 @@ function mountChat(root) {
         }
         stickLog();
       },
-      finish({ content: finalContent, reasoning: finalReasoning } = {}) {
+      finish({ content: finalContent, reasoning: finalReasoning, stopped } = {}) {
         if (finished && !live) {
           return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
         }
         const alreadySettled = finished;
         finished = true;
+        if (stopped) wasStopped = true;
         if (ticker) {
           clearInterval(ticker);
           ticker = null;
@@ -7679,6 +7694,8 @@ function mountChat(root) {
         const answer = visibleAnswerText(finalContent);
         if (answer) {
           showAnswer(displayAnswer(finalContent), finalContent);
+        } else if (wasStopped) {
+          showStoppedNote();
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
           showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
         }
@@ -9327,38 +9344,45 @@ function mountChat(root) {
       assembled = "";
       activity.kind = "restart";
     }
-    let stoppedEmpty = false;
     poll.stop();
     hideStackQueue();
     const waitingOnModel = activity.kind === "switch" || activity.kind === "restart";
     if (waitingOnModel) {
       await ensureModelWait(working, activity);
     }
-    stoppedEmpty = Boolean(stopKind) && !waitingOnModel && !String(assembled || "").trim() && !reasoning;
-    if (resume && !stopKind && !String(assembled || "").trim() && !reasoning) {
+    const userStopped = stopKind === "stop";
+    const emptyReply = !String(assembled || "").trim() && !reasoning;
+    const steerEmpty = stopKind === "steer" && emptyReply;
+    if (resume && !stopKind && emptyReply) {
       working.discard();
       await refreshChatFromServer(chatId);
-    } else if (stoppedEmpty) {
+    } else if (steerEmpty) {
       working.discard();
     } else {
-      const done = working.finish({ content: assembled, reasoning });
+      const done = working.finish({ content: assembled, reasoning, stopped: userStopped });
       if (done && done.reasoning) reasoning = done.reasoning;
       if (done && done.elapsed_s) elapsedSec = done.elapsed_s;
       if (done && done.status_label) statusLabel = done.status_label;
     }
-    if (String(assembled || "").trim() || reasoning) {
+    if (String(assembled || "").trim() || reasoning || userStopped) {
       const item = { role: "assistant", content: assembled, createdAt: Date.now() };
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
-      if (statusLabel) item.status_label = statusLabel;
+      if (userStopped) item.status_label = "Stopped";
+      else if (statusLabel) item.status_label = statusLabel;
       if (sendAgent === "ask" || sendAgent === "plan") item.agent = sendAgent;
       const last = messages.length ? messages[messages.length - 1] : null;
       const already = Boolean(
         last && last.role === "assistant" && String(last.content || "") === assembled
       );
       if (!already) appendAssistantToChat(chatId, item);
-      if (store.activeId === chatId && !stoppedEmpty && working.node && working.node.isConnected) {
-        attachMsgActions(working.node, "assistant", messages.length - 1, assembled);
+      if (store.activeId === chatId && working.node && working.node.isConnected) {
+        attachMsgActions(
+          working.node,
+          "assistant",
+          messages.length - 1,
+          assembled || (userStopped ? STOPPED_NOTE : "")
+        );
         attachPlanBuild(working.node, messages.length - 1);
         stickLog();
       }
