@@ -3593,7 +3593,11 @@ function mountChat(root) {
     });
     stage.addEventListener("pointermove", (event) => {
       if (!sizeDrag || sizeDrag.tab !== tab) return;
-      const lock = event.shiftKey ? tab.resizeLock === false : tab.resizeLock !== false;
+      const handle = sizeDrag.handle || "";
+      const corner =
+        (handle.includes("n") || handle.includes("s")) &&
+        (handle.includes("e") || handle.includes("w"));
+      const lock = event.shiftKey ? !corner : corner;
       const next = applyResizeHandle(
         sizeDrag.origin,
         sizeDrag.handle,
