@@ -11,6 +11,12 @@ function tabbyIsSsePing(text) {
   return /^ping\s*-\s*\d{4}-\d{2}-\d{2}[T\s]\d/i.test(String(text || "").trim());
 }
 
+function tabbyIsNetworkDrop(err) {
+  if (!err || err.name === "AbortError") return false;
+  const msg = String(err.message || "").toLowerCase();
+  return /network\s*error|failed to fetch|load failed|networkerror|err_network|err_internet|err_connection|connection (reset|closed)/i.test(msg);
+}
+
 function tabbyCleanStatusLabel(text) {
   return String(text || "")
     .split(/\r?\n/)
@@ -7821,6 +7827,21 @@ function mountChat(root) {
           ticker = null;
         }
       },
+      resetLive() {
+        if (finished) return;
+        reasoningText = "";
+        reasoningFromModel = false;
+        steps.length = 0;
+        statusNotes = [];
+        lastNote = "";
+        answerText = "";
+        if (bubbleMounted) {
+          bubble.innerHTML = "";
+          bubble.hidden = true;
+          turn.classList.remove("has-answer");
+        }
+        paintThought();
+      },
       discard() {
         finished = true;
         if (ticker) {
@@ -9333,141 +9354,166 @@ function mountChat(root) {
     let reasoning = "";
     let elapsedSec = null;
     let statusLabel = "";
-    const body = resume
-      ? { resume: true, conversation_id: chatId, stream: true }
-      : { messages: outboundMessagesFor(chatId), stream: true, conversation_id: chatId };
-    if (!resume && settings.temperature != null) body.temperature = settings.temperature;
-    if (!resume && sendAgent) {
-      body.mode = "code";
-      body.chat_id = workspaceId(targetChat) || activeWorkspaceId();
-      body.agent = sendAgent;
-    }
+    let streamResume = resume;
+    let networkTries = 0;
     await persist();
-    try {
-      const response = await fetch(TabbyUI.path("chat"), {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
-        body: JSON.stringify(body),
-        signal: abortController.signal,
-      });
-      if (response.status === 401) {
-        poll.stop();
-        working.stopClock();
-        persist();
-        window.location.href = TabbyUI.path("login");
-        return;
+    while (true) {
+      const body = streamResume
+        ? { resume: true, conversation_id: chatId, stream: true }
+        : { messages: outboundMessagesFor(chatId), stream: true, conversation_id: chatId };
+      if (!streamResume && settings.temperature != null) body.temperature = settings.temperature;
+      if (!streamResume && sendAgent) {
+        body.mode = "code";
+        body.chat_id = workspaceId(targetChat) || activeWorkspaceId();
+        body.agent = sendAgent;
       }
-      const type = response.headers.get("content-type") || "";
-      const unavailable = response.status === 502 || response.status === 503 || response.status === 504;
-      if (!response.ok) {
-        let data = "";
-        if (type.includes("application/json")) {
-          data = await response.json().catch(() => ({}));
-        } else {
-          data = await response.text().catch(() => "");
+      try {
+        const response = await fetch(TabbyUI.path("chat"), {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
+          body: JSON.stringify(body),
+          signal: abortController.signal,
+        });
+        if (response.status === 401) {
+          poll.stop();
+          working.stopClock();
+          persist();
+          window.location.href = TabbyUI.path("login");
+          return;
         }
-        const msg = TabbyUI.httpErrorMessage
-          ? TabbyUI.httpErrorMessage(response, data)
-          : (unavailable ? `API unavailable (${response.status})` : "Chat failed");
-        if (unavailable) {
-          activity.kind = "restart";
-        } else {
-          throw new Error(msg);
-        }
-      } else if (type.includes("text/html")) {
-        activity.kind = "restart";
-      } else if (type.includes("application/json")) {
-        const data = await response.json();
-        assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
-        reasoning = data.choices?.[0]?.message?.reasoning_content || "";
-        if (reasoning) working.setReasoning(reasoning);
-        if (assembled) working.setAnswer(assembled);
-        if (data.usage) applyUsage(data.usage, chatId);
-      } else {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(buf) && !assembled) {
-            activity.kind = "restart";
-            break;
+        const type = response.headers.get("content-type") || "";
+        const unavailable = response.status === 502 || response.status === 503 || response.status === 504;
+        if (!response.ok) {
+          let data = "";
+          if (type.includes("application/json")) {
+            data = await response.json().catch(() => ({}));
+          } else {
+            data = await response.text().catch(() => "");
           }
-          buf = consumeSseBuffer(buf, (event) => {
-            if (event.usage) applyUsage(event.usage, chatId);
-            if (event.comment && event.comment.includes("tabby-context-usage:")) {
-              const raw = String(event.comment)
-                .split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter((line) => /tabby-context-usage:/i.test(line))
-                .pop() || "";
-              const json = raw.replace(/^[\s\S]*tabby-context-usage:\s*/i, "");
-              try {
-                applyUsage(JSON.parse(json), chatId);
-              } catch {
-                /* ignore */
-              }
+          const msg = TabbyUI.httpErrorMessage
+            ? TabbyUI.httpErrorMessage(response, data)
+            : (unavailable ? `API unavailable (${response.status})` : "Chat failed");
+          if (unavailable) {
+            activity.kind = "restart";
+          } else {
+            throw new Error(msg);
+          }
+        } else if (type.includes("text/html")) {
+          activity.kind = "restart";
+        } else if (type.includes("application/json")) {
+          const data = await response.json();
+          assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
+          reasoning = data.choices?.[0]?.message?.reasoning_content || "";
+          if (reasoning) working.setReasoning(reasoning);
+          if (assembled) working.setAnswer(assembled);
+          if (data.usage) applyUsage(data.usage, chatId);
+        } else {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(buf) && !assembled) {
+              activity.kind = "restart";
+              break;
             }
-            if (event.comment && event.comment.includes("tabby-stack-queue:")) {
-              const raw = String(event.comment)
-                .split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter((line) => /tabby-stack-queue:/i.test(line))
-                .pop() || "";
-              const hint = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-stack-queue:\s*/i, ""));
-              showStackQueue(hint, working);
-            }
-            if (event.comment && event.comment.includes("tabby-image-status:")) {
-              hideStackQueue(working);
-              const raw = String(event.comment)
-                .split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter((line) => /tabby-image-status:/i.test(line))
-                .pop() || "";
-              const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
-              if (label) working.setActivity(label, { processing: true, note: label });
-              if (chatsShareWorkspace(chatId)) refreshFilesSoon();
-              if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
-                const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
-                if (isChangePath(written)) {
-                  reloadPreviewIfNeeded(written);
-                  if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
+            buf = consumeSseBuffer(buf, (event) => {
+              if (event.usage) applyUsage(event.usage, chatId);
+              if (event.comment && event.comment.includes("tabby-context-usage:")) {
+                const raw = String(event.comment)
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter((line) => /tabby-context-usage:/i.test(line))
+                  .pop() || "";
+                const json = raw.replace(/^[\s\S]*tabby-context-usage:\s*/i, "");
+                try {
+                  applyUsage(JSON.parse(json), chatId);
+                } catch {
+                  /* ignore */
                 }
               }
-            }
-            if (event.step) {
-              hideStackQueue(working);
-              if (event.step.type === "demote") assembled = "";
-              working.addStep(event.step);
-            }
-            if (event.reasoning) {
-              hideStackQueue(working, { label: "Thinking", processing: false });
-              reasoning += event.reasoning;
-              working.setReasoning(reasoning);
-            }
-            if (visibleAnswerText(event.content)) {
-              hideStackQueue(working, { label: activity.label || "Thinking", processing: false });
-              assembled += event.content;
-              working.setAnswer(assembled);
-            } else if (event.content) {
-              // Preserve whitespace-only chunks for final assembly without
-              // promoting an empty bubble.
-              assembled += event.content;
-            }
-          });
+              if (event.comment && event.comment.includes("tabby-stack-queue:")) {
+                const raw = String(event.comment)
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter((line) => /tabby-stack-queue:/i.test(line))
+                  .pop() || "";
+                const hint = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-stack-queue:\s*/i, ""));
+                showStackQueue(hint, working);
+              }
+              if (event.comment && event.comment.includes("tabby-image-status:")) {
+                hideStackQueue(working);
+                const raw = String(event.comment)
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .filter((line) => /tabby-image-status:/i.test(line))
+                  .pop() || "";
+                const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
+                if (label) working.setActivity(label, { processing: true, note: label });
+                if (chatsShareWorkspace(chatId)) refreshFilesSoon();
+                if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
+                  const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
+                  if (isChangePath(written)) {
+                    reloadPreviewIfNeeded(written);
+                    if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
+                  }
+                }
+              }
+              if (event.step) {
+                hideStackQueue(working);
+                if (event.step.type === "demote") assembled = "";
+                working.addStep(event.step);
+              }
+              if (event.reasoning) {
+                hideStackQueue(working, { label: "Thinking", processing: false });
+                reasoning += event.reasoning;
+                working.setReasoning(reasoning);
+              }
+              if (visibleAnswerText(event.content)) {
+                hideStackQueue(working, { label: activity.label || "Thinking", processing: false });
+                assembled += event.content;
+                working.setAnswer(assembled);
+              } else if (event.content) {
+                // Preserve whitespace-only chunks for final assembly without
+                // promoting an empty bubble.
+                assembled += event.content;
+              }
+            });
+          }
         }
-      }
-    } catch (err) {
-      const aborted = Boolean(err && err.name === "AbortError");
-      if (aborted) {
-        if (!stopKind) stopKind = "stop";
-      } else if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(err && err.message)) {
-        activity.kind = "restart";
-      } else {
+        break;
+      } catch (err) {
+        const aborted = Boolean(err && err.name === "AbortError");
+        if (aborted) {
+          if (!stopKind) stopKind = "stop";
+          break;
+        }
+        if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(err && err.message)) {
+          activity.kind = "restart";
+          break;
+        }
+        if (tabbyIsNetworkDrop(err) && !stopKind && networkTries < 6) {
+          networkTries += 1;
+          streamResume = true;
+          assembled = "";
+          reasoning = "";
+          if (working.resetLive) working.resetLive();
+          working.setActivity("Reconnecting", {
+            processing: true,
+            note: "Lost the stream. Catching up.",
+          });
+          await sleep(Math.min(2000, 300 * networkTries));
+          if (stopKind || (abortController && abortController.signal.aborted)) {
+            if (!stopKind) stopKind = "stop";
+            break;
+          }
+          continue;
+        }
         assembled = assembled || `Error: ${err.message}`;
+        break;
       }
     }
     if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(assembled)) {
@@ -9484,7 +9530,7 @@ function mountChat(root) {
     let savedSteps = [];
     const emptyReply = !String(assembled || "").trim() && !reasoning;
     const steerEmpty = stopKind === "steer" && emptyReply;
-    if (resume && !stopKind && emptyReply) {
+    if ((resume || networkTries) && !stopKind && emptyReply) {
       working.discard();
       await refreshChatFromServer(chatId);
     } else if (steerEmpty) {

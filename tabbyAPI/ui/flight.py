@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -47,6 +48,11 @@ def snapshot_for(username: str) -> Optional[dict[str, Any]]:
     }
 
 
+def _sse_ping() -> bytes:
+    """Comment that matches sse-starlette / tabbyIsSsePing keep-alives."""
+    return f": ping - {datetime.now(timezone.utc)}\n\n".encode("utf-8")
+
+
 def as_bytes(item: Any) -> bytes:
     if item is None:
         return b""
@@ -66,11 +72,12 @@ def as_bytes(item: Any) -> bytes:
 
 
 class ConsoleFlight:
-    def __init__(self, username: str, chat_id: str, kind: str, prompt: str):
+    def __init__(self, username: str, chat_id: str, kind: str, prompt: str, agent: str = ""):
         self.id = uuid4().hex
         self.username = str(username or "").strip()
         self.chat_id = str(chat_id or "").strip()
         self.kind = str(kind or "chat")
+        self.agent = str(agent or "").strip()
         self.prompt = str(prompt or "").replace("\n", " ").strip()[:200]
         self.started_at = time.time()
         self.abort_event = asyncio.Event()
@@ -157,7 +164,7 @@ class ConsoleFlight:
         for queue in waiters:
             await queue.put(raw)
 
-    async def subscribe(self):
+    async def subscribe(self, ping_s: Optional[float] = None):
         queue: asyncio.Queue = asyncio.Queue()
         async with self.lock:
             history = list(self.chunks)
@@ -168,9 +175,17 @@ class ConsoleFlight:
             yield item
         if finished:
             return
+        idle_ping = bool(ping_s and ping_s < 1_000_000)
         try:
             while True:
-                item = await queue.get()
+                if idle_ping:
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=float(ping_s))
+                    except asyncio.TimeoutError:
+                        yield _sse_ping()
+                        continue
+                else:
+                    item = await queue.get()
                 if item is None:
                     break
                 yield item
@@ -200,6 +215,7 @@ class ConsoleFlight:
                 elapsed_s=elapsed,
                 status_label=self.status_label,
                 steps=self.steps,
+                agent=self.agent,
             )
         async with self.lock:
             self.done = True
@@ -231,8 +247,14 @@ def stream_response(flight: Optional[ConsoleFlight]) -> StreamingResponse:
         if flight is None:
             yield b"data: [DONE]\n\n"
             return
-        async for chunk in flight.subscribe():
-            yield chunk
+        from common.networking import get_sse_ping_interval
+
+        # This response is not EventSourceResponse, so it does not inherit
+        # sse-starlette pings. A long Code/Plan prefill would otherwise sit
+        # silent until a proxy or browser drops it as a network error.
+        async for chunk in flight.subscribe(ping_s=get_sse_ping_interval()):
+            if chunk:
+                yield chunk
 
     return StreamingResponse(
         _body(),

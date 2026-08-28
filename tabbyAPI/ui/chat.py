@@ -419,7 +419,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     gate = StackGate(username, kind=kind, chat_id=conversation_id)
     if data.stream:
         flight = ConsoleFlight(
-            username, conversation_id, kind, last_user_text(data)
+            username, conversation_id, kind, last_user_text(data), agent=agent
         )
         register_flight(flight)
         flight.task = asyncio.create_task(

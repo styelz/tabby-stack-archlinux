@@ -460,6 +460,7 @@ def append_flight_assistant(
     elapsed_s: Optional[int] = None,
     status_label: str = "",
     steps: Optional[list] = None,
+    agent: str = "",
 ) -> None:
     """Write a finished console reply so a reload can show it."""
     cid = str(chat_id or "").strip()
@@ -502,6 +503,9 @@ def append_flight_assistant(
             item["status_label"] = label
         if stored_steps:
             item["steps"] = stored_steps
+        kind = str(agent or "").strip().lower()
+        if kind in ("ask", "plan"):
+            item["agent"] = kind
         messages.append(item)
         chat["updatedAt"] = item["createdAt"]
         save_store(username, store)
