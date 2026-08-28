@@ -564,6 +564,49 @@ async def ui_workspace_crop(
     }
 
 
+@router.post("/workspace/{chat_id}/punch", include_in_schema=False)
+async def ui_workspace_punch(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, punch_image, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    path = str(body.get("path") or "")
+    if not path:
+        raise HTTPException(400, "path is required")
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        result = punch_image(
+            _user,
+            cid,
+            path,
+            seeds=body.get("seeds"),
+            boxes=body.get("boxes"),
+            tolerance=body.get("tolerance", 28),
+            contiguous=bool(body.get("contiguous", True)),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "File not found.") from exc
+    except OSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "path": result["path"],
+        "original_dimensions": result["original_dimensions"],
+        "dimensions": result["dimensions"],
+        "bytes": result["bytes"],
+        "punched": result["punched"],
+        "rewritten": result["rewritten"],
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
+
+
 @router.put("/workspace/{chat_id}/folder", include_in_schema=False)
 async def ui_workspace_mkdir(
     chat_id: str, path: str = "", _user: str = Depends(require_ui_user)

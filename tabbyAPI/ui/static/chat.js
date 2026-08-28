@@ -1706,6 +1706,8 @@ function mountChat(root) {
     if (!tab) return tab;
     const copy = { ...tab, loading: false };
     if (tab.cropBox) copy.cropBox = { ...tab.cropBox };
+    if (Array.isArray(tab.punchSeeds)) copy.punchSeeds = tab.punchSeeds.map((seed) => ({ ...seed }));
+    if (Array.isArray(tab.punchBoxes)) copy.punchBoxes = tab.punchBoxes.map((box) => ({ ...box }));
     if (Array.isArray(tab.caret)) copy.caret = tab.caret.slice();
     if (Array.isArray(tab.diff)) copy.diff = tab.diff.slice();
     return copy;
@@ -2433,6 +2435,7 @@ function mountChat(root) {
       apply.disabled = tab.busy || !box || box.w < 1 || box.h < 1;
       apply.textContent = tab.busy ? "Cropping" : "Apply";
     }
+    paintPunchHead(tab);
   }
 
   /** A reload keeps showing the text it already has instead of flashing. */
@@ -2455,6 +2458,13 @@ function mountChat(root) {
     if (view === "image") {
       const src = `${fileUrl(activeWorkspaceId(), tab.path)}&v=${tab.size}`;
       const img = `<img alt="" src="${TabbyUI.escapeHtml(src)}" />`;
+      if (tab.punching) {
+        return (
+          `<div class="chat-editor-body is-image is-punch"><div class="chat-punch-stage">${img}` +
+          '<canvas class="chat-punch-canvas" data-punch-canvas></canvas>' +
+          '<div class="chat-punch-marquee" hidden data-punch-marquee></div></div></div>'
+        );
+      }
       if (!tab.cropping) {
         return `<div class="chat-editor-body is-image">${img}</div>`;
       }
@@ -2496,7 +2506,7 @@ function mountChat(root) {
     // Code turns repaint the listing every 600 ms; only rebuild when the file,
     // its state, or a reloaded revision actually changed, so typing survives.
     const view = tabView(tab);
-    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}|${tab.cropping ? "crop" : ""}`;
+    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}|${tab.cropping ? "crop" : tab.punching ? "punch" : ""}`;
     if (editorPane.dataset.key === key) {
       paintEditorHead();
       return;
@@ -2516,7 +2526,12 @@ function mountChat(root) {
               ? '<span class="chat-crop-readout" data-crop-readout></span>' +
                 '<button type="button" class="btn ghost" data-edit="crop-cancel">Cancel</button>' +
                 '<button type="button" class="btn primary" data-edit="crop-apply">Apply</button>'
-              : '<button type="button" class="btn ghost" data-edit="crop">Crop</button>')
+              : tab.punching
+                ? '<span class="chat-crop-readout" data-punch-readout></span>' +
+                  '<button type="button" class="btn ghost" data-edit="punch-cancel">Cancel</button>' +
+                  '<button type="button" class="btn primary" data-edit="punch-apply">Make transparent</button>'
+                : '<button type="button" class="btn ghost" data-edit="crop">Crop</button>' +
+                  '<button type="button" class="btn ghost" data-edit="punch">Make transparent</button>')
           : "";
     editorPane.innerHTML =
       '<div class="chat-editor-head">' +
@@ -2529,10 +2544,18 @@ function mountChat(root) {
         : '<button type="button" class="btn ghost chat-icon" data-edit="download" aria-label="Download file" title="Download">↓</button>') +
       tools +
       "</div>" +
+      (view === "image" && tab.punching
+        ? '<div class="chat-punch-bar">' +
+          "<span>Click a color or drag a box to erase. Click again to add more.</span>" +
+          `<label class="chat-punch-tol">Tolerance <input type="range" min="0" max="80" value="${tab.punchTolerance ?? 28}" data-punch-tolerance /></label>` +
+          '<button type="button" class="btn ghost" data-edit="punch-contiguous">Connected</button>' +
+          "</div>"
+        : "") +
       editorBodyHtml(tab, view) +
       '<p class="muted chat-editor-note"></p>';
     mountMonaco(tab, view);
     if (view === "image" && tab.cropping) mountCropOverlay(tab);
+    if (view === "image" && tab.punching) mountPunchOverlay(tab);
     paintEditorHead();
   }
 
@@ -3310,6 +3333,11 @@ function mountChat(root) {
 
   function beginCrop(tab) {
     if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
+    clearPunchState(tab);
+    if (punchResize) {
+      punchResize.disconnect();
+      punchResize = null;
+    }
     tab.cropping = true;
     tab.cropBox = null;
     tab.cropNatural = null;
@@ -3362,6 +3390,436 @@ function mountChat(root) {
       live.state = "image";
       live.rev += 1;
       live.note = "Cropped.";
+      reloadPreviewIfNeeded();
+      if (editorPane) editorPane.dataset.key = "";
+      paintTabsAndFiles();
+    } catch (err) {
+      tab.busy = false;
+      tab.note = err.message;
+      paintEditorHead();
+    }
+  }
+
+  const PUNCH_TOLERANCE_DEFAULT = 28;
+  let punchDrag = null;
+  let punchResize = null;
+
+  function punchSelectionCount(tab) {
+    return (tab && tab.punchCount) || 0;
+  }
+
+  function clearPunchState(tab) {
+    if (!tab) return;
+    tab.punching = false;
+    tab.punchSeeds = [];
+    tab.punchBoxes = [];
+    tab.punchNatural = null;
+    tab.punchSource = null;
+    tab.punchMask = null;
+    tab.punchCount = 0;
+    punchDrag = null;
+  }
+
+  function paintPunchHead(tab) {
+    if (!tab || !tab.punching) return;
+    const readout = editorPane && editorPane.querySelector("[data-punch-readout]");
+    if (readout) {
+      const n = punchSelectionCount(tab);
+      readout.textContent = n ? `${n.toLocaleString()} px selected` : "No selection";
+    }
+    const apply = editorPane && editorPane.querySelector("[data-edit='punch-apply']");
+    if (apply) {
+      apply.disabled = tab.busy || punchSelectionCount(tab) < 1;
+      apply.textContent = tab.busy ? "Saving" : "Make transparent";
+    }
+    const slider = editorPane && editorPane.querySelector("[data-punch-tolerance]");
+    if (slider && Number(slider.value) !== Number(tab.punchTolerance)) {
+      slider.value = String(tab.punchTolerance ?? PUNCH_TOLERANCE_DEFAULT);
+    }
+    const toggle = editorPane && editorPane.querySelector("[data-edit='punch-contiguous']");
+    if (toggle) {
+      const on = tab.punchContiguous !== false;
+      toggle.classList.toggle("is-on", on);
+      toggle.setAttribute("aria-pressed", on ? "true" : "false");
+      toggle.textContent = on ? "Connected" : "All matching";
+    }
+  }
+
+  function colorDist2(data, index, r, g, b) {
+    const dr = data[index] - r;
+    const dg = data[index + 1] - g;
+    const db = data[index + 2] - b;
+    return dr * dr + dg * dg + db * db;
+  }
+
+  function dilatePunchMask(mask, width, height) {
+    const out = new Uint8Array(mask);
+    for (let y = 0; y < height; y += 1) {
+      const row = y * width;
+      for (let x = 0; x < width; x += 1) {
+        if (!mask[row + x]) continue;
+        if (x) out[row + x - 1] = 1;
+        if (x + 1 < width) out[row + x + 1] = 1;
+        if (y) out[row - width + x] = 1;
+        if (y + 1 < height) out[row + width + x] = 1;
+      }
+    }
+    return out;
+  }
+
+  function rebuildPunchMask(tab) {
+    const source = tab && tab.punchSource;
+    if (!source) {
+      if (tab) tab.punchCount = 0;
+      return;
+    }
+    const { width, height, data } = source;
+    const mask = new Uint8Array(width * height);
+    const tol = Number(tab.punchTolerance);
+    const tol2 = (Number.isFinite(tol) ? tol : PUNCH_TOLERANCE_DEFAULT) ** 2;
+    const contiguous = tab.punchContiguous !== false;
+    const seeds = Array.isArray(tab.punchSeeds) ? tab.punchSeeds : [];
+    const boxes = Array.isArray(tab.punchBoxes) ? tab.punchBoxes : [];
+
+    const matches = (x, y, r, g, b) => {
+      const i = (y * width + x) * 4;
+      if (data[i + 3] < 8) return false;
+      return colorDist2(data, i, r, g, b) <= tol2;
+    };
+
+    const flood = (sx, sy) => {
+      if (sx < 0 || sy < 0 || sx >= width || sy >= height) return;
+      const start = (sy * width + sx) * 4;
+      if (data[start + 3] < 8) return;
+      const r = data[start];
+      const g = data[start + 1];
+      const b = data[start + 2];
+      if (contiguous) {
+        const queue = [[sx, sy]];
+        for (let q = 0; q < queue.length; q += 1) {
+          const x = queue[q][0];
+          const y = queue[q][1];
+          const index = y * width + x;
+          if (mask[index] || !matches(x, y, r, g, b)) continue;
+          mask[index] = 1;
+          if (x) queue.push([x - 1, y]);
+          if (x + 1 < width) queue.push([x + 1, y]);
+          if (y) queue.push([x, y - 1]);
+          if (y + 1 < height) queue.push([x, y + 1]);
+        }
+        return;
+      }
+      for (let y = 0; y < height; y += 1) {
+        const row = y * width;
+        for (let x = 0; x < width; x += 1) {
+          if (matches(x, y, r, g, b)) mask[row + x] = 1;
+        }
+      }
+    };
+
+    seeds.forEach((seed) => flood(Math.round(seed.x), Math.round(seed.y)));
+    boxes.forEach((box) => {
+      const x0 = Math.max(0, Math.round(box.x));
+      const y0 = Math.max(0, Math.round(box.y));
+      const x1 = Math.min(width, Math.round(box.x + box.w));
+      const y1 = Math.min(height, Math.round(box.y + box.h));
+      if (x1 <= x0 || y1 <= y0) return;
+      for (let y = y0; y < y1; y += 1) {
+        const row = y * width;
+        for (let x = x0; x < x1; x += 1) {
+          if (data[(row + x) * 4 + 3] >= 8) mask[row + x] = 1;
+        }
+      }
+    });
+
+    let punched = 0;
+    for (let i = 0; i < mask.length; i += 1) if (mask[i]) punched += 1;
+    const grown = punched ? dilatePunchMask(mask, width, height) : mask;
+    if (grown !== mask) {
+      punched = 0;
+      for (let i = 0; i < grown.length; i += 1) if (grown[i]) punched += 1;
+    }
+    tab.punchMask = grown;
+    tab.punchCount = punched;
+  }
+
+  function paintPunchOverlay(tab) {
+    const body = editorPane && editorPane.querySelector(".chat-editor-body.is-punch");
+    if (!body || !tab) return;
+    const img = body.querySelector("img");
+    const canvas = body.querySelector("[data-punch-canvas]");
+    if (!img || !canvas || !img.clientWidth || !tab.punchSource) return;
+    const { width, height, data } = tab.punchSource;
+    const mask = tab.punchMask;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const preview = ctx.createImageData(width, height);
+    preview.data.set(data);
+    if (mask) {
+      const out = preview.data;
+      for (let i = 0, p = 0; i < mask.length; i += 1, p += 4) {
+        if (mask[i]) out[p + 3] = 0;
+      }
+    }
+    ctx.putImageData(preview, 0, 0);
+    canvas.style.width = `${img.clientWidth}px`;
+    canvas.style.height = `${img.clientHeight}px`;
+    paintPunchHead(tab);
+  }
+
+  async function imageDataFromUrl(url) {
+    const res = await fetch(url, { credentials: "same-origin" });
+    if (!res.ok) throw new Error("Could not read that image.");
+    const blob = await res.blob();
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (typeof createImageBitmap === "function") {
+      const bitmap = await createImageBitmap(blob);
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      ctx.drawImage(bitmap, 0, 0);
+      if (bitmap.close) bitmap.close();
+    } else {
+      const href = URL.createObjectURL(blob);
+      try {
+        const image = await new Promise((resolve, reject) => {
+          const node = new Image();
+          node.onload = () => resolve(node);
+          node.onerror = () => reject(new Error("Could not read that image."));
+          node.src = href;
+        });
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        ctx.drawImage(image, 0, 0);
+      } finally {
+        URL.revokeObjectURL(href);
+      }
+    }
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  function mountPunchOverlay(tab) {
+    if (punchResize) {
+      punchResize.disconnect();
+      punchResize = null;
+    }
+    const body = editorPane && editorPane.querySelector(".chat-editor-body.is-punch");
+    if (!body || !tab) return;
+    const stage = body.querySelector(".chat-punch-stage");
+    const img = body.querySelector("img");
+    const marquee = body.querySelector("[data-punch-marquee]");
+    if (!stage || !img) return;
+
+    const chatId = activeWorkspaceId();
+    const path = tab.path;
+    const src = fileUrl(chatId, path);
+    imageDataFromUrl(`${src}${src.includes("?") ? "&" : "?"}v=${tab.size || 0}`)
+      .then((pixels) => {
+        if (activeWorkspaceId() !== chatId || !tab.punching || tab.path !== path) return;
+        tab.punchSource = pixels;
+        tab.punchNatural = { w: pixels.width, h: pixels.height };
+        rebuildPunchMask(tab);
+        paintPunchOverlay(tab);
+      })
+      .catch((err) => {
+        if (activeWorkspaceId() !== chatId || tab.path !== path) return;
+        tab.note = err.message || "Could not read that image.";
+        paintEditorHead();
+      });
+
+    if (img.complete && img.naturalWidth) paintPunchOverlay(tab);
+    else img.addEventListener("load", () => paintPunchOverlay(tab), { once: true });
+    if (typeof ResizeObserver === "function") {
+      punchResize = new ResizeObserver(() => paintPunchOverlay(tab));
+      punchResize.observe(img);
+    }
+
+    const naturalFromClient = (clientX, clientY) => {
+      const rect = img.getBoundingClientRect();
+      const width = rect.width || 1;
+      const height = rect.height || 1;
+      const nw = (tab.punchNatural && tab.punchNatural.w) || img.naturalWidth || 1;
+      const nh = (tab.punchNatural && tab.punchNatural.h) || img.naturalHeight || 1;
+      return {
+        x: ((clientX - rect.left) / width) * nw,
+        y: ((clientY - rect.top) / height) * nh,
+        rect,
+        nw,
+        nh,
+      };
+    };
+
+    const paintMarquee = (a, b, natural) => {
+      if (!marquee || !natural) return;
+      const sx = (img.clientWidth || 1) / natural.nw;
+      const sy = (img.clientHeight || 1) / natural.nh;
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      const w = Math.abs(b.x - a.x);
+      const h = Math.abs(b.y - a.y);
+      marquee.hidden = w < 1 && h < 1;
+      marquee.style.left = `${x * sx}px`;
+      marquee.style.top = `${y * sy}px`;
+      marquee.style.width = `${Math.max(1, w * sx)}px`;
+      marquee.style.height = `${Math.max(1, h * sy)}px`;
+    };
+
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || tab.busy || !tab.punchSource) return;
+      event.preventDefault();
+      stage.setPointerCapture(event.pointerId);
+      const at = naturalFromClient(event.clientX, event.clientY);
+      punchDrag = { tab, start: at, last: at };
+      paintMarquee(at, at, at);
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!punchDrag || punchDrag.tab !== tab) return;
+      const at = naturalFromClient(event.clientX, event.clientY);
+      punchDrag.last = at;
+      paintMarquee(punchDrag.start, at, at);
+    });
+    const endDrag = (event) => {
+      if (!punchDrag || punchDrag.tab !== tab) return;
+      const start = punchDrag.start;
+      const last = punchDrag.last || start;
+      punchDrag = null;
+      if (marquee) marquee.hidden = true;
+      try {
+        stage.releasePointerCapture(event.pointerId);
+      } catch {
+        /* already released */
+      }
+      const nw = start.nw;
+      const nh = start.nh;
+      const x0 = Math.round(Math.max(0, Math.min(start.x, last.x, nw - 1)));
+      const y0 = Math.round(Math.max(0, Math.min(start.y, last.y, nh - 1)));
+      const x1 = Math.round(Math.min(nw, Math.max(start.x, last.x) + 1));
+      const y1 = Math.round(Math.min(nh, Math.max(start.y, last.y) + 1));
+      const w = Math.max(1, x1 - x0);
+      const h = Math.max(1, y1 - y0);
+      const dx = (last.x - start.x) * ((img.clientWidth || 1) / nw);
+      const dy = (last.y - start.y) * ((img.clientHeight || 1) / nh);
+      if (Math.hypot(dx, dy) < 6) {
+        tab.punchSeeds = (tab.punchSeeds || []).concat({ x: x0, y: y0 });
+      } else {
+        tab.punchBoxes = (tab.punchBoxes || []).concat({ x: x0, y: y0, w, h });
+      }
+      tab.note = "";
+      rebuildPunchMask(tab);
+      paintPunchOverlay(tab);
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+  }
+
+  function beginPunch(tab) {
+    if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
+    tab.cropping = false;
+    tab.cropBox = null;
+    tab.cropNatural = null;
+    cropDrag = null;
+    if (cropResize) {
+      cropResize.disconnect();
+      cropResize = null;
+    }
+    tab.punching = true;
+    tab.punchSeeds = [];
+    tab.punchBoxes = [];
+    tab.punchNatural = null;
+    tab.punchSource = null;
+    tab.punchMask = null;
+    tab.punchCount = 0;
+    if (tab.punchTolerance == null) tab.punchTolerance = PUNCH_TOLERANCE_DEFAULT;
+    if (tab.punchContiguous == null) tab.punchContiguous = true;
+    tab.note = "";
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  function beginPunchPath(path) {
+    openFileTab(path);
+    const tab = findTab(path);
+    if (tab) beginPunch(tab);
+  }
+
+  function cancelPunch(tab) {
+    if (!tab || !tab.punching) return;
+    clearPunchState(tab);
+    tab.note = "";
+    if (punchResize) {
+      punchResize.disconnect();
+      punchResize = null;
+    }
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  function setPunchTolerance(tab, value) {
+    if (!tab || !tab.punching) return;
+    const next = Math.max(0, Math.min(80, Number(value)));
+    if (!Number.isFinite(next) || next === tab.punchTolerance) return;
+    tab.punchTolerance = next;
+    rebuildPunchMask(tab);
+    paintPunchOverlay(tab);
+  }
+
+  function togglePunchContiguous(tab) {
+    if (!tab || !tab.punching) return;
+    tab.punchContiguous = tab.punchContiguous === false;
+    rebuildPunchMask(tab);
+    paintPunchOverlay(tab);
+  }
+
+  async function applyPunch(tab) {
+    if (!tab || !tab.punching || tab.busy || punchSelectionCount(tab) < 1) return;
+    const chatId = activeWorkspaceId();
+    const path = tab.path;
+    tab.busy = true;
+    tab.note = "";
+    paintEditorHead();
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/punch`, {
+        method: "POST",
+        body: {
+          path,
+          seeds: tab.punchSeeds || [],
+          boxes: (tab.punchBoxes || []).map((box) => ({
+            x: box.x,
+            y: box.y,
+            width: box.w,
+            height: box.h,
+          })),
+          tolerance: tab.punchTolerance ?? PUNCH_TOLERANCE_DEFAULT,
+          contiguous: tab.punchContiguous !== false,
+        },
+      });
+      if (chatId !== activeWorkspaceId()) return;
+      const written = data.path || path;
+      tab.busy = false;
+      clearPunchState(tab);
+      if (punchResize) {
+        punchResize.disconnect();
+        punchResize = null;
+      }
+      if (written !== path) retargetPath(path, written);
+      applyListing(data);
+      const live = findTab(written) || tab;
+      const saved = filesListing.find((item) => item.path === written);
+      live.size = saved ? Number(saved.size) || Number(data.bytes) || live.size : Number(data.bytes) || live.size;
+      live.state = "image";
+      live.kind = "image";
+      live.rev += 1;
+      const n = Number(data.punched) || 0;
+      live.note = n ? `Made ${n.toLocaleString()} pixels transparent.` : "Made transparent.";
+      (data.rewritten || []).forEach((rel) => {
+        const other = findTab(rel);
+        if (!other || other.dirty) return;
+        other.state = "loading";
+        other.loading = false;
+        other.rev += 1;
+        ensureTabLoaded(other);
+      });
       reloadPreviewIfNeeded();
       if (editorPane) editorPane.dataset.key = "";
       paintTabsAndFiles();
@@ -7417,6 +7875,11 @@ function mountChat(root) {
         event.preventDefault();
         return;
       }
+      if (cropTab && cropTab.punching) {
+        cancelPunch(cropTab);
+        event.preventDefault();
+        return;
+      }
       if (editorFindBar && !editorFindBar.hidden) {
         closeEditorFind();
         event.preventDefault();
@@ -7452,11 +7915,12 @@ function mountChat(root) {
     }
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
       const cropTab = activeTabRow();
-      if (cropTab && cropTab.cropping) {
+      if (cropTab && (cropTab.cropping || cropTab.punching)) {
         const tag = String((event.target && event.target.tagName) || "").toLowerCase();
         if (tag !== "textarea" && tag !== "input" && tag !== "select" && !(event.target && event.target.isContentEditable)) {
           event.preventDefault();
-          applyCrop(cropTab);
+          if (cropTab.cropping) applyCrop(cropTab);
+          else applyPunch(cropTab);
           return;
         }
       }
@@ -8916,6 +9380,7 @@ function mountChat(root) {
     return [
       { label: "Open", run: () => openFileTab(path) },
       row && row.kind === "image" ? { label: "Crop", run: () => beginCropPath(path) } : null,
+      row && row.kind === "image" ? { label: "Make transparent", run: () => beginPunchPath(path) } : null,
       { label: attached ? "Remove from chat" : "Add to chat", run: () => {
         attachProjectFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
       } },
@@ -9687,6 +10152,16 @@ function mountChat(root) {
       if (btn.dataset.edit === "crop" && tab) beginCrop(tab);
       if (btn.dataset.edit === "crop-cancel" && tab) cancelCrop(tab);
       if (btn.dataset.edit === "crop-apply" && tab) applyCrop(tab);
+      if (btn.dataset.edit === "punch" && tab) beginPunch(tab);
+      if (btn.dataset.edit === "punch-cancel" && tab) cancelPunch(tab);
+      if (btn.dataset.edit === "punch-apply" && tab) applyPunch(tab);
+      if (btn.dataset.edit === "punch-contiguous" && tab) togglePunchContiguous(tab);
+    });
+    editorPane.addEventListener("input", (event) => {
+      const slider = event.target.closest("[data-punch-tolerance]");
+      if (!slider) return;
+      const tab = activeTabRow();
+      if (tab) setPunchTolerance(tab, slider.value);
     });
   }
   if (filesSiteBtn) {

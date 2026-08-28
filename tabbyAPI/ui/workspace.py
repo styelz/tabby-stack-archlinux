@@ -953,6 +953,234 @@ def crop_image(
     }
 
 
+def _parse_punch_seeds(raw: Any) -> list[tuple[int, int]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("seeds must be a list.")
+    if len(raw) > 64:
+        raise ValueError("Too many sample points.")
+    out: list[tuple[int, int]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each seed must be an object with x and y.")
+        try:
+            out.append((int(item.get("x")), int(item.get("y"))))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Seed coordinates must be integers.") from exc
+    return out
+
+
+def _parse_punch_boxes(raw: Any) -> list[tuple[int, int, int, int]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("boxes must be a list.")
+    if len(raw) > 32:
+        raise ValueError("Too many boxes.")
+    out: list[tuple[int, int, int, int]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each box must be an object with x, y, width, and height.")
+        try:
+            out.append(
+                (
+                    int(item.get("x")),
+                    int(item.get("y")),
+                    int(item.get("width")),
+                    int(item.get("height")),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Box values must be integers.") from exc
+    return out
+
+
+def _dilate_mask(mask: bytearray, width: int, height: int) -> bytearray:
+    out = bytearray(mask)
+    for y in range(height):
+        row = y * width
+        for x in range(width):
+            if not mask[row + x]:
+                continue
+            if x:
+                out[row + x - 1] = 1
+            if x + 1 < width:
+                out[row + x + 1] = 1
+            if y:
+                out[row - width + x] = 1
+            if y + 1 < height:
+                out[row + width + x] = 1
+    return out
+
+
+def _unique_rel(username: str, chat_id: str, rel: str) -> str:
+    root = workspace_root(username, chat_id, create=True)
+    if not resolve_rel(root, rel).exists():
+        return rel
+    parent = Path(rel).parent
+    prefix = "" if str(parent) in (".", "") else f"{parent.as_posix()}/"
+    stem = Path(rel).stem
+    suffix = Path(rel).suffix
+    for index in range(2, 100):
+        candidate = f"{prefix}{stem}-{index}{suffix}"
+        if not resolve_rel(root, candidate).exists():
+            return candidate
+    raise ValueError("Could not pick a free filename.")
+
+
+def punch_image(
+    username: str,
+    chat_id: str,
+    rel: str,
+    seeds: Any = None,
+    boxes: Any = None,
+    tolerance: Any = 28,
+    contiguous: bool = True,
+) -> dict[str, Any]:
+    """Punch selected colors or boxes to real alpha in a project raster."""
+    from collections import deque
+
+    from PIL import Image, ImageOps
+
+    if not is_image_path(rel):
+        raise ValueError("Make transparent only supports PNG, JPEG, WebP, and GIF files.")
+    points = _parse_punch_seeds(seeds)
+    rects = _parse_punch_boxes(boxes)
+    if not points and not rects:
+        raise ValueError("Select at least one area.")
+    try:
+        tol = int(tolerance)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Tolerance must be an integer.") from exc
+    if not 0 <= tol <= 96:
+        raise ValueError("Tolerance must be between 0 and 96.")
+
+    source = resolve_file(username, chat_id, rel)
+    source_format = _IMAGE_FORMATS[source.suffix.lower()]
+    original_bytes = source.stat().st_size
+    dest = rel
+    image_format = source_format
+    if source_format in ("JPEG", "GIF"):
+        dest = _unique_rel(username, chat_id, str(Path(rel).with_suffix(".png")))
+        image_format = "PNG"
+
+    try:
+        with Image.open(source) as opened:
+            if int(getattr(opened, "n_frames", 1) or 1) > 1:
+                raise ValueError("Animated images are not supported by make transparent.")
+            if opened.width * opened.height > 40_000_000:
+                raise ValueError("Image dimensions are too large to edit safely.")
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            original_size = (image.width, image.height)
+            rgba = image.convert("RGBA")
+            pixels = rgba.load()
+            width, height = rgba.size
+            mask = bytearray(width * height)
+            tol2 = tol * tol
+
+            def matches(x: int, y: int, target: tuple[int, int, int]) -> bool:
+                red, green, blue, alpha = pixels[x, y]
+                if alpha < 8:
+                    return False
+                return (
+                    (red - target[0]) ** 2
+                    + (green - target[1]) ** 2
+                    + (blue - target[2]) ** 2
+                    <= tol2
+                )
+
+            def flood(start_x: int, start_y: int) -> None:
+                if not (0 <= start_x < width and 0 <= start_y < height):
+                    return
+                if pixels[start_x, start_y][3] < 8:
+                    return
+                target = pixels[start_x, start_y][:3]
+                if contiguous:
+                    queue = deque([(start_x, start_y)])
+                    while queue:
+                        x, y = queue.popleft()
+                        index = y * width + x
+                        if mask[index] or not matches(x, y, target):
+                            continue
+                        mask[index] = 1
+                        if x:
+                            queue.append((x - 1, y))
+                        if x + 1 < width:
+                            queue.append((x + 1, y))
+                        if y:
+                            queue.append((x, y - 1))
+                        if y + 1 < height:
+                            queue.append((x, y + 1))
+                    return
+                for y in range(height):
+                    row = y * width
+                    for x in range(width):
+                        if matches(x, y, target):
+                            mask[row + x] = 1
+
+            for start_x, start_y in points:
+                flood(start_x, start_y)
+            for left, top, box_w, box_h in rects:
+                x0 = max(0, left)
+                y0 = max(0, top)
+                x1 = min(width, left + box_w)
+                y1 = min(height, top + box_h)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                for y in range(y0, y1):
+                    row = y * width
+                    for x in range(x0, x1):
+                        if pixels[x, y][3] >= 8:
+                            mask[row + x] = 1
+
+            punched = sum(mask)
+            if not punched:
+                raise ValueError("Nothing to make transparent.")
+            mask = _dilate_mask(mask, width, height)
+            punched = sum(mask)
+            for y in range(height):
+                row = y * width
+                for x in range(width):
+                    if not mask[row + x]:
+                        continue
+                    red, green, blue, _alpha = pixels[x, y]
+                    pixels[x, y] = (red, green, blue, 0)
+
+            buffer = io.BytesIO()
+            save_options: dict[str, Any] = {"format": image_format}
+            if image_format == "PNG":
+                save_options.update(optimize=True, compress_level=9)
+            elif image_format == "WEBP":
+                save_options.update(lossless=True, method=6)
+            rgba.save(buffer, **save_options)
+    except ValueError:
+        raise
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Could not make {rel} transparent: {exc}") from exc
+
+    encoded = buffer.getvalue()
+    written = copy_bytes(username, chat_id, dest, encoded)
+    rewritten: list[str] = []
+    if written != rel:
+        rewritten = _rewrite_project_image_path(username, chat_id, rel, written)
+        try:
+            delete_file(username, chat_id, rel)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+    return {
+        "path": written,
+        "format": image_format.lower(),
+        "original_dimensions": f"{original_size[0]}x{original_size[1]}",
+        "dimensions": f"{rgba.width}x{rgba.height}",
+        "original_bytes": original_bytes,
+        "bytes": len(encoded),
+        "punched": punched,
+        "rewritten": rewritten,
+    }
+
+
 def _generated_item_prompt(job, dest: str) -> str:
     for item in getattr(job, "items", None) or []:
         if str(getattr(item, "output_path", "") or "").strip() == dest:
