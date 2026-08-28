@@ -287,29 +287,24 @@ async def reload_last_llm(name: Optional[str] = None, *, from_job: bool = False)
             load_exc = exc
 
         if load_exc is not None:
-            xlogger.warning("LLM load hit leftover VRAM; stopping Comfy and retrying")
+            # A retry in this process never wins: after a Comfy batch the
+            # allocator and CUDA context here still hold 1-1.8 GiB that
+            # empty_cache cannot hand back, and the tight 12 GiB profiles need
+            # exactly that margin. Only a fresh process frees it, so bounce
+            # instead of burning another full load attempt.
+            xlogger.warning(
+                "LLM load hit leftover VRAM; bouncing for a clean CUDA context"
+            )
             await asyncio.to_thread(stop_comfy)
+            # Keep last.json / config.yml on the intended profile. A 9B
+            # fallback is the wrong model, not a recovery.
+            write_mode("llm", profile=profile_name)
             await _unload_tabby_leftovers()
-            await asyncio.to_thread(wait_gpu_vram_drain)
-            await asyncio.sleep(2)
-            retry_exc: Optional[BaseException] = None
-            try:
-                await _load_profile(profile_name)
-            except RuntimeError as exc:
-                if not is_vram_error(exc):
-                    raise
-                retry_exc = exc
-
-            if retry_exc is not None:
-                # Keep last.json / config.yml on the intended profile. A 9B
-                # fallback is the wrong model, not a recovery.
-                write_mode("llm", profile=profile_name)
-                await _unload_tabby_leftovers()
-                if from_job:
-                    raise RuntimeError(
-                        f"Insufficient VRAM reloading {profile_name}"
-                    ) from retry_exc
-                bounce = True
+            if from_job:
+                raise RuntimeError(
+                    f"Insufficient VRAM reloading {profile_name}"
+                ) from load_exc
+            bounce = True
 
         if not bounce:
             write_mode("llm", profile=profile_name)
@@ -1099,7 +1094,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         # Render failures used to skip the bounce below job.status = "done",
         # so leftover VRAM left the UI on "Loading qwen36" with no model.
         if bounce_llm:
-            _bounce_after_vram_fail(restore_name or "qwen")
+            _bounce_after_vram_fail(restore_name or last_profile() or "qwen")
 
 
 async def reset_mcp_image_jobs_for_tests() -> None:

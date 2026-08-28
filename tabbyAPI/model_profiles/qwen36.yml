@@ -1,8 +1,8 @@
 pretty: Qwen3.6-27B - hard coding, 2.00bpw
 model:
   model_name: Qwen3.6-27B-exl3-2.00bpw
-  max_seq_len: 131072
-  cache_size: 131072
+  max_seq_len: 98304
+  cache_size: 98304
   cache_mode: Q4
   chunk_size: 2048
   max_batch_size: 1

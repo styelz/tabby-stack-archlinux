@@ -31,7 +31,7 @@ Send a message that is **only** one of these. Times are warm switches on this RT
 | `restart` | Bounce the API; last model reloads | — | ~65 seconds |
 | `switch to qwen` | Daily coding, 9B | 262k | ~65 seconds |
 | `switch to qwen35` | Long or hard agent work | 196k | ~3 minutes |
-| `switch to qwen36` | Long or hard agent work | 131k | ~85 seconds |
+| `switch to qwen36` | Long or hard agent work | 98k | ~85 seconds |
 | `switch to gemma` | General | 262k | ~65 seconds |
 | `switch to gemma26` | General | 262k | ~2 minutes |
 | `switch to glm` | Thinking (vision off on RTX 4070 Ti 12 GB) | 65k (model max) | ~15 seconds |
