@@ -2466,7 +2466,7 @@ function mountChat(root) {
         );
       }
       if (!tab.cropping) {
-        return `<div class="chat-editor-body is-image">${img}</div>`;
+        return `<div class="chat-editor-body is-image"><div class="chat-image-stage">${img}</div></div>`;
       }
       const handles = ["nw", "n", "ne", "w", "e", "sw", "s", "se"]
         .map((name) => `<button type="button" class="chat-crop-handle" data-crop-handle="${name}" aria-label="Resize ${name}"></button>`)
