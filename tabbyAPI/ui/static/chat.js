@@ -3452,28 +3452,28 @@ function mountChat(root) {
     return Math.max(1, Math.min(RESIZE_MAX, n));
   }
 
-  function applyResizeHandle(origin, handle, dx, dy, lock, natural) {
+  function applyResizeHandle(origin, handle, dx, dy, lock) {
     const east = handle.includes("e");
     const west = handle.includes("w");
     const north = handle.includes("n");
     const south = handle.includes("s");
-    let w = origin.w;
-    let h = origin.h;
-    if (lock && natural && natural.w && natural.h) {
-      if (east || west) {
-        w = resizeDim(east ? origin.w + dx : origin.w - dx);
-        h = resizeDim((w * natural.h) / natural.w);
-      } else {
-        h = resizeDim(south ? origin.h + dy : origin.h - dy);
-        w = resizeDim((h * natural.w) / natural.h);
+    const dw = east ? dx : west ? -dx : 0;
+    const dh = south ? dy : north ? -dy : 0;
+    if (lock && origin.w && origin.h) {
+      const useWidth = east || west
+        ? !(north || south) || Math.abs(dw / origin.w) >= Math.abs(dh / origin.h)
+        : false;
+      if (useWidth) {
+        const w = resizeDim(origin.w + dw);
+        return { w, h: resizeDim((w * origin.h) / origin.w) };
       }
-    } else {
-      if (east) w = resizeDim(origin.w + dx);
-      if (west) w = resizeDim(origin.w - dx);
-      if (south) h = resizeDim(origin.h + dy);
-      if (north) h = resizeDim(origin.h - dy);
+      const h = resizeDim(origin.h + dh);
+      return { w: resizeDim((h * origin.w) / origin.h), h };
     }
-    return { w, h };
+    return {
+      w: dw ? resizeDim(origin.w + dw) : origin.w,
+      h: dh ? resizeDim(origin.h + dh) : origin.h,
+    };
   }
 
   function resizeChanged(tab) {
@@ -3487,8 +3487,9 @@ function mountChat(root) {
   function paintResizePreview(tab) {
     const stage = editorPane && editorPane.querySelector(".chat-resize-stage");
     if (!stage || !tab || !tab.resizeW || !tab.resizeH) return;
-    stage.style.setProperty("--resize-w", `${tab.resizeW}px`);
-    stage.style.setProperty("--resize-h", `${tab.resizeH}px`);
+    stage.style.setProperty("--resize-w", String(tab.resizeW));
+    stage.style.setProperty("--resize-h", String(tab.resizeH));
+    stage.style.aspectRatio = `${tab.resizeW} / ${tab.resizeH}`;
   }
 
   function paintResizeHead(tab) {
@@ -3533,20 +3534,24 @@ function mountChat(root) {
 
   function setResizeWidth(tab, value) {
     if (!tab || !tab.resizing) return;
+    const prevW = tab.resizeW;
+    const prevH = tab.resizeH;
     const w = resizeDim(value);
     tab.resizeW = w;
-    if (tab.resizeLock === true && tab.resizeNatural) {
-      tab.resizeH = resizeDim((w * tab.resizeNatural.h) / tab.resizeNatural.w);
+    if (tab.resizeLock === true && prevW && prevH) {
+      tab.resizeH = resizeDim((w * prevH) / prevW);
     }
     paintResizeHead(tab);
   }
 
   function setResizeHeight(tab, value) {
     if (!tab || !tab.resizing) return;
+    const prevW = tab.resizeW;
+    const prevH = tab.resizeH;
     const h = resizeDim(value);
     tab.resizeH = h;
-    if (tab.resizeLock === true && tab.resizeNatural) {
-      tab.resizeW = resizeDim((h * tab.resizeNatural.w) / tab.resizeNatural.h);
+    if (tab.resizeLock === true && prevW && prevH) {
+      tab.resizeW = resizeDim((h * prevW) / prevH);
     }
     paintResizeHead(tab);
   }
@@ -3554,9 +3559,6 @@ function mountChat(root) {
   function toggleResizeLock(tab) {
     if (!tab || !tab.resizing) return;
     tab.resizeLock = tab.resizeLock !== true;
-    if (tab.resizeLock === true && tab.resizeNatural && tab.resizeW) {
-      tab.resizeH = resizeDim((tab.resizeW * tab.resizeNatural.h) / tab.resizeNatural.w);
-    }
     paintResizeHead(tab);
   }
 
@@ -3575,53 +3577,52 @@ function mountChat(root) {
       sizeObs = new ResizeObserver(() => paintResizePreview(tab));
       sizeObs.observe(stage);
     }
-    stage.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || tab.busy) return;
-      const handleEl = event.target.closest("[data-resize-handle]");
-      if (!handleEl || !tab.resizeW || !tab.resizeH) return;
-      event.preventDefault();
-      stage.setPointerCapture(event.pointerId);
-      const rect = stage.getBoundingClientRect();
-      sizeDrag = {
-        tab,
-        handle: handleEl.dataset.resizeHandle,
-        start: { x: event.clientX, y: event.clientY },
-        origin: { w: tab.resizeW, h: tab.resizeH },
-        scaleX: (rect.width || 1) / tab.resizeW,
-        scaleY: (rect.height || 1) / tab.resizeH,
-      };
-    });
-    stage.addEventListener("pointermove", (event) => {
+    const onSizeMove = (event) => {
       if (!sizeDrag || sizeDrag.tab !== tab) return;
-      const handle = sizeDrag.handle || "";
-      const corner =
-        (handle.includes("n") || handle.includes("s")) &&
-        (handle.includes("e") || handle.includes("w"));
-      const lockAspect = tab.resizeLock === true && corner;
-      const lock = event.shiftKey ? !lockAspect : lockAspect;
+      const lock = event.shiftKey ? tab.resizeLock !== true : tab.resizeLock === true;
       const next = applyResizeHandle(
         sizeDrag.origin,
         sizeDrag.handle,
         (event.clientX - sizeDrag.start.x) / sizeDrag.scaleX,
         (event.clientY - sizeDrag.start.y) / sizeDrag.scaleY,
-        lock,
-        tab.resizeNatural
+        lock
       );
       tab.resizeW = next.w;
       tab.resizeH = next.h;
       paintResizeHead(tab);
-    });
-    const endDrag = (event) => {
+    };
+    const onSizeEnd = (event) => {
       if (!sizeDrag || sizeDrag.tab !== tab) return;
+      const el = sizeDrag.el;
       sizeDrag = null;
+      if (!el) return;
       try {
-        stage.releasePointerCapture(event.pointerId);
+        el.releasePointerCapture(event.pointerId);
       } catch {
         /* already released */
       }
     };
-    stage.addEventListener("pointerup", endDrag);
-    stage.addEventListener("pointercancel", endDrag);
+    for (const handleEl of stage.querySelectorAll("[data-resize-handle]")) {
+      handleEl.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || tab.busy || !tab.resizeW || !tab.resizeH) return;
+        event.preventDefault();
+        event.stopPropagation();
+        handleEl.setPointerCapture(event.pointerId);
+        const rect = stage.getBoundingClientRect();
+        sizeDrag = {
+          tab,
+          el: handleEl,
+          handle: handleEl.dataset.resizeHandle,
+          start: { x: event.clientX, y: event.clientY },
+          origin: { w: tab.resizeW, h: tab.resizeH },
+          scaleX: (rect.width || 1) / tab.resizeW,
+          scaleY: (rect.height || 1) / tab.resizeH,
+        };
+      });
+      handleEl.addEventListener("pointermove", onSizeMove);
+      handleEl.addEventListener("pointerup", onSizeEnd);
+      handleEl.addEventListener("pointercancel", onSizeEnd);
+    }
   }
 
   function beginResize(tab) {
