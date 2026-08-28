@@ -9308,7 +9308,8 @@ function mountChat(root) {
         const idx = pendingEditIndex;
         pendingEditIndex = -1;
         if (editBar) editBar.hidden = true;
-        messages = messages.slice(0, idx);
+        // Truncate in place. slice() would orphan `list` and drop the new prompt.
+        messages.splice(idx);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       }
       const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
@@ -9321,7 +9322,7 @@ function mountChat(root) {
       if (viewing && pendingFiles.length) {
         userItem.attachedFiles = pendingFiles.map((file) => ({ ...file }));
       }
-      list.push(userItem);
+      liveMessages(chatId).push(userItem);
       if (viewing) {
         clearPendingImage();
         touchActive();
