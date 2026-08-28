@@ -11,6 +11,7 @@
   let onSave = null;
   let ignoreChange = false;
   let currentPath = "";
+  let mountGen = 0;
 
   function localVs() {
     const rel = window.TabbyUI ? window.TabbyUI.path("assets/vs") : "/v1/ui/assets/vs";
@@ -322,7 +323,9 @@
 
   async function showFile(el, opts) {
     if (!el) return;
+    const gen = ++mountGen;
     const monaco = await ensure();
+    if (gen !== mountGen) return;
     currentPath = opts.path || "";
     disposeEditors();
     el.innerHTML = "";
@@ -357,7 +360,9 @@
 
   async function showDiff(el, opts) {
     if (!el) return;
+    const gen = ++mountGen;
     const monaco = await ensure();
+    if (gen !== mountGen) return;
     currentPath = opts.path || "";
     disposeEditors();
     el.innerHTML = "";

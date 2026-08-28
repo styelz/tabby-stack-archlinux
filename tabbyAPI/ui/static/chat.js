@@ -403,6 +403,8 @@ function mountChat(root) {
   let filesHistoryPath = "";
   let filesHistoryReq = 0;
   let filesChanged = [];
+  const changesByChat = Object.create(null);
+  const listingByChat = Object.create(null);
   // Code mode opens files as tabs beside Chat in the main column. Each tab keeps
   // its own buffer so switching away does not throw away unsaved edits.
   let openTabs = [];
@@ -451,6 +453,17 @@ function mountChat(root) {
 
   function isBuildPromptText(text) {
     return String(text || "").trim().startsWith(BUILD_PROMPT);
+  }
+
+  function looksLikeCodeProjectPrompt(text) {
+    const lower = String(text || "").toLowerCase();
+    return (
+      /\bindex\.html\b/.test(lower)
+      || /\bstyles\.css\b/.test(lower)
+      || /\bapp\.js\b/.test(lower)
+      || /\blanding page\b/.test(lower)
+      || /\bone-pager\b/.test(lower)
+    );
   }
 
   function readCodeAgent() {
@@ -517,6 +530,7 @@ function mountChat(root) {
   const HISTORY_KEY = "tabby-ui-chat-history";
   const CHANGES_KEY = "tabby-ui-chat-changes";
   const WS_OPEN_KEY = "tabby-ui-chat-ws-open";
+  const LISTING_STORE_KEY = "tabby-ui-code-listings";
   const MAX_CHATS = 50;
   const narrowChat = window.matchMedia("(max-width: 900px)");
   // Below 900px the pane is a bottom sheet over the chat, so it starts closed
@@ -1688,11 +1702,28 @@ function mountChat(root) {
     return Object.keys(tabsByChat).some((id) => tabsAreDirty(tabsByChat[id] && tabsByChat[id].openTabs));
   }
 
+  function cloneTab(tab) {
+    if (!tab) return tab;
+    const copy = { ...tab, loading: false };
+    if (tab.cropBox) copy.cropBox = { ...tab.cropBox };
+    if (Array.isArray(tab.caret)) copy.caret = tab.caret.slice();
+    if (Array.isArray(tab.diff)) copy.diff = tab.diff.slice();
+    return copy;
+  }
+
+  function cloneOpenTabs(tabs) {
+    return (tabs || []).map((tab) => cloneTab(tab));
+  }
+
+  function cloneListingRows(rows) {
+    return (rows || []).map((row) => (row && typeof row === "object" ? { ...row } : row));
+  }
+
   function stashCurrentTabs() {
     stashEditor();
     if (!tabsChat) return;
     tabsByChat[tabsChat] = {
-      openTabs,
+      openTabs: cloneOpenTabs(openTabs),
       activeTab,
       browserTabs: browserTabs.map((tab) => ({
         id: tab.id,
@@ -1702,6 +1733,61 @@ function mountChat(root) {
       })),
       activeBrowserTab,
     };
+    changesByChat[tabsChat] = filesChanged.slice();
+    rememberCurrentListing(tabsChat);
+  }
+
+  function persistListings() {
+    try {
+      sessionStorage.setItem(LISTING_STORE_KEY, JSON.stringify(listingByChat));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function rememberCurrentListing(chatId) {
+    if (!chatId) return;
+    listingByChat[chatId] = {
+      files: cloneListingRows(filesListing),
+      selected: filesSelected,
+      entry: filesEntry,
+      focusDir: filesFocusDir,
+      openFolders: Array.from(filesOpenFolders),
+    };
+    persistListings();
+  }
+
+  function restorePersistedListings() {
+    try {
+      const raw = sessionStorage.getItem(LISTING_STORE_KEY);
+      if (!raw) return;
+      const dump = JSON.parse(raw);
+      Object.keys(dump || {}).forEach((id) => {
+        const row = dump[id];
+        if (!row || !Array.isArray(row.files) || listingByChat[id]) return;
+        listingByChat[id] = {
+          files: cloneListingRows(row.files),
+          selected: row.selected || "",
+          entry: row.entry || "",
+          focusDir: row.focusDir || "",
+          openFolders: Array.isArray(row.openFolders) ? row.openFolders : [],
+        };
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function reloadRestoredFileTabs() {
+    openTabs.forEach((tab) => {
+      if (!tab || isPreviewTab(tab) || isHistoryTab(tab) || tab.dirty) return;
+      if (tab.kind === "image") return;
+      tab.state = "loading";
+      tab.loading = false;
+      tab.rev = 0;
+      tab.text = "";
+      tab.original = "";
+    });
   }
 
   function restoreTabsFor(chatId) {
@@ -1710,17 +1796,21 @@ function mountChat(root) {
       resetTabs();
       return;
     }
-    openTabs = saved.openTabs || [];
+    openTabs = cloneOpenTabs(saved.openTabs);
     activeTab = saved.activeTab && openTabs.some((tab) => tab.path === saved.activeTab)
       ? saved.activeTab
       : "";
     restoreBrowserTabList(saved.browserTabs, saved.activeBrowserTab);
+    reloadRestoredFileTabs();
     if (editorPane) editorPane.dataset.key = "";
   }
 
   function forgetTabs(chatId) {
     if (!chatId) return;
     delete tabsByChat[chatId];
+    delete changesByChat[chatId];
+    delete listingByChat[chatId];
+    persistListings();
     if (tabsChat === chatId) {
       resetTabs();
       tabsChat = "";
@@ -1730,18 +1820,36 @@ function mountChat(root) {
   function switchWorkspaceTabs(chatId) {
     if (tabsChat === chatId) return;
     stashCurrentTabs();
+    if (window.TabbyMonaco) window.TabbyMonaco.dispose();
+    if (editorPane) editorPane.dataset.key = "";
+    previewRoot = "";
     if (tabsChat) flushDrafts();
     tabsChat = chatId || "";
     restoreTabsFor(tabsChat);
     resetFilesTreeState();
     draftsChat = "";
-    filesChanged = [];
+    const savedListing = chatId && listingByChat[chatId];
+    if (savedListing) {
+      filesListing = cloneListingRows(savedListing.files);
+      filesSelected = savedListing.selected || "";
+      filesEntry = savedListing.entry || "";
+      filesFocusDir = savedListing.focusDir || "";
+      filesOpenFolders = new Set(savedListing.openFolders || []);
+    } else {
+      filesListing = [];
+      filesSelected = "";
+      filesEntry = "";
+      filesFocusDir = "";
+    }
+    filesChanged = (chatId && changesByChat[chatId] ? changesByChat[chatId] : []).slice();
+    paintFiles();
+    paintFilesChanges();
     closeTerm();
-    blankPreviewFrame();
     previewOpen = Boolean(findTab(PREVIEW_TAB));
     if (previewPane) previewPane.hidden = !previewOpen;
     if (filesPreviewBtn) filesPreviewBtn.classList.toggle("is-on", previewOpen);
     paintBrowserChrome();
+    if (previewOpen) ensurePreviewLoaded();
     if (window.TabbyLsp) window.TabbyLsp.reset();
   }
 
@@ -1887,8 +1995,10 @@ function mountChat(root) {
   }
 
   function applyListing(data) {
+    const prev = filesListing;
     filesListing = Array.isArray(data.files) ? data.files : filesListing;
     filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
+    noteNewListingFiles(prev, filesListing);
     paintFiles();
   }
 
@@ -4211,6 +4321,22 @@ function mountChat(root) {
 
   let filesRefreshTimer = 0;
 
+  function noteNewListingFiles(prev, next) {
+    if (!inFlight || !chatsShareWorkspace(flightChatId)) return;
+    const before = new Set(
+      (prev || [])
+        .filter((row) => row && row.kind !== "dir")
+        .map((row) => String(row.path || "").replace(/^\/+/, ""))
+        .filter(Boolean)
+    );
+    (next || []).forEach((row) => {
+      if (!row || row.kind === "dir") return;
+      const path = String(row.path || "").replace(/^\/+/, "");
+      if (!path || before.has(path)) return;
+      noteChange(path, true);
+    });
+  }
+
   async function refreshFiles() {
     const chatId = activeWorkspaceId();
     if (tabsChat !== chatId) {
@@ -4226,11 +4352,14 @@ function mountChat(root) {
     try {
       const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`);
       if (chatId !== activeWorkspaceId()) return;
+      const prev = filesListing;
       filesListing = Array.isArray(data.files) ? data.files : [];
       filesEntry = typeof data.entry === "string" ? data.entry : "";
+      noteNewListingFiles(prev, filesListing);
       if (filesSelected && !filesListing.some((row) => row.path === filesSelected)) {
         filesSelected = "";
       }
+      rememberCurrentListing(chatId);
     } catch {
       if (chatId !== activeWorkspaceId()) return;
       // A 502 during GPU switch used to wipe a good listing. Keep it.
@@ -6427,10 +6556,14 @@ function mountChat(root) {
       const name = sw[1];
       return { label: `Loading ${name}`, kind: "switch", processing: true, target: name };
     }
+    if (isBuildPromptText(raw) || looksLikeCodeProjectPrompt(raw)) {
+      return { label: "Building", kind: "chat", processing: true };
+    }
     if (
-      /^(generate an image|qwen-image:)/i.test(raw) ||
+      /qwen-image:/i.test(raw) ||
+      /^(generate an image)/i.test(raw) ||
       /^\/image\b/i.test(raw) ||
-      /\b(generate|draw|paint|render|create|make)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
+      /\b(generate|draw|paint|render|create|make|replace)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
       /\b(svg|png|jpg|jpeg|webp)\b.+\b(image|picture|logo|of)\b/i.test(lower)
     ) {
       return {
@@ -6439,9 +6572,6 @@ function mountChat(root) {
         processing: true,
         note: "Preparing the GPU.",
       };
-    }
-    if (isBuildPromptText(raw)) {
-      return { label: "Building", kind: "chat", processing: true };
     }
     if (/^(help|list models)$/i.test(lower) || lower === "/help" || lower === "/list models") {
       return { label: "Working", kind: "cmd", processing: true };
@@ -6957,6 +7087,7 @@ function mountChat(root) {
     persist();
     resetRecall();
     renderLog(stickToEnd !== false);
+    switchWorkspaceTabs(activeWorkspaceId());
     refreshFiles();
     jumpSidebarSearch();
     paintCompose();
@@ -7057,6 +7188,7 @@ function mountChat(root) {
       resetRecall();
       renderLog();
       filesSelected = "";
+      switchWorkspaceTabs(activeWorkspaceId());
       refreshFiles();
       hideHistoryMenu();
       input.focus();
@@ -8082,7 +8214,9 @@ function mountChat(root) {
       }
     }
     if (modelLoading) {
-      if (queueBar) queueBar.hidden = true;
+      const queuedText = queuedTextFor(store.activeId);
+      if (queueBar) queueBar.hidden = !queuedText;
+      if (queueTextEl) queueTextEl.textContent = queuedText;
       if (comfyHint) comfyHint.hidden = true;
       if (steerBtn) {
         steerBtn.hidden = true;
@@ -10100,6 +10234,7 @@ function mountChat(root) {
       /* ignore */
     }
     store = normalizeStore(incoming);
+    restorePersistedListings();
     messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
     persistReady = true;
     if (fetched || (incoming && Array.isArray(incoming.chats) && incoming.chats.some(hasUserTurn))) {

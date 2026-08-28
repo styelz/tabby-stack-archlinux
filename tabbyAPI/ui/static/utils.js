@@ -45,7 +45,9 @@
   }
 
   function looksLikeHtml(value) {
-    return /<\s*(?:html|body|head|h[1-6]|!doctype)\b/i.test(String(value || ""));
+    // Proxy 502 pages start with a document. Do not match <h1> / <body> inside
+    // a Code reply that quotes the HTML it just wrote.
+    return /^(?:<\s*!doctype[\s>]|<\s*html\b)/i.test(String(value || "").trim());
   }
 
   /** Proxy 502/503/504 pages are HTML; never dump that markup into the UI. */
@@ -1512,9 +1514,32 @@
       if (!chip) return;
       const labelEl = document.getElementById("gpu-chip-label") || chip;
       const raw = (err && err.message) || "";
+      const prev = this.lastGpuStatus || {};
+      const code = ((raw.match(/\((\d{3})\)/) || [])[1] || "").trim();
+      const bounce = Boolean(
+        prev.switching
+          || prev.restarting
+          || prev.busy
+          || prev.gpu_waiting
+          || (prev.profile && (code === "502" || code === "503" || code === "504"))
+      );
+      if (bounce) {
+        const text = "RESTARTING";
+        labelEl.textContent = text;
+        chip.className = "chip warn is-busy";
+        chip.title = raw || "API is restarting";
+        chip.setAttribute("aria-label", text);
+        this.lastGpuStatus = Object.assign({}, prev, {
+          down: true,
+          restarting: true,
+          busy: true,
+          switch_target: prev.switch_target || prev.profile || "llm",
+        });
+        window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: this.lastGpuStatus }));
+        return;
+      }
       let detail = "reconnecting";
-      const status = raw.match(/\((\d{3})\)/);
-      if (status) detail = status[1];
+      if (code) detail = code;
       else if (/unreachable/i.test(raw)) detail = "unreachable";
       else if (/restart/i.test(raw)) detail = "restarting";
       const text = `DOWN · ${detail}`;
@@ -1522,7 +1547,7 @@
       chip.className = "chip bad";
       chip.title = raw || "API unavailable";
       chip.setAttribute("aria-label", text);
-      this.lastGpuStatus = Object.assign({}, this.lastGpuStatus || {}, { down: true });
+      this.lastGpuStatus = Object.assign({}, prev, { down: true });
       window.dispatchEvent(new CustomEvent("tabby-gpu-status", { detail: this.lastGpuStatus }));
     },
   };
