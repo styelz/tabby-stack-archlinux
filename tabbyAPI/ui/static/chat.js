@@ -3597,7 +3597,8 @@ function mountChat(root) {
       const corner =
         (handle.includes("n") || handle.includes("s")) &&
         (handle.includes("e") || handle.includes("w"));
-      const lock = event.shiftKey ? !corner : corner;
+      const lockAspect = tab.resizeLock !== false && corner;
+      const lock = event.shiftKey ? !lockAspect : lockAspect;
       const next = applyResizeHandle(
         sizeDrag.origin,
         sizeDrag.handle,
