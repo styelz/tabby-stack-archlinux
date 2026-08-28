@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from common.logger import xlogger
@@ -17,6 +18,7 @@ MAX_BRIEF_FILES = 80
 MAX_PLAN_NUDGES = 2
 MAX_STEP_RESULT = 500
 MAX_STEP_ARG = 200
+MAX_DELETES_PER_TURN = 8
 AGENT_STEP_MARK = "tabby-agent-step:"
 AGENT_KINDS = ("agent", "ask", "plan")
 CODE_SYSTEM = (
@@ -25,16 +27,22 @@ CODE_SYSTEM = (
     "same files. The user can create, upload, and attach files; attached files "
     "are included in their message. Use the file tools (Write, StrReplace, Read, "
     "Rename, Delete, List) to create and edit text files. Use OptimizeImage to "
-    "compress, resize, or convert project images. If they attach a picture and "
-    "ask to remove a border or frame, wait for the new GPU PNG; do not fake it "
-    "with CSS, background-size, or JavaScript. Use Shell to run project "
-    "commands in this workspace's container (cwd is /work). Do not create "
-    "placeholder files when an attached project image can be processed with "
-    "OptimizeImage. Do not dump whole files in chat. Do not try to run the site "
-    "for the user; they have preview. Point img src at the planned local paths. "
-    "Generated assets for an HTML website are automatically converted to "
-    "web-optimized files and their code references are updated after rendering. "
-    "When you are done, give a short summary of what you wrote or optimized. "
+    "compress, resize, or convert project images. List first: generated website "
+    "images are often already WebP, not PNG. OptimizeImage finds the real file "
+    "when the prompt still says .png, updates code references, and does not "
+    "need you to delete the original. If they attach a picture and ask to "
+    "remove a border or frame, wait for the new GPU PNG; do not fake it with "
+    "CSS, background-size, or JavaScript. Use Shell to run project commands in "
+    "this workspace's container (cwd is /work). Never use Shell to delete, "
+    "move, or overwrite project files. Do not create placeholder files when an "
+    "attached project image can be processed with OptimizeImage. Do not dump "
+    "whole files in chat. Do not try to run the site for the user; they have "
+    "preview. Point img src at the planned local paths. Generated assets for "
+    "an HTML website are automatically converted to web-optimized files and "
+    "their code references are updated after rendering. Unused cleanup means "
+    "empty folders only, plus files the page does not reference. Never delete "
+    "HTML, CSS, JS, or images the page still uses. When you are done, give a "
+    "short summary of what you wrote or optimized. "
     "Earlier messages in this thread are the brief, including an "
     "<approved_plan> or the last Plan reply. Implement that; do not ask for "
     "a new spec."
@@ -314,10 +322,19 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
             type="function",
             function=Function(
                 name="Delete",
-                description="Delete a project file.",
+                description=(
+                    "Delete one unused file or an empty folder. Refuses HTML, CSS, "
+                    "JS, and files the page still uses unless the user named that "
+                    "exact path. Do not use this to clear a project."
+                ),
                 parameters={
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path, or an empty folder.",
+                        }
+                    },
                     "required": ["path"],
                 },
             ),
@@ -344,9 +361,11 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
                 name="OptimizeImage",
                 description=(
                     "Optimize, resize, convert, or crop a uniform border from one "
-                    "existing project image. Omit output_path and format to safely "
-                    "optimize it in place. Set trim_border to crop a white or black "
-                    "frame; do not use CSS for that."
+                    "existing project image. If path is .png but only .webp exists, "
+                    "that file is used. Omit output_path and format to optimize in "
+                    "place. Converting updates code references and removes the old "
+                    "file. Set trim_border to crop a white or black frame; do not "
+                    "use CSS for that."
                 ),
                 parameters={
                     "type": "object",
@@ -410,7 +429,8 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
                 name="Shell",
                 description=(
                     "Run a command in this workspace's project container. cwd is /work. "
-                    "Use for installs, builds, and checks. Prefer file tools for edits."
+                    "Use for installs, builds, and checks. Prefer file tools for edits. "
+                    "Do not delete, move, or overwrite project files from Shell."
                 ),
                 parameters={
                     "type": "object",
@@ -506,12 +526,109 @@ def _kind(name: str) -> str:
     return ""
 
 
+def _latest_user_text(messages: Any) -> str:
+    for item in reversed(list(messages or [])):
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+        else:
+            role = getattr(item, "role", None)
+            content = getattr(item, "content", None)
+        if role == "user":
+            return _plain_content(content)
+    return ""
+
+
+def _user_named_path(user_text: str, rel: str) -> bool:
+    text = str(user_text or "")
+    path = str(rel or "").strip().replace("\\", "/")
+    if not text.strip() or not path:
+        return False
+    name = Path(path).name
+    if re.search(rf"(?i)(?<![A-Za-z0-9._/-]){re.escape(path)}(?![A-Za-z0-9._-])", text):
+        return True
+    if name != path and re.search(
+        rf"(?i)(?<![A-Za-z0-9._-]){re.escape(name)}(?![A-Za-z0-9._-])", text
+    ):
+        return True
+    return False
+
+
+_SHELL_DESTROY = re.compile(
+    r"(?is)(?:^|[\n;&|`]|\$\(|\bthen\b|\bdo\b)\s*(?:"
+    r"rm\b|rmdir\b|unlink\b|shred\b|"
+    r"find\b.{0,200}\s-(?:delete|exec)\b|"
+    r"truncate\b|"
+    r"dd\b|"
+    r"python(?:3)?\b.{0,160}\b(?:remove|unlink|rmtree)\b|"
+    r"(?:os|pathlib|shutil)\.(?:remove|unlink|rmtree)\b"
+    r")"
+)
+
+
+def _shell_is_destructive(command: str) -> bool:
+    text = str(command or "").strip()
+    if not text:
+        return False
+    if _SHELL_DESTROY.search(text):
+        return True
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in ("shutil.rmtree", "os.remove", "os.unlink", "path.unlink")
+    )
+
+
+def _delete_refusal(
+    username: str,
+    chat_id: str,
+    rel: str,
+    *,
+    user_text: str,
+    protected: set[str],
+    deletes_used: int,
+) -> str:
+    if deletes_used >= MAX_DELETES_PER_TURN:
+        return (
+            f"Stopped deleting after {MAX_DELETES_PER_TURN} files this turn. "
+            "Unused cleanup only removes empty folders and files the page does not use."
+        )
+    if _user_named_path(user_text, rel):
+        return ""
+    suffix = Path(rel).suffix.lower()
+    if suffix in workspace.CORE_KEEP_SUFFIXES:
+        return (
+            f"{rel} is part of the site. Name that exact file if you really want it removed."
+        )
+    if rel in protected:
+        return (
+            f"{rel} is still used by the project (or was when this turn started). "
+            "OptimizeImage updates references; do not delete used assets."
+        )
+    if rel in workspace.referenced_project_paths(username, chat_id):
+        return f"{rel} is still referenced by the project."
+    remaining = [
+        row["path"]
+        for row in workspace.list_files(username, chat_id)
+        if row.get("path") and row["path"] != rel
+    ]
+    if not remaining and (
+        suffix in workspace.CORE_KEEP_SUFFIXES or workspace.is_image_path(rel)
+    ):
+        return f"{rel} is the last site file. Refusing to empty the workspace."
+    return ""
+
+
 def execute_tool(
     username: str,
     chat_id: str,
     name: str,
     args: dict,
     agent: str = "agent",
+    *,
+    user_text: str = "",
+    protected: Optional[set[str]] = None,
+    deletes_used: int = 0,
 ) -> tuple[str, str]:
     """Run one tool. Returns (status_label, result_text)."""
     kind = _kind(name)
@@ -522,6 +639,13 @@ def execute_tool(
         command = str(args.get("command") or args.get("cmd") or "").strip()
         if not command:
             return "Tool error", "command is required"
+        if _shell_is_destructive(command):
+            return (
+                "Tool error",
+                "Shell cannot delete or replace project files. Use OptimizeImage "
+                "for images, and Delete only for an empty folder or a file the "
+                "user named.",
+            )
         from ui import codebox
 
         try:
@@ -536,17 +660,25 @@ def execute_tool(
         prefix = rel.rstrip("/")
         if prefix in (".",):
             prefix = ""
-        rows = workspace.list_files(username, chat_id)
+        data = workspace.listing(username, chat_id)
+        rows = [row for row in data.get("files") or [] if isinstance(row, dict)]
         if prefix:
             rows = [
                 row
                 for row in rows
-                if row["path"] == prefix or row["path"].startswith(prefix + "/")
+                if row.get("path") == prefix
+                or str(row.get("path") or "").startswith(prefix + "/")
             ]
         if not rows:
             return "Listing files", "(empty project)" if not prefix else f"{prefix}: no files"
-        listed = "\n".join(f"{row['path']} ({row['size']} bytes)" for row in rows)
-        return "Listing files", listed
+        lines: list[str] = []
+        for row in rows:
+            path = str(row.get("path") or "")
+            if row.get("kind") == "dir":
+                lines.append(f"{path}/ (folder)")
+            else:
+                lines.append(f"{path} ({row.get('size', 0)} bytes)")
+        return "Listing files", "\n".join(lines)
     if not rel:
         return "Tool error", "path is required"
     if kind == "write":
@@ -560,6 +692,21 @@ def execute_tool(
     if kind == "read":
         return f"Reading {rel}", workspace.read_text(username, chat_id, rel)
     if kind == "delete":
+        root = workspace.workspace_root(username, chat_id, create=False)
+        dest = workspace.resolve_rel(root, rel)
+        if dest.is_dir():
+            written = workspace.delete_empty_dir(username, chat_id, rel)
+            return f"Deleting {written}", f"Removed empty folder {written}"
+        reason = _delete_refusal(
+            username,
+            chat_id,
+            dest.relative_to(root.resolve()).as_posix() if dest.exists() else rel,
+            user_text=user_text,
+            protected=set(protected or ()),
+            deletes_used=deletes_used,
+        )
+        if reason:
+            return "Tool error", reason
         workspace.delete_file(username, chat_id, rel)
         return f"Deleting {rel}", f"Deleted {rel}"
     if kind == "rename":
@@ -863,6 +1010,13 @@ async def iter_code_turns(
 
     kind = normalize_agent(agent)
     empty = "empty project" in workspace_file_brief(username, chat_id)
+    user_text = _latest_user_text(getattr(data, "messages", None))
+    protected = workspace.referenced_project_paths(username, chat_id)
+    for row in workspace.list_files(username, chat_id):
+        path = str(row.get("path") or "")
+        if path and Path(path).suffix.lower() in workspace.CORE_KEEP_SUFFIXES:
+            protected.add(path)
+    deletes_used = 0
     working = data.model_copy(
         update={
             "stream": True,
@@ -932,9 +1086,20 @@ async def iter_code_turns(
         working.messages.append(message)
         for name, args, call_id in pairs:
             try:
-                label, result = execute_tool(username, chat_id, name, args, agent=kind)
+                label, result = execute_tool(
+                    username,
+                    chat_id,
+                    name,
+                    args,
+                    agent=kind,
+                    user_text=user_text,
+                    protected=protected,
+                    deletes_used=deletes_used,
+                )
             except (ValueError, FileNotFoundError, OSError) as exc:
                 label, result = "Tool error", str(exc)
+            if label.startswith("Deleting "):
+                deletes_used += 1
             if (
                 label.startswith("Writing ")
                 or label.startswith("Editing ")

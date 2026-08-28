@@ -46,6 +46,10 @@ TEXT_SUFFIXES = frozenset(
     }
 )
 PAGE_SUFFIXES = frozenset({".html", ".htm"})
+# Agent Delete may not drop these unless the user named the exact path.
+CORE_KEEP_SUFFIXES = frozenset(
+    {".html", ".htm", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx"}
+)
 MAX_FILES = 200
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_TEXT_BYTES = 1 * 1024 * 1024
@@ -362,9 +366,123 @@ def listing(username: str, chat_id: str) -> dict[str, Any]:
         )
     return {
         "files": files + dir_rows,
+        "deleted": missing_history_rows(username, chat_id),
         "bytes": sum(int(row["size"]) for row in files),
         "count": len(files),
     }
+
+
+def _path_mentioned(text: str, rel: str) -> bool:
+    """True when a project file still names this path or a sibling image ext."""
+    body = str(text or "")
+    if not body:
+        return False
+    path = str(rel or "").replace("\\", "/")
+    if path and path in body:
+        return True
+    name = Path(path).name
+    if name and name in body:
+        return True
+    if not is_image_path(path):
+        return False
+    stem = Path(path).stem
+    parent = Path(path).parent.as_posix()
+    for ext in IMAGE_SUFFIXES:
+        alt = f"{stem}{ext}"
+        if alt in body:
+            return True
+        if parent and parent != "." and f"{parent}/{alt}" in body:
+            return True
+    return False
+
+
+def referenced_project_paths(username: str, chat_id: str) -> set[str]:
+    """Existing files named by HTML/CSS/JS (image stems count across .png/.webp)."""
+    rows = list_files(username, chat_id)
+    paths = [str(row["path"]) for row in rows if row.get("path")]
+    chunks: list[str] = []
+    for row in rows:
+        if not row.get("editable"):
+            continue
+        try:
+            chunks.append(read_text(username, chat_id, str(row["path"])))
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+    blob = "\n".join(chunks)
+    return {rel for rel in paths if _path_mentioned(blob, rel)}
+
+
+def resolve_image_rel(username: str, chat_id: str, rel: str) -> str:
+    """Resolve an image path, preferring a same-stem sibling when the ext is stale."""
+    root = workspace_root(username, chat_id, create=False)
+    path = resolve_rel(root, rel)
+    if path.is_file() and is_image_path(rel):
+        return path.relative_to(root.resolve()).as_posix()
+    stem = path.stem
+    found: list[str] = []
+    parent = path.parent
+    if parent.is_dir():
+        for ext in sorted(IMAGE_SUFFIXES):
+            candidate = parent / f"{stem}{ext}"
+            if candidate.is_file():
+                found.append(candidate.relative_to(root.resolve()).as_posix())
+    if not found:
+        found = [
+            str(row["path"])
+            for row in list_files(username, chat_id)
+            if is_image_path(str(row["path"])) and Path(str(row["path"])).stem == stem
+        ]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        raise FileNotFoundError(
+            f"{rel} was not found. Existing images with that name: {', '.join(found)}"
+        )
+    raise FileNotFoundError(rel)
+
+
+def missing_history_rows(username: str, chat_id: str) -> list[dict[str, Any]]:
+    """Text files that still have History after they were deleted from the tree."""
+    existing = {str(row["path"]) for row in list_files(username, chat_id)}
+    folder = history_dir(username, chat_id)
+    with _HISTORY_LOCK:
+        index = _load_history_index(folder)
+    rows: list[dict[str, Any]] = []
+    for key, versions in index.items():
+        rel = str(key or "").strip().replace("\\", "/")
+        if not rel or rel in existing or not versions:
+            continue
+        latest = versions[0] if isinstance(versions[0], dict) else {}
+        suffix = Path(rel).suffix.lower()
+        rows.append(
+            {
+                "path": rel,
+                "size": int(latest.get("bytes") or 0),
+                "kind": "text",
+                "editable": suffix in TEXT_SUFFIXES,
+                "page": suffix in PAGE_SUFFIXES,
+                "missing": True,
+                "rev": str(latest.get("id") or ""),
+            }
+        )
+    rows.sort(key=lambda row: str(row["path"]))
+    return rows
+
+
+def delete_empty_dir(username: str, chat_id: str, rel: str) -> str:
+    """Remove one empty folder. Refuses if it still contains files or folders."""
+    text = _folder_prefix(rel)
+    root = workspace_root(username, chat_id, create=False)
+    path = resolve_rel(root, text)
+    if not path.is_dir():
+        raise FileNotFoundError(text)
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        path.rmdir()
+        _prune_empty_parents(root, path.parent)
+        return path.relative_to(root.resolve()).as_posix()
+    raise ValueError(f"{text} is not empty.")
 
 
 def history_dir(username: str, chat_id: str) -> Path:
@@ -756,9 +874,10 @@ def optimize_image(
     """Compress, resize, convert, or crop a uniform border from one raster."""
     from PIL import Image, ImageOps
 
-    source = resolve_file(username, chat_id, rel)
-    if not is_image_path(rel):
+    resolved = resolve_image_rel(username, chat_id, rel)
+    if not is_image_path(resolved):
         raise ValueError("OptimizeImage only supports PNG, JPEG, WebP, and GIF files.")
+    source = resolve_file(username, chat_id, resolved)
 
     formats = {
         ".png": "PNG",
@@ -775,13 +894,12 @@ def optimize_image(
     image_format = formats[source.suffix.lower()] if requested == "original" else requested.upper()
 
     destination = str(output_path or "").strip()
+    wanted_ext = ".jpg" if image_format == "JPEG" else f".{image_format.lower()}"
     if not destination:
-        if requested == "original":
-            destination = rel
+        if requested == "original" or source.suffix.lower() == wanted_ext:
+            destination = resolved
         else:
-            extension = ".jpg" if requested == "jpeg" else f".{requested}"
-            source_rel = Path(rel)
-            destination = str(source_rel.with_name(f"{source_rel.stem}.optimized{extension}"))
+            destination = str(Path(resolved).with_suffix(wanted_ext))
     destination_suffix = Path(destination).suffix.lower()
     if destination_suffix not in formats:
         raise ValueError("output_path must end in .png, .jpg, .jpeg, .webp, or .gif")
@@ -853,8 +971,19 @@ def optimize_image(
 
     encoded = buffer.getvalue()
     written = copy_bytes(username, chat_id, destination, encoded)
+    rewritten: list[str] = []
+    if written != resolved:
+        rewritten = _rewrite_project_image_path(username, chat_id, resolved, written)
+        try:
+            delete_file(username, chat_id, resolved)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+    rewritten.extend(_sync_image_references(username, chat_id, written))
+    # Keep the first occurrence of each rewritten path.
+    rewritten = list(dict.fromkeys(rewritten))
     return {
         "path": written,
+        "source": resolved,
         "format": image_format.lower(),
         "original_dimensions": f"{original_size[0]}x{original_size[1]}",
         "dimensions": f"{image.width}x{image.height}",
@@ -862,6 +991,7 @@ def optimize_image(
         "bytes": len(encoded),
         "saved_bytes": original_bytes - len(encoded),
         "trimmed": trimmed,
+        "rewritten": rewritten,
     }
 
 
@@ -1303,6 +1433,23 @@ def _rewrite_project_image_path(
     return changed
 
 
+def _sync_image_references(username: str, chat_id: str, actual_rel: str) -> list[str]:
+    """Point stale .png/.jpg/… refs at the file that is actually on disk."""
+    path = Path(str(actual_rel or "").replace("\\", "/"))
+    if not is_image_path(str(path)):
+        return []
+    changed: list[str] = []
+    for ext in IMAGE_SUFFIXES:
+        if ext == path.suffix.lower():
+            continue
+        changed.extend(
+            _rewrite_project_image_path(
+                username, chat_id, str(path.with_suffix(ext)), str(path.as_posix())
+            )
+        )
+    return list(dict.fromkeys(changed))
+
+
 def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     from common.gpu_mode import generated_image_path
     from images.paths import generated_png_name_from_url, living_download_pairs
@@ -1344,8 +1491,6 @@ def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
                 lossless=graphic or transparent,
             )
             written = str(result["path"])
-            _rewrite_project_image_path(username, chat_id, dest, written)
-            delete_file(username, chat_id, dest)
             optimized.append(written)
         except (ValueError, FileNotFoundError, OSError):
             # Keep the original PNG and its already-written code reference if a

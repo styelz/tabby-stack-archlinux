@@ -2008,9 +2008,17 @@ function mountChat(root) {
     return pendingFiles.some((file) => file.path === path);
   }
 
+  function listingFromData(data, fallback) {
+    const live = Array.isArray(data && data.files) ? data.files : fallback || [];
+    const deleted = Array.isArray(data && data.deleted)
+      ? data.deleted.map((row) => ({ ...row, missing: true, kind: row.kind || "text" }))
+      : [];
+    return live.concat(deleted);
+  }
+
   function applyListing(data) {
     const prev = filesListing;
-    filesListing = Array.isArray(data.files) ? data.files : filesListing;
+    filesListing = listingFromData(data, filesListing);
     filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
     noteNewListingFiles(prev, filesListing);
     paintFiles();
@@ -2064,15 +2072,16 @@ function mountChat(root) {
     paintFilesToggle();
     paintHistoryPane();
     paintChangesPane();
-    const fileRows = filesListing.filter((row) => row.kind !== "dir");
+    const fileRows = filesListing.filter((row) => row.kind !== "dir" && !row.missing);
     const total = fileRows.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
       filesCountEl.textContent = fileRows.length
         ? `${fileRows.length} · ${TabbyUI.formatBytes(total)}`
         : "";
     }
-    if (filesZipBtn) filesZipBtn.disabled = !filesListing.length;
-    if (filesClearBtn) filesClearBtn.disabled = !filesListing.length;
+    const liveRows = filesListing.filter((row) => !row.missing);
+    if (filesZipBtn) filesZipBtn.disabled = !liveRows.length;
+    if (filesClearBtn) filesClearBtn.disabled = !liveRows.length;
     if (filesSiteBtn) {
       filesSiteBtn.disabled = !filesEntry;
       const row = selectedRow();
@@ -2106,19 +2115,21 @@ function mountChat(root) {
         const expanded = isDir && filesOpenFolders.has(node.path);
         const row = node.row;
         const item = document.createElement("div");
+        const missing = Boolean(row && row.missing);
         item.className =
           "chat-file" +
           (isDir ? " is-dir" : "") +
           (expanded ? " is-expanded" : "") +
           (!isDir && node.path === filesSelected ? " is-active" : "") +
           (!isDir && findTab(node.path) ? " is-open" : "") +
-          (!isDir && isPendingFile(node.path) ? " is-attached" : "");
+          (!isDir && isPendingFile(node.path) ? " is-attached" : "") +
+          (!isDir && missing ? " is-missing" : "");
         item.dataset.path = node.path;
         item.dataset.kind = node.kind;
-        item.draggable = true;
+        item.draggable = !missing;
         item.style.setProperty("--depth", String(depth));
         const action = isDir ? "toggle" : "open";
-        const size = !isDir && row ? TabbyUI.formatBytes(row.size) : "";
+        const size = missing ? "deleted" : !isDir && row ? TabbyUI.formatBytes(row.size) : "";
         item.innerHTML =
           `<button type="button" class="chat-file-open" data-file="${action}" title="${TabbyUI.escapeHtml(node.path)}"${
             isDir ? ` aria-expanded="${expanded ? "true" : "false"}"` : ""
@@ -2130,9 +2141,11 @@ function mountChat(root) {
           (isDir
             ? ""
             : `<span class="chat-file-tools">` +
-              `<button type="button" class="btn ghost chat-icon${isPendingFile(node.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
-              `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
-              `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>` +
+              (missing
+                ? `<button type="button" class="btn ghost chat-icon" data-file="restore" aria-label="Restore file" title="Restore from History">↺</button>`
+                : `<button type="button" class="btn ghost chat-icon${isPendingFile(node.path) ? " is-on" : ""}" data-file="attach" aria-label="Add to chat" title="Add to chat">📎</button>` +
+                  `<button type="button" class="btn ghost chat-icon" data-file="download" aria-label="Download file" title="Download">↓</button>` +
+                  `<button type="button" class="btn ghost chat-icon danger" data-file="delete" aria-label="Delete file" title="Delete">×</button>`) +
               `</span>`);
         frag.appendChild(item);
         if (isDir && expanded) walk(node.children, depth + 1);
@@ -2985,9 +2998,12 @@ function mountChat(root) {
 
   async function restoreHistory(path, revId) {
     if (!path || !revId) return;
+    const gone = Boolean((filesListing.find((item) => item.path === path) || {}).missing);
     const yes = await TabbyUI.confirmModal({
-      title: "Restore this version?",
-      text: `Replace “${path}” with this older version? The current file is kept in history.`,
+      title: gone ? "Restore deleted file?" : "Restore this version?",
+      text: gone
+        ? `Restore “${path}” from History?`
+        : `Replace “${path}” with this older version? The current file is kept in history.`,
       yes: "Restore",
       no: "Cancel",
     });
@@ -2997,6 +3013,17 @@ function mountChat(root) {
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
+  }
+
+  async function restoreDeletedFile(path) {
+    const row = filesListing.find((item) => item.path === path);
+    let revId = row && row.rev;
+    if (!revId) {
+      const versions = await loadFileHistory(path);
+      revId = versions[0] && versions[0].id;
+    }
+    if (!revId) throw new Error("No history to restore for that file.");
+    await restoreHistory(path, revId);
   }
 
   async function discardChange(path, options) {
@@ -4161,7 +4188,7 @@ function mountChat(root) {
       );
       tab.busy = false;
       if (chatId !== activeWorkspaceId()) return;
-      filesListing = Array.isArray(data.files) ? data.files : filesListing;
+      filesListing = listingFromData(data, filesListing);
       filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
       const live = findTab(path) || tab;
       live.original = contents;
@@ -5101,7 +5128,7 @@ function mountChat(root) {
         .filter(Boolean)
     );
     (next || []).forEach((row) => {
-      if (!row || row.kind === "dir") return;
+      if (!row || row.kind === "dir" || row.missing) return;
       const path = String(row.path || "").replace(/^\/+/, "");
       if (!path || before.has(path)) return;
       noteChange(path, true);
@@ -5124,7 +5151,7 @@ function mountChat(root) {
       const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`);
       if (chatId !== activeWorkspaceId()) return;
       const prev = filesListing;
-      filesListing = Array.isArray(data.files) ? data.files : [];
+      filesListing = listingFromData(data, []);
       filesEntry = typeof data.entry === "string" ? data.entry : "";
       noteNewListingFiles(prev, filesListing);
       if (filesSelected && !filesListing.some((row) => row.path === filesSelected)) {
@@ -6572,7 +6599,7 @@ function mountChat(root) {
         `workspace/${encodeURIComponent(activeWorkspaceId())}/file?path=${encodeURIComponent(path)}`,
         { method: "DELETE" }
       );
-      filesListing = Array.isArray(data.files) ? data.files : [];
+      filesListing = listingFromData(data, []);
       filesEntry = typeof data.entry === "string" ? data.entry : "";
       const open = findTab(path);
       if (open) open.dirty = false;
@@ -10522,11 +10549,23 @@ function mountChat(root) {
       if (btn.dataset.file === "open") {
         filesFocusDir = fileDir(path);
         const fileRow = filesListing.find((item) => item.path === path);
+        if (fileRow && fileRow.missing) {
+          filesSelected = path;
+          paintTabsAndFiles();
+          refreshHistory();
+          return;
+        }
         if (fileRow && fileRow.page && (event.ctrlKey || event.metaKey)) {
           showPreview({ path, newTab: previewOpen });
           return;
         }
         openFileTab(path);
+        return;
+      }
+      if (btn.dataset.file === "restore") {
+        restoreDeletedFile(path).catch((err) => {
+          addBubble("assistant", `Error: ${err.message}`);
+        });
         return;
       }
       if (btn.dataset.file === "attach") {
