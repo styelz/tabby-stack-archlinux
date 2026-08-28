@@ -239,20 +239,55 @@ def image_download_command(pairs: Iterable[tuple[str, str]]) -> str:
     if not rows:
         return ""
     dirs: list[str] = []
-    fetches: list[str] = []
     auth = '${TABBY_API_KEY:+-H "Authorization: Bearer $TABBY_API_KEY"}'
-    for url, dest in rows:
+    for _url, dest in rows:
         parent = Path(dest).parent.as_posix()
         if parent not in (".", "") and parent not in dirs:
             dirs.append(parent)
-        fetches.append(
-            f"curl -fsSL --max-time 120 {auth} -o {_posix_quote(dest)} -- {_posix_quote(url)}"
-        )
+    fetches = " ".join(
+        f"-o {_posix_quote(dest)} -- {_posix_quote(url)}" for url, dest in rows
+    )
+    curl = (
+        f"curl -fsSL --connect-timeout 15 --max-time 120 --parallel {auth} {fetches}"
+    )
+    listed = " ".join(_posix_quote(dest) for _, dest in rows)
     prefix = ""
     if dirs:
         prefix = "mkdir -p -- " + " ".join(_posix_quote(item) for item in dirs) + " && "
-    listed = " ".join(_posix_quote(dest) for _, dest in rows)
-    return prefix + " && ".join(fetches)
+    return prefix + curl + " && ls -l -- " + listed
+
+
+_LS_FAIL_RE = re.compile(
+    r"no such file|existing none|cannot access|not found|curl:",
+    re.I,
+)
+
+
+def tool_result_has_pngs(text: str, dests: Iterable[str]) -> bool:
+    """True when a Shell ls/curl result lists every dest.
+
+    A stray 'not found' for some other path must not fail the whole batch —
+    VS Code Copilot often ls extra files. Only a missing needed dest fails.
+    """
+    blob = str(text or "")
+    if not blob:
+        return False
+    needed = [safe_rel_png_path(dest) for dest in dests if dest]
+    if not needed:
+        return False
+    for dest in needed:
+        name = Path(dest).name
+        listed = False
+        missing = False
+        for line in blob.splitlines():
+            if dest not in line and name not in line:
+                continue
+            listed = True
+            if _LS_FAIL_RE.search(line):
+                missing = True
+        if not listed or missing:
+            return False
+    return True
 
 
 def image_download_note(pairs: Iterable[tuple[str, str]]) -> str:

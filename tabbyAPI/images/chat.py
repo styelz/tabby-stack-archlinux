@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from common.logger import xlogger
 from common.networking import get_sse_ping_interval
@@ -21,6 +22,7 @@ from images.jobs import (
     launch_mcp_image_job,
     note_coding_progress,
     start_mcp_image_job,
+    wait_mcp_job_progress,
     wait_until_done,
 )
 from images.paths import (
@@ -30,11 +32,13 @@ from images.paths import (
     job_id_from_text,
     living_download_pairs,
     planned_dest_fact_list,
+    tool_result_has_pngs,
 )
 from images.plan import classify_image_turn
 
 JOB_MARK = "tabby-image-job:"
 STATUS_MARK = "tabby-image-status:"
+HOLD_KEEPALIVE_S = 12.0
 NO_MODEL_WRITE = "No model is loaded, so files were not written."
 NO_TEMPLATE_WRITE = "Chat is disabled because no prompt template is set."
 MAX_CODE_TURNS = 16
@@ -344,6 +348,132 @@ def _stamp_job_content(content: Optional[str], job) -> str:
     return mark
 
 
+def _items_finished(job) -> bool:
+    items = list(getattr(job, "items", None) or [])
+    if not items:
+        return str(getattr(job, "status", "") or "") in ("done", "error")
+    return all(
+        str(getattr(item, "status", "") or "") in ("done", "error") for item in items
+    )
+
+
+def _editor_files_ready(job) -> bool:
+    status = str(getattr(job, "status", "") or "")
+    if status in ("done", "error"):
+        return True
+    if not _items_finished(job):
+        return False
+    items = list(getattr(job, "items", None) or [])
+    if items and all(
+        str(getattr(item, "status", "") or "") == "error" for item in items
+    ):
+        return True
+    return bool(living_download_pairs(job))
+
+
+def _hold_is_ready(job, *, files_only: bool) -> bool:
+    status = str(getattr(job, "status", "") or "")
+    if status in ("done", "error"):
+        return True
+    if files_only:
+        return _editor_files_ready(job)
+    return False
+
+
+async def _wait_for_hold(job, *, files_only: bool) -> None:
+    while not _hold_is_ready(job, files_only=files_only):
+        await wait_mcp_job_progress(job, HOLD_KEEPALIVE_S)
+
+
+def _job_dests(job) -> list[str]:
+    from images.paths import safe_rel_png_path
+
+    pairs = living_download_pairs(job)
+    if pairs:
+        return [dest for _url, dest in pairs]
+    dests: list[str] = []
+    for item in getattr(job, "items", None) or []:
+        dest = safe_rel_png_path(getattr(item, "output_path", "") or "")
+        if dest:
+            dests.append(dest)
+    return dests
+
+
+def _message_has_curl(message) -> bool:
+    if "curl " in _content_text(getattr(message, "content", None)):
+        return True
+    for _name, args in _tool_call_pairs(message):
+        blob = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+        if "curl " in blob:
+            return True
+    return False
+
+
+def _last_assistant_message(data: ChatCompletionRequest):
+    for message in reversed(data.messages or []):
+        if (message.role or "").lower() == "assistant":
+            return message
+    return None
+
+
+def _last_assistant_was_curl(data: ChatCompletionRequest) -> bool:
+    message = _last_assistant_message(data)
+    return bool(message and _message_has_curl(message))
+
+
+def _curl_assistant_count(data: ChatCompletionRequest) -> int:
+    count = 0
+    for message in reversed(data.messages or []):
+        role = (message.role or "").lower()
+        if role in ("tool", "function"):
+            continue
+        if role == "assistant":
+            if _message_has_curl(message):
+                count += 1
+                continue
+            break
+        break
+    return count
+
+
+def _trailing_tool_blob(data: ChatCompletionRequest) -> str:
+    parts: list[str] = []
+    for message in reversed(data.messages or []):
+        if (message.role or "").lower() not in ("tool", "function"):
+            break
+        parts.append(_content_text(message.content))
+    return "\n".join(reversed(parts))
+
+
+def _curl_tool_followup(data: ChatCompletionRequest, job, *, console: bool):
+    from common.phrase_switch import text_response
+
+    if console or job is None:
+        return None
+    if not _last_assistant_was_curl(data):
+        return None
+    status = str(getattr(job, "status", "") or "")
+    if not _editor_files_ready(job) and status not in ("done", "error"):
+        return None
+    dests = _job_dests(job)
+    mark = f"{JOB_MARK} {job.id}"
+    if not dests:
+        err = getattr(job, "error", None) or (
+            "Image generation finished with no files on this host."
+        )
+        return text_response(data, f"{mark}\n{err}")
+    blob = _trailing_tool_blob(data)
+    if tool_result_has_pngs(blob, dests):
+        return text_response(data, f"{mark}\nImages saved to {', '.join(dests)}.")
+    if _curl_assistant_count(data) >= 2:
+        return text_response(
+            data,
+            f"{mark}\nCould not download {', '.join(dests)}. "
+            "The PNGs are on the GPU host; download those URLs by hand.",
+        )
+    return _curl_response(data, job)
+
+
 async def _write_site_code(data: ChatCompletionRequest, disconnect_handler):
     """One coding completion while the LLM is still loaded. None if it cannot run."""
     from common import model
@@ -615,33 +745,65 @@ async def _hold_then_reply(
     workspace=None,
     extra_files: Optional[list[str]] = None,
 ):
-    from common.phrase_switch import stream_text, stream_tool_calls
+    from common.phrase_switch import stream_chat_delta, stream_text, stream_tool_calls
 
     sync = data.model_copy(update={"stream": False})
     mixed = False if console else mixed
     code = bool(workspace)
+    files_only = not console
 
-    async def _body():
-        yield ServerSentEvent(comment=f"{JOB_MARK} {job.id}")
-        line = job_progress_line(job)
-        if line:
-            yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
-        await wait_until_done(job)
+    def _reply():
         copied = _copy_workspace_pngs(job, workspace)
         names = list(extra_files or []) + copied
-        reply = (
-            _curl_response(sync, job, code_response)
-            if mixed
-            else _url_response(
-                sync, job, api_base, console=console, code=code, extra_files=names
-            )
+        if mixed:
+            return _curl_response(sync, job, code_response)
+        return _url_response(
+            sync, job, api_base, console=console, code=code, extra_files=names
         )
+
+    async def _body():
+        chunk_id = f"chatcmpl-{uuid4().hex}"
+        created = int(time.time())
+        yield ServerSentEvent(comment=f"{JOB_MARK} {job.id}")
+        last_line = job_progress_line(job)
+        if last_line:
+            yield ServerSentEvent(comment=f"{STATUS_MARK} {last_line}")
+        if not console:
+            first = (last_line + "\n") if last_line else " "
+            yield stream_chat_delta(
+                data,
+                {"role": "assistant", "content": first},
+                chunk_id=chunk_id,
+                created=created,
+            )
+        while not _hold_is_ready(job, files_only=files_only):
+            await wait_mcp_job_progress(job, HOLD_KEEPALIVE_S)
+            line = job_progress_line(job)
+            if line and line != last_line:
+                last_line = line
+                yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
+                if not console:
+                    yield stream_chat_delta(
+                        data,
+                        {"content": line + "\n"},
+                        chunk_id=chunk_id,
+                        created=created,
+                    )
+            elif not console:
+                yield stream_chat_delta(
+                    data, {"content": " "}, chunk_id=chunk_id, created=created
+                )
+        reply = _reply()
         message = reply.choices[0].message
         if message.tool_calls:
-            async for chunk in stream_tool_calls(data, message):
+            async for chunk in stream_tool_calls(
+                data, message, chunk_id=chunk_id, created=created
+            ):
                 yield chunk
         else:
-            async for chunk in stream_text(data, message.content or ""):
+            async for chunk in stream_text(
+                data, message.content or "", chunk_id=chunk_id, created=created
+            ):
                 yield chunk
 
     if data.stream:
@@ -650,14 +812,11 @@ async def _hold_then_reply(
             ping=get_sse_ping_interval(),
             sep="\n",
         )
-    await wait_until_done(job)
-    copied = _copy_workspace_pngs(job, workspace)
-    names = list(extra_files or []) + copied
-    if mixed:
-        return _curl_response(sync, job, code_response)
-    return _url_response(
-        sync, job, api_base, console=console, code=code, extra_files=names
-    )
+    if console:
+        await wait_until_done(job)
+    else:
+        await _wait_for_hold(job, files_only=True)
+    return _reply()
 
 
 def _code_model_ready() -> bool:
@@ -880,6 +1039,11 @@ async def handle(
     job_id = job_id_from_history(data)
     job = get_mcp_image_job(job_id) if job_id else None
     role = last_role(data)
+
+    if job and role in ("tool", "function"):
+        follow = _curl_tool_followup(data, job, console=console)
+        if follow is not None:
+            return follow
 
     if job and job.status in ("queued", "running"):
         if workspace:

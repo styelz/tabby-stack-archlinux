@@ -288,7 +288,9 @@ class CurlFromLivingFilesTests(unittest.TestCase):
         self.assertIn("generated-logo.png", command)
         self.assertNotIn("generated-mars.png", command)
         self.assertNotIn("sleep ", command)
-        self.assertNotIn("ls -l", command)
+        self.assertIn("--connect-timeout 15", command)
+        self.assertIn("--parallel", command)
+        self.assertIn("ls -l -- 'images/logo.png'", command)
 
     def test_running_job_has_no_urls_to_curl(self):
         job = _job(status="running", items=[

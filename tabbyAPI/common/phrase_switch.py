@@ -917,8 +917,41 @@ def tool_call_response(
     )
 
 
-async def stream_text(data: ChatCompletionRequest, text: str):
-    chunk_id = f"chatcmpl-{uuid4().hex}"
+def stream_chat_delta(
+    data: ChatCompletionRequest,
+    delta: dict,
+    *,
+    chunk_id: str,
+    created: int,
+    finish: Optional[str] = None,
+) -> str:
+    """One OpenAI chat.completion.chunk JSON object (EventSourceResponse data)."""
+    return json.dumps(
+        {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": data.model or "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish,
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+async def stream_text(
+    data: ChatCompletionRequest,
+    text: str,
+    *,
+    chunk_id: Optional[str] = None,
+    created: Optional[int] = None,
+):
+    chunk_id = chunk_id or f"chatcmpl-{uuid4().hex}"
     model_name = data.model or "gpt-4o"
     first = ChatCompletionStreamChunk(
         id=chunk_id,
@@ -936,31 +969,26 @@ async def stream_text(data: ChatCompletionRequest, text: str):
     yield last.model_dump_json()
 
 
-async def stream_tool_calls(data: ChatCompletionRequest, message: ChatCompletionMessage):
+async def stream_tool_calls(
+    data: ChatCompletionRequest,
+    message: ChatCompletionMessage,
+    *,
+    chunk_id: Optional[str] = None,
+    created: Optional[int] = None,
+):
     """OpenAI-shaped SSE deltas. Cursor ignores a whole ChatCompletionMessage dump."""
-    chunk_id = f"chatcmpl-{uuid4().hex}"
-    model_name = data.model or "gpt-4o"
-    created = int(time.time())
+    chunk_id = chunk_id or f"chatcmpl-{uuid4().hex}"
+    created = int(time.time()) if created is None else created
 
     def dump(delta: dict, finish: Optional[str] = None) -> str:
-        return json.dumps(
-            {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": delta,
-                        "finish_reason": finish,
-                    }
-                ],
-            },
-            ensure_ascii=False,
+        return stream_chat_delta(
+            data, delta, chunk_id=chunk_id, created=created, finish=finish
         )
 
     yield dump({"role": "assistant"})
+    content = getattr(message, "content", None) or ""
+    if content:
+        yield dump({"content": content})
     tool_payload = []
     for index, call in enumerate(message.tool_calls or []):
         item = call.model_dump(mode="json", exclude_none=True)
