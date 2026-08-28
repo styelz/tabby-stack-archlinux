@@ -244,8 +244,10 @@ def image_download_command(pairs: Iterable[tuple[str, str]]) -> str:
         parent = Path(dest).parent.as_posix()
         if parent not in (".", "") and parent not in dirs:
             dirs.append(parent)
+    # One curl --parallel. Do not put `--` between pairs: that ends option
+    # parsing, so later -o flags are treated as URLs and the batch fails.
     fetches = " ".join(
-        f"-o {_posix_quote(dest)} -- {_posix_quote(url)}" for url, dest in rows
+        f"-o {_posix_quote(dest)} --url {_posix_quote(url)}" for url, dest in rows
     )
     curl = (
         f"curl -fsSL --connect-timeout 15 --max-time 120 --parallel {auth} {fetches}"

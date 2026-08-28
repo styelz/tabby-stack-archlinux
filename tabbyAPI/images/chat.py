@@ -318,6 +318,18 @@ def _keep_writing_page(code_response, job) -> bool:
     return int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
 
 
+def _first_code_pass_holds_llm(code_response) -> bool:
+    """VS Code writes with its own tools. Prose or file tools both mean 'page first'."""
+    if not code_response:
+        return False
+    message = _assistant_message(code_response)
+    if message is None:
+        return False
+    if _file_write_pairs(message):
+        return True
+    return bool(str(getattr(message, "content", None) or "").strip())
+
+
 def _tool_call_pairs(message) -> list[tuple[str, dict]]:
     pairs: list[tuple[str, dict]] = []
     for call in getattr(message, "tool_calls", None) or []:
@@ -1180,10 +1192,7 @@ async def handle(
                 )
             _inject_planned_dests(data, plan.items)
             code_response = await _write_site_code(data, disconnect_handler)
-            keep = bool(
-                code_response
-                and _file_write_pairs(_assistant_message(code_response))
-            )
+            keep = _first_code_pass_holds_llm(code_response)
             started = await _start_mixed_job(
                 plan.items,
                 api_base or "",
