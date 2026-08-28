@@ -2570,7 +2570,7 @@ function mountChat(root) {
           ? '<div class="chat-resize-bar">' +
             '<label class="chat-resize-dim">Width <input type="number" min="1" max="8192" inputmode="numeric" data-resize-w /></label>' +
             '<label class="chat-resize-dim">Height <input type="number" min="1" max="8192" inputmode="numeric" data-resize-h /></label>' +
-            '<button type="button" class="btn ghost" data-edit="resize-lock">Lock</button>' +
+            '<button type="button" class="btn ghost" data-edit="resize-lock" aria-pressed="false">Lock aspect</button>' +
             "</div>"
           : "") +
       editorBodyHtml(tab, view) +
@@ -3509,10 +3509,10 @@ function mountChat(root) {
     }
     const lock = editorPane && editorPane.querySelector("[data-edit='resize-lock']");
     if (lock) {
-      const on = tab.resizeLock !== false;
+      const on = tab.resizeLock === true;
       lock.classList.toggle("is-on", on);
       lock.setAttribute("aria-pressed", on ? "true" : "false");
-      lock.textContent = on ? "Lock" : "Free";
+      lock.textContent = on ? "Unlock aspect" : "Lock aspect";
     }
     const wIn = editorPane && editorPane.querySelector("[data-resize-w]");
     const hIn = editorPane && editorPane.querySelector("[data-resize-h]");
@@ -3535,7 +3535,7 @@ function mountChat(root) {
     if (!tab || !tab.resizing) return;
     const w = resizeDim(value);
     tab.resizeW = w;
-    if (tab.resizeLock !== false && tab.resizeNatural) {
+    if (tab.resizeLock === true && tab.resizeNatural) {
       tab.resizeH = resizeDim((w * tab.resizeNatural.h) / tab.resizeNatural.w);
     }
     paintResizeHead(tab);
@@ -3545,7 +3545,7 @@ function mountChat(root) {
     if (!tab || !tab.resizing) return;
     const h = resizeDim(value);
     tab.resizeH = h;
-    if (tab.resizeLock !== false && tab.resizeNatural) {
+    if (tab.resizeLock === true && tab.resizeNatural) {
       tab.resizeW = resizeDim((h * tab.resizeNatural.w) / tab.resizeNatural.h);
     }
     paintResizeHead(tab);
@@ -3553,8 +3553,8 @@ function mountChat(root) {
 
   function toggleResizeLock(tab) {
     if (!tab || !tab.resizing) return;
-    tab.resizeLock = tab.resizeLock === false;
-    if (tab.resizeLock !== false && tab.resizeNatural && tab.resizeW) {
+    tab.resizeLock = tab.resizeLock !== true;
+    if (tab.resizeLock === true && tab.resizeNatural && tab.resizeW) {
       tab.resizeH = resizeDim((tab.resizeW * tab.resizeNatural.h) / tab.resizeNatural.w);
     }
     paintResizeHead(tab);
@@ -3597,7 +3597,7 @@ function mountChat(root) {
       const corner =
         (handle.includes("n") || handle.includes("s")) &&
         (handle.includes("e") || handle.includes("w"));
-      const lockAspect = tab.resizeLock !== false && corner;
+      const lockAspect = tab.resizeLock === true && corner;
       const lock = event.shiftKey ? !lockAspect : lockAspect;
       const next = applyResizeHandle(
         sizeDrag.origin,
@@ -3643,7 +3643,7 @@ function mountChat(root) {
     tab.resizeW = null;
     tab.resizeH = null;
     tab.resizeNatural = null;
-    if (tab.resizeLock == null) tab.resizeLock = true;
+    tab.resizeLock = false;
     tab.note = "";
     if (editorPane) editorPane.dataset.key = "";
     renderEditorPane();

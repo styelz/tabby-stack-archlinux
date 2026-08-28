@@ -2540,7 +2540,6 @@ button.chip {
 .chat-resize-stage {
   position: relative;
   width: min(100%, var(--resize-w, 100%));
-  max-height: calc(100cqh - 1.5rem);
   aspect-ratio: var(--resize-w, 1) / var(--resize-h, 1);
   overflow: visible;
 }
