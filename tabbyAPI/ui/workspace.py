@@ -953,6 +953,84 @@ def crop_image(
     }
 
 
+def resize_image(
+    username: str,
+    chat_id: str,
+    rel: str,
+    width: Any,
+    height: Any,
+) -> dict[str, Any]:
+    """Resize a project raster in place to exact pixel dimensions."""
+    from PIL import Image, ImageOps
+
+    if not is_image_path(rel):
+        raise ValueError("Resize only supports PNG, JPEG, WebP, and GIF files.")
+    try:
+        box_w = int(width)
+        box_h = int(height)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Width and height must be integers.") from exc
+    if not 1 <= box_w <= 8192 or not 1 <= box_h <= 8192:
+        raise ValueError("Width and height must be between 1 and 8192.")
+    if box_w * box_h > 40_000_000:
+        raise ValueError("Image dimensions are too large to resize safely.")
+
+    source = resolve_file(username, chat_id, rel)
+    image_format = _IMAGE_FORMATS[source.suffix.lower()]
+    original_bytes = source.stat().st_size
+    try:
+        with Image.open(source) as opened:
+            if int(getattr(opened, "n_frames", 1) or 1) > 1:
+                raise ValueError("Animated images are not supported by resize.")
+            if opened.width * opened.height > 40_000_000:
+                raise ValueError("Image dimensions are too large to resize safely.")
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            original_size = (image.width, image.height)
+            if image_format == "JPEG":
+                if image.mode in ("RGBA", "LA") or (
+                    image.mode == "P" and "transparency" in image.info
+                ):
+                    rgba = image.convert("RGBA")
+                    flattened = Image.new("RGB", rgba.size, "white")
+                    flattened.paste(rgba, mask=rgba.getchannel("A"))
+                    image = flattened
+                elif image.mode not in ("RGB", "L"):
+                    image = image.convert("RGB")
+            elif image.mode == "P":
+                image = image.convert(
+                    "RGBA" if "transparency" in image.info else "RGB"
+                )
+            image = image.resize((box_w, box_h), Image.Resampling.LANCZOS)
+            has_alpha = image.mode in ("RGBA", "LA")
+            buffer = io.BytesIO()
+            save_options: dict[str, Any] = {"format": image_format}
+            if image_format == "PNG":
+                save_options.update(optimize=True, compress_level=9)
+            elif image_format == "JPEG":
+                save_options.update(quality=92, optimize=True, progressive=True)
+            elif image_format == "WEBP":
+                save_options.update(quality=82, method=6, lossless=has_alpha)
+            elif image_format == "GIF":
+                save_options.update(optimize=True)
+            image.save(buffer, **save_options)
+    except ValueError:
+        raise
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Could not resize {rel}: {exc}") from exc
+
+    encoded = buffer.getvalue()
+    written = copy_bytes(username, chat_id, rel, encoded)
+    return {
+        "path": written,
+        "format": image_format.lower(),
+        "original_dimensions": f"{original_size[0]}x{original_size[1]}",
+        "dimensions": f"{image.width}x{image.height}",
+        "original_bytes": original_bytes,
+        "bytes": len(encoded),
+    }
+
+
 def _parse_punch_seeds(raw: Any) -> list[tuple[int, int]]:
     if raw is None:
         return []

@@ -1708,6 +1708,7 @@ function mountChat(root) {
     if (tab.cropBox) copy.cropBox = { ...tab.cropBox };
     if (Array.isArray(tab.punchSeeds)) copy.punchSeeds = tab.punchSeeds.map((seed) => ({ ...seed }));
     if (Array.isArray(tab.punchBoxes)) copy.punchBoxes = tab.punchBoxes.map((box) => ({ ...box }));
+    if (tab.resizeNatural) copy.resizeNatural = { ...tab.resizeNatural };
     if (Array.isArray(tab.caret)) copy.caret = tab.caret.slice();
     if (Array.isArray(tab.diff)) copy.diff = tab.diff.slice();
     return copy;
@@ -2436,6 +2437,7 @@ function mountChat(root) {
       apply.textContent = tab.busy ? "Cropping" : "Apply";
     }
     paintPunchHead(tab);
+    paintResizeHead(tab);
   }
 
   /** A reload keeps showing the text it already has instead of flashing. */
@@ -2464,6 +2466,9 @@ function mountChat(root) {
           '<canvas class="chat-punch-canvas" data-punch-canvas></canvas>' +
           '<div class="chat-punch-marquee" hidden data-punch-marquee></div></div></div>'
         );
+      }
+      if (tab.resizing) {
+        return `<div class="chat-editor-body is-image is-resize"><div class="chat-image-stage chat-resize-stage">${img}</div></div>`;
       }
       if (!tab.cropping) {
         return `<div class="chat-editor-body is-image"><div class="chat-image-stage">${img}</div></div>`;
@@ -2506,7 +2511,7 @@ function mountChat(root) {
     // Code turns repaint the listing every 600 ms; only rebuild when the file,
     // its state, or a reloaded revision actually changed, so typing survives.
     const view = tabView(tab);
-    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}|${tab.cropping ? "crop" : tab.punching ? "punch" : ""}`;
+    const key = `${activeWorkspaceId()}|${tab.path}|${view}|${tab.rev}|${tab.cropping ? "crop" : tab.punching ? "punch" : tab.resizing ? "resize" : ""}`;
     if (editorPane.dataset.key === key) {
       paintEditorHead();
       return;
@@ -2530,8 +2535,13 @@ function mountChat(root) {
                 ? '<span class="chat-crop-readout" data-punch-readout></span>' +
                   '<button type="button" class="btn ghost" data-edit="punch-cancel">Cancel</button>' +
                   '<button type="button" class="btn primary" data-edit="punch-apply">Make transparent</button>'
-                : '<button type="button" class="btn ghost" data-edit="crop">Crop</button>' +
-                  '<button type="button" class="btn ghost" data-edit="punch">Make transparent</button>')
+                : tab.resizing
+                  ? '<span class="chat-crop-readout" data-resize-readout></span>' +
+                    '<button type="button" class="btn ghost" data-edit="resize-cancel">Cancel</button>' +
+                    '<button type="button" class="btn primary" data-edit="resize-apply">Apply</button>'
+                  : '<button type="button" class="btn ghost" data-edit="crop">Crop</button>' +
+                    '<button type="button" class="btn ghost" data-edit="resize">Resize</button>' +
+                    '<button type="button" class="btn ghost" data-edit="punch">Make transparent</button>')
           : "";
     editorPane.innerHTML =
       '<div class="chat-editor-head">' +
@@ -2550,12 +2560,19 @@ function mountChat(root) {
           `<label class="chat-punch-tol">Tolerance <input type="range" min="0" max="80" value="${tab.punchTolerance ?? 28}" data-punch-tolerance /></label>` +
           '<button type="button" class="btn ghost" data-edit="punch-contiguous">Connected</button>' +
           "</div>"
-        : "") +
+        : view === "image" && tab.resizing
+          ? '<div class="chat-resize-bar">' +
+            '<label class="chat-resize-dim">Width <input type="number" min="1" max="8192" inputmode="numeric" data-resize-w /></label>' +
+            '<label class="chat-resize-dim">Height <input type="number" min="1" max="8192" inputmode="numeric" data-resize-h /></label>' +
+            '<button type="button" class="btn ghost" data-edit="resize-lock">Lock</button>' +
+            "</div>"
+          : "") +
       editorBodyHtml(tab, view) +
       '<p class="muted chat-editor-note"></p>';
     mountMonaco(tab, view);
     if (view === "image" && tab.cropping) mountCropOverlay(tab);
     if (view === "image" && tab.punching) mountPunchOverlay(tab);
+    if (view === "image" && tab.resizing) mountResizePreview(tab);
     paintEditorHead();
   }
 
@@ -3334,6 +3351,7 @@ function mountChat(root) {
   function beginCrop(tab) {
     if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
     clearPunchState(tab);
+    clearResizeState(tab);
     if (punchResize) {
       punchResize.disconnect();
       punchResize = null;
@@ -3390,6 +3408,190 @@ function mountChat(root) {
       live.state = "image";
       live.rev += 1;
       live.note = "Cropped.";
+      reloadPreviewIfNeeded();
+      if (editorPane) editorPane.dataset.key = "";
+      paintTabsAndFiles();
+    } catch (err) {
+      tab.busy = false;
+      tab.note = err.message;
+      paintEditorHead();
+    }
+  }
+
+  const RESIZE_MAX = 8192;
+
+  function clearResizeState(tab) {
+    if (!tab) return;
+    tab.resizing = false;
+    tab.resizeW = null;
+    tab.resizeH = null;
+    tab.resizeNatural = null;
+  }
+
+  function resizeDim(value) {
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(1, Math.min(RESIZE_MAX, n));
+  }
+
+  function resizeChanged(tab) {
+    const natural = tab && tab.resizeNatural;
+    const w = Number(tab && tab.resizeW);
+    const h = Number(tab && tab.resizeH);
+    if (!natural || w < 1 || h < 1) return false;
+    return w !== natural.w || h !== natural.h;
+  }
+
+  function paintResizePreview(tab) {
+    const stage = editorPane && editorPane.querySelector(".chat-resize-stage");
+    if (!stage || !tab || !tab.resizeW || !tab.resizeH) return;
+    stage.style.setProperty("--resize-w", `${tab.resizeW}px`);
+    stage.style.setProperty("--resize-h", `${tab.resizeH}px`);
+  }
+
+  function paintResizeHead(tab) {
+    if (!tab || !tab.resizing) return;
+    const readout = editorPane && editorPane.querySelector("[data-resize-readout]");
+    const natural = tab.resizeNatural;
+    const w = tab.resizeW;
+    const h = tab.resizeH;
+    if (readout) {
+      readout.textContent = natural && w && h
+        ? `${w} × ${h} of ${natural.w} × ${natural.h}`
+        : w && h ? `${w} × ${h}` : "";
+    }
+    const apply = editorPane && editorPane.querySelector("[data-edit='resize-apply']");
+    if (apply) {
+      apply.disabled = tab.busy || !resizeChanged(tab);
+      apply.textContent = tab.busy ? "Resizing" : "Apply";
+    }
+    const lock = editorPane && editorPane.querySelector("[data-edit='resize-lock']");
+    if (lock) {
+      const on = tab.resizeLock !== false;
+      lock.classList.toggle("is-on", on);
+      lock.setAttribute("aria-pressed", on ? "true" : "false");
+      lock.textContent = on ? "Lock" : "Free";
+    }
+    const wIn = editorPane && editorPane.querySelector("[data-resize-w]");
+    const hIn = editorPane && editorPane.querySelector("[data-resize-h]");
+    if (wIn && document.activeElement !== wIn && w) wIn.value = String(w);
+    if (hIn && document.activeElement !== hIn && h) hIn.value = String(h);
+    paintResizePreview(tab);
+  }
+
+  function setResizeNatural(tab, nw, nh) {
+    if (!tab || !nw || !nh) return;
+    tab.resizeNatural = { w: nw, h: nh };
+    if (!tab.resizeW || !tab.resizeH) {
+      tab.resizeW = nw;
+      tab.resizeH = nh;
+    }
+    paintResizeHead(tab);
+  }
+
+  function setResizeWidth(tab, value) {
+    if (!tab || !tab.resizing) return;
+    const w = resizeDim(value);
+    tab.resizeW = w;
+    if (tab.resizeLock !== false && tab.resizeNatural) {
+      tab.resizeH = resizeDim((w * tab.resizeNatural.h) / tab.resizeNatural.w);
+    }
+    paintResizeHead(tab);
+  }
+
+  function setResizeHeight(tab, value) {
+    if (!tab || !tab.resizing) return;
+    const h = resizeDim(value);
+    tab.resizeH = h;
+    if (tab.resizeLock !== false && tab.resizeNatural) {
+      tab.resizeW = resizeDim((h * tab.resizeNatural.w) / tab.resizeNatural.h);
+    }
+    paintResizeHead(tab);
+  }
+
+  function toggleResizeLock(tab) {
+    if (!tab || !tab.resizing) return;
+    tab.resizeLock = tab.resizeLock === false;
+    if (tab.resizeLock !== false && tab.resizeNatural && tab.resizeW) {
+      tab.resizeH = resizeDim((tab.resizeW * tab.resizeNatural.h) / tab.resizeNatural.w);
+    }
+    paintResizeHead(tab);
+  }
+
+  function mountResizePreview(tab) {
+    const body = editorPane && editorPane.querySelector(".chat-editor-body.is-resize");
+    if (!body || !tab) return;
+    const img = body.querySelector("img");
+    if (!img) return;
+    const ready = () => setResizeNatural(tab, img.naturalWidth, img.naturalHeight);
+    if (img.complete && img.naturalWidth) ready();
+    else img.addEventListener("load", ready, { once: true });
+    paintResizePreview(tab);
+  }
+
+  function beginResize(tab) {
+    if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
+    clearPunchState(tab);
+    if (punchResize) {
+      punchResize.disconnect();
+      punchResize = null;
+    }
+    tab.cropping = false;
+    tab.cropBox = null;
+    tab.cropNatural = null;
+    cropDrag = null;
+    if (cropResize) {
+      cropResize.disconnect();
+      cropResize = null;
+    }
+    tab.resizing = true;
+    tab.resizeW = null;
+    tab.resizeH = null;
+    tab.resizeNatural = null;
+    if (tab.resizeLock == null) tab.resizeLock = true;
+    tab.note = "";
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  function beginResizePath(path) {
+    openFileTab(path);
+    const tab = findTab(path);
+    if (tab) beginResize(tab);
+  }
+
+  function cancelResize(tab) {
+    if (!tab || !tab.resizing) return;
+    clearResizeState(tab);
+    tab.note = "";
+    if (editorPane) editorPane.dataset.key = "";
+    renderEditorPane();
+  }
+
+  async function applyResize(tab) {
+    if (!tab || !tab.resizing || tab.busy || !resizeChanged(tab)) return;
+    const w = resizeDim(tab.resizeW);
+    const h = resizeDim(tab.resizeH);
+    const chatId = activeWorkspaceId();
+    const path = tab.path;
+    tab.busy = true;
+    tab.note = "";
+    paintEditorHead();
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/resize`, {
+        method: "POST",
+        body: { path, width: w, height: h },
+      });
+      if (chatId !== activeWorkspaceId()) return;
+      tab.busy = false;
+      clearResizeState(tab);
+      applyListing(data);
+      const live = findTab(path) || tab;
+      const saved = filesListing.find((item) => item.path === path);
+      live.size = saved ? Number(saved.size) || Number(data.bytes) || live.size : Number(data.bytes) || live.size;
+      live.state = "image";
+      live.rev += 1;
+      live.note = data.dimensions ? `Resized to ${data.dimensions.replace("x", " × ")}.` : "Resized.";
       reloadPreviewIfNeeded();
       if (editorPane) editorPane.dataset.key = "";
       paintTabsAndFiles();
@@ -3723,6 +3925,7 @@ function mountChat(root) {
       cropResize.disconnect();
       cropResize = null;
     }
+    clearResizeState(tab);
     tab.punching = true;
     tab.punchSeeds = [];
     tab.punchBoxes = [];
@@ -7880,6 +8083,11 @@ function mountChat(root) {
         event.preventDefault();
         return;
       }
+      if (cropTab && cropTab.resizing) {
+        cancelResize(cropTab);
+        event.preventDefault();
+        return;
+      }
       if (editorFindBar && !editorFindBar.hidden) {
         closeEditorFind();
         event.preventDefault();
@@ -7915,12 +8123,17 @@ function mountChat(root) {
     }
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
       const cropTab = activeTabRow();
-      if (cropTab && (cropTab.cropping || cropTab.punching)) {
+      if (cropTab && (cropTab.cropping || cropTab.punching || cropTab.resizing)) {
         const tag = String((event.target && event.target.tagName) || "").toLowerCase();
-        if (tag !== "textarea" && tag !== "input" && tag !== "select" && !(event.target && event.target.isContentEditable)) {
+        const resizeField = event.target.closest("[data-resize-w],[data-resize-h]");
+        if (
+          resizeField ||
+          (tag !== "textarea" && tag !== "input" && tag !== "select" && !(event.target && event.target.isContentEditable))
+        ) {
           event.preventDefault();
           if (cropTab.cropping) applyCrop(cropTab);
-          else applyPunch(cropTab);
+          else if (cropTab.punching) applyPunch(cropTab);
+          else applyResize(cropTab);
           return;
         }
       }
@@ -9380,6 +9593,7 @@ function mountChat(root) {
     return [
       { label: "Open", run: () => openFileTab(path) },
       row && row.kind === "image" ? { label: "Crop", run: () => beginCropPath(path) } : null,
+      row && row.kind === "image" ? { label: "Resize", run: () => beginResizePath(path) } : null,
       row && row.kind === "image" ? { label: "Make transparent", run: () => beginPunchPath(path) } : null,
       { label: attached ? "Remove from chat" : "Add to chat", run: () => {
         attachProjectFile(path).catch((err) => addBubble("assistant", `Error: ${err.message}`));
@@ -10156,12 +10370,21 @@ function mountChat(root) {
       if (btn.dataset.edit === "punch-cancel" && tab) cancelPunch(tab);
       if (btn.dataset.edit === "punch-apply" && tab) applyPunch(tab);
       if (btn.dataset.edit === "punch-contiguous" && tab) togglePunchContiguous(tab);
+      if (btn.dataset.edit === "resize" && tab) beginResize(tab);
+      if (btn.dataset.edit === "resize-cancel" && tab) cancelResize(tab);
+      if (btn.dataset.edit === "resize-apply" && tab) applyResize(tab);
+      if (btn.dataset.edit === "resize-lock" && tab) toggleResizeLock(tab);
     });
     editorPane.addEventListener("input", (event) => {
-      const slider = event.target.closest("[data-punch-tolerance]");
-      if (!slider) return;
       const tab = activeTabRow();
-      if (tab) setPunchTolerance(tab, slider.value);
+      if (!tab) return;
+      const slider = event.target.closest("[data-punch-tolerance]");
+      if (slider) {
+        setPunchTolerance(tab, slider.value);
+        return;
+      }
+      if (event.target.closest("[data-resize-w]")) setResizeWidth(tab, event.target.value);
+      if (event.target.closest("[data-resize-h]")) setResizeHeight(tab, event.target.value);
     });
   }
   if (filesSiteBtn) {
