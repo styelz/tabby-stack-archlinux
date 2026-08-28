@@ -2468,7 +2468,13 @@ function mountChat(root) {
         );
       }
       if (tab.resizing) {
-        return `<div class="chat-editor-body is-image is-resize"><div class="chat-image-stage chat-resize-stage">${img}</div></div>`;
+        const handles = ["nw", "n", "ne", "w", "e", "sw", "s", "se"]
+          .map((name) => `<button type="button" class="chat-crop-handle" data-resize-handle="${name}" aria-label="Resize ${name}"></button>`)
+          .join("");
+        return (
+          `<div class="chat-editor-body is-image is-resize"><div class="chat-image-stage chat-resize-stage">${img}` +
+          `<div class="chat-resize-box" data-resize-box>${handles}</div></div></div>`
+        );
       }
       if (!tab.cropping) {
         return `<div class="chat-editor-body is-image"><div class="chat-image-stage">${img}</div></div>`;
@@ -3352,6 +3358,7 @@ function mountChat(root) {
     if (!tab || !isImageTab(tab) || isHistoryTab(tab)) return;
     clearPunchState(tab);
     clearResizeState(tab);
+    dropSizeDrag();
     if (punchResize) {
       punchResize.disconnect();
       punchResize = null;
@@ -3419,6 +3426,16 @@ function mountChat(root) {
   }
 
   const RESIZE_MAX = 8192;
+  let sizeDrag = null;
+  let sizeObs = null;
+
+  function dropSizeDrag() {
+    sizeDrag = null;
+    if (sizeObs) {
+      sizeObs.disconnect();
+      sizeObs = null;
+    }
+  }
 
   function clearResizeState(tab) {
     if (!tab) return;
@@ -3426,12 +3443,37 @@ function mountChat(root) {
     tab.resizeW = null;
     tab.resizeH = null;
     tab.resizeNatural = null;
+    sizeDrag = null;
   }
 
   function resizeDim(value) {
     const n = Math.round(Number(value));
     if (!Number.isFinite(n)) return 0;
     return Math.max(1, Math.min(RESIZE_MAX, n));
+  }
+
+  function applyResizeHandle(origin, handle, dx, dy, lock, natural) {
+    const east = handle.includes("e");
+    const west = handle.includes("w");
+    const north = handle.includes("n");
+    const south = handle.includes("s");
+    let w = origin.w;
+    let h = origin.h;
+    if (lock && natural && natural.w && natural.h) {
+      if (east || west) {
+        w = resizeDim(east ? origin.w + dx : origin.w - dx);
+        h = resizeDim((w * natural.h) / natural.w);
+      } else {
+        h = resizeDim(south ? origin.h + dy : origin.h - dy);
+        w = resizeDim((h * natural.w) / natural.h);
+      }
+    } else {
+      if (east) w = resizeDim(origin.w + dx);
+      if (west) w = resizeDim(origin.w - dx);
+      if (south) h = resizeDim(origin.h + dy);
+      if (north) h = resizeDim(origin.h - dy);
+    }
+    return { w, h };
   }
 
   function resizeChanged(tab) {
@@ -3519,14 +3561,62 @@ function mountChat(root) {
   }
 
   function mountResizePreview(tab) {
+    dropSizeDrag();
     const body = editorPane && editorPane.querySelector(".chat-editor-body.is-resize");
     if (!body || !tab) return;
+    const stage = body.querySelector(".chat-resize-stage");
     const img = body.querySelector("img");
-    if (!img) return;
+    if (!stage || !img) return;
     const ready = () => setResizeNatural(tab, img.naturalWidth, img.naturalHeight);
     if (img.complete && img.naturalWidth) ready();
     else img.addEventListener("load", ready, { once: true });
     paintResizePreview(tab);
+    if (typeof ResizeObserver === "function") {
+      sizeObs = new ResizeObserver(() => paintResizePreview(tab));
+      sizeObs.observe(stage);
+    }
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || tab.busy) return;
+      const handleEl = event.target.closest("[data-resize-handle]");
+      if (!handleEl || !tab.resizeW || !tab.resizeH) return;
+      event.preventDefault();
+      stage.setPointerCapture(event.pointerId);
+      const rect = stage.getBoundingClientRect();
+      sizeDrag = {
+        tab,
+        handle: handleEl.dataset.resizeHandle,
+        start: { x: event.clientX, y: event.clientY },
+        origin: { w: tab.resizeW, h: tab.resizeH },
+        scaleX: (rect.width || 1) / tab.resizeW,
+        scaleY: (rect.height || 1) / tab.resizeH,
+      };
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!sizeDrag || sizeDrag.tab !== tab) return;
+      const lock = event.shiftKey ? tab.resizeLock === false : tab.resizeLock !== false;
+      const next = applyResizeHandle(
+        sizeDrag.origin,
+        sizeDrag.handle,
+        (event.clientX - sizeDrag.start.x) / sizeDrag.scaleX,
+        (event.clientY - sizeDrag.start.y) / sizeDrag.scaleY,
+        lock,
+        tab.resizeNatural
+      );
+      tab.resizeW = next.w;
+      tab.resizeH = next.h;
+      paintResizeHead(tab);
+    });
+    const endDrag = (event) => {
+      if (!sizeDrag || sizeDrag.tab !== tab) return;
+      sizeDrag = null;
+      try {
+        stage.releasePointerCapture(event.pointerId);
+      } catch {
+        /* already released */
+      }
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
   }
 
   function beginResize(tab) {
@@ -3563,6 +3653,7 @@ function mountChat(root) {
   function cancelResize(tab) {
     if (!tab || !tab.resizing) return;
     clearResizeState(tab);
+    dropSizeDrag();
     tab.note = "";
     if (editorPane) editorPane.dataset.key = "";
     renderEditorPane();
@@ -3585,6 +3676,7 @@ function mountChat(root) {
       if (chatId !== activeWorkspaceId()) return;
       tab.busy = false;
       clearResizeState(tab);
+      dropSizeDrag();
       applyListing(data);
       const live = findTab(path) || tab;
       const saved = filesListing.find((item) => item.path === path);
@@ -3926,6 +4018,7 @@ function mountChat(root) {
       cropResize = null;
     }
     clearResizeState(tab);
+    dropSizeDrag();
     tab.punching = true;
     tab.punchSeeds = [];
     tab.punchBoxes = [];
