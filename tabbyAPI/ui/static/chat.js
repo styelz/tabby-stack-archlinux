@@ -5788,6 +5788,7 @@ function mountChat(root) {
 
   function attachMsgActions(host, role, idx, text) {
     if (!host || idx == null || idx < 0) return;
+    host.dataset.msgIdx = String(idx);
     host.querySelectorAll(".chat-meta").forEach((node) => node.remove());
     const meta = document.createElement("div");
     meta.className = "chat-meta";
@@ -5848,6 +5849,15 @@ function mountChat(root) {
     if (activeMode() !== "code") return false;
     if (modelLoading || inFlight) return false;
     return idx === lastUnbuiltPlanIndex();
+  }
+
+  function refreshPlanBuild() {
+    if (!log) return;
+    log.querySelectorAll(".chat-plan-build").forEach((node) => node.remove());
+    const idx = lastUnbuiltPlanIndex();
+    if (idx < 0) return;
+    const host = log.querySelector(`[data-msg-idx="${idx}"]`);
+    if (host) attachPlanBuild(host, idx);
   }
 
   function attachPlanBuild(host, idx) {
@@ -9024,6 +9034,7 @@ function mountChat(root) {
       setLoadingBanner("");
       stopLoadingClock();
       paintCompose();
+      refreshPlanBuild();
     });
     return modelWait;
   }
@@ -9584,6 +9595,7 @@ function mountChat(root) {
       flightChatId = "";
       paintCompose();
       renderSidebar();
+      refreshPlanBuild();
       input.focus();
     }
   }
