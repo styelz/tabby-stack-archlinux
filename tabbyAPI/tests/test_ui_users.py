@@ -143,6 +143,37 @@ class UiChatsTests(unittest.TestCase):
         self.assertEqual(chats.chat_count("alice"), 1)
         self.assertEqual(chats.chat_count("bob"), 0)
 
+    def test_append_flight_assistant_keeps_steps(self):
+        chats.save_store(
+            "alice",
+            {
+                "version": 1,
+                "activeId": "c1",
+                "chats": [
+                    {
+                        "id": "c1",
+                        "title": "Hi",
+                        "updatedAt": 1,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    }
+                ],
+            },
+        )
+        chats.append_flight_assistant(
+            "alice",
+            "c1",
+            content="Wrote index.html",
+            reasoning="thinking",
+            elapsed_s=3,
+            status_label="Replied",
+            steps=[{"type": "tool", "name": "Write", "label": "Writing index.html"}],
+        )
+        store = chats.load_store("alice")
+        last = store["chats"][0]["messages"][-1]
+        self.assertEqual(last["role"], "assistant")
+        self.assertEqual(last["content"], "Wrote index.html")
+        self.assertEqual(last["steps"][0]["name"], "Write")
+
 
 class UiUserUsageTests(unittest.TestCase):
     def setUp(self):

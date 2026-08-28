@@ -125,7 +125,15 @@ async def stream_code_only(
     chat_id: str,
     agent: str = "agent",
 ):
-    from ui.code_agent import final_code_text, iter_code_turns, normalize_agent
+    from time import time as now
+
+    from ui.code_agent import (
+        final_code_text,
+        iter_code_turns,
+        normalize_agent,
+        remaining_stream_text,
+        sse_for_code_event,
+    )
 
     kind = normalize_agent(agent)
     start = "Updating project"
@@ -139,22 +147,36 @@ async def stream_code_only(
         text = ""
         written: list[str] = []
         last_usage = None
+        streamed_answer = ""
+        chunk_id = f"chatcmpl-{uuid4().hex}"
+        created = int(now())
         yield ServerSentEvent(comment=f"{STATUS_MARK} {start}")
         async for event in iter_code_turns(
             sync, disconnect_handler, username, chat_id, agent=kind
         ):
-            if event[0] == "status":
-                yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
-            elif event[0] == "usage":
+            kind_ev = event[0]
+            if kind_ev == "content":
+                streamed_answer += str(event[1] or "")
+            elif kind_ev == "demote":
+                streamed_answer = ""
+            elif kind_ev == "usage":
                 last_usage = event[1]
                 note = usage_comment(last_usage)
                 if note:
                     yield ServerSentEvent(comment=note)
-            elif event[0] == "done":
+                continue
+            elif kind_ev == "done":
                 text = event[1] or ""
                 written = list(event[2] or [])
-        async for chunk in stream_text(data, final_code_text(text, written)):
-            yield chunk
+                continue
+            for item in sse_for_code_event(
+                event, data, chunk_id=chunk_id, created=created
+            ):
+                yield item
+        rest = remaining_stream_text(final_code_text(text, written), streamed_answer)
+        if rest:
+            async for chunk in stream_text(data, rest):
+                yield chunk
         payload = usage_sse_data(last_usage)
         if payload:
             yield payload

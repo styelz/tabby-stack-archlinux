@@ -15,6 +15,9 @@ from ui import workspace
 MAX_CODE_TURNS = 16
 MAX_BRIEF_FILES = 80
 MAX_PLAN_NUDGES = 2
+MAX_STEP_RESULT = 500
+MAX_STEP_ARG = 200
+AGENT_STEP_MARK = "tabby-agent-step:"
 AGENT_KINDS = ("agent", "ask", "plan")
 CODE_SYSTEM = (
     "You are coding in a workspace project folder on this Tabby Stack host. "
@@ -616,6 +619,221 @@ def summarize_writes(paths: list[str]) -> str:
     )
 
 
+def truncate_step_text(text: Any, limit: int = MAX_STEP_RESULT) -> str:
+    body = str(text or "")
+    if len(body) <= limit:
+        return body
+    return body[:limit].rstrip() + "…"
+
+
+def tool_step_args(args: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(args, dict):
+        return out
+    path = _arg_path(args)
+    if path:
+        out["path"] = path
+    dest = _arg_dest(args)
+    if dest:
+        out["to"] = dest
+    cmd = str(args.get("command") or args.get("cmd") or "").strip()
+    if cmd:
+        out["command"] = truncate_step_text(cmd, MAX_STEP_ARG)
+    return out
+
+
+def tool_step_payload(name: str, args: dict, label: str, result: str) -> dict[str, Any]:
+    return {
+        "type": "tool",
+        "name": str(name or ""),
+        "label": str(label or ""),
+        "args": tool_step_args(args if isinstance(args, dict) else {}),
+        "result": truncate_step_text(result),
+    }
+
+
+def format_agent_step_comment(step: dict[str, Any]) -> str:
+    return f"{AGENT_STEP_MARK} {json.dumps(step, separators=(',', ':'), ensure_ascii=False)}"
+
+
+def remaining_stream_text(final: str, streamed: str) -> str:
+    """Text still needed after live content deltas. Empty means do not dump again."""
+    final = str(final or "")
+    streamed = str(streamed or "")
+    if not final or final == streamed:
+        return ""
+    if streamed and final.startswith(streamed):
+        return final[len(streamed) :]
+    return final
+
+
+def parse_completion_chunk(raw: Any) -> Optional[dict[str, Any]]:
+    if raw is None or raw == "[DONE]":
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    text = str(raw).strip()
+    if text.startswith("data:"):
+        text = text[5:].strip()
+    if not text or text == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _tool_calls_from_dumps(dumps: Any) -> Optional[list]:
+    from endpoints.OAI.types.tools import Tool, ToolCall
+
+    if not dumps:
+        return None
+    calls = []
+    for item in dumps:
+        if isinstance(item, ToolCall):
+            calls.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") or {}
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "")
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, dict):
+            args = json.dumps(args, separators=(",", ":"))
+        else:
+            args = str(args or "")
+        fields: dict[str, Any] = {
+            "function": Tool(name=name, arguments=args),
+            "type": "function",
+        }
+        if item.get("id"):
+            fields["id"] = str(item["id"])
+        if item.get("index") is not None:
+            fields["index"] = item["index"]
+        calls.append(ToolCall(**fields))
+    return calls or None
+
+
+def message_from_stream(
+    content: str,
+    reasoning: str,
+    tool_dumps: Any,
+) -> ChatCompletionMessage:
+    return ChatCompletionMessage(
+        role="assistant",
+        content=content or None,
+        reasoning_content=reasoning or None,
+        tool_calls=_tool_calls_from_dumps(tool_dumps),
+    )
+
+
+def _chunk_error(parsed: dict[str, Any]) -> str:
+    err = parsed.get("error")
+    if not err:
+        return ""
+    if isinstance(err, dict):
+        return str(err.get("message") or "Chat failed")
+    return str(err)
+
+
+def sse_for_code_event(
+    event: tuple,
+    data: ChatCompletionRequest,
+    *,
+    chunk_id: str,
+    created: int,
+) -> list[Any]:
+    """Turn one iter_code_turns event into SSE comments or OpenAI chunk JSON."""
+    from common.phrase_switch import stream_chat_delta
+    from images.chat import STATUS_MARK
+    from sse_starlette import ServerSentEvent
+
+    kind = event[0]
+    if kind == "status":
+        return [ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")]
+    if kind == "reasoning":
+        return [
+            stream_chat_delta(
+                data,
+                {"reasoning_content": event[1]},
+                chunk_id=chunk_id,
+                created=created,
+            )
+        ]
+    if kind == "content":
+        return [
+            stream_chat_delta(
+                data,
+                {"content": event[1]},
+                chunk_id=chunk_id,
+                created=created,
+            )
+        ]
+    if kind == "demote":
+        return [ServerSentEvent(comment=format_agent_step_comment({"type": "demote"}))]
+    if kind == "tool":
+        payload = event[1] if isinstance(event[1], dict) else {"type": "tool"}
+        return [ServerSentEvent(comment=format_agent_step_comment(payload))]
+    return []
+
+
+async def stream_code_completion(
+    working: ChatCompletionRequest,
+    prompt,
+    embeddings,
+    request,
+    model_path,
+    disconnect_handler,
+) -> AsyncIterator[tuple[str, Any]]:
+    """Yield reasoning/content deltas, then ('turn', message, usage, error)."""
+    from common.assistant_text import strip_apology_sse
+    from endpoints.OAI.utils.chat_completion import stream_generate_chat_completion
+
+    streamed = working.model_copy(update={"stream": True, "n": 1})
+    content = ""
+    reasoning = ""
+    tool_dumps: Any = None
+    usage = None
+    error = ""
+    async for raw in strip_apology_sse(
+        stream_generate_chat_completion(
+            prompt, embeddings, streamed, request, model_path, disconnect_handler
+        )
+    ):
+        parsed = parse_completion_chunk(raw)
+        if parsed is None:
+            continue
+        err = _chunk_error(parsed)
+        if err:
+            error = err
+            break
+        if parsed.get("usage") is not None:
+            usage = parsed["usage"]
+        choice = (parsed.get("choices") or [{}])[0] or {}
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") or {}
+        if not isinstance(delta, dict):
+            delta = {}
+        reason_delta = delta.get("reasoning_content") or ""
+        content_delta = delta.get("content") or ""
+        if reason_delta:
+            reasoning += str(reason_delta)
+            yield ("reasoning", str(reason_delta))
+        if content_delta:
+            content += str(content_delta)
+            yield ("content", str(content_delta))
+        tools = delta.get("tool_calls")
+        if tools:
+            tool_dumps = tools
+    yield ("turn", message_from_stream(content, reasoning, tool_dumps), usage, error)
+
+
 async def iter_code_turns(
     data: ChatCompletionRequest,
     disconnect_handler,
@@ -623,11 +841,10 @@ async def iter_code_turns(
     chat_id: str,
     agent: str = "agent",
 ) -> AsyncIterator[tuple[str, Any]]:
-    """Yield ('status', label), ('usage', usage), then ('done', text, written_paths)."""
+    """Yield status, live tokens, tool steps, usage, then ('done', text, written_paths)."""
     from common import model
-    from common.assistant_text import strip_response_apologies
     from common.networking import DisconnectHandler, generation_request
-    from endpoints.OAI.utils.chat_completion import apply_chat_template, generate_chat_completion
+    from endpoints.OAI.utils.chat_completion import apply_chat_template
 
     container = getattr(model, "container", None)
     if not container or not getattr(container, "loaded", False):
@@ -648,7 +865,7 @@ async def iter_code_turns(
     empty = "empty project" in workspace_file_brief(username, chat_id)
     working = data.model_copy(
         update={
-            "stream": False,
+            "stream": True,
             "n": 1,
             "tools": code_tool_specs(kind),
             "tool_choice": "none" if kind == "plan" and empty else "auto",
@@ -667,20 +884,27 @@ async def iter_code_turns(
     for _turn in range(MAX_CODE_TURNS):
         if disconnect_handler:
             await disconnect_handler.poll()
+        message = None
+        usage = None
+        turn_error = ""
         try:
             prompt, embeddings = await apply_chat_template(working)
-            response = await generate_chat_completion(
-                prompt, embeddings, working, request, model_path, nested
-            )
-            response = strip_response_apologies(response)
+            async for event in stream_code_completion(
+                working, prompt, embeddings, request, model_path, nested
+            ):
+                if event[0] in ("reasoning", "content"):
+                    yield event
+                elif event[0] == "turn":
+                    message, usage, turn_error = event[1], event[2], event[3]
         except Exception as exc:
             xlogger.warning(f"UI code turn failed: {exc}")
             yield ("done", last_text or f"Coding stopped: {exc}", written)
             return
-        usage = getattr(response, "usage", None)
         if usage is not None:
             yield ("usage", usage)
-        message = _assistant_message(response)
+        if turn_error:
+            yield ("done", last_text or f"Coding stopped: {turn_error}", written)
+            return
         if message is None:
             yield ("done", last_text or "The model returned an empty reply.", written)
             return
@@ -693,6 +917,8 @@ async def iter_code_turns(
                 and not plan_looks_complete(last_text)
             ):
                 plan_nudges += 1
+                if last_text.strip():
+                    yield ("demote",)
                 working.messages.append(message)
                 working.messages.append(
                     ChatCompletionMessage(role="user", content=PLAN_RETRY)
@@ -701,6 +927,8 @@ async def iter_code_turns(
                 continue
             yield ("done", last_text, written)
             return
+        if last_text.strip():
+            yield ("demote",)
         working.messages.append(message)
         for name, args, call_id in pairs:
             try:
@@ -721,6 +949,7 @@ async def iter_code_turns(
                 if path and path not in written:
                     written.append(path)
             yield ("status", label)
+            yield ("tool", tool_step_payload(name, args, label, result))
             working.messages.append(
                 ChatCompletionMessage(
                     role="tool",

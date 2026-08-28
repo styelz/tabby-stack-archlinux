@@ -459,6 +459,7 @@ def append_flight_assistant(
     reasoning: str = "",
     elapsed_s: Optional[int] = None,
     status_label: str = "",
+    steps: Optional[list] = None,
 ) -> None:
     """Write a finished console reply so a reload can show it."""
     cid = str(chat_id or "").strip()
@@ -466,7 +467,8 @@ def append_flight_assistant(
         return
     text = str(content or "")
     thought = str(reasoning or "")
-    if not text.strip() and not thought.strip():
+    stored_steps = [step for step in (steps or []) if isinstance(step, dict)]
+    if not text.strip() and not thought.strip() and not stored_steps:
         return
     store = load_store(username)
     for chat in store.get("chats") or []:
@@ -498,6 +500,8 @@ def append_flight_assistant(
         label = str(status_label or "").strip()
         if label:
             item["status_label"] = label
+        if stored_steps:
+            item["steps"] = stored_steps
         messages.append(item)
         chat["updatedAt"] = item["createdAt"]
         save_store(username, store)

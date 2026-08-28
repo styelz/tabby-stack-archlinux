@@ -884,7 +884,12 @@ async def _stream_code_then_images(
     agent: str = "agent",
 ):
     from common.phrase_switch import stream_text, text_response as _text
-    from ui.code_agent import final_code_text, iter_code_turns
+    from ui.code_agent import (
+        final_code_text,
+        iter_code_turns,
+        remaining_stream_text,
+        sse_for_code_event,
+    )
 
     workspace = (owner, chat_id)
     sync = data.model_copy(update={"stream": False})
@@ -892,22 +897,35 @@ async def _stream_code_then_images(
     written: list[str] = []
     text = ""
     code_ran = False
+    streamed_answer = ""
+    chunk_id = f"chatcmpl-{uuid4().hex}"
+    created = int(time.time())
 
     async def take_code(*, wait_s: float = 0.0):
-        nonlocal written, text, code_ran
+        nonlocal written, text, code_ran, streamed_answer
+        streamed_answer = ""
         if wait_s and not _code_model_ready():
             await _wait_code_model(wait_s)
         async for event in iter_code_turns(
             sync, disconnect_handler, owner, chat_id, agent=agent
         ):
             kind = event[0]
-            if kind == "status":
-                yield ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")
+            if kind == "content":
+                streamed_answer += str(event[1] or "")
+            elif kind == "demote":
+                streamed_answer = ""
             elif kind == "done":
                 text = event[1] or ""
                 written = list(event[2] or [])
                 if _code_pass_ran(text, written):
                     code_ran = True
+                continue
+            elif kind == "usage":
+                continue
+            for item in sse_for_code_event(
+                event, sync, chunk_id=chunk_id, created=created
+            ):
+                yield item
 
     async def retry_code_after_images():
         if code_ran:
@@ -967,8 +985,10 @@ async def _stream_code_then_images(
             out = picture_reply(started, copied)
         else:
             out = final_code_text(text, written)
-        async for chunk in stream_text(data, out):
-            yield chunk
+        rest = remaining_stream_text(out, streamed_answer)
+        if rest:
+            async for chunk in stream_text(data, rest):
+                yield chunk
 
     if data.stream:
         return EventSourceResponse(

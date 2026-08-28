@@ -733,6 +733,11 @@ function mountChat(root) {
         const agent = normalizeAgent(item.agent);
         if (agent === "ask" || agent === "plan") out.agent = agent;
         if (item.origin) out.origin = String(item.origin);
+        if (Array.isArray(item.steps) && item.steps.length) {
+          out.steps = item.steps
+            .filter((step) => step && typeof step === "object")
+            .map((step) => Object.assign({}, step));
+        }
       }
       if (item.hidden) out.hidden = true;
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
@@ -7254,6 +7259,7 @@ function mountChat(root) {
         activity: isImage ? { kind: "image" } : undefined,
         elapsed_s: extra && extra.elapsed_s,
         status_label: extra && extra.status_label,
+        steps: extra && extra.steps,
       });
       if (idx != null && idx >= 0) turn.node.dataset.msgIdx = String(idx);
       attachSwitchLlm(turn.bubble || turn.node, text);
@@ -7419,7 +7425,7 @@ function mountChat(root) {
     return reasoning ? "Thought" : "Replied";
   }
 
-  function addAssistantTurn({ content, reasoning, live, activity, elapsed_s, status_label }) {
+  function addAssistantTurn({ content, reasoning, live, activity, elapsed_s, status_label, steps: initialSteps }) {
     const turn = document.createElement("div");
     turn.className = live ? "chat-turn assistant is-working" : "chat-turn assistant";
     turn.setAttribute("aria-live", live ? "polite" : "off");
@@ -7488,6 +7494,13 @@ function mountChat(root) {
     }
 
     let reasoningText = reasoning ? String(reasoning) : "";
+    let reasoningFromModel = Boolean(reasoningText);
+    const steps = [];
+    if (Array.isArray(initialSteps)) {
+      initialSteps.forEach((step) => {
+        if (step && typeof step === "object") steps.push(step);
+      });
+    }
     let finished = !live;
     let expanded = false;
     let processing = Boolean(activity && activity.processing);
@@ -7531,13 +7544,56 @@ function mountChat(root) {
       return settledLabel({ kind, target, reasoning: reasoningText, answer: answerText });
     }
 
+    function renderAgentStep(step) {
+      const row = document.createElement("div");
+      const kind = String((step && step.type) || "");
+      row.className = kind === "said" ? "agent-step agent-step-said" : "agent-step";
+      if (kind === "said") {
+        const body = document.createElement("div");
+        body.className = "agent-step-said-body";
+        body.innerHTML = TabbyUI.renderMarkdown(String((step && step.content) || ""));
+        row.appendChild(body);
+        return row;
+      }
+      const title = document.createElement("div");
+      title.className = "agent-step-head";
+      title.textContent = String((step && (step.label || step.name)) || "Tool");
+      row.appendChild(title);
+      const args = (step && step.args) || {};
+      const detail = [args.path, args.to, args.command].filter(Boolean).join(" → ");
+      if (detail) {
+        const meta = document.createElement("div");
+        meta.className = "agent-step-args";
+        meta.textContent = detail;
+        row.appendChild(meta);
+      }
+      if (step && step.result) {
+        const pre = document.createElement("pre");
+        pre.className = "agent-step-result";
+        pre.textContent = String(step.result);
+        row.appendChild(pre);
+      }
+      return row;
+    }
+
+    function hasTrace() {
+      return Boolean(reasoningText || steps.length);
+    }
+
     function paintThought() {
-      if (!reasoningText) {
+      if (!hasTrace()) {
         thought.hidden = true;
         thought.innerHTML = "";
         return;
       }
-      thought.innerHTML = TabbyUI.renderMarkdown(reasoningText);
+      thought.innerHTML = "";
+      if (reasoningText) {
+        const block = document.createElement("div");
+        block.className = "think-reason";
+        block.innerHTML = TabbyUI.renderMarkdown(reasoningText);
+        thought.appendChild(block);
+      }
+      steps.forEach((step) => thought.appendChild(renderAgentStep(step)));
       thought.hidden = finished ? !expanded : false;
     }
 
@@ -7547,9 +7603,11 @@ function mountChat(root) {
       lastNote = line;
       if (!statusNotes.includes(line)) statusNotes.push(line);
       if (finished) return;
-      reasoningText = line;
-      paintThought();
-      thought.hidden = false;
+      if (!reasoningFromModel && !steps.length) {
+        reasoningText = line;
+        paintThought();
+        thought.hidden = false;
+      }
       stickLog();
     }
 
@@ -7579,7 +7637,7 @@ function mountChat(root) {
       }
       if (seconds != null) elapsedSec = seconds;
       head.hidden = false;
-      const canExpand = Boolean(reasoningText);
+      const canExpand = hasTrace();
       chevron.hidden = !canExpand;
       head.classList.toggle("is-clickable", canExpand);
       if (canExpand) {
@@ -7612,7 +7670,7 @@ function mountChat(root) {
     }
 
     function toggleThought() {
-      if (!finished || !reasoningText) return;
+      if (!finished || !hasTrace()) return;
       expanded = !expanded;
       thought.hidden = !expanded;
       head.classList.toggle("is-open", expanded);
@@ -7644,8 +7702,33 @@ function mountChat(root) {
         if (opts && opts.note) addStatusNote(opts.note);
       },
       addStatusNote,
+      addStep(step) {
+        if (!step || typeof step !== "object") return;
+        if (!reasoningFromModel && reasoningText && statusNotes.includes(reasoningText)) {
+          reasoningText = "";
+        }
+        if (step.type === "demote") {
+          const draft = visibleAnswerText(answerText);
+          if (draft) steps.push({ type: "said", content: String(answerText) });
+          answerText = "";
+          if (bubbleMounted) {
+            bubble.innerHTML = "";
+            bubble.hidden = true;
+            turn.classList.remove("has-answer");
+          }
+          paintThought();
+          if (hasTrace()) thought.hidden = false;
+          stickLog();
+          return;
+        }
+        steps.push(step);
+        paintThought();
+        thought.hidden = false;
+        stickLog();
+      },
       setReasoning(text) {
         if (!text) return;
+        reasoningFromModel = true;
         reasoningText = text;
         if (!finished) {
           label.textContent = "Thinking";
@@ -7665,14 +7748,21 @@ function mountChat(root) {
           finished = true;
           settleThought(seconds);
           paintThought();
-        } else if (reasoningText || statusNotes.length) {
+        } else if (!finished && hasTrace()) {
+          thought.hidden = false;
+        } else if (reasoningText || statusNotes.length || steps.length) {
           thought.hidden = true;
         }
         stickLog();
       },
       finish({ content: finalContent, reasoning: finalReasoning, stopped } = {}) {
         if (finished && !live) {
-          return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
+          return {
+            reasoning: reasoningText,
+            elapsed_s: elapsedSec,
+            status_label: label.textContent,
+            steps: steps.slice(),
+          };
         }
         const alreadySettled = finished;
         finished = true;
@@ -7685,8 +7775,9 @@ function mountChat(root) {
         if (kind === "image") {
           foldNotesIntoThought();
         } else if (finalReasoning) {
+          reasoningFromModel = true;
           reasoningText = String(finalReasoning);
-        } else {
+        } else if (!steps.length) {
           foldNotesIntoThought();
         }
         const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
@@ -7707,7 +7798,12 @@ function mountChat(root) {
           label.textContent = headLabel();
         }
         stickLog();
-        return { reasoning: reasoningText, elapsed_s: elapsedSec, status_label: label.textContent };
+        return {
+          reasoning: reasoningText,
+          elapsed_s: elapsedSec,
+          status_label: label.textContent,
+          steps: steps.slice(),
+        };
       },
       stopClock() {
         if (ticker) {
@@ -7735,7 +7831,14 @@ function mountChat(root) {
   }
 
   function messageFindText(item) {
-    return [item && item.content, item && item.reasoning].filter(Boolean).join("\n");
+    const stepText = Array.isArray(item && item.steps)
+      ? item.steps.map((step) => (
+        [step && step.label, step && step.name, step && step.result, step && step.content]
+          .filter(Boolean)
+          .join(" ")
+      )).join("\n")
+      : "";
+    return [item && item.content, item && item.reasoning, stepText].filter(Boolean).join("\n");
   }
 
   function collectFindHits(q) {
@@ -8506,10 +8609,21 @@ function mountChat(root) {
         comment.includes("tabby-image-job:") ||
         comment.includes("tabby-image-status:") ||
         comment.includes("tabby-stack-queue:") ||
-        comment.includes("tabby-context-usage:")
+        comment.includes("tabby-context-usage:") ||
+        comment.includes("tabby-agent-step:")
       ) {
         onEvent({ comment });
       }
+      comments.forEach((line) => {
+        if (!line.includes("tabby-agent-step:")) return;
+        const json = line.replace(/^[\s\S]*tabby-agent-step:\s*/, "");
+        try {
+          const step = JSON.parse(json);
+          if (step && typeof step === "object") onEvent({ step });
+        } catch {
+          /* ignore */
+        }
+      });
       const dataLines = chunk
         .split("\n")
         .filter((line) => line.startsWith("data:"))
@@ -9303,7 +9417,7 @@ function mountChat(root) {
                 .filter((line) => /tabby-image-status:/i.test(line))
                 .pop() || "";
               const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
-              if (label) working.setActivity(label, { processing: true });
+              if (label) working.setActivity(label, { processing: true, note: label });
               if (chatsShareWorkspace(chatId)) refreshFilesSoon();
               if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
                 const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
@@ -9312,6 +9426,11 @@ function mountChat(root) {
                   if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
                 }
               }
+            }
+            if (event.step) {
+              hideStackQueue(working);
+              if (event.step.type === "demote") assembled = "";
+              working.addStep(event.step);
             }
             if (event.reasoning) {
               hideStackQueue(working, { label: "Thinking", processing: false });
@@ -9351,6 +9470,7 @@ function mountChat(root) {
       await ensureModelWait(working, activity);
     }
     const userStopped = stopKind === "stop";
+    let savedSteps = [];
     const emptyReply = !String(assembled || "").trim() && !reasoning;
     const steerEmpty = stopKind === "steer" && emptyReply;
     if (resume && !stopKind && emptyReply) {
@@ -9363,14 +9483,16 @@ function mountChat(root) {
       if (done && done.reasoning) reasoning = done.reasoning;
       if (done && done.elapsed_s) elapsedSec = done.elapsed_s;
       if (done && done.status_label) statusLabel = done.status_label;
+      if (done && Array.isArray(done.steps)) savedSteps = done.steps;
     }
-    if (String(assembled || "").trim() || reasoning || userStopped) {
+    if (String(assembled || "").trim() || reasoning || userStopped || savedSteps.length) {
       const item = { role: "assistant", content: assembled, createdAt: Date.now() };
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
       if (userStopped) item.status_label = "Stopped";
       else if (statusLabel) item.status_label = statusLabel;
       if (sendAgent === "ask" || sendAgent === "plan") item.agent = sendAgent;
+      if (savedSteps.length) item.steps = savedSteps;
       const last = messages.length ? messages[messages.length - 1] : null;
       const already = Boolean(
         last && last.role === "assistant" && String(last.content || "") === assembled

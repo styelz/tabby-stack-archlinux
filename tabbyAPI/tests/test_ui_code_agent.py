@@ -122,6 +122,107 @@ class CodeAgentTests(unittest.TestCase):
         self.assertFalse(code_agent.is_build_prompt("design a site"))
         self.assertTrue(code_agent.is_build_prompt(quoted))
 
+    def test_truncate_step_text(self):
+        short = "hello"
+        self.assertEqual(code_agent.truncate_step_text(short), short)
+        long = "x" * (code_agent.MAX_STEP_RESULT + 20)
+        out = code_agent.truncate_step_text(long)
+        self.assertTrue(out.endswith("…"))
+        self.assertLessEqual(len(out), code_agent.MAX_STEP_RESULT + 1)
+
+    def test_tool_step_payload_truncates_read_result(self):
+        body = "line\n" * 200
+        step = code_agent.tool_step_payload(
+            "Read",
+            {"path": "index.html", "contents": "ignored"},
+            "Reading index.html",
+            body,
+        )
+        self.assertEqual(step["type"], "tool")
+        self.assertEqual(step["name"], "Read")
+        self.assertEqual(step["args"], {"path": "index.html"})
+        self.assertNotIn("contents", step["args"])
+        self.assertTrue(step["result"].endswith("…"))
+        self.assertLessEqual(len(step["result"]), code_agent.MAX_STEP_RESULT + 1)
+
+    def test_tool_step_args_keep_path_and_command(self):
+        step = code_agent.tool_step_payload(
+            "Shell",
+            {"command": "python3 -m http.server --help"},
+            "Running command",
+            "usage: ...",
+        )
+        self.assertEqual(step["args"]["command"], "python3 -m http.server --help")
+        self.assertNotIn("path", step["args"])
+
+    def test_remaining_stream_text(self):
+        self.assertEqual(code_agent.remaining_stream_text("abc", "abc"), "")
+        self.assertEqual(code_agent.remaining_stream_text("abcdef", "abc"), "def")
+        self.assertEqual(code_agent.remaining_stream_text("pics", "wrote"), "pics")
+        self.assertEqual(code_agent.remaining_stream_text("only", ""), "only")
+
+    def test_parse_completion_chunk(self):
+        self.assertIsNone(code_agent.parse_completion_chunk("[DONE]"))
+        parsed = code_agent.parse_completion_chunk(
+            '{"choices":[{"delta":{"content":"hi"}}]}'
+        )
+        self.assertEqual(parsed["choices"][0]["delta"]["content"], "hi")
+
+    def test_message_from_stream_tool_calls(self):
+        message = code_agent.message_from_stream(
+            "ok",
+            "think",
+            [
+                {
+                    "id": "call_1",
+                    "index": 0,
+                    "function": {"name": "Write", "arguments": '{"path":"a.html"}'},
+                }
+            ],
+        )
+        self.assertEqual(message.content, "ok")
+        self.assertEqual(message.reasoning_content, "think")
+        pairs = code_agent._tool_pairs(message)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][0], "Write")
+        self.assertEqual(pairs[0][1]["path"], "a.html")
+
+    def test_format_agent_step_comment(self):
+        comment = code_agent.format_agent_step_comment({"type": "demote"})
+        self.assertTrue(comment.startswith(code_agent.AGENT_STEP_MARK))
+        self.assertIn('"type":"demote"', comment)
+
+    def test_sse_for_code_event_shapes(self):
+        from endpoints.OAI.types.chat_completion import ChatCompletionRequest
+        from sse_starlette import ServerSentEvent
+
+        data = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
+        status = code_agent.sse_for_code_event(
+            ("status", "Writing index.html"),
+            data,
+            chunk_id="chatcmpl-x",
+            created=1,
+        )
+        self.assertEqual(len(status), 1)
+        self.assertIsInstance(status[0], ServerSentEvent)
+        self.assertIn("Writing index.html", status[0].comment)
+        content = code_agent.sse_for_code_event(
+            ("content", "hello"),
+            data,
+            chunk_id="chatcmpl-x",
+            created=1,
+        )
+        self.assertEqual(len(content), 1)
+        self.assertIn("hello", content[0])
+        self.assertIn("content", content[0])
+        tool = code_agent.sse_for_code_event(
+            ("tool", {"type": "tool", "name": "Read", "label": "Reading a.py"}),
+            data,
+            chunk_id="chatcmpl-x",
+            created=1,
+        )
+        self.assertIn(code_agent.AGENT_STEP_MARK, tool[0].comment)
+
 
 if __name__ == "__main__":
     unittest.main()

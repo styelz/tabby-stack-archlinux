@@ -82,6 +82,7 @@ class ConsoleFlight:
         self.assembled = ""
         self.reasoning = ""
         self.status_label = ""
+        self.steps: list[dict[str, Any]] = []
         self._parse_buf = ""
         self.task: Optional[asyncio.Task] = None
 
@@ -102,6 +103,21 @@ class ConsoleFlight:
                 self.status_label = comment.split("tabby-image-status:", 1)[-1].strip()
             elif "tabby-stack-queue:" in comment:
                 self.status_label = "Queued"
+            elif "tabby-agent-step:" in comment:
+                raw = comment.split("tabby-agent-step:", 1)[-1].strip()
+                try:
+                    step = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(step, dict):
+                    continue
+                if step.get("type") == "demote":
+                    draft = self.assembled.strip()
+                    if draft:
+                        self.steps.append({"type": "said", "content": draft})
+                    self.assembled = ""
+                else:
+                    self.steps.append(step)
         data_lines = [
             line[5:].strip()
             for line in chunk.split("\n")
@@ -170,7 +186,9 @@ class ConsoleFlight:
             self._closing = True
             waiters = list(self.queues)
             self.queues.clear()
-        if self.chat_id and (self.assembled.strip() or self.reasoning.strip()):
+        if self.chat_id and (
+            self.assembled.strip() or self.reasoning.strip() or self.steps
+        ):
             from ui.chats import append_flight_assistant
 
             elapsed = max(1, int(time.time() - self.started_at))
@@ -181,6 +199,7 @@ class ConsoleFlight:
                 reasoning=self.reasoning,
                 elapsed_s=elapsed,
                 status_label=self.status_label,
+                steps=self.steps,
             )
         async with self.lock:
             self.done = True

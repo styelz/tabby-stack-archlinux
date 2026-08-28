@@ -3219,6 +3219,36 @@ button.chip {
 .think-body ul,
 .think-body ol { margin: 0.25em 0 0.4em; padding-left: 1.25em; }
 .think-body .md-code { margin: 0.45em 0; }
+.think-reason { margin-bottom: 0.45em; }
+.agent-step {
+  margin: 0.4em 0 0.5em;
+}
+.agent-step-head {
+  font-weight: 600;
+  color: var(--text);
+  opacity: 0.88;
+}
+.agent-step-args {
+  margin-top: 0.1em;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  word-break: break-word;
+}
+.agent-step-result {
+  margin: 0.25em 0 0;
+  padding: 0.35em 0.5em;
+  max-height: 6rem;
+  overflow: auto;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 0.35rem;
+  background: var(--bg-elev-2);
+}
+.agent-step-said {
+  opacity: 0.9;
+}
 .chat-turn.is-working .think-body {
   max-height: 280px;
 }
