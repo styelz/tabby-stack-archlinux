@@ -51,6 +51,10 @@ from endpoints.OAI.types.chat_completion import ChatCompletionLogprob, ChatCompl
 from endpoints.core.types.model import ModelCard, ModelCardParameters
 from endpoints.OAI.utils.tools import is_supported_format
 
+# How long to wait for an aborted job to acknowledge cancellation before
+# giving up on it and rebuilding the generator.
+CANCEL_TIMEOUT_S = 10
+
 
 def _merge_stream_results(results: List[dict]) -> dict:
     """
@@ -1045,8 +1049,10 @@ class ExllamaV3Container:
             ):
                 yield generation_chunk
         finally:
-            # Clean up and remove the job from active IDs
-            del self.active_job_ids[request_id]
+            # Clean up and remove the job from active IDs. This must not raise:
+            # a KeyError here masked the real error and left the id behind, so
+            # wait_for_jobs spun forever and the stack looked permanently busy.
+            self.active_job_ids.pop(request_id, None)
 
     def constrain_generation_output(self, request_id: str, text: str) -> bool:
         """
@@ -1494,7 +1500,20 @@ class ExllamaV3Container:
 
         except CancelledError:
             if not job.cancelled:
-                await job.cancel()
+                # An abort (UI Stop or Steer) used to await this with no bound.
+                # A job that never settled held the request open forever, and
+                # with it the UI stack lease, wedging every later chat behind
+                # "your previous request is still running". Cap the wait and
+                # rebuild the generator if the cancel does not land.
+                try:
+                    await asyncio.wait_for(job.cancel(), timeout=CANCEL_TIMEOUT_S)
+                except (CancelledError, asyncio.TimeoutError, Exception) as ex:
+                    xlogger.error(
+                        "Could not cancel generation cleanly. "
+                        "Recreating the generator.\n",
+                        {"request_id": request_id, "exception": str(ex)},
+                    )
+                    asyncio.ensure_future(self.create_generator())
 
         except Exception as ex:
             # Create a new generator since the current state is broken

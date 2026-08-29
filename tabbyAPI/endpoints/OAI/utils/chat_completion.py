@@ -353,6 +353,10 @@ async def format_messages_with_template(
 # templates that trim trailing whitespace from message content.
 CONTINUE_FINAL_MESSAGE_TAG = "CONTINUE_FINAL_MESSAGE_TAG "
 
+# How long the streaming consumer waits on the queue before re-checking whether
+# its collectors have all finished.
+_STREAM_IDLE_POLL_S = 0.25
+
 
 def _mark_continued_final_message(data: ChatCompletionRequest) -> str:
     """Validate a continue_final_message request and append the sentinel tag.
@@ -869,7 +873,22 @@ async def stream_generate_chat_completion(
 
         # Consumer loop
         while True:
-            generation = await gen_queue.get()
+            # An aborted collector (UI Stop or Steer) can finish without
+            # pushing a final chunk. Waiting on the queue with no bound then
+            # stranded this generator forever, and with it the caller holding
+            # the UI stack lease, so re-check completion on a short timeout.
+            try:
+                generation = await asyncio.wait_for(
+                    gen_queue.get(), timeout=_STREAM_IDLE_POLL_S
+                )
+            except asyncio.TimeoutError:
+                if all(task.done() for task in gen_tasks) and gen_queue.empty():
+                    xlogger.info(
+                        f"Finished chat completion streaming request {request.state.id}"
+                    )
+                    yield "[DONE]"
+                    break
+                continue
 
             # Stream collector will push an exception to the queue if it fails
             if isinstance(generation, Exception):
