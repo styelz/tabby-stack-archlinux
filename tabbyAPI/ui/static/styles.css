@@ -4513,15 +4513,13 @@ figure.shot .open { display: block; }
   border-color: rgba(var(--accent-rgb), 0.28);
 }
 .settings-body {
-  display: grid;
-  align-content: start;
   min-height: 0;
   overflow: auto;
 }
 .settings-card {
   padding: 0;
-  min-height: 100%;
-  overflow: hidden;
+  max-width: 42rem;
+  width: 100%;
 }
 .settings-card-head {
   padding: 1rem 1.25rem 0.875rem;
@@ -4535,34 +4533,22 @@ figure.shot .open { display: block; }
 .settings-card-head .muted { margin: 0; font-size: 0.8125rem; line-height: 1.45; }
 .settings-path { margin: 0.375rem 0 0; font-family: var(--mono); font-size: 0.6875rem; word-break: break-all; }
 .settings-fields {
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
 }
 .settings-field {
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
-  grid-column: 1 / -1;
-  column-gap: 1.25rem;
-  align-items: start;
-  padding: 0.75rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--line);
 }
-@supports (grid-template-columns: subgrid) {
-  .settings-field {
-    grid-template-columns: subgrid;
-  }
-}
 .settings-field:last-child { border-bottom: 0; }
-.settings-field:hover { background: var(--hover-fill); }
-.settings-field.is-stack .settings-field-meta,
-.settings-field.is-stack .settings-field-control {
-  grid-column: 1 / -1;
-}
 .settings-field-meta {
-  display: grid;
-  gap: 0.25rem;
-  min-width: 0;
-  padding-top: 0.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
 }
 .settings-field-meta label {
   display: block;
@@ -4572,18 +4558,25 @@ figure.shot .open { display: block; }
   font-weight: 600;
   line-height: 1.3;
 }
-.settings-help { margin: 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.settings-help {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
 .settings-field-control {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 0.375rem;
-  justify-items: start;
   min-width: 0;
 }
 .settings-field-control input:not([type="checkbox"]),
 .settings-field-control select,
 .settings-field-control textarea {
   width: 100%;
-  max-width: none;
+  max-width: 100%;
   min-width: 0;
   background: var(--bg);
   border: 1px solid var(--line);
@@ -4593,18 +4586,26 @@ figure.shot .open { display: block; }
   font: inherit;
 }
 .settings-field.is-number .settings-field-control input {
-  width: 8.5rem;
-  max-width: 8.5rem;
+  width: 100%;
+  max-width: 100%;
+}
+.settings-field.is-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.75rem;
 }
 .settings-field.is-check .settings-field-control {
-  padding-top: 0.4rem;
+  grid-column: 1;
+  grid-row: 1;
+  padding-top: 0.15rem;
 }
+.settings-field.is-check .settings-field-meta { grid-column: 2; }
 .settings-field.is-check input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
   margin: 0;
   padding: 0;
-  max-width: none;
 }
 .settings-field textarea { font-family: var(--mono); min-height: 8rem; }
 .settings-field-control input:focus,
@@ -4640,6 +4641,4 @@ figure.shot .open { display: block; }
   .settings-layout { grid-template-columns: 1fr; }
   .settings-nav { flex-direction: row; flex-wrap: wrap; }
   .settings-stamp { align-items: flex-start; text-align: left; max-width: none; }
-  .settings-fields,
-  .settings-field { grid-template-columns: minmax(0, 1fr); }
 }
