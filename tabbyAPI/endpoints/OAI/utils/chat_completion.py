@@ -690,6 +690,10 @@ async def _chat_stream_collector(
             raw_out = ""
             parsed_tools = []
             dropped_noops = 0
+            # A regenerated attempt replaces the dropped one. Carrying the
+            # dropped attempt's prose forward concatenated two answers.
+            full_reasoning = ""
+            full_content = ""
             budget_injection = None
             if budget is not None:
                 budget_injection = _reasoning_budget_injection(mc, budget_message)

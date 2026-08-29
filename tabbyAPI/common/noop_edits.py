@@ -14,8 +14,10 @@ import re
 NOOP_EDIT_HINT = (
     "\n[Anti-noop] That file edit would apply 0 changes "
     "(old_string equals new_string, or the patch has no added/removed lines). "
-    "Call the edit tool again. new_string must differ from old_string and "
-    "must implement the requested change.\n"
+    "Call a tool now, do not explain what you would call. If you are unsure of "
+    "the exact current text, call Read on that file first. Otherwise call the "
+    "edit tool again: new_string must differ from old_string and must implement "
+    "the requested change.\n"
 )
 HINT_MARK = "[Anti-noop]"
 MAX_RETRIES = 2
