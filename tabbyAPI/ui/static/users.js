@@ -3,7 +3,7 @@ function mountUsers(root) {
     <div class="users-page">
       <div class="card">
         <h2>Create account</h2>
-        <p class="muted">Tabby-only users. They are not Linux accounts. Extra users can use Chat, Code, Status, Gallery, and Logs, but cannot create users.</p>
+        <p class="muted">Tabby-only users. They are not Linux accounts. Extra users can use Chat, Code, Status, Gallery, and Logs, but cannot create users or change Settings.</p>
         <form id="user-create" class="users-form">
           <label>Username
             <input id="new-username" name="username" autocomplete="off" required minlength="3" maxlength="32" />

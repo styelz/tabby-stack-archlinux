@@ -286,6 +286,29 @@ async def ui_chat(request: Request, _user: str = Depends(require_ui_user)):
 
 
 
+@router.get("/settings", include_in_schema=False)
+async def ui_settings_get(_admin: str = Depends(require_ui_admin)):
+    from ui.settings import load_settings
+
+    return load_settings()
+
+
+@router.put("/settings", include_in_schema=False)
+async def ui_settings_put(request: Request, _admin: str = Depends(require_ui_admin)):
+    from ui.settings import SettingsError, save_settings
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    try:
+        return save_settings(body)
+    except SettingsError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/users", include_in_schema=False)
 async def ui_users_list(_admin: str = Depends(require_ui_admin)):
     from ui.users import list_accounts

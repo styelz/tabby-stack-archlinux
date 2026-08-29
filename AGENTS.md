@@ -16,6 +16,7 @@ This file is for **any editor** that talks to the TabbyAPI server, and for anyon
   - **Gallery** — generated images (the administrator can see every account)
   - **Logs** — live TabbyAPI and ComfyUI output
   - **Users** — administrator-only account creation. Extra users get Chat, Code, Status, Gallery, and Logs; they cannot create accounts
+  - **Settings** — administrator-only Tabby `config.yml` and system `tabby.env`
 - The GPU is shared. If another account is chatting, coding, generating, or switching models, the UI queues you.
 
 Do not SSH into the GPU host just to change models. Send a chat phrase, use Status in `/v1/ui`, or send `restart` to bounce the API.

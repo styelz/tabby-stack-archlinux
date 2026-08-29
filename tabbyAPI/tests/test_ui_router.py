@@ -18,6 +18,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/v1/ui/gallery/upload", paths)
         self.assertIn("/v1/ui/metrics", paths)
         self.assertIn("/v1/ui/users", paths)
+        self.assertIn("/v1/ui/settings", paths)
         self.assertIn("/v1/ui/chats", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/folder", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/drafts", paths)
@@ -43,6 +44,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("require_ui_admin", self._dep_names("/v1/ui/restart"))
         self.assertIn("require_ui_admin", self._dep_names("/v1/ui/update"))
         self.assertIn("require_ui_admin", self._dep_names("/v1/ui/update/log"))
+        self.assertIn("require_ui_admin", self._dep_names("/v1/ui/settings"))
         self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/gpu"))
         self.assertIn("require_ui_user", self._dep_names("/v1/ui/gpu"))
 

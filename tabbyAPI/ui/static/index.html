@@ -99,7 +99,7 @@
       })();
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260829-wipeguard";
+    window.TABBY_UI_ASSET_V = "20260830-settings";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
@@ -121,6 +121,7 @@
       <a href="#gallery" data-page="gallery" class="tab">Gallery</a>
       <a href="#logs" data-page="logs" class="tab">Logs</a>
       <a href="#users" data-page="users" class="tab" id="tab-users" hidden>Users</a>
+      <a href="#settings" data-page="settings" class="tab" id="tab-settings" hidden>Settings</a>
     </nav>
     <div class="header-meta">
       <div class="context-menu" id="context-menu">
@@ -147,6 +148,12 @@
         </button>
         <div class="user-menu-panel" id="gpu-menu-panel" hidden role="menu"></div>
       </div>
+      <button type="button" id="settings-btn" class="chip quiet" hidden aria-label="Settings" title="Settings">
+        <svg class="user-chip-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M12 4.2v2.1M12 17.7v2.1M4.2 12h2.1M17.7 12h2.1M6.5 6.5l1.5 1.5M16 16l1.5 1.5M6.5 17.5l1.5-1.5M16 8l1.5-1.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+      </button>
       <div class="user-menu" id="user-menu">
         <button type="button" id="user-chip" class="chip quiet" aria-haspopup="menu" aria-expanded="false" aria-label="Account">
           <svg class="user-chip-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -174,6 +181,7 @@
             <kbd id="user-menu-zoom-hint">100%</kbd>
           </div>
           <div class="user-menu-sep"></div>
+          <button type="button" class="user-menu-item" data-user-act="settings" id="user-menu-settings" hidden>Settings</button>
           <button type="button" class="user-menu-item" data-user-act="keys">Keyboard shortcuts</button>
           <button type="button" class="user-menu-item" data-user-act="copy">Copy username</button>
           <button type="button" class="user-menu-item" data-user-act="fullscreen">Full screen</button>
@@ -191,10 +199,11 @@
     <section id="page-gallery" class="page" data-page="gallery" hidden></section>
     <section id="page-logs" class="page" data-page="logs" hidden></section>
     <section id="page-users" class="page" data-page="users" hidden></section>
+    <section id="page-settings" class="page" data-page="settings" hidden></section>
   </main>
 
   <script>
-    ["highlight.js", "utils.js", "xterm.js", "xterm-addon-fit.js", "monaco.js", "lsp.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "app.js"].forEach(function (name) {
+    ["highlight.js", "utils.js", "xterm.js", "xterm-addon-fit.js", "monaco.js", "lsp.js", "logs.js", "chat.js", "status.js", "gallery.js", "users.js", "settings.js", "app.js"].forEach(function (name) {
       document.write('<script src="' + TABBY_UI_BASE + "/assets/" + name + "?v=" + TABBY_UI_ASSET_V + '"><\/script>');
     });
   </script>

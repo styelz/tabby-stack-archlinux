@@ -569,6 +569,7 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         "- **Gallery:** generated output images only.",
         "- **Logs:** live and historical server output.",
         "- **Users:** administrator-only Tabby accounts (not Linux users).",
+        "- **Settings:** administrator-only Tabby `config.yml` and system `tabby.env`.",
         "",
         "## Connection",
         "",

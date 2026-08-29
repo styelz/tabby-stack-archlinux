@@ -5,13 +5,14 @@
     status: { el: document.getElementById("page-status"), mount: window.mountStatus, title: "Status" },
     gallery: { el: document.getElementById("page-gallery"), mount: window.mountGallery, title: "Gallery" },
     users: { el: document.getElementById("page-users"), mount: window.mountUsers, title: "Users" },
+    settings: { el: document.getElementById("page-settings"), mount: window.mountSettings, title: "Settings" },
   };
   let isAdmin = false;
   const handles = {};
 
   function currentName() {
     const hash = (location.hash || "#chat").replace("#", "");
-    if (hash === "users" && !isAdmin) return "chat";
+    if ((hash === "users" || hash === "settings") && !isAdmin) return "chat";
     return pages[hash] ? hash : "chat";
   }
 
@@ -276,6 +277,8 @@
   const zoomInput = document.getElementById("user-menu-zoom");
   const zoomHint = document.getElementById("user-menu-zoom-hint");
   const restartItem = document.getElementById("user-menu-restart");
+  const settingsItem = document.getElementById("user-menu-settings");
+  const settingsBtn = document.getElementById("settings-btn");
   let userMenuOpen = false;
 
   function closeFlyouts() {
@@ -374,6 +377,16 @@
   paintUserMenuHints();
   document.addEventListener("tabby-theme-change", paintUserMenuHints);
   document.addEventListener("fullscreenchange", paintUserMenuHints);
+
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeUserMenu();
+      closeGpuMenu();
+      closeContextMenu();
+      location.hash = "#settings";
+    });
+  }
 
   if (userChip) {
     userChip.addEventListener("click", (event) => {
@@ -482,6 +495,9 @@
       } else if (name === "fullscreen") {
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});
+      } else if (name === "settings") {
+        closeUserMenu();
+        location.hash = "#settings";
       } else if (name === "restart") {
         restartApi();
       } else if (name === "logout") {
@@ -526,10 +542,15 @@
       const chip = document.getElementById("user-chip");
       if (chip && name) chip.setAttribute("aria-label", name);
       isAdmin = Boolean(data.is_admin);
-      const tab = document.getElementById("tab-users");
-      if (tab) tab.hidden = !isAdmin;
+      const usersTab = document.getElementById("tab-users");
+      const settingsTab = document.getElementById("tab-settings");
+      if (usersTab) usersTab.hidden = !isAdmin;
+      if (settingsTab) settingsTab.hidden = !isAdmin;
+      if (settingsBtn) settingsBtn.hidden = !isAdmin;
+      if (settingsItem) settingsItem.hidden = !isAdmin;
       if (restartItem) restartItem.hidden = !isAdmin;
-      if (!isAdmin && (location.hash || "").replace("#", "") === "users") {
+      const hash = (location.hash || "").replace("#", "");
+      if (!isAdmin && (hash === "users" || hash === "settings")) {
         location.hash = "#chat";
       }
       show(currentName());
