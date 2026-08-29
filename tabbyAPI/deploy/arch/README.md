@@ -105,7 +105,7 @@ systemctl --user status tabbyapi
 
 - API: `http://127.0.0.1:5000`
 - Health: `GET /health` on that origin
-- Management UI: `http://127.0.0.1:5000/v1/ui` — sign in with the Linux account that runs the stack (admin), or a Tabby-only account created on the Users page. Chat, Code (Monaco, file tools, preview, per-chat container terminal), Status (occupancy, GPU, restart, Update git / Update all), Gallery, Logs, and Settings (`config.yml` and `tabby.env`, admin). Extra users cannot create accounts. Through an SSH forwarder use the same `/v1/ui` path under your API prefix.
+- Management UI: `http://127.0.0.1:5000/v1/ui` — sign in with the Linux account that runs the stack (admin), or a Tabby-only account created on the Users page. Chat (no file tools), Code (browser IDE: Chat Completions plus Grep/Glob/Read/Write/Shell on a jailed workspace, Monaco, preview, per-chat container terminal), Status (occupancy, GPU, restart, Update git / Update all), Gallery, Logs, and Settings (`config.yml` and `tabby.env`, admin). Extra users cannot create accounts. Through an SSH forwarder use the same `/v1/ui` path under your API prefix.
 - OpenAI-compatible base URL for remote IDEs: `http://<gpu-host>:5000/v1` (model name **`gpt-4o`** — leave it)
 - Agent / IDE notes: `$HOME/tabby-stack/AGENTS.md` (copied by the installer)
 - A public reverse tunnel is optional. Set `TABBY_PUBLIC_BASE` and `TABBY_SSH_REMOTE` in `deploy/arch/tabby.env` if you have one. Every env key is listed in [`tabby.env.example`](tabby.env.example).
@@ -134,8 +134,9 @@ Manual start (same as the unit):
 
 Chat phrases, images, and mixed page+images: `$HOME/tabby-stack/AGENTS.md` (copied by the installer). Editor model name is **`gpt-4o`** (a label only).
 
-- Browser Chat and Code live at `/v1/ui`. Editor mixed page+images still follow AGENTS.md (file tools on your computer, then one Shell curl of GPU URLs).
-- After `switch to …`, wait for the GPU (warm RTX 4070 Ti 12 GB: qwen / gemma ~65s, qwen36 ~85s, gemma26 ~2 min, qwen35 ~3 min, glm ~15s). After `switch to comfy`, wait about **35 seconds** (first Flux ~3 min, first Qwen-Image ~4 min). GLM is thinking-only on RTX 4070 Ti 12 GB (vision off). You can also load an LLM or hand the GPU to Comfy from the Status page in `/v1/ui`.
+- One Chat Completions API, two clients. **Editor:** your disk and your tools at `/v1`. **Browser Code:** jailed project on this host; the page runs the tool loop. Do not send Tabby workspace tools from an editor.
+- Browser Chat and Code live at `/v1/ui`. Editor mixed page+images still follow AGENTS.md (your file tools, then one Shell curl of GPU URLs). Browser Code copies finished PNGs into the workspace.
+- After `switch to …`, wait for the GPU (warm RTX 4070 Ti 12 GB: qwen / gemma ~65s, qwen36 ~85s, gemma26 ~2 min, qwen35 ~3 min, glm ~15s). After `switch to comfy`, wait about **35 seconds** (first Flux ~3 min, first Qwen-Image ~4 min). GLM is thinking chat only on RTX 4070 Ti 12 GB (no coding tools; vision off). You can also load an LLM or hand the GPU to Comfy from the Status page in `/v1/ui`.
 
 ## 5. Update
 

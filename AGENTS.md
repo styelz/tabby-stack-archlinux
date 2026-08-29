@@ -2,7 +2,12 @@
 
 Use **gpt-4o** as the model name in your editor, and leave it. That is not ChatGPT — it is only a name. Many editors sandbox or block tools unless they see a known OpenAI name. The GPU still runs the local model you switched to.
 
-This file is for **any editor** that talks to the TabbyAPI server, and for anyone using the browser UI. An editor keeps the project on the computer that runs the editor. Browser **Code** keeps the project on this GPU host. Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
+This file is for **any editor** that talks to the TabbyAPI server, and for anyone using the browser UI. There is one Chat Completions API. The GPU server is not the coding agent: the *client* sends `tools`, runs `tool_calls`, and POSTs `role: tool` results.
+
+- **Editor** — project on the computer that runs the editor. Keep **your** tools. Do not send Tabby workspace tools.
+- **Browser Code** — project on this GPU host. The page is the agent; tools hit the jailed workspace.
+
+Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; that is why a reverse SSH tunnel from an HTTPS host back to this API exists.
 
 ## API
 
@@ -11,7 +16,7 @@ This file is for **any editor** that talks to the TabbyAPI server, and for anyon
 - Health: `GET /health` on the same origin
 - Browser UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created.
   - **Chat** — same Chat Completions pipeline as an editor, without file tools (searchable history, follow-up queue)
-  - **Code** — a self-contained IDE on this host. The browser is the agent: it calls Chat Completions, then runs Grep/Glob/Read/Write/Shell against a jailed workspace (Monaco, preview, container terminal, zip). Nested chats under a workspace share the same files
+  - **Code** — a self-contained IDE on this host. The browser calls Chat Completions, then runs Grep/Glob/Read/Write/Shell against a jailed workspace (Monaco, preview, container terminal, zip). Nested chats under a workspace share the same files. **Agent** can write; **Ask** and **Plan** are read-only (Grep, Glob, Read, List)
   - **Status** — profile, GPU mode, occupancy, health, graphs, restart, and updates
   - **Gallery** — generated images (the administrator can see every account)
   - **Logs** — live TabbyAPI and ComfyUI output
@@ -35,7 +40,7 @@ Send a message that is **only** one of these. Times are warm switches on this RT
 | `switch to qwen36` | Long or hard agent work | 98k | ~85 seconds |
 | `switch to gemma` | General | 262k | ~65 seconds |
 | `switch to gemma26` | General | 262k | ~2 minutes |
-| `switch to glm` | Thinking (vision off on RTX 4070 Ti 12 GB) | 65k (model max) | ~15 seconds |
+| `switch to glm` | Thinking chat only (no coding tools; vision off on RTX 4070 Ti 12 GB) | 65k (model max) | ~15 seconds |
 | `switch to comfy` / `flux` | Unload the LLM; image gen | — | ~35 seconds (then Flux ~3 minutes / Qwen-Image ~4 minutes for the first picture) |
 | `switch to llm` | Free Comfy; reload the last LLM | — | ~65 seconds |
 

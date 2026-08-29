@@ -16,10 +16,12 @@ The language model and ComfyUI share one GPU. Tabby Stack unloads one before sta
 
 ```mermaid
 flowchart LR
-    Editor["Editor on your computer"] --> API["TabbyAPI /v1"]
-    Browser["Browser /v1/ui"] --> API
-    API --> CPU["CPU embeddings"]
-    API --> GPU{"NVIDIA GPU"}
+    Editor["Editor + own tools"] --> OAI["POST /v1/chat/completions"]
+    Browser["Browser IDE + host workspace"] --> UI["POST /v1/ui/chat"]
+    OAI --> Pipe["Same pipeline"]
+    UI --> Pipe
+    Pipe --> CPU["CPU embeddings"]
+    Pipe --> GPU{"NVIDIA GPU"}
     GPU --> LLM["Coding / chat model"]
     GPU --> Images["ComfyUI image models"]
 ```
@@ -60,11 +62,11 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 ## Use the browser UI
 
-**Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account or an editor is already using the GPU, you wait in a queue.
+**Chat** is the same Chat Completions pipeline as an editor, without file tools. Use it for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account or an editor is already using the GPU, you wait in a queue.
 
 <img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/03456b83-b6a5-46e9-a96f-9d752ed34fdb" />
 
-**Code** is a self-contained IDE per project folder. Extra chats under that workspace share the same files. The browser calls the same Chat Completions endpoint as an editor, then runs Grep, Glob, Read, Write, Shell, and the other workspace tools here. Upload files, edit in Monaco, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
+**Code** is a self-contained IDE per project folder. Extra chats under that workspace share the same files. The browser is the agent: it calls the same Chat Completions API as an editor, then runs Grep, Glob, Read, Write, Shell, and the other workspace tools against the jailed project on this host. **Agent** can write; **Ask** and **Plan** only inspect. Upload files, edit in Monaco, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/11dca1dd-7036-4a11-9c12-043e417014e7" />
 
@@ -111,7 +113,7 @@ Send commands as the entire message. `switch to qwen` is the usual form; `please
 | `switch to qwen` | Load the everyday coding profile |
 | `switch to qwen35` / `switch to qwen36` | Load a larger profile for long or difficult work |
 | `switch to gemma` / `switch to gemma26` | Load a general-purpose profile |
-| `switch to glm` | Load the thinking profile |
+| `switch to glm` | Load the thinking chat profile (no coding tools) |
 | `switch to comfy` / `switch to flux` | Unload the language model and start image generation |
 | `switch to llm` | Stop ComfyUI and restore the last language model |
 
