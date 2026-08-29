@@ -419,6 +419,38 @@ def _workspace_chat_id(chat_id: str, username: str, *, adopt: bool = True) -> st
     return cid
 
 
+@router.post("/workspace/{chat_id}/tools", include_in_schema=False)
+async def ui_workspace_tool(chat_id: str, request: Request, _user: str = Depends(require_ui_user)):
+    from ui.code_agent import execute_tool, normalize_agent
+
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body is required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object is required")
+    name = str(body.get("name") or "").strip()
+    args = body.get("arguments")
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args) if args.strip() else {}
+        except json.JSONDecodeError:
+            parsed = {}
+        args = parsed
+    if not isinstance(args, dict):
+        args = {}
+    agent = normalize_agent(body.get("agent"))
+    user_text = str(body.get("user_text") or "")
+    try:
+        label, result = execute_tool(
+            _user, cid, name, args, agent=agent, user_text=user_text
+        )
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "name": name, "label": label, "result": result}
+
+
 @router.get("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import listing, site_entry

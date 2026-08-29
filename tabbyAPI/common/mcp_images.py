@@ -481,6 +481,32 @@ async def run_generate_tool(
     if restore is None:
         restore = was_llm
 
+    from common.networking import DisconnectHandler
+    from ui.occupancy import StackGate
+
+    gate = StackGate("api", kind="image")
+    handler = DisconnectHandler(request, "/v1/mcp") if request is not None else None
+    if handler is not None:
+        await gate.wait_until_acquired(handler)
+    else:
+        await gate.wait_until_acquired(_NullDisconnect())
+    try:
+        return await _run_generate_job(
+            args, request, prompt, items, size, count, seed, restore
+        )
+    finally:
+        await gate.release()
+
+
+class _NullDisconnect:
+    async def poll(self):
+        return None
+
+
+async def _run_generate_job(args, request, prompt, items, size, count, seed, restore):
+    from common.gpu_mode import public_api_base
+    from images.jobs import start_mcp_image_job, wait_until_done
+
     suggested = str(args.get("output_path") or "").strip() or "images/generated.png"
     api_base = public_api_base(request)
     job, kind = await start_mcp_image_job(

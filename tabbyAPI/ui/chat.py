@@ -12,35 +12,23 @@ from fastapi import HTTPException, Request
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from common import model
-from common.assistant_text import strip_apology_sse, strip_response_apologies
 from common.gpu_mode import public_api_base
-from common.model import check_model_container
 from common.networking import DisconnectHandler, get_sse_ping_interval
 from common.phrase_switch import (
     comfy_chat_suggest_text,
-    comfy_idle_response,
     gpu_is_comfy,
     handle_if_requested,
     last_user_text,
-    llm_not_ready_response,
     looks_like_chat_not_image,
     requested_profile,
-    should_yield_comfy_to_llm,
     start_switch,
     stream_text,
     switch_reply_text,
     text_response,
-    yield_comfy_to_llm_response,
 )
-from common.tabby_config import config
 from endpoints.OAI.types.chat_completion import ChatCompletionRequest
-from endpoints.OAI.utils.chat_completion import (
-    apply_chat_template,
-    generate_chat_completion,
-    stream_generate_chat_completion,
-)
+from endpoints.OAI.utils.pipeline import run_chat_completion_turn
 from common.pasted_images import latest_turn_image, materialize_pasted_images
-from images.chat import STATUS_MARK, handle as handle_image_chat
 from ui.flight import (
     ConsoleFlight,
     abort_flight,
@@ -100,102 +88,29 @@ def usage_comment(usage: Any) -> str:
     return f"{USAGE_MARK} {json.dumps(payload, separators=(',', ':'))}"
 
 
+CODE_DEFAULT_MAX_TOKENS = 16384
+
+
 def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
     fields: dict[str, Any] = {
         "messages": payload["messages"],
         "stream": payload.get("stream", True),
-        "tools": None,
+        "tools": payload.get("tools"),
         "stream_options": {"include_usage": True},
     }
     if payload.get("temperature") is not None:
         fields["temperature"] = payload["temperature"]
     if payload.get("max_tokens") is not None:
         fields["max_tokens"] = payload["max_tokens"]
+    elif payload.get("mode") == "code":
+        fields["max_tokens"] = CODE_DEFAULT_MAX_TOKENS
+    if payload.get("tool_choice") is not None:
+        fields["tool_choice"] = payload["tool_choice"]
     return ChatCompletionRequest(**fields)
 
 
 def is_code_request(body: dict[str, Any]) -> bool:
     return str(body.get("mode") or "").strip().lower() == "code"
-
-
-async def stream_code_only(
-    data: ChatCompletionRequest,
-    disconnect_handler,
-    username: str,
-    chat_id: str,
-    agent: str = "agent",
-):
-    from time import time as now
-
-    from ui.code_agent import (
-        final_code_text,
-        iter_code_turns,
-        normalize_agent,
-        remaining_stream_text,
-        sse_for_code_event,
-    )
-
-    kind = normalize_agent(agent)
-    start = "Updating project"
-    if kind == "ask":
-        start = "Reading project"
-    elif kind == "plan":
-        start = "Planning"
-    sync = data.model_copy(update={"stream": False})
-
-    async def _body():
-        text = ""
-        written: list[str] = []
-        last_usage = None
-        streamed_answer = ""
-        chunk_id = f"chatcmpl-{uuid4().hex}"
-        created = int(now())
-        yield ServerSentEvent(comment=f"{STATUS_MARK} {start}")
-        async for event in iter_code_turns(
-            sync, disconnect_handler, username, chat_id, agent=kind
-        ):
-            kind_ev = event[0]
-            if kind_ev == "content":
-                streamed_answer += str(event[1] or "")
-            elif kind_ev == "demote":
-                streamed_answer = ""
-            elif kind_ev == "usage":
-                last_usage = event[1]
-                note = usage_comment(last_usage)
-                if note:
-                    yield ServerSentEvent(comment=note)
-                continue
-            elif kind_ev == "done":
-                text = event[1] or ""
-                written = list(event[2] or [])
-                continue
-            for item in sse_for_code_event(
-                event, data, chunk_id=chunk_id, created=created
-            ):
-                yield item
-        rest = remaining_stream_text(final_code_text(text, written), streamed_answer)
-        if rest:
-            async for chunk in stream_text(data, rest):
-                yield chunk
-        payload = usage_sse_data(last_usage)
-        if payload:
-            yield payload
-
-    if data.stream:
-        return EventSourceResponse(
-            _body(),
-            ping=get_sse_ping_interval(),
-            sep="\n",
-        )
-    text = ""
-    written: list[str] = []
-    async for event in iter_code_turns(
-        sync, disconnect_handler, username, chat_id, agent=kind
-    ):
-        if event[0] == "done":
-            text = event[1] or ""
-            written = list(event[2] or [])
-    return text_response(sync, final_code_text(text, written))
 
 
 def _completion_text(result: Any) -> str:
@@ -233,68 +148,27 @@ async def _run_console_work(
     disconnect_handler,
     agent: str = "agent",
 ):
-    llm_ready = bool(model.container and getattr(model.container, "loaded", False))
     await disconnect_handler.poll()
     name = requested_profile(data)
     if name:
         start_switch(name)
         return text_response(data, switch_reply_text(name))
-    image_response = await handle_image_chat(
-        data,
-        api_base,
-        source_image=saved_images[-1] if saved_images else None,
-        llm_ready=llm_ready,
-        gpu_is_comfy=gpu_is_comfy(),
-        disconnect_handler=disconnect_handler,
-        console=True,
-        owner=username or None,
-        code=code,
-        chat_id=chat_id or None,
-        agent=agent,
-    )
-    if image_response is not None:
-        return image_response
-    if not llm_ready:
-        if gpu_is_comfy():
-            if looks_like_chat_not_image(last_user_text(data)):
-                return text_response(data, comfy_chat_suggest_text())
-            if should_yield_comfy_to_llm(data):
-                return await yield_comfy_to_llm_response(data, console=True)
-            return await comfy_idle_response(data, api_base=api_base)
-        return await llm_not_ready_response(data, console=True)
-
-    if code and chat_id:
-        return await stream_code_only(
-            data, disconnect_handler, username, chat_id, agent=agent
-        )
-
-    await check_model_container()
-    if not (model.container and getattr(model.container, "model_dir", None)):
-        raise HTTPException(503, "No model is loaded.")
-    if getattr(model.container, "prompt_template", None) is None:
-        raise HTTPException(422, "Chat is disabled because no prompt template is set.")
-
-    model_path = model.container.model_dir
-    prompt, mm_embeddings = await apply_chat_template(data)
+    if not model.container or not getattr(model.container, "loaded", False):
+        if gpu_is_comfy() and looks_like_chat_not_image(last_user_text(data)):
+            return text_response(data, comfy_chat_suggest_text())
     try:
-        await disconnect_handler.poll()
-        streaming = bool(data.stream)
-        disabled = bool(getattr(config.developer, "disable_request_streaming", False))
-        if streaming and not disabled:
-            model.check_context_length(prompt, data, mm_embeddings)
-            return EventSourceResponse(
-                strip_apology_sse(
-                    stream_generate_chat_completion(
-                        prompt, mm_embeddings, data, request, model_path, disconnect_handler
-                    )
-                ),
-                ping=get_sse_ping_interval(),
-                sep="\n",
-            )
-        response = await generate_chat_completion(
-            prompt, mm_embeddings, data, request, model_path, disconnect_handler
+        return await run_chat_completion_turn(
+            request,
+            data,
+            disconnect_handler,
+            api_base=api_base,
+            source_image=saved_images[-1] if saved_images else None,
+            console=True,
+            owner=username or None,
+            chat_id=chat_id or None,
+            agent=agent,
+            code=code,
         )
-        return strip_response_apologies(response)
     except HTTPException:
         raise
     except Exception as exc:

@@ -39,16 +39,9 @@ from select_model import (
     profile_aliases,
 )
 
-LOCK = Path(__file__).resolve().parent / "switch-model.lock"
+from common.load_fields import load_payload
 
-LOAD_FIELDS = (
-    "max_seq_len",
-    "cache_size",
-    "cache_mode",
-    "chunk_size",
-    "autosplit_reserve",
-    "vision",
-)
+LOCK = Path(__file__).resolve().parent / "switch-model.lock"
 
 
 def api_base() -> str:
@@ -110,10 +103,7 @@ def switch_sampler(base: str, preset: str | None):
 
 
 def load_model(base: str, model_name: str, model_cfg: dict):
-    payload = {"model_name": model_name}
-    for key in LOAD_FIELDS:
-        if key in model_cfg and model_cfg[key] is not None:
-            payload[key] = model_cfg[key]
+    payload = load_payload(model_name, model_cfg)
 
     print(f"Loading {model_name} (this can take a minute)...")
     req = Request(

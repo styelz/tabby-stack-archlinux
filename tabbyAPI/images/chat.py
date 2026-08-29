@@ -962,181 +962,6 @@ async def _hold_then_reply(
     return _reply()
 
 
-def _code_model_ready() -> bool:
-    from common import model
-
-    container = getattr(model, "container", None)
-    return bool(
-        container
-        and getattr(container, "loaded", False)
-        and getattr(container, "model_dir", None) is not None
-        and getattr(container, "prompt_template", None) is not None
-    )
-
-
-async def _wait_code_model(timeout_s: float) -> bool:
-    deadline = time.monotonic() + max(0.0, float(timeout_s))
-    while True:
-        if _code_model_ready():
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        await asyncio.sleep(0.4)
-
-
-def _code_pass_ran(text: str, written: list[str]) -> bool:
-    if written:
-        return True
-    return (text or "").strip() not in (NO_MODEL_WRITE, NO_TEMPLATE_WRITE)
-
-
-def _mixed_code_reply(text: str, written: list[str], picture: str) -> str:
-    """Page write summary plus pictures. Keep a write error visible if nothing landed."""
-    from ui.code_agent import final_code_text
-
-    pictures = (picture or "").strip()
-    if written:
-        return pictures or final_code_text(text, written)
-    error = (text or "").strip()
-    if error and pictures:
-        return f"{error}\n\n{pictures}"
-    return pictures or final_code_text(text, written)
-
-
-async def _stream_code_then_images(
-    data: ChatCompletionRequest,
-    *,
-    api_base: Optional[str],
-    disconnect_handler,
-    owner: str,
-    chat_id: str,
-    items: Optional[list[dict[str, str]]] = None,
-    job=None,
-    agent: str = "agent",
-):
-    from common.phrase_switch import stream_text, text_response as _text
-    from ui.code_agent import (
-        final_code_text,
-        iter_code_turns,
-        remaining_stream_text,
-        sse_for_code_event,
-    )
-
-    workspace = (owner, chat_id)
-    sync = data.model_copy(update={"stream": False})
-    start_new = bool(items) and not _readonly_agent(agent)
-    written: list[str] = []
-    text = ""
-    code_ran = False
-    streamed_answer = ""
-    chunk_id = f"chatcmpl-{uuid4().hex}"
-    created = int(time.time())
-
-    async def take_code(*, wait_s: float = 0.0):
-        nonlocal written, text, code_ran, streamed_answer
-        streamed_answer = ""
-        if wait_s and not _code_model_ready():
-            await _wait_code_model(wait_s)
-        async for event in iter_code_turns(
-            sync, disconnect_handler, owner, chat_id, agent=agent
-        ):
-            kind = event[0]
-            if kind == "content":
-                streamed_answer += str(event[1] or "")
-            elif kind == "demote":
-                streamed_answer = ""
-            elif kind == "done":
-                text = event[1] or ""
-                written = list(event[2] or [])
-                if _code_pass_ran(text, written):
-                    code_ran = True
-                continue
-            elif kind == "usage":
-                continue
-            for item in sse_for_code_event(
-                event, sync, chunk_id=chunk_id, created=created
-            ):
-                yield item
-
-    async def retry_code_after_images():
-        if code_ran:
-            return
-        if not _code_model_ready():
-            yield ServerSentEvent(comment=f"{STATUS_MARK} Reloading the coding model")
-            if not await _wait_code_model(90.0):
-                return
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
-        async for item in take_code():
-            yield item
-
-    async def start_or_launch():
-        started = job
-        if start_new:
-            return await _start_mixed_job(
-                items, api_base or "", start=True, owner=owner, chat_id=chat_id
-            )
-        if started is not None and getattr(started, "status", "") == "coding":
-            if chat_id:
-                started.chat_id = chat_id
-            if owner:
-                started.owner = owner
-            await _launch_mixed_job(started)
-        return started
-
-    def picture_reply(started, copied: list[str]) -> str:
-        reply = _url_response(
-            sync,
-            started,
-            api_base,
-            console=True,
-            code=True,
-            extra_files=written + copied,
-        )
-        picture = ""
-        if reply is not None:
-            picture = getattr(
-                getattr(reply.choices[0], "message", None), "content", None
-            ) or ""
-        return _mixed_code_reply(text, written, picture)
-
-    async def _body():
-        yield ServerSentEvent(comment=f"{STATUS_MARK} Updating project")
-        async for item in take_code():
-            yield item
-        started = await start_or_launch()
-        if started is not None:
-            yield ServerSentEvent(comment=f"{JOB_MARK} {started.id}")
-            line = job_progress_line(started)
-            if line:
-                yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
-            await wait_until_done(started)
-            copied = _copy_workspace_pngs(started, workspace)
-            async for item in retry_code_after_images():
-                yield item
-            out = picture_reply(started, copied)
-        else:
-            out = final_code_text(text, written)
-        rest = remaining_stream_text(out, streamed_answer)
-        if rest:
-            async for chunk in stream_text(data, rest):
-                yield chunk
-
-    if data.stream:
-        return EventSourceResponse(
-            _body(),
-            ping=get_sse_ping_interval(),
-            sep="\n",
-        )
-    async for _item in take_code():
-        pass
-    started = await start_or_launch()
-    if started is not None:
-        await wait_until_done(started)
-        copied = _copy_workspace_pngs(started, workspace)
-        async for _item in retry_code_after_images():
-            pass
-        return _text(sync, picture_reply(started, copied))
-    return _text(sync, final_code_text(text, written))
 
 
 def _attached_project_image_rel(text: str) -> str:
@@ -1184,8 +1009,8 @@ async def handle(
     conversation — never by attaching a global coding job.
 
     console=True (management UI) still generates images but never emits
-    Write/StrReplace tool calls unless code=True, which writes into a
-    per-chat host workspace instead.
+    a download curl. code=True plus a workspace copies finished PNGs into
+    the per-chat host folder after the browser writes the page.
 
     agent=ask|plan (UI Code mode) does not start a new Comfy job. In-flight
     jobs still hold until they finish.
@@ -1228,14 +1053,22 @@ async def handle(
 
     if job and job.status == "coding" and llm_ready:
         if workspace:
-            return await _stream_code_then_images(
+            _inject_planned_dests(data, _job_plan_items(job))
+            note_coding_progress(job)
+            code_response = await _write_site_code(data, disconnect_handler)
+            if _keep_writing_page(code_response, job):
+                return _code_reply(data, job, code_response)
+            await _launch_mixed_job(job)
+            if code_response and _file_write_pairs(_assistant_message(code_response)):
+                return _code_reply(data, job, code_response)
+            return await _hold_then_reply(
                 data,
+                job,
+                mixed=True,
                 api_base=api_base,
-                disconnect_handler=disconnect_handler,
-                owner=owner or "",
-                chat_id=chat_id or "",
-                job=job,
-                agent=agent,
+                code_response=code_response,
+                console=True,
+                workspace=workspace,
             )
         if console:
             await _launch_mixed_job(job)
@@ -1327,14 +1160,25 @@ async def handle(
                 )
             if workspace:
                 _inject_planned_dests(data, plan.items)
-                return await _stream_code_then_images(
+                code_response = await _write_site_code(data, disconnect_handler)
+                keep = _first_code_pass_holds_llm(code_response)
+                started = await _start_mixed_job(
+                    plan.items,
+                    api_base or "",
+                    start=not keep,
+                    owner=owner,
+                    chat_id=chat_id,
+                )
+                if keep:
+                    return _code_reply(data, started, code_response)
+                return await _hold_then_reply(
                     data,
+                    started,
+                    mixed=True,
                     api_base=api_base,
-                    disconnect_handler=disconnect_handler,
-                    owner=owner or "",
-                    chat_id=chat_id or "",
-                    items=plan.items,
-                    agent=agent,
+                    code_response=code_response,
+                    console=True,
+                    workspace=workspace,
                 )
             if console:
                 started = await _start_mixed_job(

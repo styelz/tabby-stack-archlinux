@@ -112,6 +112,16 @@ class ModelLoadRequest(BaseModel):
     output_chunking: Optional[bool] = True
     prompt_template: Optional[str] = None
     vision: Optional[bool] = None
+    tool_format: Optional[str] = None
+    template_vars_force: Optional[dict] = None
+    template_vars_default: Optional[dict] = None
+    reasoning: Optional[bool] = None
+    reasoning_start_token: Optional[str] = None
+    reasoning_end_token: Optional[str] = None
+    start_in_reasoning: Optional[str] = None
+    harmony: Optional[bool] = None
+    muse_glimmer: Optional[bool] = None
+    tool_calls_in_reasoning: Optional[bool] = None
 
     # Non-config arguments
     draft_model: Optional[DraftModelLoadRequest] = None

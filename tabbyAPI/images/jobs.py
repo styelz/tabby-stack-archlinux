@@ -35,16 +35,8 @@ from common.vram_recover import is_vram_error, reset_cuda_memory
 from common.tabby_config import config
 from endpoints.core.types.model import ModelLoadRequest
 from endpoints.core.utils.model import stream_model_load
+from common.load_fields import LOAD_FIELDS
 from select_model import apply_profile, available_profiles, last_profile
-
-LOAD_FIELDS = (
-    "max_seq_len",
-    "cache_size",
-    "cache_mode",
-    "chunk_size",
-    "autosplit_reserve",
-    "vision",
-)
 
 # Chat holds the HTTP request, so Comfy can start immediately.
 MCP_HANDOFF_DELAY_S = 0.0

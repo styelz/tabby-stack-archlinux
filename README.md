@@ -2,7 +2,7 @@
 
 A self-hosted coding assistant, web workspace, and image generator for an Arch Linux machine with an NVIDIA GPU.
 
-Use it from Cursor, VS Code, Continue, Cline, another OpenAI-compatible client, or the built-in browser UI. Prompts, project files, and generated images stay on hardware you control.
+Use it from Cursor, VS Code, Continue, Cline, another OpenAI-compatible client, or the built-in browser IDE. Editors keep their own tools and files. The browser Code tab is a self-contained IDE on this host that uses the same Chat Completions API. Prompts, project files, and generated images stay on hardware you control.
 
 ## What you get
 
@@ -60,11 +60,11 @@ The first account is the administrator. It can create separate Tabby-only accoun
 
 ## Use the browser UI
 
-**Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account is already using the GPU, you wait in a queue.
+**Chat** is for conversations, pasted images, model commands, and image generation. It keeps searchable history and lets you queue a follow-up while a reply is running. If another signed-in account or an editor is already using the GPU, you wait in a queue.
 
 <img width="1919" height="1122" alt="image" src="https://github.com/user-attachments/assets/03456b83-b6a5-46e9-a96f-9d752ed34fdb" />
 
-**Code** is a workspace per project folder. Extra chats under that workspace share the same files. Ask the model to create or edit files, upload existing files, edit them in the browser IDE, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
+**Code** is a self-contained IDE per project folder. Extra chats under that workspace share the same files. The browser calls the same Chat Completions endpoint as an editor, then runs Grep, Glob, Read, Write, Shell, and the other workspace tools here. Upload files, edit in Monaco, preview an HTML site, use a per-chat container terminal, or download the project as a zip.
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/11dca1dd-7036-4a11-9c12-043e417014e7" />
 
@@ -93,7 +93,7 @@ Configure an OpenAI-compatible provider in your editor:
 | Base URL | `http://<gpu-host>:5000/v1` on a trusted LAN/Tailscale network, or your configured HTTPS `/v1` URL |
 | Model name | `gpt-4o` |
 
-Leave the model name as **`gpt-4o`**. It is only a compatibility label that keeps editor tool support enabled; inference still runs on the local profile shown by `list models` or the Status page.
+Leave the model name as **`gpt-4o`**. It is only a compatibility label that keeps editor tool support enabled; inference still runs on the local profile shown by `list models` or the Status page. Do not send Tabby workspace tools from an editor — the editor already has its own.
 
 Some clients require HTTPS. The installer can configure a reverse SSH connection to a host that already has a valid certificate. Details are in the [network section of the install guide](tabbyAPI/deploy/arch/README.md#1-fresh-machine-github).
 

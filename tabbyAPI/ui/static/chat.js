@@ -725,7 +725,9 @@ function mountChat(root) {
   function cloneMessages(list) {
     return (Array.isArray(list) ? list : []).map((item) => {
       const out = {
-        role: item.role === "assistant" || item.role === "system" ? item.role : "user",
+        role: item.role === "assistant" || item.role === "system" || item.role === "tool"
+          ? item.role
+          : "user",
         content: String(item.content || ""),
       };
       if (out.role === "assistant" && item.reasoning) {
@@ -744,6 +746,13 @@ function mountChat(root) {
             .filter((step) => step && typeof step === "object")
             .map((step) => Object.assign({}, step));
         }
+        if (Array.isArray(item.tool_calls) && item.tool_calls.length) {
+          out.tool_calls = item.tool_calls.map((call) => Object.assign({}, call));
+        }
+      }
+      if (out.role === "tool") {
+        if (item.tool_call_id) out.tool_call_id = String(item.tool_call_id);
+        if (item.name) out.name = String(item.name);
       }
       if (item.hidden) out.hidden = true;
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
@@ -7189,10 +7198,29 @@ function mountChat(root) {
     return text;
   }
 
+  function outboundAssistant(item, code) {
+    const out = { role: "assistant", content: item.content };
+    if (code && Array.isArray(item.tool_calls) && item.tool_calls.length) {
+      out.tool_calls = item.tool_calls;
+    }
+    return out;
+  }
+
+  function outboundTool(item) {
+    const out = { role: "tool", content: String(item.content || "") };
+    if (item.tool_call_id) out.tool_call_id = item.tool_call_id;
+    if (item.name) out.name = item.name;
+    return out;
+  }
+
   function outboundMessages() {
+    const code = activeMode() === "code";
     return messages
       .filter((item) => item.role !== "system")
+      .filter((item) => code || item.role !== "tool")
       .map((item) => {
+        if (item.role === "tool") return outboundTool(item);
+        if (item.role === "assistant") return outboundAssistant(item, code);
         if (item.role !== "user") return { role: item.role, content: item.content };
         const text = outboundUserText(item);
         const images = [];
@@ -7621,7 +7649,7 @@ function mountChat(root) {
       title.textContent = String((step && (step.label || step.name)) || "Tool");
       row.appendChild(title);
       const args = (step && step.args) || {};
-      const detail = [args.path, args.to, args.command].filter(Boolean).join(" → ");
+      const detail = [args.path, args.to, args.pattern, args.glob, args.command].filter(Boolean).join(" → ");
       if (detail) {
         const meta = document.createElement("div");
         meta.className = "agent-step-args";
@@ -8005,7 +8033,10 @@ function mountChat(root) {
       if (item.role === "user") {
         if (isHiddenUserTurn(item)) return;
         addBubble("user", item.content, false, null, idx, item);
-      } else if (item.role === "assistant") addBubble("assistant", item.content, false, item.reasoning, idx, item);
+      } else if (item.role === "assistant") {
+        if (Array.isArray(item.tool_calls) && item.tool_calls.length) return;
+        addBubble("assistant", item.content, false, item.reasoning, idx, item);
+      }
     });
     if (inFlight && store.activeId === flightChatId && flightWorking && flightWorking.isLive()) {
       log.appendChild(flightWorking.node);
@@ -8724,6 +8755,9 @@ function mountChat(root) {
       const message = choice.message || {};
       const content = delta.content || message.content || json.line || "";
       const reasoning = delta.reasoning_content || message.reasoning_content || "";
+      const tools = delta.tool_calls || message.tool_calls;
+      if (Array.isArray(tools) && tools.length) onEvent({ tool_calls: tools });
+      if (choice.finish_reason) onEvent({ finish_reason: choice.finish_reason });
       if (content || reasoning) onEvent({ content, reasoning });
     }
     return rest;
@@ -9301,9 +9335,13 @@ function mountChat(root) {
   }
 
   function outboundMessagesFor(chatId) {
+    const code = chatMode(store.chats.find((item) => item.id === chatId)) === "code";
     return liveMessages(chatId)
       .filter((item) => item.role !== "system")
+      .filter((item) => code || item.role !== "tool")
       .map((item) => {
+        if (item.role === "tool") return outboundTool(item);
+        if (item.role === "assistant") return outboundAssistant(item, code);
         if (item.role !== "user") return { role: item.role, content: item.content };
         const text = outboundUserText(item);
         const images = [];
@@ -9325,6 +9363,62 @@ function mountChat(root) {
     const chat = store.chats.find((item) => item.id === chatId);
     if (!chat || isWorkspaceRoot(chat)) return;
     chat.updatedAt = Date.now();
+  }
+
+  const MAX_AGENT_ROUNDS = 64;
+
+  function normalizeToolCalls(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((item, index) => {
+      const fn = (item && item.function) || {};
+      let args = fn.arguments;
+      if (typeof args === "string") {
+        try {
+          args = args ? JSON.parse(args) : {};
+        } catch {
+          args = {};
+        }
+      }
+      if (!args || typeof args !== "object") args = {};
+      return {
+        id: String((item && item.id) || `call_${index}`),
+        name: String(fn.name || (item && item.name) || ""),
+        arguments: args,
+        raw: item,
+      };
+    }).filter((item) => item.name);
+  }
+
+  async function executeWorkspaceTool(chatId, name, args, agent, userText) {
+    const response = await fetch(
+      TabbyUI.path(`workspace/${encodeURIComponent(chatId)}/tools`),
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          arguments: args,
+          agent,
+          user_text: userText || "",
+        }),
+        signal: abortController && abortController.signal,
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = data.detail || (data.error && data.error.message) || data.error || "Tool failed";
+      return { label: "Tool error", result: String(detail) };
+    }
+    return { label: data.label || name, result: String(data.result || "") };
+  }
+
+  function lastUserTextFor(chatId) {
+    const list = liveMessages(chatId);
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (list[index] && list[index].role === "user") return String(list[index].content || "");
+    }
+    return "";
   }
 
   async function send(text, opts) {
@@ -9402,7 +9496,12 @@ function mountChat(root) {
     let statusLabel = "";
     let streamResume = resume;
     let networkTries = 0;
+    let toolRounds = 0;
+    let toolCalls = [];
     await persist();
+    agentTurn:
+    while (true) {
+    toolCalls = [];
     while (true) {
       const body = streamResume
         ? { resume: true, conversation_id: chatId, stream: true }
@@ -9451,6 +9550,9 @@ function mountChat(root) {
           const data = await response.json();
           assembled = data.choices?.[0]?.message?.content || data.message || JSON.stringify(data);
           reasoning = data.choices?.[0]?.message?.reasoning_content || "";
+          if (Array.isArray(data.choices?.[0]?.message?.tool_calls)) {
+            toolCalls = data.choices[0].message.tool_calls;
+          }
           if (reasoning) working.setReasoning(reasoning);
           if (assembled) working.setAnswer(assembled);
           if (data.usage) applyUsage(data.usage, chatId);
@@ -9513,6 +9615,7 @@ function mountChat(root) {
                 if (event.step.type === "demote") assembled = "";
                 working.addStep(event.step);
               }
+              if (event.tool_calls) toolCalls = event.tool_calls;
               if (event.reasoning) {
                 hideStackQueue(working, { label: "Thinking", processing: false });
                 reasoning += event.reasoning;
@@ -9561,6 +9664,70 @@ function mountChat(root) {
         assembled = assembled || `Error: ${err.message}`;
         break;
       }
+    }
+    const calls = sendAgent && !stopKind ? normalizeToolCalls(toolCalls) : [];
+    if (calls.length) {
+      const list = liveMessages(chatId);
+      const assistantItem = { role: "assistant", content: assembled, createdAt: Date.now() };
+      if (reasoning) assistantItem.reasoning = reasoning;
+      assistantItem.tool_calls = toolCalls;
+      list.push(assistantItem);
+      const userText = lastUserTextFor(chatId);
+      const workspace = workspaceId(targetChat) || activeWorkspaceId();
+      for (const call of calls) {
+        working.setActivity(call.name, { processing: true });
+        working.addStep({ type: "tool", name: call.name, label: call.name, args: call.arguments });
+        const ran = await executeWorkspaceTool(
+          workspace,
+          call.name,
+          call.arguments,
+          sendAgent,
+          userText
+        );
+        working.addStep({
+          type: "tool",
+          name: call.name,
+          label: ran.label,
+          args: call.arguments,
+          result: ran.result,
+        });
+        list.push({
+          role: "tool",
+          content: ran.result,
+          tool_call_id: call.id,
+          name: call.name,
+          createdAt: Date.now(),
+        });
+        if (
+          /^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(ran.label)
+          && chatsShareWorkspace(chatId)
+        ) {
+          const written = ran.label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
+          if (isChangePath(written)) {
+            reloadPreviewIfNeeded(written);
+            if (!/^Deleting\b/.test(ran.label)) noteAgentWrite(written);
+          }
+          refreshFilesSoon();
+        }
+        if (stopKind) break;
+      }
+      persist();
+      toolRounds += 1;
+      if (!stopKind && toolRounds < MAX_AGENT_ROUNDS) {
+        assembled = "";
+        reasoning = "";
+        toolCalls = [];
+        streamResume = false;
+        networkTries = 0;
+        if (working.resetLive) working.resetLive();
+        working.setActivity("Thinking", { processing: false });
+        continue;
+      }
+      if (!stopKind && toolRounds >= MAX_AGENT_ROUNDS) {
+        assembled = "Stopped after 64 tool rounds. Send another message to continue.";
+      }
+    }
+    break;
     }
     if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(assembled)) {
       assembled = "";

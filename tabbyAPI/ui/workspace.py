@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import io
 import json
 import mimetypes
@@ -50,9 +51,11 @@ PAGE_SUFFIXES = frozenset({".html", ".htm"})
 CORE_KEEP_SUFFIXES = frozenset(
     {".html", ".htm", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx"}
 )
-MAX_FILES = 200
-MAX_TOTAL_BYTES = 50 * 1024 * 1024
-MAX_TEXT_BYTES = 1 * 1024 * 1024
+MAX_FILES = 2000
+MAX_TOTAL_BYTES = 500 * 1024 * 1024
+MAX_TEXT_BYTES = 8 * 1024 * 1024
+MAX_GREP_MATCHES = 200
+MAX_GREP_LINE = 400
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
 DRAFTS_SUFFIX = ".drafts.json"
@@ -695,7 +698,7 @@ def write_text(username: str, chat_id: str, rel: str, contents: str) -> str:
     text = contents if isinstance(contents, str) else str(contents or "")
     data = text.encode("utf-8")
     if len(data) > MAX_TEXT_BYTES:
-        raise ValueError("File is larger than 1 MB.")
+        raise ValueError(f"File is larger than {MAX_TEXT_BYTES // (1024 * 1024)} MB.")
     root = workspace_root(username, chat_id, create=True)
     path = resolve_rel(root, rel)
     extra_files = 0 if path.is_file() else 1
@@ -712,6 +715,91 @@ def write_text(username: str, chat_id: str, rel: str, contents: str) -> str:
     path.write_bytes(data)
     os.chmod(path, 0o600)
     return path.relative_to(root.resolve()).as_posix()
+
+
+def read_text_window(
+    username: str,
+    chat_id: str,
+    rel: str,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> str:
+    text = read_text(username, chat_id, rel)
+    if offset is None and limit is None:
+        return text
+    lines = text.splitlines()
+    start = max(int(offset or 1), 1)
+    span = len(lines) if limit is None else max(int(limit), 0)
+    chunk = lines[start - 1 : start - 1 + span]
+    if not chunk:
+        return f"# {rel} has {len(lines)} lines; offset {start} is past the end."
+    end = start + len(chunk) - 1
+    numbered = [f"{start + index}|{line}" for index, line in enumerate(chunk)]
+    return f"# {rel} lines {start}-{end} of {len(lines)}\n" + "\n".join(numbered)
+
+
+def _glob_match(rel: str, pattern: str) -> bool:
+    pat = (pattern or "").strip()
+    if not pat:
+        return True
+    name = Path(rel).name
+    if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat):
+        return True
+    if "**" in pat:
+        tail = pat.split("**", 1)[-1].lstrip("/")
+        if tail and (fnmatch.fnmatch(rel, tail) or fnmatch.fnmatch(name, tail)):
+            return True
+    return False
+
+
+def grep_text(
+    username: str,
+    chat_id: str,
+    pattern: str,
+    path: str = "",
+    glob_pat: str = "",
+    max_matches: int = MAX_GREP_MATCHES,
+) -> str:
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid regex: {exc}") from exc
+    prefix = str(path or "").strip().strip("/")
+    hits: list[str] = []
+    for row in list_files(username, chat_id):
+        rel = str(row.get("path") or "")
+        if not rel or row.get("kind") == "image" or not row.get("editable"):
+            continue
+        if prefix and rel != prefix and not rel.startswith(prefix + "/"):
+            continue
+        if glob_pat and not _glob_match(rel, glob_pat):
+            continue
+        try:
+            text = read_text(username, chat_id, rel)
+        except (ValueError, FileNotFoundError, OSError):
+            continue
+        if text.startswith("[binary"):
+            continue
+        for index, line in enumerate(text.splitlines(), 1):
+            if not regex.search(line):
+                continue
+            snippet = line if len(line) <= MAX_GREP_LINE else line[:MAX_GREP_LINE] + "…"
+            hits.append(f"{rel}:{index}:{snippet}")
+            if len(hits) >= max_matches:
+                return "\n".join(hits) + f"\n…stopped after {max_matches} matches"
+    return "\n".join(hits) if hits else "No matches."
+
+
+def glob_paths(username: str, chat_id: str, pattern: str) -> str:
+    pat = str(pattern or "").strip() or "**/*"
+    matches = [
+        str(row.get("path") or "")
+        for row in list_files(username, chat_id)
+        if row.get("path") and _glob_match(str(row.get("path") or ""), pat)
+    ]
+    if not matches:
+        return "No files matched."
+    return "\n".join(sorted(matches))
 
 
 def str_replace(username: str, chat_id: str, rel: str, old: str, new: str) -> str:

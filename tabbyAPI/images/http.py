@@ -12,6 +12,19 @@ from images.jobs import generate_images_job, loaded_tabby_name
 
 async def generate_response(request, data):
     """Render, then return b64_json + url. Never return a job id to poll."""
+    from common.networking import DisconnectHandler
+    from ui.occupancy import StackGate
+
+    gate = StackGate("api", kind="image")
+    handler = DisconnectHandler(request, "/v1/images/generations")
+    try:
+        await gate.wait_until_acquired(handler)
+        return await _generate_body(request, data)
+    finally:
+        await gate.release()
+
+
+async def _generate_body(request, data):
     from fastapi import HTTPException
 
     was_llm = bool(loaded_tabby_name())

@@ -10,14 +10,14 @@ This file is for **any editor** that talks to the TabbyAPI server, and for anyon
 - Model name: **`gpt-4o`** (leave it)
 - Health: `GET /health` on the same origin
 - Browser UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created.
-  - **Chat** — conversations, vision, model commands, and image generation (searchable history, follow-up queue)
-  - **Code** — a project folder on this host with file tools, Monaco, preview, a per-chat container terminal, and zip download. Nested chats under a workspace share the same files
+  - **Chat** — same Chat Completions pipeline as an editor, without file tools (searchable history, follow-up queue)
+  - **Code** — a self-contained IDE on this host. The browser is the agent: it calls Chat Completions, then runs Grep/Glob/Read/Write/Shell against a jailed workspace (Monaco, preview, container terminal, zip). Nested chats under a workspace share the same files
   - **Status** — profile, GPU mode, occupancy, health, graphs, restart, and updates
   - **Gallery** — generated images (the administrator can see every account)
   - **Logs** — live TabbyAPI and ComfyUI output
   - **Users** — administrator-only account creation. Extra users get Chat, Code, Status, Gallery, and Logs; they cannot create accounts
   - **Settings** — administrator-only Tabby `config.yml` and system `tabby.env`
-- The GPU is shared. If another account is chatting, coding, generating, or switching models, the UI queues you.
+- The GPU is shared. Browser UI and editor `/v1` requests wait in one queue.
 
 Do not SSH into the GPU host just to change models. Send a chat phrase, use Status in `/v1/ui`, or send `restart` to bounce the API.
 
@@ -53,8 +53,8 @@ The GPU server generates the PNG and returns a URL on **this same API host**. No
 
 A line like “create a webpage and generate a header and logo” is a **coding task**. Write HTML/CSS/JS first, then generate PNGs on the GPU. Do not use React/Vite boilerplate, SVG/CSS art, or Pillow/`generate_images.py`.
 
-- **Browser Code:** ask for the files and named PNGs together. The model writes the project, generates the images, and copies them into the Files pane.
-- **Editor:** apply file tools on your computer. Point `img src` at planned paths such as `images/logo.png`. Do not dump the page in chat or overwrite those PNGs. After the page is written, the next reply holds until every planned PNG exists, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`, invent timestamps, or curl another chat’s leftovers. A 404 means the file is missing on the GPU host.
+- **Browser Code:** ask for the files and named PNGs together. The browser writes the project with workspace tools, then the API holds until PNGs exist and copies them into the Files pane.
+- **Editor:** apply **your** file tools on your computer. Point `img src` at planned paths such as `images/logo.png`. Do not dump the page in chat or overwrite those PNGs. After the page is written, the next reply holds until every planned PNG exists, then returns **one** Shell `curl` of those real URLs. Run that `curl`. Do not `sleep`/`ls`, invent timestamps, or curl another chat’s leftovers. A 404 means the file is missing on the GPU host.
 
 Prefix `qwen-image:` for logos and readable text. Hero/header photos: a scene, not a website.
 

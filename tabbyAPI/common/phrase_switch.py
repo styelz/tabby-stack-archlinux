@@ -560,11 +560,13 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         "",
         "## Choose where to work",
         "",
-        "- **Editor:** your project stays on your computer and the editor supplies its own tools.",
-        "- **Browser Chat:** conversations, visual questions, model commands, and image generation.",
-        "- **Browser Code:** one private project folder per workspace. Nested chats "
-        "share those files, with file tools, uploads, a Monaco editor, Changes/diff, "
-        "site preview, a per-chat container terminal, and zip download.",
+        "- **Editor:** Chat Completions at this `/v1`. Keep model name `gpt-4o`. "
+        "Your project stays on your computer and the editor supplies its own tools.",
+        "- **Browser Chat:** same API, no file tools. Conversations, vision, "
+        "model commands, and image generation.",
+        "- **Browser Code:** a self-contained IDE on this host. Same Chat Completions "
+        "pipeline; the browser runs the tool loop against a jailed workspace "
+        "(Grep, Glob, Read, Write, Shell, …), plus Monaco, preview, and a container terminal.",
         "- **Status:** model switching, GPU occupancy, restart, updates, health, and resource graphs.",
         "- **Gallery:** generated output images only.",
         "- **Logs:** live and historical server output.",
@@ -579,8 +581,8 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         f"- CPU embeddings: `POST {embed}`",
         "",
         "The NVIDIA GPU runs either a language model or ComfyUI, never both at once. "
-        "CPU embeddings remain available in either mode. The browser UI queues you "
-        "if another account is chatting, coding, generating, or switching models.",
+        "CPU embeddings remain available in either mode. Browser and editor requests "
+        "share one GPU slot.",
         "",
         "## Chat commands",
         "",
@@ -673,8 +675,9 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
             "",
             "## Build code with images",
             "",
-            "- **Browser Code:** ask for the files and named PNGs together. The model writes "
-            "the project first, generates the images, and copies them into the Files pane.",
+            "- **Browser Code:** ask for the files and named PNGs together. The browser "
+            "writes the project with workspace tools; the API then holds for images and "
+            "copies them into the Files pane.",
             "- **Editor:** ask for the page and named image paths together. Apply the editor's "
             "file tools; the API waits for the image batch and returns one download command.",
             "",
@@ -704,7 +707,8 @@ def list_text() -> str:
     lines = [
         "Stay on gpt-4o. To switch, type switch to <model>. "
         "Send restart to bounce the API. Send help for the full guide.",
-        "Daily chat: qwen. Long Agent tasks: switch to qwen35 or qwen36 first.",
+        "Daily chat: qwen. Long Agent tasks: switch to qwen35 or qwen36 first. "
+        "glm is thinking chat only — it does not parse coding tools.",
         "Image gen: switch to comfy (unloads the LLM, Flux Schnell). "
         "Switch back with switch to qwen.",
         "",
@@ -869,6 +873,37 @@ def switch_reply_text(name: str) -> str:
         f"{hint}, then keep using gpt-4o. "
         f"The next message will use the new model.{extra}"
     )
+
+
+NO_TOOL_FORMAT_HINT = (
+    "The loaded profile does not parse tool calls. "
+    "Send `switch to qwen` (or gemma) for coding with tools. "
+    "glm is a thinking chat profile, not a coding-agent profile."
+)
+
+
+def request_has_tools(data: ChatCompletionRequest) -> bool:
+    return bool(getattr(data, "tools", None) or getattr(data, "functions", None))
+
+
+def container_parses_tools() -> bool:
+    from common import model as tabby_model
+
+    container = getattr(tabby_model, "container", None)
+    if container is None:
+        return False
+    return bool(
+        getattr(container, "tool_format", None)
+        or getattr(container, "harmony", False)
+        or getattr(container, "muse_glimmer", False)
+    )
+
+
+def tools_without_format_response(data: ChatCompletionRequest):
+    """Honest reply when the client sent tools but this profile cannot parse them."""
+    if not request_has_tools(data) or container_parses_tools():
+        return None
+    return text_response(data, NO_TOOL_FORMAT_HINT)
 
 
 def text_response(data: ChatCompletionRequest, text: str):

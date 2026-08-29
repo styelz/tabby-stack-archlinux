@@ -195,11 +195,17 @@ def tabby_schema() -> list[dict[str, Any]]:
                 spec["choices"] = ["true", "false"]
                 spec["blank"] = "auto"
             fields.append(spec)
+        description = (model_cls.__doc__ or "").strip().split("\n", 1)[0]
+        if name == "model":
+            description = (
+                f"{description} A profile switch overwrites load keys "
+                "(context, cache, tool_format, reasoning)."
+            ).strip()
         sections.append(
             {
                 "name": name,
                 "label": name.replace("_", " "),
-                "description": (model_cls.__doc__ or "").strip().split("\n", 1)[0],
+                "description": description,
                 "fields": fields,
             }
         )

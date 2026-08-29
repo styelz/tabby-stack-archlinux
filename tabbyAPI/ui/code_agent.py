@@ -1,4 +1,4 @@
-"""Server-side jailed project-tool loop for UI Code mode."""
+"""Jailed workspace tools for the browser IDE. The browser runs the agent loop."""
 
 from __future__ import annotations
 
@@ -25,8 +25,9 @@ CODE_SYSTEM = (
     "You are coding in a workspace project folder on this Tabby Stack host. "
     "This conversation is one thread in that workspace; extra chats share the "
     "same files. The user can create, upload, and attach files; attached files "
-    "are included in their message. Use the file tools (Write, StrReplace, Read, "
-    "Rename, Delete, List) to create and edit text files. Use OptimizeImage to "
+    "are included in their message. Use the file tools (Grep, Glob, Write, "
+    "StrReplace, Read, Rename, Delete, List) to search, create, and edit text "
+    "files. Use OptimizeImage to "
     "compress, resize, or convert project images. List first: generated website "
     "images are often already WebP, not PNG. OptimizeImage finds the real file "
     "when the prompt still says .png, updates code references, and does not "
@@ -51,7 +52,7 @@ ASK_SYSTEM = (
     "Tabby Stack host. This conversation is one thread in that workspace; "
     "extra chats share the same files. Use this thread and the project "
     "files together: earlier Plan or Ask turns are part of the brief. Do "
-    "not ignore them. Use Read and List to inspect files. Do not create, "
+    "not ignore them. Use Grep, Glob, Read, and List to inspect files. Do not create, "
     "edit, delete, rename, or optimize files. Do not run Shell. Do not "
     "implement changes. Answer clearly from the conversation and the project."
 )
@@ -59,7 +60,7 @@ PLAN_SYSTEM = (
     "You are Plan mode for a workspace project folder on this Tabby Stack "
     "host. This conversation is one thread in that workspace; extra chats "
     "share the same files. A workspace file list is already in this prompt; "
-    "only Read a file if you need its contents. Do not List just to confirm "
+    "only Grep, Glob, or Read a file if you need its contents. Do not List just to confirm "
     "the file list. If a plan is already in this thread, revise that plan; "
     "do not start from a blank page. Do not create, edit, delete, rename, "
     "or optimize files, and do not run Shell. "
@@ -102,10 +103,10 @@ _PLAN_PREAMBLE = re.compile(
 _MUTATE_KINDS = frozenset(
     ("write", "replace", "delete", "rename", "optimize", "shell")
 )
-_READONLY_TOOLS = frozenset(("read", "list"))
+_READONLY_TOOLS = frozenset(("read", "list", "grep", "glob"))
 _READONLY_REFUSE = (
-    "This prompt mode is read-only. Use Read or List, or switch to Agent to "
-    "change files."
+    "This prompt mode is read-only. Use Grep, Glob, Read, or List, or switch "
+    "to Agent to change files."
 )
 BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
 
@@ -250,6 +251,8 @@ _REPLACE_NAMES = (
     "edit_file",
 )
 _READ_NAMES = ("read", "read_file", "readfile")
+_GREP_NAMES = ("grep", "search", "rg")
+_GLOB_NAMES = ("glob", "find_files", "find")
 _DELETE_NAMES = ("delete", "delete_file", "remove_file")
 _RENAME_NAMES = ("rename", "rename_file", "move_file", "mv")
 _LIST_NAMES = ("list", "list_dir", "listdir", "list_files")
@@ -309,10 +312,22 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
             type="function",
             function=Function(
                 name="Read",
-                description="Read a project file.",
+                description="Read a project file. Use offset and limit for large files.",
                 parameters={
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1-based start line. Omit to read the whole file.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum number of lines to return.",
+                        },
+                    },
                     "required": ["path"],
                 },
             ),
@@ -351,6 +366,48 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
                             "description": "Directory to list, or omit for the project root.",
                         }
                     },
+                },
+            ),
+        ),
+        ToolSpec(
+            type="function",
+            function=Function(
+                name="Grep",
+                description="Search project text files with a regular expression.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regular expression to search for.",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional subdirectory or file to search.",
+                        },
+                        "glob": {
+                            "type": "string",
+                            "description": "Optional filename glob, e.g. **/*.css",
+                        },
+                    },
+                    "required": ["pattern"],
+                },
+            ),
+        ),
+        ToolSpec(
+            type="function",
+            function=Function(
+                name="Glob",
+                description="List project files matching a glob pattern.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob, e.g. **/*.js or src/**/*.css",
+                        }
+                    },
+                    "required": ["pattern"],
                 },
             ),
         ),
@@ -512,6 +569,10 @@ def _kind(name: str) -> str:
         return "replace"
     if match_tool_name([key], _READ_NAMES):
         return "read"
+    if match_tool_name([key], _GREP_NAMES):
+        return "grep"
+    if match_tool_name([key], _GLOB_NAMES):
+        return "glob"
     if match_tool_name([key], _DELETE_NAMES):
         return "delete"
     if match_tool_name([key], _RENAME_NAMES):
@@ -646,6 +707,25 @@ def execute_tool(
             else:
                 lines.append(f"{path} ({row.get('size', 0)} bytes)")
         return "Listing files", "\n".join(lines)
+    if kind == "grep":
+        pattern = str(args.get("pattern") or args.get("query") or "").strip()
+        if not pattern:
+            return "Tool error", "pattern is required"
+        return (
+            "Searching project",
+            workspace.grep_text(
+                username,
+                chat_id,
+                pattern,
+                path=rel,
+                glob_pat=str(args.get("glob") or args.get("include") or ""),
+            ),
+        )
+    if kind == "glob":
+        pattern = str(args.get("pattern") or args.get("glob") or rel or "").strip()
+        if not pattern:
+            return "Tool error", "pattern is required"
+        return "Finding files", workspace.glob_paths(username, chat_id, pattern)
     if not rel:
         return "Tool error", "path is required"
     if kind == "write":
@@ -657,7 +737,20 @@ def execute_tool(
         workspace.str_replace(username, chat_id, rel, old, new)
         return f"Editing {rel}", f"Updated {rel}"
     if kind == "read":
-        return f"Reading {rel}", workspace.read_text(username, chat_id, rel)
+        offset = args.get("offset")
+        limit = args.get("limit")
+        try:
+            offset_n = int(offset) if offset is not None else None
+        except (TypeError, ValueError):
+            offset_n = None
+        try:
+            limit_n = int(limit) if limit is not None else None
+        except (TypeError, ValueError):
+            limit_n = None
+        return (
+            f"Reading {rel}",
+            workspace.read_text_window(username, chat_id, rel, offset_n, limit_n),
+        )
     if kind == "delete":
         root = workspace.workspace_root(username, chat_id, create=False)
         dest = workspace.resolve_rel(root, rel)
@@ -698,7 +791,7 @@ def execute_tool(
         return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
     return (
         "Tool error",
-        f"Unknown tool {name!r}. Use Write, StrReplace, Read, Rename, Delete, List, OptimizeImage, or Shell.",
+        f"Unknown tool {name!r}. Use Grep, Glob, Write, StrReplace, Read, Rename, Delete, List, OptimizeImage, or Shell.",
     )
 
 

@@ -589,16 +589,46 @@ def start_stack_update(*, full: bool = False) -> dict[str, Any]:
     return _prompt_response(load_update_prompt(prompt_path), "Git update finished.")
 
 
-def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
+MAX_CODE_TOOL_ROUNDS = 8
+
+
+def _cap_tool_rounds(messages: list[dict[str, Any]], limit: int = MAX_CODE_TOOL_ROUNDS) -> list:
+    starts = [
+        index
+        for index, item in enumerate(messages)
+        if item.get("role") == "assistant" and item.get("tool_calls")
+    ]
+    if len(starts) <= limit:
+        return messages
+    drop: set[int] = set()
+    for start in starts[:-limit]:
+        drop.add(start)
+        index = start + 1
+        while index < len(messages) and messages[index].get("role") == "tool":
+            drop.add(index)
+            index += 1
+    out = []
+    for index, item in enumerate(messages):
+        if index not in drop:
+            out.append(item)
+            continue
+        if item.get("role") == "assistant" and item.get("content"):
+            kept = {key: value for key, value in item.items() if key != "tool_calls"}
+            out.append(kept)
+    return out
+
+
+def sanitize_chat_payload(body: dict[str, Any], *, keep_tools: bool = False) -> dict[str, Any]:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("messages is required")
+    allowed = ("system", "user", "assistant", "tool") if keep_tools else ("system", "user", "assistant")
     clean_messages = []
     for raw in messages:
         if not isinstance(raw, dict):
             continue
         role = str(raw.get("role") or "user")
-        if role not in ("system", "user", "assistant"):
+        if role not in allowed:
             continue
         content = raw.get("content")
         if isinstance(content, list):
@@ -631,7 +661,15 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
             content = ""
         if not isinstance(content, list):
             content = str(content)
-        clean_messages.append({"role": role, "content": content})
+        item = {"role": role, "content": content}
+        if keep_tools and role == "assistant" and raw.get("tool_calls"):
+            item["tool_calls"] = raw["tool_calls"]
+        if keep_tools and role == "tool":
+            if raw.get("tool_call_id"):
+                item["tool_call_id"] = str(raw.get("tool_call_id") or "")
+            if raw.get("name"):
+                item["name"] = str(raw.get("name") or "")
+        clean_messages.append(item)
     if not any(item["role"] == "system" for item in clean_messages):
         clean_messages.insert(0, {"role": "system", "content": CONSOLE_SYSTEM})
     payload = {
@@ -650,16 +688,23 @@ def sanitize_chat_payload(body: dict[str, Any]) -> dict[str, Any]:
 
 def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str, Any]:
     """Chat sanitizer, but force the Code-mode system prompt and keep chat_id."""
-    from ui.code_agent import attach_plan_user_contract, code_system_for, normalize_agent
+    from ui.code_agent import (
+        attach_plan_user_contract,
+        code_system_for,
+        code_tool_specs,
+        normalize_agent,
+        workspace_file_brief,
+    )
     from ui.workspace import safe_name
 
-    payload = sanitize_chat_payload(body)
+    payload = sanitize_chat_payload(body, keep_tools=True)
     raw_id = str(body.get("chat_id") or "").strip()
     if not raw_id:
         raise ValueError("chat_id is required in Code mode")
     chat_id = safe_name(raw_id)
     agent = normalize_agent(body.get("agent"))
     messages = [item for item in payload["messages"] if item.get("role") != "system"]
+    messages = _cap_tool_rounds(messages)
     messages.insert(0, {"role": "system", "content": code_system_for(username, chat_id, agent)})
     if agent == "plan":
         attach_plan_user_contract(messages)
@@ -667,4 +712,7 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
     payload["chat_id"] = chat_id
     payload["mode"] = "code"
     payload["agent"] = agent
+    payload["tools"] = code_tool_specs(agent)
+    if agent == "plan" and "empty project" in workspace_file_brief(username, chat_id):
+        payload["tool_choice"] = "none"
     return payload
