@@ -33,8 +33,7 @@ CODE_SYSTEM = (
     "need you to delete the original. If they attach a picture and ask to "
     "remove a border or frame, wait for the new GPU PNG; do not fake it with "
     "CSS, background-size, or JavaScript. Use Shell to run project commands in "
-    "this workspace's container (cwd is /work). Never use Shell to delete, "
-    "move, or overwrite project files. Do not create placeholder files when an "
+    "this workspace's container (cwd is /work). Do not create placeholder files when an "
     "attached project image can be processed with OptimizeImage. Do not dump "
     "whole files in chat. Do not try to run the site for the user; they have "
     "preview. Point img src at the planned local paths. Generated assets for "
@@ -429,8 +428,8 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
                 name="Shell",
                 description=(
                     "Run a command in this workspace's project container. cwd is /work. "
-                    "Use for installs, builds, and checks. Prefer file tools for edits. "
-                    "Do not delete, move, or overwrite project files from Shell."
+                    "Use for installs, builds, checks, and any project command. "
+                    "Prefer file tools for edits."
                 ),
                 parameters={
                     "type": "object",
@@ -554,31 +553,6 @@ def _user_named_path(user_text: str, rel: str) -> bool:
     return False
 
 
-_SHELL_DESTROY = re.compile(
-    r"(?is)(?:^|[\n;&|`]|\$\(|\bthen\b|\bdo\b)\s*(?:"
-    r"rm\b|rmdir\b|unlink\b|shred\b|"
-    r"find\b.{0,200}\s-(?:delete|exec)\b|"
-    r"truncate\b|"
-    r"dd\b|"
-    r"python(?:3)?\b.{0,160}\b(?:remove|unlink|rmtree)\b|"
-    r"(?:os|pathlib|shutil)\.(?:remove|unlink|rmtree)\b"
-    r")"
-)
-
-
-def _shell_is_destructive(command: str) -> bool:
-    text = str(command or "").strip()
-    if not text:
-        return False
-    if _SHELL_DESTROY.search(text):
-        return True
-    lowered = text.lower()
-    return any(
-        token in lowered
-        for token in ("shutil.rmtree", "os.remove", "os.unlink", "path.unlink")
-    )
-
-
 def _delete_refusal(
     username: str,
     chat_id: str,
@@ -639,13 +613,6 @@ def execute_tool(
         command = str(args.get("command") or args.get("cmd") or "").strip()
         if not command:
             return "Tool error", "command is required"
-        if _shell_is_destructive(command):
-            return (
-                "Tool error",
-                "Shell cannot delete or replace project files. Use OptimizeImage "
-                "for images, and Delete only for an empty folder or a file the "
-                "user named.",
-            )
         from ui import codebox
 
         try:
