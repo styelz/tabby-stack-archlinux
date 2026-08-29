@@ -77,8 +77,16 @@ _SLASH_RESERVED = frozenset({"help", "restart", "list", "models", "image", "gene
 IMAGE_GEN_RE = re.compile(
     r"(?is)^\s*(?:please\s+)?(?:can you\s+|could you\s+)?"
     r"(?:generate|draw|imagine|create|make|render)"
-    r"(?:\s+me)?(?:\s+an?)?(?:\s+image|picture|photo|pic)?"
+    r"(?:\s+me)?(?:\s+an?)?\s+(?:image|picture|photo|pic)"
     r"(?:\s+of|\s+showing)?\s+(.+?)\s*$"
+)
+REFUSE_IMAGES_RE = re.compile(
+    r"(?is)\b(?:"
+    r"do(?:\s+not|n't)\s+(?:generate|draw|create|render|make)\s+"
+    r"(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)|"
+    r"no\s+new\s+(?:images?|pictures?|photos?)|"
+    r"without\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?)"
+    r")\b"
 )
 IMAGE_COUNT_RE = re.compile(
     r"(?is)^\s*(?:please\s+)?(?:can you\s+|could you\s+)?"
@@ -1094,6 +1102,11 @@ USE_IN_UI_RE = re.compile(
 MIXED_IMAGE_HINT_MARK = "This turn is a coding task that also needs images."
 
 
+def refuses_new_images(text: str) -> bool:
+    """True when this line asks not to start another picture job."""
+    return bool(REFUSE_IMAGES_RE.search(text or ""))
+
+
 def is_coding_task(text: str) -> bool:
     return bool(CODING_TASK_RE.search(text or ""))
 
@@ -1273,6 +1286,8 @@ def requested_image_prompt(
     if is_page_layout_ask(text):
         return None
     if looks_like_chat_not_image(text):
+        return None
+    if refuses_new_images(text) and not IMAGE_GEN_RE.match(text):
         return None
     if explicit_only and is_coding_task(text):
         return None

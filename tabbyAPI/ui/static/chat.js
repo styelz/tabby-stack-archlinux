@@ -7379,12 +7379,19 @@ function mountChat(root) {
     if (isBuildPromptText(raw) || looksLikeCodeProjectPrompt(raw)) {
       return { label: "Building", kind: "chat", processing: true };
     }
+    const refusesImages =
+      /\bdo(?:\s+not|n't)\s+(?:generate|draw|create|render|make)\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)\b/i.test(
+        lower
+      ) ||
+      /\bno\s+new\s+(?:images?|pictures?|photos?)\b/i.test(lower) ||
+      /\bwithout\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?)\b/i.test(lower);
     if (
-      /qwen-image:/i.test(raw) ||
-      /^(generate an image)/i.test(raw) ||
-      /^\/image\b/i.test(raw) ||
-      /\b(generate|draw|paint|render|create|make|replace)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
-      /\b(svg|png|jpg|jpeg|webp)\b.+\b(image|picture|logo|of)\b/i.test(lower)
+      !refusesImages &&
+      (/qwen-image:/i.test(raw) ||
+        /^(generate an image)/i.test(raw) ||
+        /^\/image\b/i.test(raw) ||
+        /\b(generate|draw|paint|render|create|make|replace)\b[\s\S]{0,80}\b(image|picture|logo|poster|icon|svg)\b/i.test(lower) ||
+        /\b(svg|png|jpg|jpeg|webp)\b.+\b(image|picture|logo|of)\b/i.test(lower))
     ) {
       return {
         label: "Starting the picture",

@@ -34,7 +34,7 @@ from images.paths import (
     planned_dest_fact_list,
     tool_result_has_pngs,
 )
-from images.plan import classify_image_turn
+from images.plan import ImageTurnPlan, classify_image_turn, plan_from_extracted
 
 JOB_MARK = "tabby-image-job:"
 STATUS_MARK = "tabby-image-status:"
@@ -64,13 +64,21 @@ _HERO_STEMS = frozenset(
 _EXPLICIT_NEW_RE = re.compile(
     r"(?is)(?:"
     r"qwen-image:|"
-    r"\b(?:generate|draw|render)\s+an?\s+(?:image|picture|photo|pic)\b|"
+    r"\b(?:generate|draw|render|create)\s+"
+    r"(?:(?:real|gpu|new)\s+)*"
+    r"(?:an?\s+)?"
+    r"(?:images?|pictures?|photos?|pics?)\b|"
     r"\b(?:redo|recreate)\b|"
     r"\breplace\s+the\s+(?:logo|hero(?:\s+(?:image|photo))?|header\s+(?:image|photo)|image|photo)\b|"
     r"\bnew\s+(?:logo|hero(?:\s+photo)?|header\s+photo)\b"
     r")"
 )
 _RASTER_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_NAMED_DEST_RE = re.compile(r"(?i)\bimages/([A-Za-z][A-Za-z0-9._-]*)")
+_SKIP_DEST_STEMS = frozenset({"image", "images", "generated", "generated.png"})
+_MIN_GPU_RASTER_BYTES = 50_000
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 def _readonly_agent(agent: str | None) -> bool:
@@ -96,12 +104,112 @@ def workspace_raster_paths(owner: str | None, chat_id: str | None) -> list[str]:
         if not isinstance(row, dict):
             continue
         path = str(row.get("path") or "").strip().replace("\\", "/")
-        if not path:
+        if not path or _is_scratch_raster(path):
+            continue
+        try:
+            size = int(row.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size and size < 1024:
             continue
         kind = str(row.get("kind") or "")
         if kind == "image" or Path(path).suffix.lower() in suffixes:
             found.append(path)
     return found
+
+
+def _is_scratch_raster(path: str) -> bool:
+    """Scratch leftovers are not dests for a new images/logo or header."""
+    clean = str(path or "").replace("\\", "/").lstrip("/")
+    return clean == "scratch" or clean.startswith("scratch/")
+
+
+def _named_image_dests(text: str) -> list[str]:
+    """Project dests the user named, such as images/logo or images/header."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _NAMED_DEST_RE.finditer(text or ""):
+        raw = str(match.group(1) or "").strip()
+        stem = Path(raw).stem.lower().replace("_", "-")
+        if not stem or stem in _SKIP_DEST_STEMS:
+            continue
+        if stem in _HERO_STEMS:
+            name = "header.png"
+        elif Path(raw).suffix:
+            name = Path(raw).name
+        else:
+            name = f"{stem}.png"
+        dest = f"images/{name}"
+        if dest in seen:
+            continue
+        seen.add(dest)
+        found.append(dest)
+    return found
+
+
+def _workspace_gpu_raster(owner: str, chat_id: str, dest: str) -> bool:
+    """True when this dest is a real GPU raster, not a stub or converted leftover."""
+    wanted = str(dest or "").strip().replace("\\", "/").lstrip("/")
+    if not wanted or _is_scratch_raster(wanted):
+        return False
+    try:
+        from ui.workspace import resolve_file
+
+        path = resolve_file(owner, chat_id, wanted)
+    except (OSError, ValueError, FileNotFoundError):
+        return False
+    try:
+        size = path.stat().st_size
+        head = path.read_bytes()[:12]
+    except OSError:
+        return False
+    if size < _MIN_GPU_RASTER_BYTES:
+        return False
+    suffix = Path(wanted).suffix.lower()
+    if suffix == ".png":
+        return head.startswith(_PNG_MAGIC)
+    if suffix in {".jpg", ".jpeg"}:
+        return head.startswith(_JPEG_MAGIC)
+    if suffix == ".webp":
+        return head.startswith(b"RIFF") and b"WEBP" in head
+    if suffix == ".gif":
+        return head.startswith(b"GIF8")
+    return False
+
+
+def _gpu_dest_ready(
+    dest: str,
+    existing: list[str],
+    owner: str | None = None,
+    chat_id: str | None = None,
+) -> bool:
+    """Skip Comfy only when the named dest is already a real GPU file."""
+    if owner and chat_id:
+        return _workspace_gpu_raster(owner, chat_id, dest)
+    return _dest_exists(dest, existing)
+
+
+def _upgrade_missing_named_dests(
+    plan: ImageTurnPlan,
+    ask: str,
+    existing: list[str],
+    owner: str | None = None,
+    chat_id: str | None = None,
+) -> ImageTurnPlan:
+    """Scratch leftovers are not reuse when images/logo or header is still missing."""
+    if plan.action == "generate" and plan.items:
+        return plan
+    missing = [
+        dest
+        for dest in _named_image_dests(ask)
+        if not _gpu_dest_ready(dest, existing, owner, chat_id)
+    ]
+    if not missing:
+        return plan
+    items = plan_from_extracted(ask, [{"filename": Path(dest).name} for dest in missing])
+    if not items:
+        return plan
+    return ImageTurnPlan(action="generate", items=items, from_model=False)
 
 
 def workspace_raster_facts(paths: list[str]) -> str:
@@ -120,12 +228,16 @@ def _dest_exists(dest: str, existing: list[str]) -> bool:
         return False
     dest_name = Path(wanted).name.lower()
     dest_stem = _raster_stem(wanted)
+    dest_suffix = Path(wanted).suffix.lower()
     dest_stems = {dest_stem}
     if dest_stem in _HERO_STEMS:
         dest_stems |= _HERO_STEMS
     for path in existing:
         have = str(path or "").strip().replace("\\", "/").lstrip("/")
         if not have:
+            continue
+        have_suffix = Path(have).suffix.lower()
+        if dest_suffix and have_suffix and dest_suffix != have_suffix:
             continue
         if have == wanted or have.endswith("/" + wanted) or wanted.endswith("/" + have):
             return True
@@ -140,20 +252,39 @@ def _dest_exists(dest: str, existing: list[str]) -> bool:
     return False
 
 
-def _existing_raster_paths(job, workspace_paths: list[str]) -> list[str]:
+def _existing_raster_paths(
+    job,
+    workspace_paths: list[str],
+    owner: str | None = None,
+    chat_id: str | None = None,
+) -> list[str]:
     found = list(workspace_paths)
     if job is None:
         return found
     for _url, dest in living_download_pairs(job):
-        if dest:
-            found.append(dest)
+        if not dest:
+            continue
+        if owner and chat_id:
+            if _workspace_gpu_raster(owner, chat_id, dest):
+                found.append(dest)
+            continue
+        found.append(dest)
     return found
 
 
-def _all_dests_exist(items: list[dict[str, str]], existing: list[str]) -> bool:
+def _all_dests_exist(
+    items: list[dict[str, str]],
+    existing: list[str],
+    owner: str | None = None,
+    chat_id: str | None = None,
+) -> bool:
     dests = [str(row.get("output_path") or "").strip() for row in items or []]
     dests = [dest for dest in dests if dest]
-    if not dests or not existing:
+    if not dests:
+        return False
+    if owner and chat_id:
+        return all(_workspace_gpu_raster(owner, chat_id, dest) for dest in dests)
+    if not existing:
         return False
     return all(_dest_exists(dest, existing) for dest in dests)
 
@@ -1060,8 +1191,10 @@ async def handle(
     jobs still hold until they finish.
     """
     from common.phrase_switch import (
+        IMAGE_GEN_RE,
         border_edit_prompt,
         last_user_text,
+        refuses_new_images,
         requested_image_prompt,
         text_response,
         wants_border_trim,
@@ -1156,20 +1289,24 @@ async def handle(
                 workspace=workspace,
             )
 
+    if refuses_new_images(ask) and not IMAGE_GEN_RE.match(ask):
+        return None
+
     if llm_ready:
         rasters = workspace_raster_paths(owner, chat_id) if workspace else []
         prior = _classify_prior_facts(job, rasters)
         plan = await classify_image_turn(
             data, disconnect_handler=disconnect_handler, prior_facts=prior
         )
+        existing = _existing_raster_paths(job, rasters, owner, chat_id)
+        plan = _upgrade_missing_named_dests(plan, ask, existing, owner, chat_id)
         if plan.action == "reuse":
             _inject_existing_image_facts(data, job, rasters)
             return None
-        existing = _existing_raster_paths(job, rasters)
         if (
             plan.action == "generate"
             and plan.items
-            and _all_dests_exist(plan.items, existing)
+            and _all_dests_exist(plan.items, existing, owner, chat_id)
             and not _explicit_new_rasters(data)
         ):
             _inject_existing_image_facts(data, job, rasters)
