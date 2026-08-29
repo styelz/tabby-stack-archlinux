@@ -6,7 +6,10 @@ function mountSettings(root) {
         <button class="btn" type="button" id="settings-reload">Reload</button>
         <button class="btn danger" type="button" id="settings-restart">Restart API</button>
         <span class="spacer"></span>
-        <span class="muted" id="settings-stamp"></span>
+        <div class="settings-stamp">
+          <span class="settings-path-line" id="settings-path"></span>
+          <span class="settings-hint" id="settings-hint"></span>
+        </div>
       </div>
       <p class="error" id="settings-error" hidden></p>
       <p class="muted" id="settings-ok" hidden></p>
@@ -20,8 +23,10 @@ function mountSettings(root) {
   const body = root.querySelector("#settings-body");
   const err = root.querySelector("#settings-error");
   const ok = root.querySelector("#settings-ok");
-  const stamp = root.querySelector("#settings-stamp");
+  const pathEl = root.querySelector("#settings-path");
+  const hintEl = root.querySelector("#settings-hint");
   let payload = null;
+  let selectedSec = "";
 
   function showError(message) {
     err.hidden = !message;
@@ -39,8 +44,25 @@ function mountSettings(root) {
     return `set-${section}-${name}`;
   }
 
+  function prettyLabel(text) {
+    const value = String(text || "").trim();
+    if (!value || value !== value.toLowerCase()) return value;
+    const acronyms = { sse: "SSE", api: "API", url: "URL", gpu: "GPU", llm: "LLM", ip: "IP" };
+    return value.replace(/(^|\s)(\S+)/g, (match, space, word) => {
+      if (acronyms[word]) return `${space}${acronyms[word]}`;
+      return `${space}${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+    });
+  }
+
   function helpText(text) {
     return String(text || "").replace(/\n+/g, " ").trim();
+  }
+
+  function layoutClass(kind) {
+    if (kind === "bool") return " is-check";
+    if (kind === "int" || kind === "float") return " is-number";
+    if (kind === "json") return " is-stack";
+    return "";
   }
 
   function formatValue(value) {
@@ -99,24 +121,26 @@ function mountSettings(root) {
     const showLive = !field.secret && live != null && !sameValue(live, fileVal);
     const env = field.env;
     const notes = [];
-    if (field.secret && field.set) notes.push("saved");
-    if (env) notes.push("env override");
-    if (showLive) notes.push(`active: ${formatValue(live)}`);
+    if (field.secret && field.set) notes.push("Saved");
+    if (env) notes.push("Env override");
+    if (showLive) notes.push(`Active: ${formatValue(live)}`);
     const note = notes.length
-      ? `<span class="settings-note">${TabbyUI.escapeHtml(notes.join(" · "))}</span>`
+      ? `<div class="settings-notes">${notes.map((item) => `<span class="settings-note">${TabbyUI.escapeHtml(item)}</span>`).join("")}</div>`
       : "";
     const clear = field.secret && field.set
       ? `<label class="settings-clear"><input type="checkbox" data-clear="${TabbyUI.escapeHtml(field.name)}" /> Clear</label>`
       : "";
     return `
-      <div class="settings-field${field.kind === "bool" ? " is-check" : ""}" data-section="${TabbyUI.escapeHtml(section)}" data-name="${TabbyUI.escapeHtml(field.name)}" data-kind="${TabbyUI.escapeHtml(field.kind)}">
-        <div class="settings-field-head">
-          <label for="${id}">${TabbyUI.escapeHtml(field.label || field.name)}</label>
+      <div class="settings-field${layoutClass(field.kind)}" data-section="${TabbyUI.escapeHtml(section)}" data-name="${TabbyUI.escapeHtml(field.name)}" data-kind="${TabbyUI.escapeHtml(field.kind)}">
+        <div class="settings-field-meta">
+          <label for="${id}">${TabbyUI.escapeHtml(prettyLabel(field.label || field.name))}</label>
+          ${help ? `<p class="settings-help" title="${TabbyUI.escapeHtml(field.description || "")}">${TabbyUI.escapeHtml(help)}</p>` : ""}
+        </div>
+        <div class="settings-field-control">
+          ${inputFor(section, field)}
           ${note}
           ${clear}
         </div>
-        ${help ? `<p class="settings-help" title="${TabbyUI.escapeHtml(field.description || "")}">${TabbyUI.escapeHtml(help)}</p>` : ""}
-        ${inputFor(section, field)}
       </div>
     `;
   }
@@ -125,13 +149,32 @@ function mountSettings(root) {
     const path = section.path ? `<p class="muted settings-path">${TabbyUI.escapeHtml(section.path)}</p>` : "";
     const fields = (section.fields || []).map((field) => fieldHtml(section.name, field)).join("");
     return `
-      <section class="card settings-card" id="settings-sec-${TabbyUI.escapeHtml(section.name)}">
-        <h2>${TabbyUI.escapeHtml(section.label || section.name)}</h2>
-        ${section.description ? `<p class="muted">${TabbyUI.escapeHtml(section.description)}</p>` : ""}
-        ${path}
+      <section class="card settings-card" id="settings-sec-${TabbyUI.escapeHtml(section.name)}" hidden>
+        <header class="settings-card-head">
+          <h2>${TabbyUI.escapeHtml(prettyLabel(section.label || section.name))}</h2>
+          ${section.description ? `<p class="muted">${TabbyUI.escapeHtml(section.description)}</p>` : ""}
+          ${path}
+        </header>
         <div class="settings-fields">${fields}</div>
       </section>
     `;
+  }
+
+  function showSection(name) {
+    const sections = [...(payload && payload.tabby || []), payload && payload.system].filter(Boolean);
+    const names = sections.map((section) => section.name);
+    const next = names.includes(name) ? name : names[0] || "";
+    selectedSec = next;
+    body.querySelectorAll(".settings-card").forEach((card) => {
+      card.hidden = card.id !== `settings-sec-${next}`;
+    });
+    nav.querySelectorAll(".settings-nav-item").forEach((item) => {
+      const on = item.dataset.sec === next;
+      item.classList.toggle("is-on", on);
+      if (on) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
+    });
+    body.scrollTop = 0;
   }
 
   function paint(data) {
@@ -139,17 +182,17 @@ function mountSettings(root) {
     const sections = [...(data.tabby || []), data.system].filter(Boolean);
     nav.innerHTML = sections
       .map((section) => (
-        `<button type="button" class="settings-nav-item" data-sec="${TabbyUI.escapeHtml(section.name)}">${TabbyUI.escapeHtml(section.label || section.name)}</button>`
+        `<button type="button" class="settings-nav-item" data-sec="${TabbyUI.escapeHtml(section.name)}">${TabbyUI.escapeHtml(prettyLabel(section.label || section.name))}</button>`
       ))
       .join("");
     body.innerHTML = sections.map(sectionCard).join("");
-    const hint = data.restart_hint || "";
-    const paths = data.paths || {};
-    stamp.textContent = [paths.config, hint].filter(Boolean).join(" · ");
+    pathEl.textContent = (data.paths && data.paths.config) || "";
+    hintEl.textContent = data.restart_hint || "";
+    showSection(selectedSec);
   }
 
   function parseField(wrap, spec) {
-    const input = wrap.querySelector("input, select, textarea");
+    const input = wrap.querySelector("input:not([data-clear]), select, textarea");
     if (!input) return undefined;
     const kind = spec.kind;
     if (spec.secret) {
@@ -285,11 +328,7 @@ function mountSettings(root) {
   nav.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-sec]");
     if (!btn) return;
-    const target = root.querySelector(`#settings-sec-${btn.dataset.sec}`);
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-    nav.querySelectorAll(".settings-nav-item").forEach((item) => {
-      item.classList.toggle("is-on", item === btn);
-    });
+    showSection(btn.dataset.sec);
   });
 
   root.querySelector("#settings-save").addEventListener("click", () => {
