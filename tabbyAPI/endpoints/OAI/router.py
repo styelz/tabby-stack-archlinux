@@ -28,7 +28,7 @@ from endpoints.OAI.types.embedding import EmbeddingsRequest, EmbeddingsResponse
 from common.agent_loop import inject_loop_break, inject_zero_change_hint
 from common.assistant_text import strip_apology_sse, strip_response_apologies
 from common.gpu_mode import public_api_base
-from common.pasted_images import materialize_pasted_images
+from common.pasted_images import latest_turn_image, materialize_pasted_images
 from common.phrase_switch import (
     comfy_idle_response,
     gpu_is_comfy,
@@ -139,7 +139,7 @@ async def chat_completion_request(
     xlogger.debug("[ENDPOINT] /v1/chat/completions", {"raw": raw_json})
 
     api_base = public_api_base(request)
-    saved_images = materialize_pasted_images(data)
+    materialize_pasted_images(data)
     switch_response = handle_if_requested(data, api_base=api_base)
     if switch_response is not None:
         return switch_response
@@ -148,7 +148,10 @@ async def chat_completion_request(
     inject_loop_break(data)
 
     llm_ready = bool(model.container and getattr(model.container, "loaded", False))
-    source_image = saved_images[-1] if saved_images else None
+    # Only an image attached on this turn may seed img2img. Clients resend the
+    # whole history, so an older one turned a later unrelated image prompt into
+    # an img2img render of it.
+    source_image = latest_turn_image(data)
     disconnect_handler = DisconnectHandler(request, "/v1/chat/completions")
     await disconnect_handler.poll()
     image_response = await handle_image_chat(

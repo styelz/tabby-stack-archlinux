@@ -97,6 +97,46 @@ def _iter_image_urls(data: ChatCompletionRequest):
                 yield url
 
 
+def _last_user_turn_image_urls(data: ChatCompletionRequest) -> list[str]:
+    """Image parts on the final user turn only."""
+    for message in reversed(data.messages or []):
+        if getattr(message, "role", None) != "user":
+            continue
+        content = message.content
+        if not isinstance(content, list):
+            return []
+        urls = []
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            image = getattr(part, "image_url", None)
+            url = getattr(image, "url", None) if image is not None else None
+            if url:
+                urls.append(url)
+        return urls
+    return []
+
+
+def latest_turn_image(data: ChatCompletionRequest) -> Path | None:
+    """The image attached on this turn, which is the only valid img2img source.
+
+    Clients resend the whole history, so picking the newest image anywhere in
+    the conversation silently turned a later, unrelated image prompt into an
+    img2img render of a picture attached several turns earlier. Call after
+    materialize_pasted_images has written the files.
+    """
+    for url in reversed(_last_user_turn_image_urls(data)):
+        decoded = _decode_data_uri(url)
+        if not decoded:
+            continue
+        raw, ext = decoded
+        digest = hashlib.sha256(raw).hexdigest()[:16]
+        existing = next(SAVE_DIR.glob(f"*-{digest}{ext}"), None)
+        if existing is not None:
+            return existing
+    return None
+
+
 def _latest_alias(ext: str) -> Path:
     """Stable name the clipboard hint points at, matching the real format."""
     return LATEST if ext == ".png" else LATEST.with_suffix(ext)

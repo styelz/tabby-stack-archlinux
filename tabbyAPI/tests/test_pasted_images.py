@@ -61,6 +61,28 @@ class PastedImageTests(unittest.TestCase):
         stored = [p for p in self.folder.glob("*.png") if p.name != "latest.png"]
         self.assertEqual(len(stored), 1)
 
+    def test_img2img_source_ignores_images_from_earlier_turns(self):
+        part = ChatCompletionMessagePart(
+            type="image_url",
+            image_url={"url": _data_uri(PNG_BYTES, "image/png")},
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="user", content=[part]),
+                ChatCompletionMessage(role="assistant", content="A harbour."),
+                ChatCompletionMessage(role="user", content="now draw a red apple"),
+            ]
+        )
+        pasted_images.materialize_pasted_images(data)
+        self.assertIsNone(pasted_images.latest_turn_image(data))
+
+    def test_img2img_source_uses_image_on_this_turn(self):
+        data = _paste(PNG_BYTES)
+        pasted_images.materialize_pasted_images(data)
+        found = pasted_images.latest_turn_image(data)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.read_bytes(), PNG_BYTES)
+
     def test_prune_keeps_newest_and_spares_aliases(self):
         for index in range(5):
             path = self.folder / f"20260101T00000{index}-1-{index:016x}.png"

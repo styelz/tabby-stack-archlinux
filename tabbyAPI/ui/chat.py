@@ -39,7 +39,7 @@ from endpoints.OAI.utils.chat_completion import (
     generate_chat_completion,
     stream_generate_chat_completion,
 )
-from common.pasted_images import materialize_pasted_images
+from common.pasted_images import latest_turn_image, materialize_pasted_images
 from images.chat import STATUS_MARK, handle as handle_image_chat
 from ui.flight import (
     ConsoleFlight,
@@ -410,7 +410,11 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
     conversation_id = str(payload.get("conversation_id") or "").strip()
     agent = str(payload.get("agent") or "agent") if code else "agent"
     data = completion_request_from_payload(payload)
-    saved_images = materialize_pasted_images(data)
+    # Every pasted image is written to disk, but only one attached on this turn
+    # may seed img2img: an older one made unrelated image prompts re-render it.
+    materialize_pasted_images(data)
+    turn_image = latest_turn_image(data)
+    saved_images = [turn_image] if turn_image else []
     api_base = public_api_base(request)
     switched = handle_if_requested(data, api_base=api_base, defer_switch=True)
     if switched is not None:
