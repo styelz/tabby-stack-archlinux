@@ -20,6 +20,11 @@ KIND_ACTIONS = {
     "gpu": "switching the GPU",
 }
 
+# A lease is normally released by the task that took it. These bound the damage
+# when that task dies without unwinding: an aborted Steer or Stop used to leave
+# the slot held and wedge every chat behind "your previous request is running".
+_LEASE_MAX_S = 30 * 60
+
 _cond = asyncio.Condition()
 _occupant: Optional["Occupant"] = None
 _waiters: list["Waiter"] = []
@@ -32,6 +37,7 @@ class Occupant:
     started_at: float
     kind: str = "chat"
     chat_id: str = ""
+    task: Optional[asyncio.Task] = None
 
 
 @dataclass
@@ -83,6 +89,22 @@ def _externally_busy() -> bool:
     return _llm_jobs_active()
 
 
+def _reclaim_stale() -> bool:
+    """Drop a lease whose owning task is gone, or that has run absurdly long."""
+    global _occupant
+    occupant = _occupant
+    if occupant is None:
+        return False
+    task = occupant.task
+    if task is not None and task.done():
+        _occupant = None
+        return True
+    if time.time() - occupant.started_at > _LEASE_MAX_S:
+        _occupant = None
+        return True
+    return False
+
+
 def _holder(occupant: Optional[Occupant]) -> tuple[Optional[str], str]:
     """kind, occupant username for the current GPU holder."""
     if occupant is not None:
@@ -98,6 +120,7 @@ def _holder(occupant: Optional[Occupant]) -> tuple[Optional[str], str]:
 
 
 def snapshot(username: str = "") -> dict[str, Any]:
+    _reclaim_stale()
     occupant = _occupant
     waiters = list(_waiters)
     who = (username or "").strip()
@@ -208,6 +231,7 @@ async def try_acquire(
     """Take the slot if nothing else is waiting or running."""
     global _occupant
     async with _cond:
+        _reclaim_stale()
         if _occupant is not None or _waiters or _externally_busy():
             return None
         occupant = Occupant(
@@ -216,6 +240,7 @@ async def try_acquire(
             started_at=time.time(),
             kind=kind,
             chat_id=chat_id or "",
+            task=asyncio.current_task(),
         )
         _occupant = occupant
         return occupant.id
@@ -237,6 +262,7 @@ async def enqueue(username: str, *, kind: str = "chat", chat_id: str = "") -> Wa
 async def promote(waiter: Waiter) -> Optional[str]:
     global _occupant
     async with _cond:
+        _reclaim_stale()
         if _occupant is not None:
             return None
         if not _waiters or _waiters[0].id != waiter.id:
@@ -250,6 +276,7 @@ async def promote(waiter: Waiter) -> Optional[str]:
             started_at=time.time(),
             kind=waiter.kind,
             chat_id=waiter.chat_id,
+            task=asyncio.current_task(),
         )
         _occupant = occupant
         return occupant.id
@@ -325,6 +352,12 @@ class StackGate:
             if info is None:
                 return
             await wait_tick(1.0)
+
+    async def adopt_task(self) -> None:
+        """Point the lease at the current task when ownership hands off."""
+        async with _cond:
+            if _occupant is not None and _occupant.id == self.occupant_id:
+                _occupant.task = asyncio.current_task()
 
     async def release(self) -> None:
         waiter = self.waiter

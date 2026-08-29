@@ -160,6 +160,9 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(code_agent.remaining_stream_text("abcdef", "abc"), "def")
         self.assertEqual(code_agent.remaining_stream_text("pics", "wrote"), "pics")
         self.assertEqual(code_agent.remaining_stream_text("only", ""), "only")
+        # The final text is stripped, the deltas are not: this must not replay.
+        self.assertEqual(code_agent.remaining_stream_text("abc", "\nabc\n"), "")
+        self.assertEqual(code_agent.remaining_stream_text("abcdef", "\nabc"), "def")
 
     def test_parse_completion_chunk(self):
         self.assertIsNone(code_agent.parse_completion_chunk("[DONE]"))

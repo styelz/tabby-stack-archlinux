@@ -900,6 +900,17 @@ function mountChat(root) {
     );
   }
 
+  function awaitsAnswer(chat) {
+    const list = (chat && chat.messages) || [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const item = list[i];
+      if (!item || isHiddenUserTurn(item)) continue;
+      if (item.role === "assistant") return false;
+      if (item.role === "user") return userTurnHasContent(item);
+    }
+    return false;
+  }
+
   // Clone-on-reload leftovers share a title and timestamp. This is not
   // "one folder per title" — distinct projects with the same name stay.
   function collapseDuplicateWorkspaces(chats, activeId, lastByMode) {
@@ -11223,7 +11234,16 @@ function mountChat(root) {
     rememberGpu(data);
     applyStackOccupancy(data);
     const queue = (data && data.stack_queue) || {};
-    if (!queue.live) return;
+    if (!queue.live) {
+      // A reply that finished while the page was reloading is already saved
+      // server-side, but the local copy still ends on the question alone.
+      const done = String(queue.chat_id || "").trim() || store.activeId;
+      const chat = store.chats.find((item) => item.id === done);
+      if (chat && !isWorkspaceRoot(chat) && awaitsAnswer(chat)) {
+        await refreshChatFromServer(done);
+      }
+      return;
+    }
     const chatId = String(queue.chat_id || "").trim();
     if (chatId) {
       const exists = store.chats.some((item) => item.id === chatId);

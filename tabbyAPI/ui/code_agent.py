@@ -804,13 +804,23 @@ def format_agent_step_comment(step: dict[str, Any]) -> str:
 
 
 def remaining_stream_text(final: str, streamed: str) -> str:
-    """Text still needed after live content deltas. Empty means do not dump again."""
+    """Text still needed after live content deltas. Empty means do not dump again.
+
+    The final text arrives stripped while the deltas are raw, so both sides are
+    compared stripped. A lone leading newline in the deltas used to defeat the
+    prefix test and replay the whole answer under it.
+    """
     final = str(final or "")
-    streamed = str(streamed or "")
-    if not final or final == streamed:
+    lean_final = final.strip()
+    lean_streamed = str(streamed or "").strip()
+    if not lean_final or lean_final == lean_streamed:
         return ""
-    if streamed and final.startswith(streamed):
-        return final[len(streamed) :]
+    if not lean_streamed:
+        return final
+    if lean_streamed.startswith(lean_final):
+        return ""
+    if lean_final.startswith(lean_streamed):
+        return lean_final[len(lean_streamed) :]
     return final
 
 

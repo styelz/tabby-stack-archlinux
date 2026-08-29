@@ -309,6 +309,7 @@ def _proxy_request(request: Request):
 
 
 async def _stream_held_result(gate: StackGate, result):
+    await gate.adopt_task()
     try:
         async for item in _iter_sse(result):
             yield item
