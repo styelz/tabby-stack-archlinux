@@ -2,8 +2,9 @@
 # Pull the latest tabby-stack commit into this install, then apply it.
 #
 # The live tree is the git checkout (clone into $HOME/tabby-stack, or an
-# older rsync dest that this script bootstraps). Runtime data stays:
-# venv, models, ComfyUI, config.yml, tabby.env.
+# older rsync dest that this script bootstraps). It always sits on
+# origin's default branch (main). Runtime data stays: venv, models,
+# ComfyUI, config.yml, tabby.env.
 set -euo pipefail
 
 DEST="$(cd "$(dirname "$0")" && pwd)"
@@ -762,6 +763,7 @@ ff_pull() {
   local dir="$1"
   local label="$2"
   local branch=""
+  local current=""
   local wrappers_tmp=""
   local wrap f
   local pct_fetch="${3:-15}"
@@ -805,8 +807,15 @@ ff_pull() {
     restore_crlf_only "$dir"
   fi
   clear_matching_untracked "$dir" "origin/$branch"
-  progress "$pct_merge" "Fast-forward $label to origin/$branch"
-  run_git git -C "$dir" merge --ff-only "origin/$branch"
+  progress "$pct_merge" "Checking out origin/$branch"
+  current="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -n "$current" && "$current" != "HEAD" && "$current" != "$branch" ]]; then
+    printf '%s\n' "==> Switching $label from $current to $branch" >> "$UPDATE_LOG"
+  fi
+  # Deploy checkout: sit on origin's branch, not a leftover local name
+  # (rewrite, etc.). -B moves that branch to origin and checks it out.
+  run_git git -C "$dir" checkout -B "$branch" "origin/$branch"
+  git -C "$dir" branch --set-upstream-to="origin/$branch" "$branch" >>"$UPDATE_LOG" 2>&1 || true
   if [[ -n "$wrappers_tmp" ]]; then
     local keep_origin wrap_old wrap_new
     for wrap in "${AHEAD_WRAPPERS[@]}"; do
