@@ -142,7 +142,7 @@ BUILD_USER_SUFFIX = (
 )
 _APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
 _CHECKLIST_SECTION_RE = re.compile(
-    r"(?im)^#{1,3}\s+(?:checklist|to-?dos?)\b[^\n]*\n(.*?)(?=^#{1,3}\s+|\Z)"
+    r"(?ims)^#{1,3}\s+(?:checklist|to-?dos?)\b[^\n]*\n(.*?)(?=^#{1,3}\s+|\Z)"
 )
 _CHECK_ITEM_RE = re.compile(
     r"(?m)^\s*(?:[-*]|\d+[\.)])\s*\[\s*[xX ]?\s*\]\s+(.+?\S)\s*$"
