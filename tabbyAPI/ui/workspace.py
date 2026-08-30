@@ -2138,6 +2138,115 @@ def _ensure_logo_img(username: str, chat_id: str, dests: list[str]) -> None:
             return
 
 
+_IMAGE_REF_RE = re.compile(
+    r"""(?i)((?:src|href)\s*=\s*["']|url\(\s*["']?)([^"')\s]+)"""
+)
+_HERO_RULE_RE = re.compile(r"(\.hero\b[^{]*\{)([^}]*)\}", re.I)
+_HERO_DEST_HINTS = frozenset({"hero", "header", "banner"})
+
+
+def _page_file_texts(username: str, chat_id: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for row in list_files(username, chat_id):
+        rel = str(row.get("path") or "")
+        if not row.get("editable") or Path(rel).suffix.lower() not in _PAGE_SUFFIXES:
+            continue
+        try:
+            rows.append((rel, read_text(username, chat_id, rel)))
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+    return rows
+
+
+def _stem_tokens(path: str) -> set[str]:
+    stem = Path(str(path or "").replace("\\", "/")).stem.lower().replace("_", "-")
+    return {
+        part
+        for part in stem.split("-")
+        if part and part not in {"img", "image", "pic", "photo", "png", "webp", "gif"}
+    }
+
+
+def _best_dest_for_ref(ref: str, dests: list[str]) -> str:
+    want = _stem_tokens(ref)
+    if not want:
+        return ""
+    best = ""
+    best_score = 0
+    for dest in dests:
+        score = len(want & _stem_tokens(dest))
+        if score > best_score:
+            best = dest
+            best_score = score
+    return best if best_score else ""
+
+
+def _project_blob(username: str, chat_id: str) -> str:
+    return "\n".join(text for _rel, text in _page_file_texts(username, chat_id))
+
+
+def _rewrite_stub_image_refs(username: str, chat_id: str, dests: list[str]) -> None:
+    """Point leftover assets/ or stub refs at the GPU dest with the same stem tokens."""
+    for rel, text in _page_file_texts(username, chat_id):
+        updated = text
+        for match in _IMAGE_REF_RE.finditer(text):
+            ref = match.group(2)
+            if not is_image_path(ref):
+                continue
+            if any(_path_mentioned(ref, dest) or Path(ref).name == Path(dest).name for dest in dests):
+                continue
+            target = _best_dest_for_ref(ref, dests)
+            if target and target not in ref and ref not in target:
+                updated = updated.replace(ref, target)
+        if updated != text:
+            write_text(username, chat_id, rel, updated, sync_images=False)
+
+
+def _ensure_hero_background(username: str, chat_id: str, dests: list[str]) -> None:
+    """If a hero dest exists but .hero has no photo, set background-image."""
+    hero = next(
+        (
+            dest
+            for dest in dests
+            if _HERO_DEST_HINTS & _stem_tokens(dest)
+        ),
+        "",
+    )
+    if not hero:
+        return
+    blob = _project_blob(username, chat_id)
+    if _path_mentioned(blob, hero):
+        return
+    for rel, text in _page_file_texts(username, chat_id):
+        if Path(rel).suffix.lower() != ".css":
+            continue
+        if not _HERO_RULE_RE.search(text):
+            continue
+
+        def _inject(match: re.Match[str]) -> str:
+            body = match.group(2)
+            if "url(" in body:
+                return match.group(0)
+            return (
+                f'{match.group(1)}{body.rstrip()}\n'
+                f'    background-image: url("{hero}");\n'
+                "}"
+            )
+
+        updated, n = _HERO_RULE_RE.subn(_inject, text, count=1)
+        if n and updated != text:
+            write_text(username, chat_id, rel, updated, sync_images=False)
+            return
+
+
+def _wire_job_dests(username: str, chat_id: str, dests: list[str]) -> None:
+    """After GPU rasters land, make the page actually use them."""
+    if not dests:
+        return
+    _rewrite_stub_image_refs(username, chat_id, dests)
+    _ensure_hero_background(username, chat_id, dests)
+
+
 def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     from common.gpu_mode import generated_image_path
     from images.paths import generated_png_name_from_url, living_download_pairs
@@ -2187,6 +2296,7 @@ def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     dests = optimized or copied
     dests.extend(_publish_dest_aliases(username, chat_id, dests))
     _ensure_logo_img(username, chat_id, dests)
+    _wire_job_dests(username, chat_id, dests)
     return list(dict.fromkeys(dests))
 
 

@@ -330,7 +330,8 @@ def planned_dest_fact_list(items: Iterable[dict[str, str]]) -> str:
     listed = ", ".join(names)
     return (
         f"Write every HTML/CSS/JS file for this page now. "
-        f"Point img src at these exact local paths: {listed}. "
+        f"Point img src or CSS url() at these exact local paths: {listed}. "
+        "Do not Write PNG, WebP, GIF, or placeholder image files. "
         "Do not generate images. Do not write Python drawing scripts. "
         "Do not dump the page in chat; use file tools. "
         "The GPU will save those PNG files after you finish the page."

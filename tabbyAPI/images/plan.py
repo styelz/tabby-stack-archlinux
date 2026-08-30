@@ -14,6 +14,7 @@ import re
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from common.image_prompts import (
     MAX_PLANNED_IMAGES,
@@ -253,8 +254,9 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
     for row in rows or []:
         if len(items) >= MAX_PLANNED_IMAGES:
             break
-        filename = str(row.get("filename") or "").replace("\\", "/")
-        filename = filename.split("/")[-1].strip()
+        raw_path = str(row.get("filename") or row.get("output_path") or "")
+        raw_path = raw_path.replace("\\", "/").lstrip("/")
+        filename = raw_path.split("/")[-1].strip()
         slug = _subject_slug(filename.rsplit(".", 1)[0] if filename else "")
         if not slug:
             slug = _subject_slug(str(row.get("subject") or ""))
@@ -268,10 +270,22 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
         name = "logo.png" if slug == "logo" else f"{slug}.png"
         subject = str(row.get("subject") or slug).strip() or slug
         seen.add(slug)
+        if "/" in raw_path and Path(raw_path).suffix.lower() in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+        }:
+            dest = raw_path
+            if Path(dest).suffix.lower() != ".png":
+                dest = str(Path(dest).with_suffix(".png"))
+        else:
+            dest = f"{dest_dir}/{name}".replace("//", "/")
         items.append(
             {
                 "prompt": rewrite_comfy_prompt(subject),
-                "output_path": f"{dest_dir}/{name}".replace("//", "/"),
+                "output_path": dest,
             }
         )
     return items

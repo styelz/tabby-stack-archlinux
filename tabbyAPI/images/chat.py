@@ -226,14 +226,15 @@ def _upgrade_missing_named_dests(
     """Scratch leftovers are not reuse when images/logo or header is still missing."""
     if plan.action == "generate" and plan.items:
         return plan
+    named = list(dict.fromkeys(_named_image_dests(ask) + _plan_asset_dests(ask)))
     missing = [
         dest
-        for dest in _named_image_dests(ask)
+        for dest in named
         if not _gpu_dest_ready(dest, existing, owner, chat_id)
     ]
     if not missing:
         return plan
-    items = plan_from_extracted(ask, [{"filename": Path(dest).name} for dest in missing])
+    items = plan_from_extracted(ask, [{"filename": dest} for dest in missing])
     if not items:
         return plan
     return ImageTurnPlan(action="generate", items=items, from_model=False)
@@ -323,8 +324,7 @@ def _last_assistant_text(data: ChatCompletionRequest) -> str:
     return ""
 
 
-def _plan_asset_rasters(text: str) -> list[str]:
-    """PNG/WebP dests from an approved plan or ## Assets section."""
+def _asset_section_blob(text: str) -> str:
     blob = text or ""
     match = _APPROVED_PLAN_RE.search(blob)
     if match:
@@ -333,11 +333,16 @@ def _plan_asset_rasters(text: str) -> list[str]:
     if section:
         body = section.group(1) or ""
         if _ASSET_NONE_RE.search(body.strip()) and not _ASSET_FILE_RE.search(body):
-            return []
-        blob = body
+            return ""
+        return body
+    return blob
+
+
+def _plan_asset_rasters(text: str) -> list[str]:
+    """PNG/WebP dest basenames from an approved plan or ## Assets section."""
     found: list[str] = []
     seen: set[str] = set()
-    for raw in _ASSET_FILE_RE.findall(blob):
+    for raw in _ASSET_FILE_RE.findall(_asset_section_blob(text)):
         name = Path(str(raw).replace("\\", "/")).name
         stem = Path(name).stem.lower().replace("_", "-")
         if not stem or stem in _SKIP_DEST_STEMS or stem in _SKIP_ASSET_STEMS:
@@ -347,6 +352,74 @@ def _plan_asset_rasters(text: str) -> list[str]:
         seen.add(name.lower())
         found.append(name)
     return found
+
+
+def _plan_asset_dests(text: str) -> list[str]:
+    """Full relative dests from ## Assets, keeping assets/ or images/."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _ASSET_FILE_RE.findall(_asset_section_blob(text)):
+        path = str(raw).replace("\\", "/").lstrip("./")
+        if not path or ".." in path.split("/"):
+            continue
+        name = Path(path).name
+        stem = Path(name).stem.lower().replace("_", "-")
+        if not stem or stem in _SKIP_DEST_STEMS or stem in _SKIP_ASSET_STEMS:
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        if "/" not in path:
+            path = f"images/{name}"
+        found.append(path)
+    return found
+
+
+def _stem_tokens(path: str) -> frozenset[str]:
+    stem = Path(str(path or "").replace("\\", "/")).stem.lower().replace("_", "-")
+    return frozenset(
+        part
+        for part in stem.split("-")
+        if part and part not in {"img", "image", "pic", "photo", "png", "webp", "gif"}
+    )
+
+
+def _best_dest_match(wanted: str, dests: list[str], used: set[str]) -> str:
+    want = _stem_tokens(wanted)
+    if not want or not dests:
+        return ""
+    best = ""
+    best_score = 0
+    for dest in dests:
+        if dest in used:
+            continue
+        have = _stem_tokens(dest)
+        score = len(want & have)
+        if score > best_score:
+            best = dest
+            best_score = score
+    return best if best_score else ""
+
+
+def _apply_approved_asset_dests(plan: ImageTurnPlan, ask: str) -> ImageTurnPlan:
+    """Use ## Assets dests (assets/foo.png) instead of invented images/ names."""
+    dests = _plan_asset_dests(ask)
+    if not dests or plan.action != "generate" or not plan.items:
+        return plan
+    used: set[str] = set()
+    items: list[dict[str, str]] = []
+    for row in plan.items:
+        dest = str(row.get("output_path") or "")
+        prompt = str(row.get("prompt") or "")
+        match = _best_dest_match(dest, dests, used) or _best_dest_match(
+            prompt.replace(" ", "-"), dests, used
+        )
+        updated = dict(row)
+        if match:
+            updated["output_path"] = match
+            used.add(match)
+        items.append(updated)
+    return ImageTurnPlan(action="generate", items=items, from_model=plan.from_model)
 
 
 def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
@@ -503,12 +576,55 @@ def _job_plan_items(job) -> list[dict[str, str]]:
     return items
 
 
+def _tool_write_path(args: dict) -> str:
+    raw = args.get("path") or args.get("filename") or args.get("file") or ""
+    return str(raw).replace("\\", "/").lstrip("/")
+
+
+def _page_write_paths(message) -> list[str]:
+    paths: list[str] = []
+    for _name, args in _file_write_pairs(message):
+        path = _tool_write_path(args)
+        if Path(path).suffix.lower() in {".html", ".htm", ".css", ".js", ".mjs"}:
+            paths.append(path)
+    return paths
+
+
+def _workspace_has_page_files(job) -> bool:
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    if not owner or not chat_id:
+        return False
+    try:
+        from ui.workspace import list_files
+
+        rows = list_files(owner, chat_id)
+    except Exception:
+        return False
+    for row in rows or []:
+        path = str(row.get("path") or "")
+        if Path(path).suffix.lower() in {".html", ".htm", ".css", ".js", ".mjs"}:
+            return True
+    return False
+
+
 def _keep_writing_page(code_response, job) -> bool:
     if not code_response:
         return False
-    if not _file_write_pairs(_assistant_message(code_response)):
+    message = _assistant_message(code_response)
+    if not _file_write_pairs(message):
         return False
-    return int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
+    if int(getattr(job, "code_turns", 0) or 0) >= MAX_CODE_TURNS:
+        return False
+    pages = _page_write_paths(message)
+    if not pages:
+        return not _workspace_has_page_files(job)
+    written = list(getattr(job, "written_pages", None) or [])
+    new_pages = [path for path in pages if path not in written]
+    if not new_pages:
+        return False
+    job.written_pages = written + new_pages
+    return True
 
 
 def _first_code_pass_holds_llm(code_response) -> bool:
@@ -782,11 +898,21 @@ def _code_reply(data: ChatCompletionRequest, job, code_response):
     if message is None:
         return text_response(data, f"{JOB_MARK} {job.id}")
     content = _stamp_job_content(getattr(message, "content", None), job)
+    dests = _job_dests(job)
+    hint = ""
+    if dests:
+        hint = (
+            f" Point img src or CSS url() at these exact paths: {', '.join(dests)}. "
+            "Write HTML, CSS, and JS only. Do not Write PNG, WebP, or placeholder "
+            "image files."
+        )
     if content == f"{JOB_MARK} {job.id}":
         content = (
             f"{content}\nWrite the page now. The GPU will render the images "
-            "after these files are written."
+            f"after these files are written.{hint}"
         )
+    elif hint and "Do not Write PNG" not in content:
+        content = content.rstrip() + "\n" + hint.strip()
     calls = _tool_call_pairs(message)
     if calls:
         return tool_call_response(data, calls, content=content)
@@ -1195,6 +1321,7 @@ async def handle(
         )
         existing = _existing_raster_paths(job, rasters, owner, chat_id)
         plan = _upgrade_missing_named_dests(plan, ask, existing, owner, chat_id)
+        plan = _apply_approved_asset_dests(plan, ask)
         if plan.action == "reuse":
             _inject_existing_image_facts(data, job, rasters)
             return None
