@@ -24,9 +24,12 @@
 
   function installWorkers(vs) {
     const base = String(vs || "").replace(/\/+$/, "");
+    // Worker AMD ids are "vs/language/typescript/tsWorker". baseUrl must be
+    // the parent of /vs, or the worker 404s on .../vs/vs/language/...
+    const root = /\/vs$/i.test(base) ? base.slice(0, -3) : base;
     const workerMain = `${base}/base/worker/workerMain.js`;
     const body =
-      `self.MonacoEnvironment={baseUrl:${JSON.stringify(`${base}/`)}};` +
+      `self.MonacoEnvironment={baseUrl:${JSON.stringify(`${root}/`)}};` +
       `importScripts(${JSON.stringify(workerMain)});`;
     const workerUrl = URL.createObjectURL(new Blob([body], { type: "text/javascript" }));
     window.MonacoEnvironment = {
