@@ -6167,6 +6167,7 @@ function mountChat(root) {
         plan.checklist.forEach((item) => {
           item.status = "completed";
         });
+        persist();
       }
     }
     paintPlanChecklist();
@@ -6230,20 +6231,33 @@ function mountChat(root) {
     if (store.activeId === chatId) paintPlanChecklist({ scrollCurrent: true });
   }
 
+  function ensurePlanChecklist(found) {
+    if (!found || !found.item) return [];
+    if (Array.isArray(found.item.checklist) && found.item.checklist.length) {
+      return found.item.checklist;
+    }
+    const texts = parsePlanChecklist(found.item.content);
+    if (!texts.length) return [];
+    found.item.checklist = texts.map((text) => ({ text, status: "pending" }));
+    return found.item.checklist;
+  }
+
   function finishChecklistBuild({ chatId, stopped } = {}) {
     if (!planChecklistBuilding) return;
     const found = planMessageFor(chatId || flightChatId || store.activeId);
     planChecklistBuilding = false;
-    if (!found || !Array.isArray(found.item.checklist)) {
+    const items = ensurePlanChecklist(found);
+    if (!items.length) {
+      persist();
       paintPlanChecklist();
       return;
     }
     if (stopped) {
-      found.item.checklist.forEach((item) => {
+      items.forEach((item) => {
         if (item.status === "in-progress") item.status = "pending";
       });
     } else {
-      found.item.checklist.forEach((item) => {
+      items.forEach((item) => {
         item.status = "completed";
       });
     }
@@ -6294,11 +6308,17 @@ function mountChat(root) {
     const found = planMessageFor(chatId);
     if (!found || !Array.isArray(found.item.checklist)) return;
     const items = found.item.checklist;
-    const current = items.findIndex((item) => item.status === "in-progress");
-    const idx = current >= 0 ? current : items.findIndex((item) => item.status === "pending");
-    if (idx < 0) return;
     const needles = checklistPathNeedles(step);
-    if (!needles.length || !itemMentionsPath(items[idx], needles)) return;
+    if (!needles.length) return;
+    let idx = items.findIndex((item) => item.status !== "completed" && itemMentionsPath(item, needles));
+    if (idx < 0) {
+      idx = items.findIndex((item) => item.status === "in-progress");
+      if (idx < 0) idx = items.findIndex((item) => item.status === "pending");
+      if (idx < 0 || !itemMentionsPath(items[idx], needles)) return;
+    }
+    for (let i = 0; i < idx; i += 1) {
+      if (items[i].status !== "completed") items[i].status = "completed";
+    }
     completeChecklistAt(chatId, idx);
   }
 
@@ -6327,16 +6347,31 @@ function mountChat(root) {
     if (!planChecklistBuilding) return;
     const text = String(label || "");
     const phase = String((job && (job.phase || job.status)) || "");
-    const rendering = /^(Starting Comfy|Rendering image |Rendering in Comfy|Working on the picture)/i.test(text)
-      || /^(starting_comfy|generating|running)$/i.test(phase);
-    const finishing = /^Reloading the coding model$/i.test(text) || phase === "restoring_llm";
+    const status = String((job && job.status) || "");
+    const rendering = /^(Queued|Starting Comfy|Rendering image |Rendering in Comfy|Working on the picture)/i.test(text)
+      || /^(queued|starting_comfy|generating|running)$/i.test(phase);
+    const finishing = /^Reloading the coding model$/i.test(text)
+      || /^Rendered\b/i.test(text)
+      || /here(?:'s| are) the \d* pictures/i.test(text)
+      || phase === "restoring_llm"
+      || /^(done|error)$/i.test(phase)
+      || /^(done|error)$/i.test(status);
     if (!rendering && !finishing) return;
     const found = planMessageFor(chatId);
-    if (!found || !Array.isArray(found.item.checklist) || !found.item.checklist.length) return;
-    const items = found.item.checklist;
+    const items = ensurePlanChecklist(found);
+    if (!items.length) return;
     const before = items.map((item) => `${item.text}\0${item.status}`).join("\n");
     const firstAsset = items.findIndex(isAssetChecklistItem);
     if (firstAsset < 0) {
+      if (finishing && (/^(done|error)$/i.test(phase) || /^(done|error)$/i.test(status)
+        || /^Rendered\b/i.test(text) || /here(?:'s| are) the \d* pictures/i.test(text))) {
+        items.forEach((item) => {
+          item.status = "completed";
+        });
+        persistChecklistIfChanged(chatId, items, before);
+        finishChecklistBuild({ chatId, stopped: false });
+        return;
+      }
       const current = items.findIndex((item) => item.status === "in-progress");
       if (current >= 0) items[current].status = "completed";
       if (planChecklistBuilding) promoteNextChecklist(items);
@@ -6350,11 +6385,22 @@ function mountChat(root) {
       .map((item, index) => ({ item, index }))
       .filter((row) => isAssetChecklistItem(row.item));
     if (finishing) {
-      assets.forEach((row) => {
-        row.item.status = "completed";
-      });
-      promoteNextChecklist(items);
+      const allDone = /^(done|error)$/i.test(phase)
+        || /^(done|error)$/i.test(status)
+        || /^Rendered\b/i.test(text)
+        || /here(?:'s| are) the \d* pictures/i.test(text);
+      if (allDone) {
+        items.forEach((item) => {
+          item.status = "completed";
+        });
+      } else {
+        assets.forEach((row) => {
+          row.item.status = "completed";
+        });
+        promoteNextChecklist(items);
+      }
       persistChecklistIfChanged(chatId, items, before);
+      if (allDone) finishChecklistBuild({ chatId, stopped: false });
       return;
     }
     let currentAsset = 0;
@@ -10025,7 +10071,10 @@ function mountChat(root) {
           if (reasoning) working.setReasoning(reasoning);
           if (assembled) working.setAnswer(assembled);
           if (assembled && sendAgent === "plan") ingestLivePlanChecklist(assembled, chatId);
-          if (assembled && planChecklistBuilding) applyChecklistDoneLines(assembled, chatId);
+          if (assembled && planChecklistBuilding) {
+            applyChecklistDoneLines(assembled, chatId);
+            if (looksLikeImageReply(assembled)) finishChecklistBuild({ chatId, stopped: false });
+          }
           if (data.usage) applyUsage(data.usage, chatId);
         } else {
           const reader = response.body.getReader();
@@ -10104,7 +10153,12 @@ function mountChat(root) {
                 assembled += event.content;
                 working.setAnswer(assembled);
                 if (sendAgent === "plan") ingestLivePlanChecklist(assembled, chatId);
-                if (planChecklistBuilding) applyChecklistDoneLines(assembled, chatId);
+                if (planChecklistBuilding) {
+                  applyChecklistDoneLines(assembled, chatId);
+                  if (looksLikeImageReply(assembled)) {
+                    finishChecklistBuild({ chatId, stopped: false });
+                  }
+                }
               } else if (event.content) {
                 // Preserve whitespace-only chunks for final assembly without
                 // promoting an empty bubble.
@@ -10222,11 +10276,14 @@ function mountChat(root) {
     }
     poll.stop();
     hideStackQueue();
+    const userStopped = stopKind === "stop";
+    if (planChecklistBuilding && (userStopped || looksLikeImageReply(assembled))) {
+      finishChecklistBuild({ chatId, stopped: userStopped });
+    }
     const waitingOnModel = activity.kind === "switch" || activity.kind === "restart";
     if (waitingOnModel) {
       await ensureModelWait(working, activity);
     }
-    const userStopped = stopKind === "stop";
     let savedSteps = [];
     const emptyReply = !String(assembled || "").trim() && !reasoning;
     const steerEmpty = stopKind === "steer" && emptyReply;
@@ -10279,7 +10336,7 @@ function mountChat(root) {
     } else if (store.activeId === chatId) {
       persist();
     }
-    if (planChecklistBuilding && isBuildPromptText(outboundText)) {
+    if (planChecklistBuilding) {
       finishChecklistBuild({ chatId, stopped: userStopped });
     }
     if (flightWorking === working) flightWorking = null;
