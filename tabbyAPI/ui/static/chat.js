@@ -6302,6 +6302,83 @@ function mountChat(root) {
     completeChecklistAt(chatId, idx);
   }
 
+  function isAssetChecklistItem(item) {
+    const text = String((item && item.text) || "").toLowerCase();
+    if (!text) return false;
+    if (/\.(png|jpe?g|webp|gif)\b/.test(text)) return true;
+    if (/\b(flux|qwen-image)\b/.test(text)) return true;
+    return /\b(generate|render)\b/.test(text) && /\b(image|asset|hero|logo|photo)\b/.test(text);
+  }
+
+  function imageStatusRenderIndex(label) {
+    const match = /Rendering image (\d+) of (\d+)/i.exec(String(label || ""));
+    if (!match) return null;
+    return Math.max(0, Number(match[1]) - 1);
+  }
+
+  function persistChecklistIfChanged(chatId, items, before) {
+    const after = items.map((item) => `${item.text}\0${item.status}`).join("\n");
+    if (after === before) return;
+    persist();
+    if (store.activeId === chatId) paintPlanChecklist({ scrollCurrent: true });
+  }
+
+  function advanceChecklistForImageStatus(label, chatId, job) {
+    if (!planChecklistBuilding) return;
+    const text = String(label || "");
+    const phase = String((job && (job.phase || job.status)) || "");
+    const rendering = /^(Starting Comfy|Rendering image |Rendering in Comfy|Working on the picture)/i.test(text)
+      || /^(starting_comfy|generating|running)$/i.test(phase);
+    const finishing = /^Reloading the coding model$/i.test(text) || phase === "restoring_llm";
+    if (!rendering && !finishing) return;
+    const found = planMessageFor(chatId);
+    if (!found || !Array.isArray(found.item.checklist) || !found.item.checklist.length) return;
+    const items = found.item.checklist;
+    const before = items.map((item) => `${item.text}\0${item.status}`).join("\n");
+    const firstAsset = items.findIndex(isAssetChecklistItem);
+    if (firstAsset < 0) {
+      const current = items.findIndex((item) => item.status === "in-progress");
+      if (current >= 0) items[current].status = "completed";
+      if (planChecklistBuilding) promoteNextChecklist(items);
+      persistChecklistIfChanged(chatId, items, before);
+      return;
+    }
+    for (let i = 0; i < firstAsset; i += 1) {
+      if (items[i].status !== "completed") items[i].status = "completed";
+    }
+    const assets = items
+      .map((item, index) => ({ item, index }))
+      .filter((row) => isAssetChecklistItem(row.item));
+    if (finishing) {
+      assets.forEach((row) => {
+        row.item.status = "completed";
+      });
+      promoteNextChecklist(items);
+      persistChecklistIfChanged(chatId, items, before);
+      return;
+    }
+    let currentAsset = 0;
+    if (job && Number.isFinite(Number(job.current_index))) {
+      currentAsset = Math.max(0, Number(job.current_index));
+    } else {
+      const fromLabel = imageStatusRenderIndex(text);
+      if (fromLabel != null) currentAsset = fromLabel;
+    }
+    if (assets.length) currentAsset = Math.min(currentAsset, assets.length - 1);
+    assets.forEach((row, offset) => {
+      if (offset < currentAsset) row.item.status = "completed";
+      else if (offset === currentAsset) row.item.status = "in-progress";
+      else if (row.item.status === "in-progress") row.item.status = "pending";
+    });
+    let seenCurrent = false;
+    items.forEach((item) => {
+      if (item.status !== "in-progress") return;
+      if (seenCurrent) item.status = "pending";
+      else seenCurrent = true;
+    });
+    persistChecklistIfChanged(chatId, items, before);
+  }
+
   function applyChecklistDoneLines(text, chatId) {
     if (!planChecklistBuilding) return;
     const found = planMessageFor(chatId);
@@ -9156,6 +9233,9 @@ function mountChat(root) {
         if (stopped) return;
         rememberGpu(data);
         applyStackOccupancy(data, working, kind);
+        if (planChecklistBuilding && data && data.job) {
+          advanceChecklistForImageStatus(labelForJob(data.job), flightChatId, data.job);
+        }
         const queue = data && data.stack_queue;
         if (queue && queue.queued && (!queue.mine || stackWaiting)) {
           return;
@@ -9992,12 +10072,16 @@ function mountChat(root) {
                   .pop() || "";
                 const label = tabbyCleanStatusLabel(raw.replace(/^[\s\S]*tabby-image-status:\s*/i, ""));
                 if (label) working.setActivity(label, { processing: true, note: label });
+                if (planChecklistBuilding) advanceChecklistForImageStatus(label, chatId);
                 if (chatsShareWorkspace(chatId)) refreshFilesSoon();
                 if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
                   const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
                   if (isChangePath(written)) {
                     reloadPreviewIfNeeded(written);
                     if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
+                    if (planChecklistBuilding) {
+                      advanceChecklistFromTool({ label, args: { path: written } }, chatId);
+                    }
                   }
                 }
               }
