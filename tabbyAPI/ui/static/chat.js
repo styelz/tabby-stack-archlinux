@@ -65,6 +65,8 @@ const FILES_NEW_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9" /></svg>';
 const FILES_UPLOAD_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 11.5V3.5M4.5 7 8 3.5 11.5 7"/><path d="M3 13h10" /></svg>';
+const FILES_SITE_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.5 3.5H3.5v9h9V9.5"/><path d="M8.5 3.5H12.5V7.5M7.5 8.5 12.5 3.5"/></svg>';
 const FILES_PREVIEW_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8" /></svg>';
 const FILES_TERM_SVG =
@@ -272,7 +274,7 @@ function mountChat(root) {
                 <button type="button" data-upload="gallery">From gallery</button>
               </div>
             </div>
-            <button class="btn" type="button" id="chat-files-site">Open site</button>
+            <button class="btn ghost chat-icon" type="button" id="chat-files-site" aria-label="Open site">${FILES_SITE_SVG}</button>
             <button class="btn ghost chat-icon" type="button" id="chat-files-preview" aria-label="Preview">${FILES_PREVIEW_SVG}</button>
             <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Terminal" aria-keyshortcuts="Control+\`" title="Terminal (Ctrl+\`)">${FILES_TERM_SVG}</button>
           </div>
@@ -2106,7 +2108,10 @@ function mountChat(root) {
       filesSiteBtn.disabled = !filesEntry;
       const row = selectedRow();
       const target = row && row.page ? row.path : filesEntry;
-      filesSiteBtn.title = target ? `Open ${target} in a new tab` : "No HTML page yet";
+      filesSiteBtn.setAttribute(
+        "aria-label",
+        target ? `Open ${target}` : "No HTML page yet"
+      );
     }
     if (filesPreviewBtn) {
       filesPreviewBtn.disabled = !filesEntry;
