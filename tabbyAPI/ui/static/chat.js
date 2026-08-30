@@ -8286,6 +8286,43 @@ function mountChat(root) {
       return Boolean(reasoningText || steps.length || statusNotes.length);
     }
 
+    let followThought = true;
+    let pinningThought = false;
+    let pinThoughtRaf = 0;
+
+    function thoughtNearBottom() {
+      return thought.scrollHeight - thought.scrollTop - thought.clientHeight < 48;
+    }
+
+    function pinThoughtNow() {
+      pinningThought = true;
+      thought.scrollTop = thought.scrollHeight;
+      pinningThought = false;
+    }
+
+    function stickThought(force) {
+      if (force) followThought = true;
+      if (finished || thought.hidden || !followThought) return;
+      pinThoughtNow();
+      if (pinThoughtRaf) cancelAnimationFrame(pinThoughtRaf);
+      pinThoughtRaf = requestAnimationFrame(() => {
+        pinThoughtRaf = requestAnimationFrame(() => {
+          pinThoughtRaf = 0;
+          if (!finished && !thought.hidden && followThought) pinThoughtNow();
+        });
+      });
+    }
+
+    thought.addEventListener("scroll", () => {
+      if (pinningThought || finished) return;
+      followThought = thoughtNearBottom();
+    }, { passive: true });
+    thought.addEventListener("load", (event) => {
+      if (event.target && event.target.tagName === "IMG" && followThought && !finished) {
+        stickThought();
+      }
+    }, true);
+
     function paintThought() {
       paintStepCount();
       if (!hasTrace()) {
@@ -8293,6 +8330,8 @@ function mountChat(root) {
         thought.innerHTML = "";
         return;
       }
+      const keepScroll = thought.scrollTop;
+      pinningThought = true;
       thought.innerHTML = "";
       if (reasoningText) {
         const block = document.createElement("div");
@@ -8302,6 +8341,13 @@ function mountChat(root) {
       }
       steps.forEach((step) => thought.appendChild(renderAgentStep(step)));
       thought.hidden = finished ? !expanded : false;
+      if (finished) {
+        thought.scrollTop = keepScroll;
+        pinningThought = false;
+        return;
+      }
+      pinningThought = false;
+      stickThought();
     }
 
     function addStatusNote(note) {
@@ -8341,6 +8387,10 @@ function mountChat(root) {
       head.classList.remove("is-live");
       turn.removeAttribute("aria-busy");
       turn.setAttribute("aria-live", "off");
+      if (pinThoughtRaf) {
+        cancelAnimationFrame(pinThoughtRaf);
+        pinThoughtRaf = 0;
+      }
     }
 
     function settleThought(seconds) {
@@ -8559,6 +8609,7 @@ function mountChat(root) {
           turn.classList.remove("has-answer");
         }
         paintThought();
+        if (!finished) stickThought(true);
       },
       discard() {
         finished = true;
