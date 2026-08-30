@@ -582,7 +582,14 @@
   }
   refreshHeaderStatus();
 
-  window.addEventListener("hashchange", () => show(currentName()));
+  window.addEventListener("hashchange", () => {
+    const hash = (location.hash || "").replace("#", "");
+    if (!isAdmin && (hash === "users" || hash === "settings")) {
+      location.hash = "#chat";
+      return;
+    }
+    show(currentName());
+  });
   show(currentName());
   if (typeof TABBY_REVEAL_UI === "function") TABBY_REVEAL_UI();
 })();
