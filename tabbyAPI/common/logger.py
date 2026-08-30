@@ -104,11 +104,30 @@ def _log_formatter(record: dict):
 # Optional first segment covers reverse-proxy prefixes such as /openai/v1/ui.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _UI_ACCESS_RE = re.compile(r'"[A-Z]+ (?:/\w+)?(?:/v1)?/ui(?:[/?\s]|$)')
+# sse_starlette logs every sent chunk at DEBUG. Streaming /ui/logs back into
+# journalctl turns that into a runaway echo (multi-megabyte lines, /health hangs).
+_SSE_ECHO_RE = re.compile(r"event:\s*log|chunk:\s*b['\"]event:", re.I)
+_JOURNAL_LINE_MAX = 4000
 
 
 def is_ui_access_line(line: str) -> bool:
     text = _ANSI_RE.sub("", line or "")
     return bool(_UI_ACCESS_RE.search(text))
+
+
+def is_hidden_journal_line(line: str) -> bool:
+    text = _ANSI_RE.sub("", line or "")
+    if not text:
+        return True
+    if len(text) > _JOURNAL_LINE_MAX:
+        return True
+    if is_ui_access_line(text):
+        return True
+    if _SSE_ECHO_RE.search(text):
+        return True
+    if "\\" * 40 in text:
+        return True
+    return False
 
 
 # Uvicorn log handler
@@ -138,6 +157,9 @@ def setup_logger():
     """Bootstrap the logger."""
 
     logger.remove()
+    # Keep INFO+ from sse_starlette; DEBUG chunk dumps re-enter journalctl.
+    logging.getLogger("sse_starlette").setLevel(logging.INFO)
+    logging.getLogger("sse_starlette.sse").setLevel(logging.INFO)
 
     logger.add(
         RICH_CONSOLE.print,

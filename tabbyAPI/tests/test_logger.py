@@ -2,7 +2,12 @@ import logging
 import unittest
 from unittest import mock
 
-from common.logger import UvicornLoggingHandler, console_width, is_ui_access_line
+from common.logger import (
+    UvicornLoggingHandler,
+    console_width,
+    is_hidden_journal_line,
+    is_ui_access_line,
+)
 
 
 class LoggerWidthTests(unittest.TestCase):
@@ -29,6 +34,14 @@ class UiAccessLogTests(unittest.TestCase):
         )
         self.assertTrue(is_ui_access_line(line))
         self.assertFalse(is_ui_access_line('"GET /v1/chat/completions HTTP/1.1" 200'))
+
+    def test_sse_chunk_echo_is_hidden(self):
+        self.assertTrue(
+            is_hidden_journal_line("2026-08-30 07:38:13.030 DEBUG:    chunk: b'event: log\\r\\ndata: {\"line\": \"hi\"}'")
+        )
+        self.assertTrue(is_hidden_journal_line("x" * 4001))
+        self.assertTrue(is_hidden_journal_line("keep " + ("\\" * 40)))
+        self.assertFalse(is_hidden_journal_line("Model loaded: qwen"))
 
     def test_handler_drops_ui_status_access(self):
         handler = UvicornLoggingHandler()

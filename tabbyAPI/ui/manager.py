@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
 
-from common.logger import is_ui_access_line
+from common.logger import is_hidden_journal_line, is_ui_access_line
 
 ROOT = Path(__file__).resolve().parent.parent
 STACK_ROOT = ROOT.parent
@@ -34,7 +34,7 @@ _STARTED_AT = time.time()
 
 
 def visible_log_lines(lines, limit: Optional[int] = None) -> list[str]:
-    out = [line for line in lines if line and not is_ui_access_line(line)]
+    out = [line for line in lines if line and not is_hidden_journal_line(line)]
     if limit is None:
         return out
     return out[-max(1, int(limit)) :]
@@ -47,7 +47,7 @@ def install_log_sink() -> None:
 
     def _sink(message):
         text = str(message).rstrip("\n")
-        if not text or is_ui_access_line(text):
+        if not text or is_hidden_journal_line(text):
             return
         PROCESS_LOGS.append(text)
 
@@ -130,7 +130,7 @@ async def stream_journal_lines() -> AsyncIterator[str]:
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if line and not is_ui_access_line(line):
+                if line and not is_hidden_journal_line(line):
                     yield line
         except asyncio.CancelledError:
             await _stop_process(process)
@@ -143,7 +143,7 @@ async def _stream_process_logs() -> AsyncIterator[str]:
     index = 0
     for line in list(PROCESS_LOGS):
         index += 1
-        if line and not is_ui_access_line(line):
+        if line and not is_hidden_journal_line(line):
             yield line
     while True:
         await asyncio.sleep(0.25)
@@ -153,7 +153,7 @@ async def _stream_process_logs() -> AsyncIterator[str]:
         while index < len(current):
             line = current[index]
             index += 1
-            if line and not is_ui_access_line(line):
+            if line and not is_hidden_journal_line(line):
                 yield line
 
 
