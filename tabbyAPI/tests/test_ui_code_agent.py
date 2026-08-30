@@ -73,10 +73,20 @@ class CodeAgentTests(unittest.TestCase):
             "## Assets\n"
             "- images/logo.png — qwen-image logo\n"
             "- images/hero.png — Flux nebula photograph\n\n"
+            "## Checklist\n"
+            "- [ ] Write index.html with img src for logo and hero\n"
+            "- [ ] Write styles.css and app.js starfield\n\n"
             "## Risks\n"
             "Readable logo text needs Qwen-Image, not Flux."
         )
         self.assertTrue(code_agent.plan_looks_complete(text))
+        self.assertEqual(
+            code_agent.plan_checklist_items(text),
+            [
+                "Write index.html with img src for logo and hero",
+                "Write styles.css and app.js starfield",
+            ],
+        )
 
     def test_attach_plan_contract_once(self):
         messages = [{"role": "user", "content": "design a site"}]
@@ -112,8 +122,11 @@ class CodeAgentTests(unittest.TestCase):
         self.assertIn("qwen-image:", plan)
         self.assertIn("GPU will render", plan)
         self.assertIn("canvas", plan)
+        self.assertIn("## Checklist", plan)
+        self.assertIn("- [ ]", plan)
         self.assertIn("<approved_plan>", agent)
         self.assertIn("canvas-draw", agent)
+        self.assertIn("## Checklist", agent)
 
     def test_attach_plan_contract_skips_build(self):
         quoted = (
@@ -129,7 +142,9 @@ class CodeAgentTests(unittest.TestCase):
     def test_attach_build_contract_once(self):
         quoted = (
             f"{code_agent.BUILD_PROMPT}\n\n<approved_plan>\n"
-            "## Goal\nShip it.\n## Assets\n- images/liner.png\n</approved_plan>"
+            "## Goal\nShip it.\n## Assets\n- images/liner.png\n"
+            "## Checklist\n- [ ] Write index.html with liner img\n"
+            "- [ ] Point img src at images/liner.png\n</approved_plan>"
         )
         messages = [{"role": "user", "content": quoted}]
         code_agent.attach_build_user_contract(messages)
@@ -137,6 +152,12 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"].count(code_agent.BUILD_CONTRACT_MARK), 1)
         self.assertTrue(messages[0]["content"].startswith(code_agent.BUILD_PROMPT))
         self.assertIn("Write and edit project files", messages[0]["content"])
+        self.assertIn("Checklist to finish:", messages[0]["content"])
+        self.assertIn("- [ ] Write index.html with liner img", messages[0]["content"])
+        self.assertEqual(
+            messages[0]["content"].count("- [ ] Write index.html with liner img"),
+            2,
+        )
 
     def test_attach_build_contract_skips_non_build(self):
         messages = [{"role": "user", "content": "design a site"}]

@@ -44,8 +44,9 @@ CODE_SYSTEM = (
     "HTML, CSS, JS, or images the page still uses. When you are done, give a "
     "short summary of what you wrote or optimized. "
     "Earlier messages in this thread are the brief, including an "
-    "<approved_plan> or the last Plan reply. Implement that; do not ask for "
-    "a new spec. If the plan says to canvas-draw, Node-export, Pillow, or "
+    "<approved_plan> or the last Plan reply. Implement that plan's "
+    "## Checklist in order; do not skip items and do not ask for a new spec. "
+    "If the plan says to canvas-draw, Node-export, Pillow, or "
     "base64 fake site PNGs, ignore those steps: point img src at the Asset "
     "dest paths. JS/CSS may still animate stars."
 )
@@ -69,7 +70,7 @@ PLAN_SYSTEM = (
     "Your assistant message is the plan the user will review, then click "
     "Build to implement. Never say you will write a plan — write it now. "
     "Use markdown with these headings:\n"
-    "## Goal\n## Files\n## Steps\n## Assets\n## Risks\n"
+    "## Goal\n## Files\n## Steps\n## Assets\n## Checklist\n## Risks\n"
     "Files: concrete relative paths and what each one is for. "
     "Steps: numbered and specific enough to implement without asking again. "
     "Assets: dest paths the GPU will render after Build (hero/scene = Flux "
@@ -78,28 +79,35 @@ PLAN_SYSTEM = (
     "PNGs, or placeholders reserved for later. JS/CSS starfield and warp "
     "animation is allowed and is not an Asset. OptimizeImage is after real "
     "files exist, not canvas export. "
+    "Checklist: one `- [ ]` item per user request in this thread (each "
+    "page file, each Asset dest with img src, JS/CSS effects, mobile/nav, "
+    "optimize if they asked). When revising, keep earlier items and add "
+    "new ones. Build will implement only this list. "
     "Do not implement."
 )
 PLAN_CONTRACT_MARK = "<plan_mode>"
 PLAN_USER_SUFFIX = (
     "\n\n<plan_mode>\n"
     "Write the full implementation plan now as markdown with headings Goal, "
-    "Files, Steps, Assets, and Risks. Name concrete relative paths. Number "
-    "the steps. Assets are GPU dest paths (or None), not canvas/Node "
-    "exports. Page pictures use img tags. Starfields may be JS. Do not "
-    "implement. Do not announce a plan — this reply is the plan. The user "
-    "will click Build later.\n"
+    "Files, Steps, Assets, Checklist, and Risks. Name concrete relative "
+    "paths. Number the steps. Assets are GPU dest paths (or None), not "
+    "canvas/Node exports. Page pictures use img tags. Starfields may be JS. "
+    "Checklist is `- [ ]` todos covering every user request; Build will "
+    "follow only that list. Do not implement. Do not announce a plan — "
+    "this reply is the plan. The user will click Build later.\n"
     "</plan_mode>"
 )
 PLAN_RETRY = (
     "That reply was not a plan. Write the complete implementation plan now "
-    "as markdown with headings Goal, Files, Steps, Assets, and Risks. "
-    "Include concrete file paths and numbered steps. Do not implement. "
+    "as markdown with headings Goal, Files, Steps, Assets, Checklist, and "
+    "Risks. Include concrete file paths, numbered steps, and `- [ ]` "
+    "checklist items for every user request. Do not implement. "
     "Do not call tools unless you must Read a specific existing file. "
     "Do not say you will write a plan later."
 )
 _PLAN_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
 _PLAN_STEPS = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+\S|[-*]\s+\S.{8,})")
+_PLAN_CHECKS = re.compile(r"(?m)^\s*(?:[-*]|\d+[\.)])\s*\[\s*[xX ]?\s*\]\s+\S")
 _PLAN_PATH = re.compile(
     r"\b[\w./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|json|md|py|svg|png|jpe?g|webp|gif)\b",
     re.I,
@@ -122,12 +130,22 @@ BUILD_CONTRACT_MARK = "<build_mode>"
 BUILD_USER_SUFFIX = (
     "\n\n<build_mode>\n"
     "The plan is already approved. Write and edit project files with tools "
-    "now. Do not reply with Goal, Files, Steps, Assets, or Risks headings. "
+    "now. Do not reply with Goal, Files, Steps, Assets, Checklist, or Risks "
+    "headings. Work the plan's ## Checklist in order (every `- [ ]` item). "
+    "Do not skip items and do not start extra work that is not on the list. "
+    "After the last item, stop calling tools and give a short summary. "
     "Site images listed under Assets are GPU PNGs: point img src at those "
     "dest paths; do not draw them on canvas or export Node/Pillow/base64 "
     "PNGs. JS/CSS may still animate stars and warp effects. Use "
     "OptimizeImage after real image files exist if they asked to optimize.\n"
     "</build_mode>"
+)
+_APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
+_CHECKLIST_SECTION_RE = re.compile(
+    r"(?im)^#{1,3}\s+(?:checklist|to-?dos?)\b[^\n]*\n(.*?)(?=^#{1,3}\s+|\Z)"
+)
+_CHECK_ITEM_RE = re.compile(
+    r"(?m)^\s*(?:[-*]|\d+[\.)])\s*\[\s*[xX ]?\s*\]\s+(.+?\S)\s*$"
 )
 
 
@@ -200,6 +218,39 @@ def attach_plan_user_contract(messages: list) -> None:
         return
 
 
+def plan_checklist_items(text: str) -> list[str]:
+    """`- [ ]` todos from an approved plan or ## Checklist section."""
+    blob = text or ""
+    match = _APPROVED_PLAN_RE.search(blob)
+    if match:
+        blob = match.group(1) or ""
+    section = _CHECKLIST_SECTION_RE.search(blob)
+    if not section:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _CHECK_ITEM_RE.findall(section.group(1) or ""):
+        line = " ".join(str(raw).split())
+        key = line.lower()
+        if not line or key in {"none", "n/a"} or key in seen:
+            continue
+        seen.add(key)
+        found.append(line)
+    return found
+
+
+def _build_user_suffix(content: Any) -> str:
+    items = plan_checklist_items(_plain_content(content))
+    extra = ""
+    if items:
+        extra = (
+            "Checklist to finish:\n"
+            + "\n".join(f"- [ ] {item}" for item in items)
+            + "\n"
+        )
+    return BUILD_USER_SUFFIX.replace("</build_mode>", f"{extra}</build_mode>")
+
+
 def attach_build_user_contract(messages: list) -> None:
     """Pin the Build contract on the last user turn (server-only)."""
     for item in reversed(messages):
@@ -210,7 +261,7 @@ def attach_build_user_contract(messages: list) -> None:
             return
         if _content_has_mark(content, BUILD_CONTRACT_MARK):
             return
-        item["content"] = _append_text_content(content, BUILD_USER_SUFFIX)
+        item["content"] = _append_text_content(content, _build_user_suffix(content))
         return
 
 
@@ -224,7 +275,7 @@ def plan_looks_complete(text: str) -> bool:
     if not body:
         return False
     headings = len(_PLAN_HEADING.findall(body))
-    steps = len(_PLAN_STEPS.findall(body))
+    steps = len(_PLAN_STEPS.findall(body)) + len(_PLAN_CHECKS.findall(body))
     paths = len(_PLAN_PATH.findall(body))
     if _PLAN_PREAMBLE.search(body) and headings < 2 and steps < 3:
         return False
