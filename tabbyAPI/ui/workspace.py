@@ -14,6 +14,7 @@ import shutil
 import threading
 import time
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Optional
 
@@ -57,6 +58,7 @@ MAX_TOTAL_BYTES = 500 * 1024 * 1024
 MAX_TEXT_BYTES = 8 * 1024 * 1024
 MAX_GREP_MATCHES = 200
 MAX_GREP_LINE = 400
+LAYOUT_REPORT_MAX = 2048
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
 DRAFTS_SUFFIX = ".drafts.json"
@@ -348,6 +350,448 @@ def site_entry(username: str, chat_id: str, wanted: str = "") -> str:
     if "index.html" in pages:
         return "index.html"
     return sorted(pages, key=lambda page: (page.count("/"), page))[0]
+
+
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+_CSS_URL = re.compile(r"""(?i)url\(\s*['"]?([^'")\s]+)['"]?\s*\)""")
+_JS_CANVAS_WIDTH = re.compile(r"(?i)\.width\s*=\s*([^;\n]{1,80})")
+_JS_CANVAS_HEIGHT = re.compile(r"(?i)\.height\s*=\s*([^;\n]{1,80})")
+
+
+def _el_label(tag: str, el_id: str, classes: list[str]) -> str:
+    label = tag or "element"
+    if el_id:
+        label += f"#{el_id}"
+    for name in classes:
+        label += f".{name}"
+    return label
+
+
+def _is_hero(el_id: str, classes: list[str]) -> bool:
+    if (el_id or "").lower() == "hero":
+        return True
+    return any(name.lower() == "hero" for name in classes)
+
+
+class _LayoutWalker(HTMLParser):
+    """Collect hero nodes, canvases, assets, and linked CSS/JS."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+        self.heroes: list[dict[str, Any]] = []
+        self.canvases: list[dict[str, Any]] = []
+        self.imgs: list[str] = []
+        self.css_hrefs: list[str] = []
+        self.js_hrefs: list[str] = []
+        self.style_blocks: list[str] = []
+        self.script_blocks: list[str] = []
+        self._capture = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        ad = {str(key).lower(): (val or "") for key, val in attrs}
+        classes = [name for name in ad.get("class", "").split() if name]
+        el_id = ad.get("id") or ""
+        depth = len(self.stack)
+        rel = (ad.get("rel") or "").lower()
+        if tag == "link" and "stylesheet" in rel and ad.get("href"):
+            self.css_hrefs.append(ad["href"].strip())
+        if tag == "script" and ad.get("src"):
+            self.js_hrefs.append(ad["src"].strip())
+        if tag == "img" and ad.get("src"):
+            self.imgs.append(ad["src"].strip())
+        inline = ad.get("style") or ""
+        if _is_hero(el_id, classes):
+            self.heroes.append(
+                {
+                    "tag": tag,
+                    "id": el_id,
+                    "classes": classes,
+                    "depth": depth,
+                    "children": [],
+                    "style": inline,
+                    "open": True,
+                }
+            )
+        for hero in self.heroes:
+            if hero.get("open") and hero["depth"] + 1 == depth:
+                hero["children"].append(_el_label(tag, el_id, classes))
+        if tag == "canvas":
+            self.canvases.append(
+                {
+                    "tag": tag,
+                    "id": el_id,
+                    "classes": classes,
+                    "depth": depth,
+                    "in_hero": any(
+                        hero.get("open") and hero["depth"] < depth
+                        for hero in self.heroes
+                    ),
+                    "style": inline,
+                }
+            )
+        if tag in ("style", "script") and not ad.get("src"):
+            self._capture = tag
+        if tag not in _VOID_TAGS:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._capture == tag:
+            self._capture = ""
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index] == tag:
+                del self.stack[index:]
+                break
+        for hero in self.heroes:
+            if hero.get("open") and hero["depth"] >= len(self.stack):
+                hero["open"] = False
+
+    def handle_data(self, data: str) -> None:
+        if self._capture == "style":
+            self.style_blocks.append(data)
+        elif self._capture == "script":
+            self.script_blocks.append(data)
+
+
+def _try_read_text(username: str, chat_id: str, rel: str) -> str:
+    try:
+        text = read_text(username, chat_id, rel)
+    except (OSError, ValueError, FileNotFoundError):
+        return ""
+    if str(text).startswith("[binary "):
+        return ""
+    return text
+
+
+def _workspace_file_exists(username: str, chat_id: str, rel: str) -> bool:
+    try:
+        root = workspace_root(username, chat_id, create=False)
+        return resolve_rel(root, rel).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _local_ref(base_file: str, ref: str) -> str:
+    raw = str(ref or "").strip().split("?", 1)[0].split("#", 1)[0]
+    if not raw or raw.startswith(("http://", "https://", "data:", "/", "//")):
+        return ""
+    try:
+        path = Path(base_file).parent / raw
+        parts: list[str] = []
+        for part in path.parts:
+            if part == "..":
+                if parts:
+                    parts.pop()
+            elif part not in ("", "."):
+                parts.append(part)
+        return "/".join(parts)
+    except (OSError, ValueError):
+        return ""
+
+
+def _parse_decls(body: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in str(body or "").split(";"):
+        if ":" not in part:
+            continue
+        prop, val = part.split(":", 1)
+        key = prop.strip().lower()
+        value = re.sub(r"\s*!important\s*$", "", val.strip(), flags=re.I)
+        if key:
+            out[key] = value
+    return out
+
+
+def _iter_css_rules(css: str) -> list[tuple[str, str]]:
+    text = re.sub(r"/\*.*?\*/", "", css or "", flags=re.S)
+    rules: list[tuple[str, str]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        start = text.find("{", index)
+        if start < 0:
+            break
+        selector = text[index:start].strip()
+        depth = 1
+        cursor = start + 1
+        while cursor < length and depth:
+            if text[cursor] == "{":
+                depth += 1
+            elif text[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        body = text[start + 1 : cursor - 1]
+        if "{" in body:
+            rules.extend(_iter_css_rules(body))
+        elif selector and not selector.lstrip().startswith("@"):
+            rules.append((selector, body))
+        index = cursor
+    return rules
+
+
+def _selector_matches(selector: str, tag: str, el_id: str, classes: list[str]) -> bool:
+    compound = re.split(r"[\s>+~]+", (selector or "").strip())[-1]
+    compound = re.sub(r"::?[\w-]+", "", compound)
+    compound = re.sub(r"\[[^\]]*\]", "", compound).strip()
+    if not compound or compound == "*":
+        return False
+    rest = compound
+    tag_m = ""
+    match = re.match(r"(?i)^([a-z][a-z0-9-]*)", rest)
+    if match:
+        tag_m = match.group(1).lower()
+        rest = rest[match.end() :]
+    id_m = ""
+    class_m: list[str] = []
+    while rest:
+        if rest.startswith("#"):
+            match = re.match(r"#([\w-]+)", rest)
+            if not match:
+                return False
+            id_m = match.group(1)
+            rest = rest[match.end() :]
+            continue
+        if rest.startswith("."):
+            match = re.match(r"\.([\w-]+)", rest)
+            if not match:
+                return False
+            class_m.append(match.group(1).lower())
+            rest = rest[match.end() :]
+            continue
+        return False
+    if tag_m and tag_m != (tag or "").lower():
+        return False
+    if id_m and id_m != el_id:
+        return False
+    have = {name.lower() for name in classes}
+    if any(name not in have for name in class_m):
+        return False
+    return bool(tag_m or id_m or class_m)
+
+
+def _rules_for(
+    rules: list[tuple[str, str]], tag: str, el_id: str, classes: list[str]
+) -> dict[str, str]:
+    decls: dict[str, str] = {}
+    for selector, body in rules:
+        for piece in selector.split(","):
+            if _selector_matches(piece, tag, el_id, classes):
+                decls.update(_parse_decls(body))
+                break
+    return decls
+
+
+def _merged_decls(rules: dict[str, str], inline: str) -> dict[str, str]:
+    merged = dict(rules)
+    merged.update(_parse_decls(inline))
+    return merged
+
+
+def _css_position(merged: dict[str, str]) -> str:
+    pos = (merged.get("position") or "").strip()
+    return f"position:{pos}" if pos else "no CSS rule"
+
+
+def _js_canvas_notes(js: str) -> list[str]:
+    notes: list[str] = []
+    for raw in _JS_CANVAS_WIDTH.findall(js or ""):
+        value = str(raw).strip()
+        if "innerWidth" in value:
+            notes.append("JS sets canvas.width = window.innerWidth")
+        elif re.search(r"(?:clientWidth|offsetWidth)", value):
+            notes.append("JS sets canvas.width from parent")
+    for raw in _JS_CANVAS_HEIGHT.findall(js or ""):
+        value = str(raw).strip()
+        if "innerHeight" in value:
+            notes.append("JS sets canvas.height = window.innerHeight")
+    return list(dict.fromkeys(notes))
+
+
+def _image_ref_notes(
+    username: str,
+    chat_id: str,
+    refs: list[tuple[str, str]],
+) -> list[str]:
+    disk: list[str] = []
+    for row in list_files(username, chat_id):
+        rel = str(row.get("path") or "")
+        if is_image_path(rel):
+            disk.append(rel)
+    on_disk = set(disk)
+    notes: list[str] = []
+    seen: set[str] = set()
+    matched = 0
+    for base, ref in refs:
+        rel = _local_ref(base, ref)
+        if not rel or rel in seen or not is_image_path(rel):
+            continue
+        seen.add(rel)
+        if rel in on_disk:
+            matched += 1
+            continue
+        parent = Path(rel).parent.as_posix()
+        stem = Path(rel).stem
+        alts = [
+            path
+            for path in disk
+            if Path(path).stem == stem
+            and Path(path).parent.as_posix() == parent
+        ]
+        if alts:
+            notes.append(
+                f"{rel} missing, {Path(alts[0]).name} exists — leave src"
+            )
+        else:
+            notes.append(f"{rel} missing — leave src")
+    if not seen:
+        return []
+    if not notes:
+        return ["Image src paths match files on disk."]
+    if matched:
+        notes.append(f"{matched} other image src path(s) match disk.")
+    return notes
+
+
+def layout_report(username: str, chat_id: str) -> str:
+    """Static hero/canvas/image facts for a layout-fix turn. No browser."""
+    if not username or not chat_id:
+        return "No HTML page in this workspace."
+    try:
+        entry = site_entry(username, chat_id)
+    except (OSError, ValueError):
+        return "No HTML page in this workspace."
+    if not entry:
+        return "No HTML page in this workspace."
+    html = _try_read_text(username, chat_id, entry)
+    if not html:
+        return f"Could not read {entry}."
+    walker = _LayoutWalker()
+    try:
+        walker.feed(html)
+        walker.close()
+    except Exception:
+        return f"Could not parse {entry}."
+
+    css_rels = [
+        rel
+        for rel in (_local_ref(entry, href) for href in walker.css_hrefs)
+        if rel
+    ]
+    if _workspace_file_exists(username, chat_id, "styles.css") and "styles.css" not in css_rels:
+        css_rels.append("styles.css")
+    js_rels = [
+        rel
+        for rel in (_local_ref(entry, href) for href in walker.js_hrefs)
+        if rel
+    ]
+    if _workspace_file_exists(username, chat_id, "script.js") and "script.js" not in js_rels:
+        js_rels.append("script.js")
+
+    css_chunks = list(walker.style_blocks)
+    css_urls: list[tuple[str, str]] = []
+    for rel in css_rels:
+        text = _try_read_text(username, chat_id, rel)
+        if text:
+            css_chunks.append(text)
+            for url in _CSS_URL.findall(text):
+                css_urls.append((rel, url))
+    rules = []
+    for chunk in css_chunks:
+        rules.extend(_iter_css_rules(chunk))
+    js_text = "\n".join(walker.script_blocks)
+    for rel in js_rels:
+        text = _try_read_text(username, chat_id, rel)
+        if text:
+            js_text += "\n" + text
+
+    lines = [f"Page: {entry}"]
+    if css_rels:
+        lines.append("CSS: " + ", ".join(css_rels))
+    if js_rels:
+        lines.append("JS: " + ", ".join(js_rels))
+
+    hero_flex = False
+    if not walker.heroes:
+        lines.append("No .hero / header.hero element.")
+    for hero in walker.heroes[:4]:
+        label = _el_label(hero["tag"], hero["id"], hero["classes"])
+        merged = _merged_decls(
+            _rules_for(rules, hero["tag"], hero["id"], hero["classes"]),
+            hero["style"],
+        )
+        display = (merged.get("display") or "").strip() or "no CSS rule"
+        line = f"{label} display:{display}"
+        direction = (merged.get("flex-direction") or "").strip()
+        if direction:
+            line += f" flex-direction:{direction}"
+        kids = hero["children"] or ["(no children)"]
+        line += "; children: " + ", ".join(kids[:12])
+        lines.append(line)
+        if display.split()[0] in ("flex", "grid"):
+            hero_flex = True
+
+    js_notes = _js_canvas_notes(js_text)
+    flagged = False
+    for canvas in walker.canvases[:6]:
+        label = _el_label(canvas["tag"], canvas["id"], canvas["classes"])
+        merged = _merged_decls(
+            _rules_for(rules, canvas["tag"], canvas["id"], canvas["classes"]),
+            canvas["style"],
+        )
+        pos = _css_position(merged)
+        where = " inside hero" if canvas["in_hero"] else ""
+        extra = f"; {js_notes[0]}" if js_notes else ""
+        lines.append(f"{label}{where}: {pos}{extra}")
+        in_flow = (merged.get("position") or "").strip() not in (
+            "absolute",
+            "fixed",
+            "sticky",
+        )
+        if hero_flex and canvas["in_hero"] and in_flow and not flagged:
+            sel = f"#{canvas['id']}" if canvas.get("id") else "canvas"
+            lines.append(
+                "Flag: this canvas takes layout space and can shove hero text. "
+                f"StrReplace styles.css to add {sel} "
+                "{ position: absolute; inset: 0; pointer-events: none; }"
+            )
+            flagged = True
+    if walker.canvases and js_notes[1:]:
+        lines.extend(js_notes[1:])
+
+    refs = [(entry, src) for src in walker.imgs] + css_urls
+    img_notes = _image_ref_notes(username, chat_id, refs)
+    missing = [note for note in img_notes if "missing" in note]
+    if missing:
+        lines.append(
+            "Image srcs use extensions that are not on disk (files are .webp). "
+            "Do not change src on this layout turn."
+        )
+    elif img_notes:
+        lines.extend(img_notes)
+
+    text = "\n".join(lines)
+    if len(text) > LAYOUT_REPORT_MAX:
+        text = text[: LAYOUT_REPORT_MAX - 1].rstrip() + "…"
+    return text
 
 
 def listing(username: str, chat_id: str) -> dict[str, Any]:

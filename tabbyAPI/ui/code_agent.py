@@ -148,16 +148,20 @@ PLAN_THEME_RETRY = (
     "Do not implement."
 )
 LAYOUT_FIX_MARK = "<layout_fix>"
+LAYOUT_REPORT_MARK = "<layout_report>"
 LAYOUT_FIX_SUFFIX = (
     "\n\n<layout_fix>\n"
     "The user asked for a small layout or alignment change. Read the "
     "existing CSS. Use StrReplace on only the rules that place the hero "
-    "text or buttons. If a canvas sits beside the hero copy, give that "
-    "canvas position:absolute; inset:0; pointer-events:none so it cannot "
-    "shove the title off-screen. Do not Write whole files. Do not change "
+    "text or buttons. Do not Write whole files. Do not change "
     "image paths. Do not generate images.\n"
     "</layout_fix>"
 )
+LAYOUT_REPORT_FOOTER = (
+    "Fix only the layout facts this report names (position, flex, canvas). "
+    "Prefer StrReplace. Do not change image paths."
+)
+_LAYOUT_SERVER_BLOCK = re.compile(r"(?is)<(?:layout_fix|layout_report)\b")
 _PLAN_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
 _PLAN_STEPS = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+\S|[-*]\s+\S.{8,})")
 _PLAN_CHECKS = re.compile(r"(?m)^\s*(?:[-*]|\d+[\.)])\s*\[\s*[xX ]?\s*\]\s+\S")
@@ -390,14 +394,42 @@ def _demote_example_space_brief(content: Any) -> Any:
     return content
 
 
+def _layout_fix_user_words(text: str) -> str:
+    """User's own words, excluding server <layout_fix> / <layout_report> suffixes."""
+    return _LAYOUT_SERVER_BLOCK.split(str(text or ""), maxsplit=1)[0].strip()
+
+
 def is_layout_fix_prompt(text: Any) -> bool:
     raw = _plain_content(text).strip()
-    if not raw or is_build_prompt(raw) or len(raw) > 240:
+    if not raw or is_build_prompt(raw):
         return False
-    return bool(_LAYOUT_ASK.search(raw))
+    if LAYOUT_FIX_MARK in raw:
+        return True
+    user = _layout_fix_user_words(raw)
+    if not user or len(user) > 240:
+        return False
+    return bool(_LAYOUT_ASK.search(user))
 
 
-def attach_layout_fix_contract(messages: list) -> None:
+def _layout_report_suffix(username: str, chat_id: str) -> str:
+    facts = ""
+    if username and chat_id:
+        try:
+            facts = workspace.layout_report(username, chat_id)
+        except Exception:
+            facts = "Could not read workspace layout."
+    facts = (facts or "No HTML page in this workspace.").strip()
+    return (
+        f"\n\n{LAYOUT_REPORT_MARK}\n"
+        f"{facts}\n"
+        f"{LAYOUT_REPORT_FOOTER}\n"
+        "</layout_report>"
+    )
+
+
+def attach_layout_fix_contract(
+    messages: list, username: str = "", chat_id: str = ""
+) -> None:
     """Pin a surgical-edit contract on a short hero/alignment follow-up."""
     for item in reversed(messages):
         if not isinstance(item, dict) or item.get("role") != "user":
@@ -409,7 +441,8 @@ def attach_layout_fix_contract(messages: list) -> None:
             return
         if not is_layout_fix_prompt(content):
             return
-        item["content"] = _append_text_content(content, LAYOUT_FIX_SUFFIX)
+        extra = LAYOUT_FIX_SUFFIX + _layout_report_suffix(username, chat_id)
+        item["content"] = _append_text_content(content, extra)
         return
 
 
@@ -452,6 +485,11 @@ def workspace_file_brief(username: str, chat_id: str) -> str:
     if not files:
         return "Workspace files: (empty project)."
     files.sort()
+    rasters = [
+        Path(path).suffix.lower()
+        for path in files
+        if Path(path).suffix.lower() in workspace.IMAGE_SUFFIXES
+    ]
     extra = 0
     if len(files) > MAX_BRIEF_FILES:
         extra = len(files) - MAX_BRIEF_FILES
@@ -460,7 +498,12 @@ def workspace_file_brief(username: str, chat_id: str) -> str:
     text = ", ".join(files)
     if extra:
         text += f", …and {extra} more"
-    return f"Workspace files ({count}): {text}."
+    line = f"Workspace files ({count}): {text}."
+    if any(suffix != ".png" for suffix in rasters):
+        line += (
+            " On disk, generated pictures are .webp; do not change src to .png."
+        )
+    return line
 
 
 def code_system_for(username: str, chat_id: str, agent: str = "agent") -> str:

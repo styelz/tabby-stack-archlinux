@@ -712,7 +712,7 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
         attach_plan_user_contract(messages)
     elif agent != "ask":
         attach_build_user_contract(messages)
-        attach_layout_fix_contract(messages)
+        attach_layout_fix_contract(messages, username, chat_id)
     payload["messages"] = messages
     payload["chat_id"] = chat_id
     payload["mode"] = "code"
