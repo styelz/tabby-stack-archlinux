@@ -1143,7 +1143,7 @@ async def ui_code_preview(
     with its own subresource requests.
     """
     from ui.preview import STORAGE_ROUTE, html_preview_bytes, is_html_name, persist_url_for
-    from ui.workspace import guess_media_type, resolve_file, site_entry
+    from ui.workspace import guess_media_type, resolve_preview_file, site_entry
 
     user, cid = _preview_owner(username, chat_id, token)
     rel = path or ""
@@ -1154,7 +1154,7 @@ async def ui_code_preview(
     if rel == STORAGE_ROUTE or rel.endswith(f"/{STORAGE_ROUTE}"):
         raise HTTPException(404, "File not found.")
     try:
-        file_path = resolve_file(user, cid, rel)
+        file_path = resolve_preview_file(user, cid, rel)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:

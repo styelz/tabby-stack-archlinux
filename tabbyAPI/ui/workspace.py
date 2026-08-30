@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_PAGE_SUFFIXES = frozenset({".html", ".htm", ".css", ".js", ".mjs"})
 # Editing is limited to what the console can safely round-trip as UTF-8 text.
 TEXT_SUFFIXES = frozenset(
     {
@@ -681,6 +682,16 @@ def resolve_file(username: str, chat_id: str, rel: str) -> Path:
     return path
 
 
+def resolve_preview_file(username: str, chat_id: str, rel: str) -> Path:
+    """Site-preview path. A .png URL may land on the same-stem .webp (or reverse)."""
+    try:
+        return resolve_file(username, chat_id, rel)
+    except FileNotFoundError:
+        if not is_image_path(rel):
+            raise
+        return resolve_file(username, chat_id, resolve_image_rel(username, chat_id, rel))
+
+
 def read_bytes(username: str, chat_id: str, rel: str) -> tuple[Path, bytes]:
     path = resolve_file(username, chat_id, rel)
     return path, path.read_bytes()
@@ -694,7 +705,14 @@ def read_text(username: str, chat_id: str, rel: str) -> str:
         return f"[binary {len(data)} bytes]"
 
 
-def write_text(username: str, chat_id: str, rel: str, contents: str) -> str:
+def write_text(
+    username: str,
+    chat_id: str,
+    rel: str,
+    contents: str,
+    *,
+    sync_images: bool = True,
+) -> str:
     text = contents if isinstance(contents, str) else str(contents or "")
     data = text.encode("utf-8")
     if len(data) > MAX_TEXT_BYTES:
@@ -714,7 +732,10 @@ def write_text(username: str, chat_id: str, rel: str, contents: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     os.chmod(path, 0o600)
-    return path.relative_to(root.resolve()).as_posix()
+    written = path.relative_to(root.resolve()).as_posix()
+    if sync_images and Path(written).suffix.lower() in _PAGE_SUFFIXES:
+        _resync_existing_image_refs(username, chat_id)
+    return written
 
 
 def read_text_window(
@@ -1516,9 +1537,17 @@ def _rewrite_project_image_path(
             updated = updated.replace(old, new)
         if updated == text:
             continue
-        write_text(username, chat_id, rel, updated)
+        write_text(username, chat_id, rel, updated, sync_images=False)
         changed.append(rel)
     return changed
+
+
+def _resync_existing_image_refs(username: str, chat_id: str) -> None:
+    """After a page rewrite, keep img/css urls on the files that exist (.webp)."""
+    for row in list_files(username, chat_id):
+        rel = str(row.get("path") or "")
+        if is_image_path(rel):
+            _sync_image_references(username, chat_id, rel)
 
 
 def _sync_image_references(username: str, chat_id: str, actual_rel: str) -> list[str]:

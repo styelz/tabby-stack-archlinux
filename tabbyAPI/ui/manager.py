@@ -690,6 +690,7 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
     """Chat sanitizer, but force the Code-mode system prompt and keep chat_id."""
     from ui.code_agent import (
         attach_build_user_contract,
+        attach_layout_fix_contract,
         attach_plan_user_contract,
         code_system_for,
         code_tool_specs,
@@ -711,6 +712,7 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
         attach_plan_user_contract(messages)
     elif agent != "ask":
         attach_build_user_contract(messages)
+        attach_layout_fix_contract(messages)
     payload["messages"] = messages
     payload["chat_id"] = chat_id
     payload["mode"] = "code"

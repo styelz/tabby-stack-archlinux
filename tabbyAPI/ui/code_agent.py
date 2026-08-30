@@ -37,9 +37,18 @@ CODE_SYSTEM = (
     "this workspace's container (cwd is /work). Do not create placeholder files when an "
     "attached project image can be processed with OptimizeImage. Do not dump "
     "whole files in chat. Do not try to run the site for the user; they have "
-    "preview. Point img src at the planned local paths. Generated assets for "
-    "an HTML website are automatically converted to web-optimized files and "
-    "their code references are updated after rendering. Unused cleanup means "
+    "preview. A later user message wins over an earlier example brief: if they "
+    "say a different theme or names, do not keep the example's industry or "
+    "setting. For a layout, alignment, or color fix, Read the file and use "
+    "StrReplace on the few rules that are wrong. Do not Write the whole "
+    "HTML/CSS/JS again and do not touch img src or regenerate pictures. "
+    "If hero text sits off to the left, the usual cause is a full-size "
+    "canvas in the flex row: give that canvas position:absolute; inset:0. "
+    "After images exist, List and keep the on-disk paths (often .webp even "
+    "when the plan said .png). Never change a working src back to .png. "
+    "On first write, point img src at the planned local paths. Generated "
+    "assets for an HTML website are automatically converted to web-optimized "
+    "files and their code references are updated after rendering. Unused cleanup means "
     "empty folders only, plus files the page does not reference. Never delete "
     "HTML, CSS, JS, or images the page still uses. When you are done, give a "
     "short summary of what you wrote or optimized. "
@@ -77,12 +86,18 @@ PLAN_SYSTEM = (
     "photo; logos/text/named ships = qwen-image:), shown with img src, or "
     "None. Do not plan canvas, toDataURL, Pillow, Node, or base64 fake "
     "PNGs, or placeholders reserved for later. JS/CSS starfield and warp "
-    "animation is allowed and is not an Asset. OptimizeImage is after real "
+    "animation is allowed and is not an Asset. Overlay canvases (stars, "
+    "fireflies, particles) must be position:absolute covering the hero — "
+    "never a flex or grid sibling, or they shove the title off-screen. "
+    "OptimizeImage is after real "
     "files exist, not canvas export. "
     "Checklist: one `- [ ]` item per user request in this thread (each "
     "page file, each Asset dest with img src, JS/CSS effects, mobile/nav, "
     "optimize if they asked). When revising, keep earlier items and add "
     "new ones. Build will implement only this list. "
+    "If they say the pasted brief is only an example, or they do not want "
+    "the same theme or names, invent a different setting. Do not reuse that "
+    "industry, ships, planets, or company type. "
     "Do not implement."
 )
 PLAN_CONTRACT_MARK = "<plan_mode>"
@@ -97,6 +112,26 @@ PLAN_USER_SUFFIX = (
     "this reply is the plan. The user will click Build later.\n"
     "</plan_mode>"
 )
+PLAN_THEME_HINT = (
+    "\n\n<plan_theme>\n"
+    "The space-travel paragraph is an example only. Invent a completely "
+    "different setting and names. Do not plan space, ships, planets, "
+    "cruise liners, or light-speed travel.\n"
+    "</plan_theme>"
+)
+_LAYOUT_WRITE_REFUSE = (
+    "This turn is a small layout or alignment fix. Do not Write whole files. "
+    "Read the existing CSS and use StrReplace on the rules that place the "
+    "hero text or buttons. Leave image paths as they are on disk."
+)
+_LAYOUT_SRC_REFUSE = (
+    "This turn is a layout fix. Do not change image paths. Use StrReplace "
+    "only on CSS position or alignment rules."
+)
+_PAGE_EDIT_SUFFIXES = frozenset({".html", ".htm", ".css", ".js", ".mjs"})
+_IMAGE_IN_TEXT = re.compile(
+    r"(?i)[\w./-]+\.(?:png|jpe?g|webp|gif)\b"
+)
 PLAN_RETRY = (
     "That reply was not a plan. Write the complete implementation plan now "
     "as markdown with headings Goal, Files, Steps, Assets, Checklist, and "
@@ -104,6 +139,24 @@ PLAN_RETRY = (
     "checklist items for every user request. Do not implement. "
     "Do not call tools unless you must Read a specific existing file. "
     "Do not say you will write a plan later."
+)
+PLAN_THEME_RETRY = (
+    "That plan still uses the example theme from the pasted brief (space "
+    "travel). Invent a completely different setting and names. Do not use "
+    "space, ships, planets, cruise liners, or light-speed travel. Write the "
+    "full plan again with Goal, Files, Steps, Assets, Checklist, and Risks. "
+    "Do not implement."
+)
+LAYOUT_FIX_MARK = "<layout_fix>"
+LAYOUT_FIX_SUFFIX = (
+    "\n\n<layout_fix>\n"
+    "The user asked for a small layout or alignment change. Read the "
+    "existing CSS. Use StrReplace on only the rules that place the hero "
+    "text or buttons. If a canvas sits beside the hero copy, give that "
+    "canvas position:absolute; inset:0; pointer-events:none so it cannot "
+    "shove the title off-screen. Do not Write whole files. Do not change "
+    "image paths. Do not generate images.\n"
+    "</layout_fix>"
 )
 _PLAN_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
 _PLAN_STEPS = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+\S|[-*]\s+\S.{8,})")
@@ -215,7 +268,11 @@ def attach_plan_user_contract(messages: list) -> None:
             return
         if _content_has_mark(content, PLAN_CONTRACT_MARK):
             return
-        item["content"] = _append_text_content(content, PLAN_USER_SUFFIX)
+        extra = PLAN_USER_SUFFIX
+        if user_forbids_example_space(_plain_content(content)):
+            content = _demote_example_space_brief(content)
+            extra = PLAN_THEME_HINT + extra
+        item["content"] = _append_text_content(content, extra)
         return
 
 
@@ -263,6 +320,96 @@ def attach_build_user_contract(messages: list) -> None:
         if _content_has_mark(content, BUILD_CONTRACT_MARK):
             return
         item["content"] = _append_text_content(content, _build_user_suffix(content))
+        return
+
+
+_FORBID_EXAMPLE_THEME = re.compile(
+    r"(?is)(?:don'?t|do not|not)\s+(?:use\s+)?(?:the\s+)?same theme"
+    r"|totally new website"
+    r"|totally different"
+    r"|not\s+\w+\s+themed"
+    r"|i don'?t want it\s+\w+\s+themed"
+)
+_EXAMPLE_SPACE_BRIEF = re.compile(
+    r"(?i)\b(?:space travel|solar system|cruise liner|light[- ]speed|"
+    r"trips to any planet)\b"
+)
+_PLAN_SPACE_THEME = re.compile(
+    r"(?i)\b(?:space travel|solar system|cruise liner|light[- ]speed|"
+    r"luxury (?:space )?(?:liner|cruise)|warp drive|starship|spaceship|"
+    r"planet(?:s)? (?:mars|neptune|jupiter)|observation deck)\b"
+)
+_LAYOUT_ASK = re.compile(
+    r"(?i)\b(?:hero|align(?:ment|ed)?|off (?:to the )?left|off[- ]screen|"
+    r"center(?:ed)?|pushed off|too (?:far )?(?:left|right)|layout)\b"
+)
+
+
+def user_forbids_example_space(text: str) -> bool:
+    user = text or ""
+    if re.search(r"(?i)(?:don'?t|do not|not).{0,40}space\s+themed", user):
+        return True
+    return bool(
+        _FORBID_EXAMPLE_THEME.search(user) and _EXAMPLE_SPACE_BRIEF.search(user)
+    )
+
+
+def plan_copies_forbidden_example(user_text: str, plan_text: str) -> bool:
+    """True when they forbade the pasted space brief but the plan still uses it."""
+    if not user_forbids_example_space(user_text or ""):
+        return False
+    return bool(_PLAN_SPACE_THEME.search(_strip_think(plan_text or "")))
+
+
+_SPACE_EXAMPLE_PARA = re.compile(
+    r"(?is)(you are designing a website for a space travel company\..+?)(?=\n{2,}|\Z)"
+)
+
+
+def _demote_example_space_brief(content: Any) -> Any:
+    """Label the pasted space brief so it is not read as the site to build."""
+
+    def wrap(text: str) -> str:
+        if "EXAMPLE ONLY" in (text or ""):
+            return text
+        return _SPACE_EXAMPLE_PARA.sub(
+            r"EXAMPLE ONLY — do not use this theme or names:\n\1",
+            text or "",
+            count=1,
+        )
+
+    if isinstance(content, str):
+        return wrap(content)
+    if isinstance(content, list):
+        parts = [part if isinstance(part, dict) else part for part in content]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = wrap(str(part.get("text") or ""))
+                return parts
+        return parts
+    return content
+
+
+def is_layout_fix_prompt(text: Any) -> bool:
+    raw = _plain_content(text).strip()
+    if not raw or is_build_prompt(raw) or len(raw) > 240:
+        return False
+    return bool(_LAYOUT_ASK.search(raw))
+
+
+def attach_layout_fix_contract(messages: list) -> None:
+    """Pin a surgical-edit contract on a short hero/alignment follow-up."""
+    for item in reversed(messages):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if is_build_prompt(content):
+            return
+        if _content_has_mark(content, LAYOUT_FIX_MARK):
+            return
+        if not is_layout_fix_prompt(content):
+            return
+        item["content"] = _append_text_content(content, LAYOUT_FIX_SUFFIX)
         return
 
 
@@ -352,7 +499,7 @@ def code_tool_specs(agent: str = "agent") -> list[ToolSpec]:
             type="function",
             function=Function(
                 name="Write",
-                    description="Create or overwrite a text file in this workspace's project.",
+                    description="Create or overwrite a whole text file. For a small layout, alignment, or path edit, use StrReplace.",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -672,6 +819,15 @@ def _kind(name: str) -> str:
     return ""
 
 
+def _existing_page_file(username: str, chat_id: str, rel: str) -> bool:
+    try:
+        root = workspace.workspace_root(username, chat_id, create=False)
+        dest = workspace.resolve_rel(root, rel)
+    except (OSError, ValueError):
+        return False
+    return dest.is_file()
+
+
 def _latest_user_text(messages: Any) -> str:
     for item in reversed(list(messages or [])):
         if isinstance(item, dict):
@@ -683,6 +839,20 @@ def _latest_user_text(messages: Any) -> str:
         if role == "user":
             return _plain_content(content)
     return ""
+
+
+def _all_user_text(messages: Any) -> str:
+    parts: list[str] = []
+    for item in list(messages or []):
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+        else:
+            role = getattr(item, "role", None)
+            content = getattr(item, "content", None)
+        if role == "user":
+            parts.append(_plain_content(content))
+    return "\n".join(parts)
 
 
 def _user_named_path(user_text: str, rel: str) -> bool:
@@ -815,11 +985,22 @@ def execute_tool(
     if not rel:
         return "Tool error", "path is required"
     if kind == "write":
+        if (
+            is_layout_fix_prompt(user_text)
+            and Path(rel).suffix.lower() in _PAGE_EDIT_SUFFIXES
+            and _existing_page_file(username, chat_id, rel)
+        ):
+            return "Tool error", _LAYOUT_WRITE_REFUSE
         written = workspace.write_text(username, chat_id, rel, _arg_contents(args))
         return f"Writing {written}", f"Wrote {written}"
     if kind == "replace":
         old = str(args.get("old_string") or args.get("oldStr") or "")
         new = str(args.get("new_string") or args.get("newStr") or "")
+        if is_layout_fix_prompt(user_text):
+            old_imgs = set(_IMAGE_IN_TEXT.findall(old))
+            new_imgs = set(_IMAGE_IN_TEXT.findall(new))
+            if old_imgs != new_imgs:
+                return "Tool error", _LAYOUT_SRC_REFUSE
         workspace.str_replace(username, chat_id, rel, old, new)
         return f"Editing {rel}", f"Updated {rel}"
     if kind == "read":
@@ -1167,6 +1348,7 @@ async def iter_code_turns(
     kind = normalize_agent(agent)
     empty = "empty project" in workspace_file_brief(username, chat_id)
     user_text = _latest_user_text(getattr(data, "messages", None))
+    all_user_text = _all_user_text(getattr(data, "messages", None)) or user_text
     protected = workspace.referenced_project_paths(username, chat_id)
     for row in workspace.list_files(username, chat_id):
         path = str(row.get("path") or "")
@@ -1221,17 +1403,19 @@ async def iter_code_turns(
         last_text = _content_text(getattr(message, "content", None))
         pairs = _tool_pairs(message)
         if not pairs:
-            if (
-                kind == "plan"
-                and plan_nudges < MAX_PLAN_NUDGES
-                and not plan_looks_complete(last_text)
-            ):
+            retry = ""
+            if kind == "plan" and plan_nudges < MAX_PLAN_NUDGES:
+                if not plan_looks_complete(last_text):
+                    retry = PLAN_RETRY
+                elif plan_copies_forbidden_example(all_user_text, last_text):
+                    retry = PLAN_THEME_RETRY
+            if retry:
                 plan_nudges += 1
                 if last_text.strip():
                     yield ("demote",)
                 working.messages.append(message)
                 working.messages.append(
-                    ChatCompletionMessage(role="user", content=PLAN_RETRY)
+                    ChatCompletionMessage(role="user", content=retry)
                 )
                 yield ("status", "Writing plan")
                 continue
