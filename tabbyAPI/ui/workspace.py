@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import difflib
 import fnmatch
 import io
@@ -68,6 +69,26 @@ _DRAFTS_LOCK = threading.Lock()
 
 _WORK_DIR: Optional[Path] = None
 _HISTORY_LOCK = threading.Lock()
+_HISTORY_RUN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+_HISTORY_RUN = contextvars.ContextVar("tabby_history_run", default="")
+
+
+def _clean_history_run(raw: Any) -> str:
+    text = str(raw or "").strip()
+    return text if _HISTORY_RUN_RE.fullmatch(text) else ""
+
+
+def push_history_run(run_id: Any) -> contextvars.Token:
+    """Tag file-history snapshots for one Code-mode prompt run."""
+    return _HISTORY_RUN.set(_clean_history_run(run_id))
+
+
+def pop_history_run(token: contextvars.Token) -> None:
+    _HISTORY_RUN.reset(token)
+
+
+def _active_history_run(explicit: Any = None) -> str:
+    return _clean_history_run(explicit) or str(_HISTORY_RUN.get() or "")
 
 
 def workspaces_dir() -> Path:
@@ -1005,6 +1026,7 @@ def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
     except (UnicodeDecodeError, ValueError):
         return
     folder = history_dir(username, chat_id)
+    run_id = _active_history_run()
     with _HISTORY_LOCK:
         index = _load_history_index(folder)
         rows = list(index.get(key) or [])
@@ -1015,12 +1037,18 @@ def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
                     return
             except OSError:
                 pass
+            # One snapshot per file for a prompt run: keep the pre-run bytes.
+            if run_id and str(rows[0].get("run") or "") == run_id:
+                return
         rev_id = secrets.token_hex(8)
         blob = _history_blob(folder, rev_id)
         blob.parent.mkdir(parents=True, exist_ok=True)
         blob.write_bytes(data)
         os.chmod(blob, 0o600)
-        rows.insert(0, {"id": rev_id, "ts": int(time.time() * 1000), "bytes": len(data)})
+        row = {"id": rev_id, "ts": int(time.time() * 1000), "bytes": len(data)}
+        if run_id:
+            row["run"] = run_id
+        rows.insert(0, row)
         extra = rows[MAX_HISTORY_VERSIONS:]
         rows = rows[:MAX_HISTORY_VERSIONS]
         for old in extra:

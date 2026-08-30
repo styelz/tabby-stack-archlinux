@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -963,8 +964,36 @@ def execute_tool(
     user_text: str = "",
     protected: Optional[set[str]] = None,
     deletes_used: int = 0,
+    history_run: str = "",
 ) -> tuple[str, str]:
     """Run one tool. Returns (status_label, result_text)."""
+    token = workspace.push_history_run(history_run)
+    try:
+        return _execute_tool(
+            username,
+            chat_id,
+            name,
+            args,
+            agent,
+            user_text=user_text,
+            protected=protected,
+            deletes_used=deletes_used,
+        )
+    finally:
+        workspace.pop_history_run(token)
+
+
+def _execute_tool(
+    username: str,
+    chat_id: str,
+    name: str,
+    args: dict,
+    agent: str = "agent",
+    *,
+    user_text: str = "",
+    protected: Optional[set[str]] = None,
+    deletes_used: int = 0,
+) -> tuple[str, str]:
     kind = _kind(name)
     if normalize_agent(agent) != "agent" and kind in _MUTATE_KINDS:
         return "Tool error", _READONLY_REFUSE
@@ -1398,6 +1427,7 @@ async def iter_code_turns(
         if path and Path(path).suffix.lower() in workspace.CORE_KEEP_SUFFIXES:
             protected.add(path)
     deletes_used = 0
+    history_run = secrets.token_hex(8)
     working = data.model_copy(
         update={
             "stream": True,
@@ -1478,6 +1508,7 @@ async def iter_code_turns(
                     user_text=user_text,
                     protected=protected,
                     deletes_used=deletes_used,
+                    history_run=history_run,
                 )
             except (ValueError, FileNotFoundError, OSError) as exc:
                 label, result = "Tool error", str(exc)

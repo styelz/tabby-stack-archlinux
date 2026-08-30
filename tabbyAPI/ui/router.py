@@ -442,9 +442,16 @@ async def ui_workspace_tool(chat_id: str, request: Request, _user: str = Depends
         args = {}
     agent = normalize_agent(body.get("agent"))
     user_text = str(body.get("user_text") or "")
+    history_run = str(body.get("history_run") or "")
     try:
         label, result = execute_tool(
-            _user, cid, name, args, agent=agent, user_text=user_text
+            _user,
+            cid,
+            name,
+            args,
+            agent=agent,
+            user_text=user_text,
+            history_run=history_run,
         )
     except (ValueError, FileNotFoundError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
