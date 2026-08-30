@@ -43,7 +43,13 @@ from endpoints.OAI.utils.tools import (
     parse_toolcalls,
 )
 from endpoints.OAI.utils.common_ import aggregate_usage_stats, get_usage_stats
-from common.noop_edits import MAX_RETRIES, NOOP_EDIT_HINT, split_noop_tool_dumps
+from common.noop_edits import (
+    MAX_RETRIES,
+    NOOP_EDIT_HINT,
+    NOOP_EDIT_HINT_LAST,
+    NOOP_EMPTY_REPLY,
+    split_noop_tool_dumps,
+)
 
 
 def _start_in_reasoning_mode(prompt: str, user_suffix_len: int = 0) -> bool:
@@ -786,6 +792,14 @@ async def _chat_stream_collector(
                     elif finish_reason and full_tool:
                         generation["delta_tool_calls"] = parsed_tools
                         generation["finish_reason"] = "tool_calls"
+                    elif (
+                        finish_reason
+                        and attempt > 0
+                        and not parsed_tools
+                        and not (full_content or "").strip()
+                    ):
+                        generation["delta_content"] = NOOP_EMPTY_REPLY
+                        full_content = NOOP_EMPTY_REPLY
                     await gen_queue.put(generation)
 
                 if finish_reason:
@@ -796,13 +810,25 @@ async def _chat_stream_collector(
                     f"No-op file edit in request {request_id}; regenerating "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})"
                 )
-                current_prompt = current_prompt + raw_out + NOOP_EDIT_HINT
+                hint = (
+                    NOOP_EDIT_HINT_LAST
+                    if attempt + 1 >= MAX_RETRIES
+                    else NOOP_EDIT_HINT
+                )
+                current_prompt = current_prompt + raw_out + hint
                 in_reasoning = False
                 continue
             break
 
         if not streaming_mode:
             has_content = bool(full_content.strip())
+            if (
+                not has_content
+                and not parsed_tools
+                and attempt > 0
+            ):
+                full_content = NOOP_EMPTY_REPLY
+                has_content = True
             if has_content and len(collected_logprobs):
                 generation["logprob_response"] = ChatCompletionLogprobs(
                     content=collected_logprobs

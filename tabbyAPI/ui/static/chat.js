@@ -8008,6 +8008,7 @@ function mountChat(root) {
   // transient live status ("Rendering image 2 of 3", "Writing index.html").
   const SETTLED_LABEL = /^(Generated|Replied|Thought|Restarted|Stopped|Loaded |Still loading$)/;
   const STOPPED_NOTE = "Generation stopped.";
+  const EMPTY_REPLY_NOTE = "(empty reply)";
 
   function settledLabel({ kind, target, reasoning, answer }) {
     if (kind === "image") return looksLikeImageReply(answer) ? "Generated" : "Replied";
@@ -8383,7 +8384,7 @@ function mountChat(root) {
         } else if (wasStopped) {
           showStoppedNote();
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
-          showAnswer(TabbyUI.renderMarkdown("(empty reply)"));
+          showAnswer(TabbyUI.renderMarkdown(EMPTY_REPLY_NOTE), EMPTY_REPLY_NOTE);
         }
         if (!alreadySettled) {
           settleThought(seconds);
@@ -10287,7 +10288,8 @@ function mountChat(root) {
     let savedSteps = [];
     const emptyReply = !String(assembled || "").trim() && !reasoning;
     const steerEmpty = stopKind === "steer" && emptyReply;
-    if ((resume || networkTries) && !stopKind && emptyReply) {
+    const resumeEmpty = Boolean((resume || networkTries) && !stopKind && emptyReply);
+    if (resumeEmpty) {
       working.discard();
       await refreshChatFromServer(chatId);
     } else if (steerEmpty) {
@@ -10299,8 +10301,13 @@ function mountChat(root) {
       if (done && done.status_label) statusLabel = done.status_label;
       if (done && Array.isArray(done.steps)) savedSteps = done.steps;
     }
-    if (String(assembled || "").trim() || reasoning || userStopped || savedSteps.length) {
-      const item = { role: "assistant", content: assembled, createdAt: Date.now() };
+    const persistEmpty = emptyReply && !userStopped && !steerEmpty && !resumeEmpty;
+    if (String(assembled || "").trim() || reasoning || userStopped || savedSteps.length || persistEmpty) {
+      const item = {
+        role: "assistant",
+        content: assembled || (persistEmpty ? EMPTY_REPLY_NOTE : ""),
+        createdAt: Date.now(),
+      };
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
       if (userStopped) item.status_label = "Stopped";
@@ -10319,7 +10326,7 @@ function mountChat(root) {
       }
       const last = messages.length ? messages[messages.length - 1] : null;
       const already = Boolean(
-        last && last.role === "assistant" && String(last.content || "") === assembled
+        last && last.role === "assistant" && String(last.content || "") === item.content
       );
       if (!already) appendAssistantToChat(chatId, item);
       if (store.activeId === chatId && working.node && working.node.isConnected) {
@@ -10327,7 +10334,7 @@ function mountChat(root) {
           working.node,
           "assistant",
           messages.length - 1,
-          assembled || (userStopped ? STOPPED_NOTE : "")
+          item.content || (userStopped ? STOPPED_NOTE : "")
         );
         attachPlanBuild(working.node, messages.length - 1);
         paintPlanChecklist();

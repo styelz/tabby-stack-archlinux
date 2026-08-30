@@ -19,6 +19,18 @@ NOOP_EDIT_HINT = (
     "edit tool again: new_string must differ from old_string and must implement "
     "the requested change.\n"
 )
+NOOP_EDIT_HINT_LAST = (
+    "\n[Anti-noop] That file edit would apply 0 changes. "
+    "If you can make a real edit, call the tool now (new_string must differ). "
+    "Otherwise reply in one short sentence: say you need to Read the file, "
+    "or ask for the exact change. Do not emit another identical edit.\n"
+)
+NOOP_EMPTY_REPLY = (
+    "That file edit would not have changed anything "
+    "(the old text already matched the new text). "
+    "I stopped instead of applying a no-op. "
+    "Send the change again, or ask me to read the file first."
+)
 HINT_MARK = "[Anti-noop]"
 MAX_RETRIES = 2
 
@@ -156,6 +168,8 @@ def tool_result_is_zero_change(content) -> bool:
 
 # Names used by chat_completion / agent_loop
 NOOP_EDIT_HINT = NOOP_EDIT_HINT
+NOOP_EDIT_HINT_LAST = NOOP_EDIT_HINT_LAST
+NOOP_EMPTY_REPLY = NOOP_EMPTY_REPLY
 MAX_RETRIES = MAX_RETRIES
 HINT_MARK = HINT_MARK
 split_noop_tool_dumps = split_noop_tool_dumps
