@@ -1001,7 +1001,11 @@ def _load_history_index(folder: Path) -> dict[str, list[dict[str, Any]]]:
                 nbytes = int(row.get("bytes") or 0)
             except (TypeError, ValueError):
                 continue
-            clean.append({"id": rev_id, "ts": ts, "bytes": max(0, nbytes)})
+            item = {"id": rev_id, "ts": ts, "bytes": max(0, nbytes)}
+            run_id = _clean_history_run(row.get("run"))
+            if run_id:
+                item["run"] = run_id
+            clean.append(item)
         if clean:
             out[key] = clean
     return out
