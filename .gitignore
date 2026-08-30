@@ -11,6 +11,8 @@ AppData/
 
 # update.sh moves copy-to-live tracked files here so origin can fast-forward
 .tabby-update-backup/
+# Written on the running install so git hooks can refuse commit/push
+.live-install
 
 # Editor and OS junk
 .DS_Store

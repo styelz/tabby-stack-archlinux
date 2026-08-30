@@ -281,6 +281,42 @@ if ! need_cmd git; then
   die "git is not installed. On Arch: sudo pacman -S git"
 fi
 
+# Live checkout only. A separate git source tree must stay commitable.
+install_live_git_hooks() {
+  local dir="${1:-$DEST}"
+  local hook_src="$dir/scripts/refuse-live-git.sh"
+  local hook
+  [[ -d "$dir/.git" ]] || return 0
+  if [[ "$dir" != "$HOME/tabby-stack" && ! -d "$dir/tabbyAPI/venv" ]]; then
+    return 0
+  fi
+  printf 'live\n' >"$dir/.live-install"
+  mkdir -p "$dir/.git/hooks"
+  if [[ -f "$hook_src" ]]; then
+    for hook in pre-commit pre-push; do
+      install -m 0755 "$hook_src" "$dir/.git/hooks/$hook"
+    done
+    return 0
+  fi
+  for hook in pre-commit pre-push; do
+    cat >"$dir/.git/hooks/$hook" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$root" ]] || exit 0
+if [[ -f "$root/.live-install" || "$root" == "${HOME}/tabby-stack" ]]; then
+  echo "Refuse: this is the live Tabby install (${root})." >&2
+  echo "Commit and push in the git source tree. Live only pulls origin/main." >&2
+  exit 1
+fi
+exit 0
+HOOK
+    chmod 0755 "$dir/.git/hooks/$hook"
+  done
+}
+
+install_live_git_hooks "$DEST"
+
 ask_update_kind() {
   if [[ -n "$UPDATE_KIND" ]]; then
     return
@@ -856,6 +892,7 @@ BEFORE_UPDATE_SH="$(hash_ignore_cr <"$DEST/update.sh")"
 if [[ -d "$DEST/.git" ]]; then
   ensure_stack_origin
   ff_pull "$DEST" "tabby-stack" 20 70
+  install_live_git_hooks "$DEST"
 else
   progress 15 "Bootstrapping git from origin"
   run_git git -C "$DEST" init
@@ -868,6 +905,7 @@ else
     progress 70 "Resetting tracked paths to origin/$branch"
     run_git git -C "$DEST" reset --hard "origin/$branch"
   fi
+  install_live_git_hooks "$DEST"
 fi
 
 if [[ "$UPDATE_COMFY" -eq 1 ]]; then
