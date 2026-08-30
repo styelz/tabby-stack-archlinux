@@ -519,6 +519,7 @@ function mountChat(root) {
     ".php", ".toml", ".ini", ".conf",
   ]);
   const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+  const PREVIEW_MIN_BYTES = 50_000;
   const BINARY_SUFFIXES = new Set([
     ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar", ".pdf", ".doc", ".docx",
     ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".dll", ".so", ".dylib", ".wasm",
@@ -2186,7 +2187,10 @@ function mountChat(root) {
         item.draggable = !missing;
         item.style.setProperty("--depth", String(depth));
         const action = isDir ? "toggle" : "open";
-        const size = missing ? "deleted" : !isDir && row ? TabbyUI.formatBytes(row.size) : "";
+        const rasterStub = !isDir && !missing && row
+          && IMAGE_SUFFIXES.has(fileSuffix(node.path))
+          && (Number(row.size) || 0) < PREVIEW_MIN_BYTES;
+        const size = missing ? "deleted" : rasterStub ? "pending" : !isDir && row ? TabbyUI.formatBytes(row.size) : "";
         item.innerHTML =
           `<button type="button" class="chat-file-open" data-file="${action}" title="${TabbyUI.escapeHtml(node.path)}"${
             isDir ? ` aria-expanded="${expanded ? "true" : "false"}"` : ""
@@ -6302,6 +6306,29 @@ function mountChat(root) {
     return true;
   }
 
+  function isRasterPath(path) {
+    return IMAGE_SUFFIXES.has(fileSuffix(path));
+  }
+
+  function listingRasterReady(path) {
+    const clean = String(path || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
+    if (!clean) return false;
+    const lower = clean.toLowerCase();
+    const base = lower.split("/").pop();
+    const row = filesListing.find((item) => {
+      const have = String((item && item.path) || "").replace(/\\/g, "/").toLowerCase();
+      if (!have || item.missing || item.kind === "dir") return false;
+      return have === lower || (base && (have.split("/").pop() || "") === base);
+    });
+    return Boolean(row && (Number(row.size) || 0) >= PREVIEW_MIN_BYTES);
+  }
+
+  function assetItemRasterReady(item) {
+    const text = String((item && item.text) || "");
+    const paths = text.match(/[\w./-]+\.(?:png|jpe?g|webp|gif)\b/gi) || [];
+    return paths.some((path) => listingRasterReady(path));
+  }
+
   function advanceChecklistFromTool(step, chatId) {
     if (!planChecklistBuilding) return;
     const label = String((step && step.label) || "");
@@ -6312,13 +6339,16 @@ function mountChat(root) {
     const items = found.item.checklist;
     const needles = checklistPathNeedles(step);
     if (!needles.length) return;
+    if (needles.some((needle) => isRasterPath(needle))) return;
     let idx = items.findIndex((item) => item.status !== "completed" && itemMentionsPath(item, needles));
     if (idx < 0) {
       idx = items.findIndex((item) => item.status === "in-progress");
       if (idx < 0) idx = items.findIndex((item) => item.status === "pending");
       if (idx < 0 || !itemMentionsPath(items[idx], needles)) return;
     }
+    if (isAssetChecklistItem(items[idx])) return;
     for (let i = 0; i < idx; i += 1) {
+      if (isAssetChecklistItem(items[i])) continue;
       if (items[i].status !== "completed") items[i].status = "completed";
     }
     completeChecklistAt(chatId, idx);
@@ -6416,7 +6446,7 @@ function mountChat(root) {
     assets.forEach((row, offset) => {
       if (offset < currentAsset) row.item.status = "completed";
       else if (offset === currentAsset) row.item.status = "in-progress";
-      else if (row.item.status === "in-progress") row.item.status = "pending";
+      else row.item.status = "pending";
     });
     let seenCurrent = false;
     items.forEach((item) => {
@@ -6447,6 +6477,7 @@ function mountChat(root) {
         });
       }
       if (idx < 0 || items[idx].status === "completed") continue;
+      if (isAssetChecklistItem(items[idx]) && !assetItemRasterReady(items[idx])) continue;
       items[idx].status = "completed";
       changed = true;
     }

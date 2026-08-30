@@ -784,8 +784,8 @@ def _code_reply(data: ChatCompletionRequest, job, code_response):
     content = _stamp_job_content(getattr(message, "content", None), job)
     if content == f"{JOB_MARK} {job.id}":
         content = (
-            f"{content}\nWrite the page now. Images are rendering on the GPU; "
-            "the next reply is the download curl."
+            f"{content}\nWrite the page now. The GPU will render the images "
+            "after these files are written."
         )
     calls = _tool_call_pairs(message)
     if calls:

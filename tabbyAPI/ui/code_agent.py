@@ -129,6 +129,10 @@ _LAYOUT_SRC_REFUSE = (
     "This turn is a layout fix. Do not change image paths. Use StrReplace "
     "only on CSS position or alignment rules."
 )
+_RASTER_WRITE_REFUSE = (
+    "Do not Write PNG, JPEG, WebP, or GIF dest files. Point img src at the "
+    "planned path; the GPU will save that file after the page is written."
+)
 _PAGE_EDIT_SUFFIXES = frozenset({".html", ".htm", ".css", ".js", ".mjs"})
 _IMAGE_IN_TEXT = re.compile(
     r"(?i)[\w./-]+\.(?:png|jpe?g|webp|gif)\b"
@@ -1070,6 +1074,8 @@ def _execute_tool(
     if not rel:
         return "Tool error", "path is required"
     if kind == "write":
+        if Path(rel).suffix.lower() in workspace.IMAGE_SUFFIXES:
+            return "Tool error", _RASTER_WRITE_REFUSE
         if (
             is_layout_fix_prompt(user_text)
             and Path(rel).suffix.lower() in _PAGE_EDIT_SUFFIXES
