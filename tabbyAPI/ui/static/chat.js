@@ -4312,22 +4312,44 @@ function mountChat(root) {
     revertTabAt(tab.path);
   }
 
+  function showPreviewFromMint(minted, opts) {
+    opts = opts || {};
+    const spec = {
+      path: minted.path || "",
+      url: minted.href,
+      title: fileBase(minted.path || ""),
+    };
+    previewOpen = true;
+    ensurePreviewTab();
+    if (previewPane) previewPane.hidden = false;
+    if (opts.newTab && browserTabs.length) addBrowserTab(spec);
+    else if (!browserTabs.length) addBrowserTab(spec);
+    else loadBrowserTab(activeBrowserTabRow(), spec);
+    if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
+    paintTabsAndFiles();
+  }
+
   async function openSite() {
-    const row = selectedRow();
-    const wanted = row && row.page ? row.path : "";
+    const wanted = previewPagePath();
     if (!filesEntry && !wanted) return;
     const chatId = activeWorkspaceId();
-    // Open the tab on the click itself; a tab opened after the await is a popup.
-    const tab = window.open("about:blank", "_blank");
+    // Prefer a known preview URL so the new tab can load on this click.
+    // about:blank is the fallback when the token is not minted yet.
+    const known = wanted ? hrefFromPreviewPath(wanted) : "";
+    const tab = window.open(known || "about:blank", "_blank");
     try {
-      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/preview`, {
-        method: "POST",
-        body: { path: wanted },
-      });
-      // about:blank resolves relative URLs against itself, so hand it an absolute one.
-      const url = new URL(TabbyUI.path(data.url), window.location.href).href;
-      if (tab) tab.location.replace(url);
-      else addBubble("assistant", `Error: Allow pop-ups for this site, or open ${url} yourself.`);
+      const minted = known
+        ? { href: known, path: wanted }
+        : await mintPreview(wanted);
+      if (chatId !== activeWorkspaceId()) {
+        if (tab) tab.close();
+        return;
+      }
+      if (tab) {
+        if (!known) tab.location.replace(minted.href);
+        return;
+      }
+      showPreviewFromMint(minted);
     } catch (err) {
       if (tab) tab.close();
       addBubble("assistant", `Error: ${err.message}`);
@@ -4828,15 +4850,7 @@ function mountChat(root) {
     try {
       const minted = await mintPreview(wanted);
       if (chatId !== activeWorkspaceId()) return;
-      const spec = { path: minted.path, url: minted.href, title: fileBase(minted.path) };
-      previewOpen = true;
-      ensurePreviewTab();
-      if (previewPane) previewPane.hidden = false;
-      if (opts.newTab && browserTabs.length) addBrowserTab(spec);
-      else if (!browserTabs.length) addBrowserTab(spec);
-      else loadBrowserTab(activeBrowserTabRow(), spec);
-      if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
-      paintTabsAndFiles();
+      showPreviewFromMint(minted, opts);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
