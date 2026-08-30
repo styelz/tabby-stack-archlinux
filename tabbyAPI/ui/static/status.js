@@ -268,10 +268,18 @@ function mountStatus(root) {
       : "No samples yet";
   }
 
+  let metricsGen = 0;
   async function refreshMetrics() {
-    const data = await TabbyUI.api(`metrics?${metricsQuery()}&max_points=720`);
-    paintCharts(data);
-    return data;
+    const gen = ++metricsGen;
+    try {
+      const data = await TabbyUI.api(`metrics?${metricsQuery()}&max_points=720`);
+      if (gen !== metricsGen) return data;
+      paintCharts(data);
+      return data;
+    } catch (err) {
+      if (gen !== metricsGen) return;
+      throw err;
+    }
   }
 
   async function refresh() {

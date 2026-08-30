@@ -465,6 +465,8 @@ function mountChat(root) {
   const ASK_PLACEHOLDER = "Ask about the project. Files will not be changed.";
   const PLAN_PLACEHOLDER = "Describe what to plan. Review it, then click Build to implement.";
   const BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation.";
+  const AGENT_EMPTY_NUDGE =
+    "Continue. You stopped without changing files. Apply the user's last request now with Write or StrReplace, then give a short summary. Do not generate images unless they asked.";
   const AGENT_KEY = "tabby-ui-code-agent";
   let livePlanChecklist = null;
   let planChecklistOpen = true;
@@ -1277,6 +1279,34 @@ function mountChat(root) {
   let persistTail = Promise.resolve();
   let persistGen = 0;
 
+  function writeLegacyBackup() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    } catch {
+      /* ignore quota */
+    }
+  }
+
+  function mergeChatStores(server, local) {
+    const base = normalizeStore(server);
+    const extra = normalizeStore(local);
+    const byId = new Map((base.chats || []).map((chat) => [chat.id, chat]));
+    (extra.chats || []).forEach((chat) => {
+      if (!chat || !chat.id) return;
+      if (!hasUserTurn(chat) && !isWorkspaceRoot(chat)) return;
+      const existing = byId.get(chat.id);
+      if (!existing || (chat.updatedAt || 0) > (existing.updatedAt || 0)) {
+        byId.set(chat.id, chat);
+      }
+    });
+    return normalizeStore({
+      version: 1,
+      activeId: base.activeId || extra.activeId,
+      chats: [...byId.values()],
+      lastByMode: { ...(extra.lastByMode || {}), ...(base.lastByMode || {}) },
+    });
+  }
+
   function persist() {
     rememberActiveMode();
     const chat = activeChat();
@@ -1332,9 +1362,13 @@ function mountChat(root) {
     persistTail = persistTail
       .then(() => {
         if (gen !== persistGen) return;
-        return TabbyUI.api("chats", { method: "PUT", body: store });
+        return TabbyUI.api("chats", { method: "PUT", body: store }).then(() => {
+          writeLegacyBackup();
+        });
       })
-      .catch(() => {});
+      .catch(() => {
+        writeLegacyBackup();
+      });
     return persistTail;
   }
 
@@ -6102,7 +6136,7 @@ function mountChat(root) {
     if (livePlanChecklist && livePlanChecklist.chatId === store.activeId && livePlanChecklist.items.length) {
       return livePlanChecklist.items;
     }
-    const plan = latestPlanMessage();
+    const plan = latestPlanMessage(liveMessages(store.activeId));
     if (plan && Array.isArray(plan.checklist) && plan.checklist.length) return plan.checklist;
     if (plan) {
       return parsePlanChecklist(plan.content).map((text) => ({ text, status: "pending" }));
@@ -6115,7 +6149,14 @@ function mountChat(root) {
     const items = visibleChecklistItems();
     const show = activeMode() === "code" && items.length > 0;
     todoListEl.hidden = !show;
-    if (!show) return;
+    if (!show) {
+      if (todoItemsEl) todoItemsEl.replaceChildren();
+      if (todoBuildBtn) {
+        todoBuildBtn.hidden = true;
+        todoBuildBtn.disabled = true;
+      }
+      return;
+    }
     const done = items.filter((item) => item.status === "completed").length;
     const current = items.find((item) => item.status === "in-progress");
     const building = planChecklistBuilding && flightChatId === store.activeId;
@@ -7955,9 +7996,17 @@ function mountChat(root) {
     return row;
   }
 
-  function activityFromPrompt(text) {
+  function activityFromPrompt(text, agent) {
     const raw = String(text || "").trim();
     const lower = raw.toLowerCase();
+    const promptAgent = normalizeAgent(agent);
+    if (promptAgent === "ask" || promptAgent === "plan") {
+      return {
+        label: promptAgent === "plan" ? "Planning" : "Thinking",
+        kind: "chat",
+        processing: true,
+      };
+    }
     if (/^restart$/i.test(lower) || lower === "/restart") {
       return { label: "Restarting", kind: "restart", processing: true, target: "restart" };
     }
@@ -8243,7 +8292,11 @@ function mountChat(root) {
         row.className = kind === "said" ? "agent-step agent-step-said" : "agent-step agent-step-thought";
         const body = document.createElement("div");
         body.className = "agent-step-said-body";
-        body.innerHTML = TabbyUI.renderMarkdown(String((step && step.content) || ""));
+        const stepText = String((step && step.content) || "");
+        const cleaned = TabbyUI.formatAssistantContent
+          ? TabbyUI.formatAssistantContent(stepText)
+          : stepText;
+        body.innerHTML = TabbyUI.renderMarkdown(cleaned);
         row.appendChild(body);
         return row;
       }
@@ -8868,6 +8921,7 @@ function mountChat(root) {
       const chat = addCodeWorkspace();
       store.activeId = chat.id;
       messages = cloneMessages(chat.messages);
+      if (livePlanChecklist && livePlanChecklist.chatId !== chat.id) livePlanChecklist = null;
       persist();
       resetRecall();
       renderLog();
@@ -10011,6 +10065,39 @@ function mountChat(root) {
     persist();
   }
 
+  function lastAssistantAfterLastUser(chatId) {
+    const chat = store.chats.find((item) => item.id === chatId);
+    const list = chat && Array.isArray(chat.messages) ? chat.messages : liveMessages(chatId);
+    let lastUser = -1;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i] && list[i].role === "user" && !list[i].hidden) {
+        lastUser = i;
+        break;
+      }
+    }
+    for (let i = list.length - 1; i > lastUser; i -= 1) {
+      const item = list[i];
+      if (item && item.role === "assistant") return String(item.content || "");
+    }
+    return "";
+  }
+
+  async function pollImageHoldReply(chatId, working) {
+    const deadline = Date.now() + 8 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (stopKind === "stop") return "";
+      await sleep(2000);
+      if (stopKind === "stop") return "";
+      await refreshChatFromServer(chatId);
+      const content = lastAssistantAfterLastUser(chatId);
+      if (looksLikeImageReply(content) || /^\s*Error:/i.test(content)) {
+        if (working && working.setAnswer) working.setAnswer(content);
+        return content;
+      }
+    }
+    return "";
+  }
+
   async function refreshChatFromServer(chatId) {
     try {
       const incoming = await TabbyUI.api("chats");
@@ -10193,7 +10280,7 @@ function mountChat(root) {
         kind: (opts && opts.kind) || "chat",
         processing: (opts && opts.kind) === "image",
       }
-      : activityFromPrompt(outboundText);
+      : activityFromPrompt(outboundText, sendAgent);
     const working = addWorkingReply(activity);
     flightWorking = working;
     const poll = startStatusPoll(working, activity.kind);
@@ -10209,6 +10296,7 @@ function mountChat(root) {
     let networkTries = 0;
     let toolRounds = 0;
     let toolCalls = [];
+    let agentEmptyNudges = 0;
     await persist();
     agentTurn:
     while (true) {
@@ -10293,6 +10381,10 @@ function mountChat(root) {
               break;
             }
             buf = consumeSseBuffer(buf, (event) => {
+              if (event.comment) {
+                const held = String(event.comment).match(/tabby-image-job:\s*([0-9a-fA-F-]{8,})/);
+                if (held) working.heldJobId = held[1];
+              }
               if (event.usage) applyUsage(event.usage, chatId);
               if (event.comment && event.comment.includes("tabby-context-usage:")) {
                 const raw = String(event.comment)
@@ -10481,15 +10573,42 @@ function mountChat(root) {
         assembled = "Stopped after 64 tool rounds. Send another message to continue.";
       }
     }
+    if (
+      sendAgent === "agent"
+      && !stopKind
+      && !visibleAnswerText(assembled)
+      && agentEmptyNudges < 1
+    ) {
+      agentEmptyNudges += 1;
+      liveMessages(chatId).push({
+        role: "user",
+        content: AGENT_EMPTY_NUDGE,
+        hidden: true,
+        createdAt: Date.now(),
+      });
+      persist();
+      streamResume = false;
+      assembled = "";
+      reasoning = "";
+      toolCalls = [];
+      networkTries = 0;
+      if (working.resetLive) working.resetLive();
+      working.setActivity("Continuing", { processing: true });
+      continue;
+    }
     break;
     }
     if (TabbyUI.looksLikeHtml && TabbyUI.looksLikeHtml(assembled)) {
       assembled = "";
       activity.kind = "restart";
     }
-    poll.stop();
-    hideStackQueue();
     const userStopped = stopKind === "stop";
+    const imageHoldOpen =
+      !userStopped
+      && (activity.kind === "image" || Boolean(working.heldJobId))
+      && !looksLikeImageReply(assembled);
+    if (!imageHoldOpen) poll.stop();
+    hideStackQueue();
     if (planChecklistBuilding && (userStopped || looksLikeImageReply(assembled))) {
       finishChecklistBuild({ chatId, stopped: userStopped });
     }
@@ -10497,15 +10616,29 @@ function mountChat(root) {
     if (waitingOnModel) {
       await ensureModelWait(working, activity);
     }
+    if (imageHoldOpen) {
+      const recovered = await pollImageHoldReply(chatId, working);
+      if (recovered) assembled = recovered;
+      poll.stop();
+    }
     let savedSteps = [];
     const emptyReply = !String(assembled || "").trim() && !reasoning;
     const steerEmpty = stopKind === "steer" && emptyReply;
     const resumeEmpty = Boolean((resume || networkTries) && !stopKind && emptyReply);
+    const imageHoldEmpty =
+      !userStopped
+      && (activity.kind === "image" || Boolean(working.heldJobId))
+      && !looksLikeImageReply(assembled);
     if (resumeEmpty) {
       working.discard();
       await refreshChatFromServer(chatId);
     } else if (steerEmpty) {
       working.discard();
+    } else if (imageHoldEmpty) {
+      /* keep the working turn; do not persist (empty reply) */
+    } else if (imageHoldOpen && looksLikeImageReply(assembled)) {
+      working.discard();
+      await refreshChatFromServer(chatId);
     } else {
       const done = working.finish({ content: assembled, reasoning, stopped: userStopped });
       if (done && done.reasoning) reasoning = done.reasoning;
@@ -10514,7 +10647,7 @@ function mountChat(root) {
       if (done && Array.isArray(done.steps)) savedSteps = done.steps;
       if (done && done.model) replyModel = done.model;
     }
-    const persistEmpty = emptyReply && !userStopped && !steerEmpty && !resumeEmpty;
+    const persistEmpty = emptyReply && !userStopped && !steerEmpty && !resumeEmpty && !imageHoldEmpty;
     if (String(assembled || "").trim() || reasoning || userStopped || savedSteps.length || persistEmpty) {
       const item = {
         role: "assistant",
@@ -11488,7 +11621,7 @@ function mountChat(root) {
   });
   root.querySelector("#chat-mode").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-mode]");
-    if (!btn || modelLoading) return;
+    if (!btn) return;
     setChatMode(btn.dataset.mode);
   });
   if (agentBtn && agentMenu) {
@@ -12222,12 +12355,20 @@ function mountChat(root) {
     const chatId = String(queue.chat_id || "").trim();
     if (chatId) {
       const exists = store.chats.some((item) => item.id === chatId);
+      const target = store.chats.find((item) => item.id === chatId);
+      const mine = Boolean(queue.mine);
+      const kind = String(queue.kind || "chat") === "code" ? "code" : "chat";
+      const modeMatch = Boolean(target && chatMode(target) === activeMode());
+      const sameWs = chatsShareWorkspace(chatId);
+      // Occupancy in another mode (Chat image while Code is open) must
+      // wait in place. Switching would drop the workspace and persist a wipe.
       if (exists) {
-        if (store.activeId !== chatId) loadChat(chatId, true);
-      } else {
-        const mode = queue.kind === "code" ? "code" : "chat";
-        const parent = mode === "code" ? activeWorkspaceId() : "";
-        const chat = emptyChat(mode, parent);
+        if (store.activeId !== chatId && (sameWs || (mine && modeMatch))) {
+          loadChat(chatId, true);
+        }
+      } else if (mine && kind === activeMode()) {
+        const parent = kind === "code" ? activeWorkspaceId() : "";
+        const chat = emptyChat(kind, parent);
         chat.id = chatId;
         store.chats.unshift(chat);
         store.activeId = chatId;
@@ -12260,16 +12401,14 @@ function mountChat(root) {
       incoming = null;
     }
     const serverEmpty = !incoming || !Array.isArray(incoming.chats) || !incoming.chats.some(hasUserTurn);
+    const legacy = readStore();
     if (serverEmpty) {
-      const legacy = readStore();
       if (legacy.chats.some(hasUserTurn)) incoming = legacy;
-    }
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* ignore */
+    } else if (legacy.chats.some((chat) => hasUserTurn(chat) || isWorkspaceRoot(chat))) {
+      incoming = mergeChatStores(incoming, legacy);
     }
     store = normalizeStore(incoming);
+    writeLegacyBackup();
     restorePersistedListings();
     messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
     persistReady = true;

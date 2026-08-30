@@ -366,6 +366,7 @@ function mountGallery(root) {
     errorEl.textContent = message || "";
   }
   let page = 1;
+  let loadGen = 0;
   let lastIndex = 0;
   let boxes = [];
   let kept = new Set();
@@ -437,40 +438,48 @@ function mountGallery(root) {
   });
 
   async function load(nextPage, extraNames) {
+    const gen = ++loadGen;
     snapshot();
     (extraNames || []).forEach((name) => name && kept.add(name));
     const target = nextPage || 1;
     if (target !== page) lastIndex = 0;
     page = target;
     showError("");
-    const data = await TabbyUI.api(`gallery/list?page=${page}&per_page=24`);
-    if (!Array.isArray(data.items) || !data.items.length) {
-      grid.innerHTML = "<p class='muted'>No images yet. Upload a photo or generate one in Chat.</p>";
-      pager.innerHTML = "";
-      boxes = [];
+    try {
+      const data = await TabbyUI.api(`gallery/list?page=${page}&per_page=24`);
+      if (gen !== loadGen) return;
+      if (!Array.isArray(data.items) || !data.items.length) {
+        grid.innerHTML = "<p class='muted'>No images yet. Upload a photo or generate one in Chat.</p>";
+        pager.innerHTML = "";
+        boxes = [];
+        paint();
+        return;
+      }
+      grid.innerHTML = data.items
+        .map((item, index) => galleryFigureHtml(item, index))
+        .join("");
+      bindBoxes();
+      restore();
+      const links = [];
+      for (let n = 1; n <= data.pages; n += 1) {
+        links.push(
+          n === data.page
+            ? `<span class="btn is-current" aria-current="page">${n}</span>`
+            : `<button type="button" class="btn" data-page="${n}">${n}</button>`
+        );
+      }
+      pager.innerHTML = `Page ${data.page} / ${data.pages} · ${data.total} images ` + links.join("");
+      pager.querySelectorAll("button[data-page]").forEach((btn) => {
+        btn.addEventListener("click", () => load(Number(btn.dataset.page)));
+      });
       paint();
-      return;
+      showError("");
+    } catch (err) {
+      if (gen !== loadGen) return;
+      showError(err.message);
+      throw err;
     }
-    grid.innerHTML = data.items
-      .map((item, index) => galleryFigureHtml(item, index))
-      .join("");
-    bindBoxes();
-    restore();
-    const links = [];
-    for (let n = 1; n <= data.pages; n += 1) {
-      links.push(
-        n === data.page
-          ? `<span class="btn is-current" aria-current="page">${n}</span>`
-          : `<button type="button" class="btn" data-page="${n}">${n}</button>`
-      );
-    }
-    pager.innerHTML = `Page ${data.page} / ${data.pages} · ${data.total} images ` + links.join("");
-    pager.querySelectorAll("button[data-page]").forEach((btn) => {
-      btn.addEventListener("click", () => load(Number(btn.dataset.page)));
-    });
-    paint();
   }
-
   function closeModal() {
     if (!modal.classList.contains("is-open")) return;
     modal.classList.remove("is-open");

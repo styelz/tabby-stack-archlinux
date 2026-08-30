@@ -45,13 +45,14 @@ class ConsoleImageChatTests(unittest.TestCase):
                 ) as hold,
             ):
                 result = await images_chat.handle(
-                    data, api_base="http://x", llm_ready=True, console=True
+                    data, api_base="http://x", llm_ready=True, console=True, chat_id="conv-1"
                 )
             write.assert_not_called()
             start.assert_awaited()
             hold.assert_awaited()
             self.assertTrue(hold.await_args.kwargs.get("console"))
             self.assertFalse(hold.await_args.kwargs.get("mixed"))
+            self.assertEqual(start.await_args.kwargs.get("chat_id"), "conv-1")
             self.assertEqual(result, "held")
 
         asyncio.run(go())
@@ -241,12 +242,14 @@ class ConsoleImageReplyTests(unittest.TestCase):
                     source_image=source,
                     llm_ready=True,
                     console=True,
+                    chat_id="conv-1",
                 )
             classify.assert_not_called()
             start.assert_awaited()
             kwargs = start.await_args.kwargs
             self.assertEqual(Path(kwargs.get("source_image")), source)
             self.assertEqual(kwargs.get("denoise"), 0.85)
+            self.assertEqual(kwargs.get("chat_id"), "conv-1")
             self.assertIn("no white border", start.await_args.args[0])
             hold.assert_awaited()
             self.assertTrue(hold.await_args.kwargs.get("console"))

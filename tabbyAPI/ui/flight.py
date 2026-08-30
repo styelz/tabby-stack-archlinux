@@ -227,7 +227,10 @@ def register_flight(flight: ConsoleFlight) -> ConsoleFlight:
     previous = _FLIGHTS.get(flight.username)
     _FLIGHTS[flight.username] = flight
     if previous is not None and previous is not flight and not previous.done:
-        previous.abort_event.set()
+        prev_id = str(getattr(previous, "chat_id", "") or "")
+        next_id = str(getattr(flight, "chat_id", "") or "")
+        if not prev_id or not next_id or prev_id == next_id:
+            previous.abort_event.set()
     return flight
 
 

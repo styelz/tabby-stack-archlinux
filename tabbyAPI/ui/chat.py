@@ -282,6 +282,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
 
     workspace_id = str(payload.get("chat_id") or "") if code else ""
     conversation_id = str(payload.get("conversation_id") or "").strip()
+    handle_chat_id = workspace_id or conversation_id
     agent = str(payload.get("agent") or "agent") if code else "agent"
     data = completion_request_from_payload(payload)
     # Every pasted image is written to disk, but only one attached on this turn
@@ -307,7 +308,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
                 request,
                 data,
                 username,
-                workspace_id,
+                handle_chat_id,
                 code,
                 saved_images,
                 api_base,
@@ -328,7 +329,7 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
             request,
             data,
             username,
-            workspace_id,
+            handle_chat_id,
             code,
             saved_images,
             api_base,

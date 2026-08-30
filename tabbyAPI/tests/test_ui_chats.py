@@ -170,8 +170,8 @@ class ChatStoreSaveWorkspaceTests(unittest.TestCase):
         loaded = chats.load_store("u")
         self.assertEqual([chat["id"] for chat in loaded["chats"]], ["w1"])
 
-    def test_dropping_workspace_root_deletes_files(self):
-        workspace.write_text("u", "w1", "index.html", "<p>hi</p>")
+    def test_stale_put_keeps_omitted_workspace_with_files(self):
+        workspace.write_text("u", "w1", "index.html", "<title>Cafe Night</title><p>hi</p>")
         chats.save_store(
             "u",
             {
@@ -179,14 +179,30 @@ class ChatStoreSaveWorkspaceTests(unittest.TestCase):
                     {
                         "id": "w1",
                         "mode": "code",
-                        "title": "App",
+                        "title": "Cafe",
                         "messages": [{"role": "user", "content": "x"}],
                     }
                 ]
             },
         )
-        chats.save_store("u", {"chats": []})
-        self.assertFalse(workspace.has_files("u", "w1"))
+        chats.save_store(
+            "u",
+            {
+                "chats": [
+                    {
+                        "id": "c1",
+                        "mode": "chat",
+                        "title": "Hi",
+                        "messages": [{"role": "user", "content": "y"}],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(workspace.read_text("u", "w1", "index.html"), "<title>Cafe Night</title><p>hi</p>")
+        loaded = chats.load_store("u")
+        ids = {chat["id"] for chat in loaded["chats"]}
+        self.assertIn("w1", ids)
+        self.assertIn("c1", ids)
 
 
 if __name__ == "__main__":

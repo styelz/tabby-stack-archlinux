@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
 import re
 import time
 from pathlib import Path
@@ -30,6 +31,7 @@ from images.paths import (
     image_download_command,
     image_download_note,
     job_id_from_text,
+    job_ids_from_text,
     living_download_pairs,
     planned_dest_fact_list,
     tool_result_has_pngs,
@@ -82,6 +84,7 @@ _CREATE_SITE_RE = re.compile(
 _PAGE_LOGO_RE = re.compile(r"(?is)\b(?:a\s+)?logo\b")
 _PAGE_HERO_RE = re.compile(r"(?is)\b(?:header|hero)\s+(?:photo|image|picture)s?\b")
 _SKIP_DEST_STEMS = frozenset({"image", "images", "generated", "generated.png"})
+_GALLERY_OUTPUT_STEM_RE = re.compile(r"^generated(?:-\d+){3}$")
 _APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
 _ASSETS_SECTION_RE = re.compile(
     r"(?im)^#{1,3}\s+assets\b[^\n]*\n(.*?)(?=^#{1,3}\s+|\Z)"
@@ -134,10 +137,16 @@ def _is_scratch_raster(path: str) -> bool:
     return clean == "scratch" or clean.startswith("scratch/")
 
 
+def _skip_dest_stem(stem: str) -> bool:
+    """Generic and gallery stamps are not workspace dests to generate."""
+    return stem in _SKIP_DEST_STEMS or bool(_GALLERY_OUTPUT_STEM_RE.match(stem))
+
+
 def _named_image_dests(text: str) -> list[str]:
     """Project dests the user named, such as images/logo or images/header."""
     found: list[str] = []
     seen: set[str] = set()
+    blob = _ATTACHED_PROJECT_IMAGE_RE.sub("", text or "")
 
     def add(dest: str) -> None:
         if dest in seen:
@@ -145,17 +154,16 @@ def _named_image_dests(text: str) -> list[str]:
         seen.add(dest)
         found.append(dest)
 
-    for match in _NAMED_DEST_RE.finditer(text or ""):
+    for match in _NAMED_DEST_RE.finditer(blob):
         raw = str(match.group(1) or "").strip(".-")
         stem = Path(raw).stem.lower().replace("_", "-").strip(".-")
-        if not stem or stem in _SKIP_DEST_STEMS:
+        if not stem or _skip_dest_stem(stem):
             continue
         if Path(raw).suffix:
             name = Path(raw).name
         else:
             name = f"{stem}.png"
         add(f"images/{name}")
-    blob = text or ""
     if _CREATE_SITE_RE.search(blob):
         if _PAGE_LOGO_RE.search(blob):
             add("images/logo.png")
@@ -211,6 +219,8 @@ def _upgrade_missing_named_dests(
     if plan.action == "generate" and plan.items:
         return plan
     named = list(dict.fromkeys(_named_image_dests(ask) + _plan_asset_dests(ask)))
+    if not named:
+        return plan
     missing = [
         dest
         for dest in named
@@ -309,7 +319,7 @@ def _last_assistant_text(data: ChatCompletionRequest) -> str:
 
 
 def _asset_section_blob(text: str) -> str:
-    blob = text or ""
+    blob = _ATTACHED_PROJECT_IMAGE_RE.sub("", text or "")
     match = _APPROVED_PLAN_RE.search(blob)
     if match:
         blob = match.group(1) or ""
@@ -329,7 +339,7 @@ def _plan_asset_rasters(text: str) -> list[str]:
     for raw in _ASSET_FILE_RE.findall(_asset_section_blob(text)):
         name = Path(str(raw).replace("\\", "/")).name
         stem = Path(name).stem.lower().replace("_", "-")
-        if not stem or stem in _SKIP_DEST_STEMS or stem in _SKIP_ASSET_STEMS:
+        if not stem or _skip_dest_stem(stem) or stem in _SKIP_ASSET_STEMS:
             continue
         if name.lower() in seen:
             continue
@@ -348,7 +358,7 @@ def _plan_asset_dests(text: str) -> list[str]:
             continue
         name = Path(path).name
         stem = Path(name).stem.lower().replace("_", "-")
-        if not stem or stem in _SKIP_DEST_STEMS or stem in _SKIP_ASSET_STEMS:
+        if not stem or _skip_dest_stem(stem) or stem in _SKIP_ASSET_STEMS:
             continue
         if name.lower() in seen:
             continue
@@ -486,7 +496,20 @@ def _history_blob(data: ChatCompletionRequest) -> str:
 
 
 def job_id_from_history(data: ChatCompletionRequest) -> str:
-    return job_id_from_text(_history_blob(data))
+    """Prefer a still-running stamp. The first done job in a long thread is stale."""
+    ids = job_ids_from_text(_history_blob(data))
+    last = ""
+    in_flight = ""
+    for job_id in ids:
+        last = job_id
+        job = get_mcp_image_job(job_id)
+        if job and str(getattr(job, "status", "") or "") in (
+            "coding",
+            "queued",
+            "running",
+        ):
+            in_flight = job_id
+    return in_flight or last or job_id_from_text(_history_blob(data))
 
 
 def _job_uses_curl(job) -> bool:
@@ -577,6 +600,10 @@ def _page_write_paths(message) -> list[str]:
 def _workspace_has_page_files(job) -> bool:
     owner = str(getattr(job, "owner", "") or "")
     chat_id = str(getattr(job, "chat_id", "") or "")
+    return _pages_on_disk(owner, chat_id)
+
+
+def _pages_on_disk(owner: str | None, chat_id: str | None) -> bool:
     if not owner or not chat_id:
         return False
     try:
@@ -592,34 +619,116 @@ def _workspace_has_page_files(job) -> bool:
     return False
 
 
+_LINKED_PAGE_RE = re.compile(
+    r"""(?i)(?:href|src)\s*=\s*["']([^"']+\.(?:css|js|mjs))["']"""
+)
+
+
+def _normalize_page_ref(html_path: str, ref: str) -> str:
+    raw = str(ref or "").strip().split("#", 1)[0].split("?", 1)[0]
+    if not raw or raw.startswith(("http://", "https://", "//", "data:", "blob:")):
+        return ""
+    raw = raw.lstrip("/")
+    base = posixpath.dirname(str(html_path or "").replace("\\", "/"))
+    joined = posixpath.normpath(posixpath.join(base, raw) if base else raw)
+    return joined.lstrip("./")
+
+
+def _missing_linked_page_files(job) -> list[str]:
+    """Local CSS/JS that HTML already links but the workspace does not have."""
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    if not owner or not chat_id:
+        return []
+    try:
+        from ui.workspace import list_files, read_text
+
+        rows = list_files(owner, chat_id) or []
+    except Exception:
+        return []
+    existing = {str(row.get("path") or "") for row in rows}
+    missing: list[str] = []
+    for row in rows:
+        path = str(row.get("path") or "")
+        if Path(path).suffix.lower() not in {".html", ".htm"}:
+            continue
+        try:
+            html = read_text(owner, chat_id, path)
+        except Exception:
+            continue
+        if not html or html.startswith("[binary "):
+            continue
+        for match in _LINKED_PAGE_RE.finditer(html):
+            rel = _normalize_page_ref(path, match.group(1))
+            if rel and rel not in existing and rel not in missing:
+                missing.append(rel)
+    return missing
+
+
+def _inject_missing_page_files(data: ChatCompletionRequest, job) -> None:
+    missing = _missing_linked_page_files(job)
+    if not missing:
+        return
+    listed = ", ".join(f"`{path}`" for path in missing)
+    _append_user_facts(
+        data,
+        "The page links these files that are not on disk yet: "
+        f"{listed}. Write each of them now with Write. Do not stop for "
+        "pictures until they exist.",
+    )
+
+
 def _keep_writing_page(code_response, job) -> bool:
+    if int(getattr(job, "code_turns", 0) or 0) >= MAX_CODE_TURNS:
+        return False
+    missing = _missing_linked_page_files(job)
     if not code_response:
         return False
     message = _assistant_message(code_response)
     if not _file_write_pairs(message):
-        return False
-    if int(getattr(job, "code_turns", 0) or 0) >= MAX_CODE_TURNS:
         return False
     pages = _page_write_paths(message)
     if not pages:
         return not _workspace_has_page_files(job)
     written = list(getattr(job, "written_pages", None) or [])
     new_pages = [path for path in pages if path not in written]
-    if not new_pages:
-        return False
-    job.written_pages = written + new_pages
-    return True
+    if new_pages:
+        job.written_pages = written + new_pages
+        return True
+    return bool(missing)
 
 
-def _first_code_pass_holds_llm(code_response) -> bool:
-    """VS Code writes with its own tools. Prose or file tools both mean 'page first'."""
+async def _write_page_then_maybe_launch(data, job, disconnect_handler):
+    """Another coding completion. Hold while linked CSS/JS are still missing."""
+    _inject_missing_page_files(data, job)
+    note_coding_progress(job)
+    code_response = await _write_site_code(data, disconnect_handler)
+    if _keep_writing_page(code_response, job):
+        return code_response, False
+    if (
+        _missing_linked_page_files(job)
+        and int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
+    ):
+        _inject_missing_page_files(data, job)
+        extra = await _write_site_code(data, disconnect_handler)
+        if extra is not None:
+            code_response = extra
+        if _keep_writing_page(code_response, job):
+            return code_response, False
+    return code_response, True
+
+
+def _first_code_pass_holds_llm(code_response, *, page_ready: bool = False) -> bool:
+    """Hold Comfy for page writes. A replace on an existing site must not wait."""
     if not code_response:
         return False
     message = _assistant_message(code_response)
     if message is None:
         return False
     if _file_write_pairs(message):
-        return True
+        return not page_ready
+    if page_ready:
+        return False
     return bool(str(getattr(message, "content", None) or "").strip())
 
 
@@ -887,8 +996,9 @@ def _code_reply(data: ChatCompletionRequest, job, code_response):
     if dests:
         hint = (
             f" Point img src or CSS url() at these exact paths: {', '.join(dests)}. "
-            "Write HTML, CSS, and JS only. Do not Write PNG, WebP, or placeholder "
-            "image files."
+            "Write HTML, CSS, and JS only — if the HTML links styles.css or "
+            "app.js, Write those files before pictures. Do not Write PNG, WebP, "
+            "or placeholder image files."
         )
     if content == f"{JOB_MARK} {job.id}":
         content = (
@@ -1091,35 +1201,47 @@ async def _hold_then_reply(
                 chunk_id=chunk_id,
                 created=created,
             )
-        while not _hold_is_ready(job, files_only=files_only):
-            await wait_mcp_job_progress(job, HOLD_KEEPALIVE_S)
-            line = job_progress_line(job)
-            if line and line != last_line:
-                last_line = line
-                yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
-                if not console:
+        async def _emit_reply():
+            reply = _reply()
+            message = reply.choices[0].message
+            if message.tool_calls:
+                async for chunk in stream_tool_calls(
+                    data, message, chunk_id=chunk_id, created=created
+                ):
+                    yield chunk
+            else:
+                async for chunk in stream_text(
+                    data, message.content or "", chunk_id=chunk_id, created=created
+                ):
+                    yield chunk
+
+        emitted = False
+        try:
+            while not _hold_is_ready(job, files_only=files_only):
+                await wait_mcp_job_progress(job, HOLD_KEEPALIVE_S)
+                line = job_progress_line(job)
+                if line and line != last_line:
+                    last_line = line
+                    yield ServerSentEvent(comment=f"{STATUS_MARK} {line}")
+                    if not console:
+                        yield stream_chat_delta(
+                            data,
+                            {"content": line + "\n"},
+                            chunk_id=chunk_id,
+                            created=created,
+                        )
+                elif not console:
                     yield stream_chat_delta(
-                        data,
-                        {"content": line + "\n"},
-                        chunk_id=chunk_id,
-                        created=created,
+                        data, {"content": " "}, chunk_id=chunk_id, created=created
                     )
-            elif not console:
-                yield stream_chat_delta(
-                    data, {"content": " "}, chunk_id=chunk_id, created=created
-                )
-        reply = _reply()
-        message = reply.choices[0].message
-        if message.tool_calls:
-            async for chunk in stream_tool_calls(
-                data, message, chunk_id=chunk_id, created=created
-            ):
+            emitted = True
+            async for chunk in _emit_reply():
                 yield chunk
-        else:
-            async for chunk in stream_text(
-                data, message.content or "", chunk_id=chunk_id, created=created
-            ):
-                yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            if not emitted and _hold_is_ready(job, files_only=files_only):
+                async for chunk in _emit_reply():
+                    yield chunk
+            raise
 
     if data.stream:
         return EventSourceResponse(
@@ -1200,6 +1322,16 @@ async def handle(
     workspace = (owner, chat_id) if code and owner and chat_id else None
     job_id = job_id_from_history(data)
     job = get_mcp_image_job(job_id) if job_id else None
+    if workspace and (job is None or str(getattr(job, "status", "") or "") in ("done", "error")):
+        busy = active_mcp_image_job()
+        if (
+            busy
+            and str(getattr(busy, "status", "") or "") in ("coding", "queued", "running")
+            and str(getattr(busy, "owner", "") or "") == owner
+            and str(getattr(busy, "chat_id", "") or "") == chat_id
+        ):
+            job = busy
+            job_id = busy.id
     role = last_role(data)
 
     if job and role in ("tool", "function"):
@@ -1212,8 +1344,8 @@ async def handle(
             bound_owner, bound_chat = workspace
             if bound_owner and (not job.owner or job.owner == bound_owner):
                 job.owner = bound_owner
-            if bound_chat and (not job.chat_id or job.chat_id == bound_chat):
-                job.chat_id = bound_chat
+        if chat_id and (not job.chat_id or job.chat_id == chat_id):
+            job.chat_id = chat_id
         return await _hold_then_reply(
             data,
             job,
@@ -1226,9 +1358,10 @@ async def handle(
     if job and job.status == "coding" and llm_ready:
         if workspace:
             _inject_planned_dests(data, _job_plan_items(job))
-            note_coding_progress(job)
-            code_response = await _write_site_code(data, disconnect_handler)
-            if _keep_writing_page(code_response, job):
+            code_response, launch = await _write_page_then_maybe_launch(
+                data, job, disconnect_handler
+            )
+            if not launch:
                 return _code_reply(data, job, code_response)
             await _launch_mixed_job(job)
             if code_response and _file_write_pairs(_assistant_message(code_response)):
@@ -1248,9 +1381,10 @@ async def handle(
                 data, job, mixed=False, api_base=api_base, console=True
             )
         _inject_planned_dests(data, _job_plan_items(job))
-        note_coding_progress(job)
-        code_response = await _write_site_code(data, disconnect_handler)
-        if _keep_writing_page(code_response, job):
+        code_response, launch = await _write_page_then_maybe_launch(
+            data, job, disconnect_handler
+        )
+        if not launch:
             return _code_reply(data, job, code_response)
         await _launch_mixed_job(job)
         if code_response and _file_write_pairs(_assistant_message(code_response)):
@@ -1283,7 +1417,7 @@ async def handle(
                 source_image=source,
                 denoise=0.85,
                 owner=owner,
-                chat_id=chat_id if workspace else None,
+                chat_id=chat_id,
             )
             return await _hold_then_reply(
                 data,
@@ -1334,7 +1468,11 @@ async def handle(
             if workspace:
                 _inject_planned_dests(data, plan.items)
                 code_response = await _write_site_code(data, disconnect_handler)
-                keep = _first_code_pass_holds_llm(code_response)
+                keep = _first_code_pass_holds_llm(
+                    code_response,
+                    page_ready=_pages_on_disk(owner, chat_id)
+                    and _explicit_new_rasters(data),
+                )
                 started = await _start_mixed_job(
                     plan.items,
                     api_base or "",
@@ -1393,7 +1531,7 @@ async def handle(
             restore=True,
             source_image=source_image,
             owner=owner,
-            chat_id=chat_id if workspace else None,
+            chat_id=chat_id,
         )
         return await _hold_then_reply(
             data,
@@ -1419,7 +1557,7 @@ async def handle(
                 restore=False,
                 source_image=source_image,
                 owner=owner,
-                chat_id=chat_id if workspace else None,
+                chat_id=chat_id,
             )
             return await _hold_then_reply(
                 data,

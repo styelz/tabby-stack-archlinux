@@ -304,9 +304,19 @@ def image_download_note(pairs: Iterable[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def job_ids_from_text(text: str) -> list[str]:
+    found: list[str] = []
+    for match in JOB_ID_RE.finditer(text or ""):
+        job_id = (match.group(1) or "").strip()
+        if job_id:
+            found.append(job_id)
+    return found
+
+
 def job_id_from_text(text: str) -> str:
-    match = JOB_ID_RE.search(text or "")
-    return (match.group(1) if match else "").strip()
+    """Latest stamp wins. An older done job must not hide a replace/redo."""
+    ids = job_ids_from_text(text)
+    return ids[-1] if ids else ""
 
 
 def dest_fact_list(pairs: Iterable[tuple[str, str]]) -> str:

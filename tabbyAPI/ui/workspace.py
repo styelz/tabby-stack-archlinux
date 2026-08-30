@@ -238,6 +238,35 @@ def chats_with_files(username: str, chat_ids: list[str]) -> list[str]:
     return [str(cid) for cid in chat_ids if str(cid).strip() and has_files(username, str(cid))]
 
 
+_SKIP_PROJECT_SUFFIXES = (".codebox", HISTORY_SUFFIX, ".drafts.json")
+
+
+def list_project_ids(username: str) -> list[str]:
+    """Workspace folder names under this account that still have files."""
+    root = user_dir(username)
+    if not root.is_dir():
+        return []
+    out: list[str] = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return []
+    for entry in entries:
+        name = str(entry.name or "")
+        if not name or name.startswith("."):
+            continue
+        if any(name.endswith(suffix) for suffix in _SKIP_PROJECT_SUFFIXES):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if has_files(username, name):
+            out.append(name)
+    return out
+
+
 def _merge_tree(src: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for path in sorted(src.rglob("*")):

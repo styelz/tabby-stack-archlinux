@@ -321,12 +321,104 @@ def _read_disk(username: str) -> Any:
         return None
 
 
+_TITLE_RE = re.compile(r"<title>([^<]+)</title>", re.I | re.S)
+
+
+def _workspace_title_from_files(username: str, chat_id: str) -> str:
+    from ui.workspace import workspace_root
+
+    page = workspace_root(username, chat_id, create=False, box=False) / "index.html"
+    if not page.is_file():
+        return "Recovered workspace"
+    try:
+        text = page.read_text(encoding="utf-8", errors="replace")[:8000]
+    except OSError:
+        return "Recovered workspace"
+    match = _TITLE_RE.search(text)
+    title = re.sub(r"\s+", " ", (match.group(1) if match else "").strip())
+    return title[:80] or "Recovered workspace"
+
+
+def _rehydrate_file_workspaces(username: str, store: dict[str, Any]) -> dict[str, Any]:
+    """Put Code workspace rows back when the project folder still has files."""
+    from ui.workspace import has_files, list_project_ids
+
+    chats = list(store.get("chats") or [])
+    known = {
+        str(chat.get("id") or "")
+        for chat in chats
+        if isinstance(chat, dict) and str(chat.get("id") or "").strip()
+    }
+    added = False
+    now = int(time.time() * 1000)
+    for chat_id in list_project_ids(username):
+        if chat_id in known or not has_files(username, chat_id):
+            continue
+        chats.append(
+            {
+                "id": chat_id,
+                "title": _workspace_title_from_files(username, chat_id),
+                "updatedAt": now,
+                "pinned": False,
+                "titleLocked": False,
+                "mode": "code",
+                "parentId": "",
+                "messages": [],
+            }
+        )
+        known.add(chat_id)
+        added = True
+    if not added:
+        return store
+    next_store = dict(store)
+    next_store["chats"] = chats
+    return normalize_store(next_store)
+
+
+def _restore_omitted_file_workspaces(
+    username: str,
+    store: dict[str, Any],
+    old_chats: dict[str, Any],
+    dropped: list[str],
+) -> dict[str, Any]:
+    """A stale PUT must not erase Code workspaces whose folders are still on disk."""
+    from ui.workspace import has_files
+
+    restore_roots = [
+        chat_id
+        for chat_id in dropped
+        if is_workspace_root(old_chats.get(chat_id)) and has_files(username, chat_id)
+    ]
+    if not restore_roots:
+        return _rehydrate_file_workspaces(username, store)
+    chats = list(store.get("chats") or [])
+    new_ids = {str(chat.get("id") or "") for chat in chats}
+    restore_set = set(restore_roots)
+    for chat_id in restore_roots:
+        if chat_id in new_ids:
+            continue
+        chats.append(old_chats[chat_id])
+        new_ids.add(chat_id)
+    for chat_id, old in old_chats.items():
+        if chat_id in new_ids or not isinstance(old, dict):
+            continue
+        parent = str(old.get("parentId") or "").strip()
+        if parent in restore_set:
+            chats.append(old)
+            new_ids.add(chat_id)
+    next_store = dict(store)
+    next_store["chats"] = chats
+    return _rehydrate_file_workspaces(username, normalize_store(next_store))
+
+
 def load_store(username: str) -> dict[str, Any]:
     with _LOCK:
         raw = _read_disk(username)
     if raw is None:
-        return dict(EMPTY_STORE)
-    return normalize_store(raw)
+        store = dict(EMPTY_STORE)
+    else:
+        store = normalize_store(raw)
+    return _rehydrate_file_workspaces(username, store)
 
 
 def is_workspace_root(chat: Any) -> bool:
@@ -424,6 +516,9 @@ def save_store(username: str, raw: Any) -> dict[str, Any]:
         chat["messages"] = _preserve_server_assistant(
             old.get("messages"), chat.get("messages")
         )
+    new_ids = {str(chat.get("id") or "") for chat in store.get("chats") or []}
+    dropped = [chat_id for chat_id in old_chats if chat_id not in new_ids]
+    store = _restore_omitted_file_workspaces(username, store, old_chats, dropped)
     new_ids = {str(chat.get("id") or "") for chat in store.get("chats") or []}
     remaining_roots = [
         chat for chat in store.get("chats") or [] if is_workspace_root(chat)

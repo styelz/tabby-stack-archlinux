@@ -16,7 +16,10 @@ from endpoints.OAI.types.chat_completion import (
 from endpoints.OAI.types.tools import Tool, ToolCall
 from images.chat import (
     _explicit_new_rasters,
+    _named_image_dests,
+    _plan_asset_dests,
     _plan_asset_rasters,
+    _upgrade_missing_named_dests,
     handle,
     job_id_from_history,
 )
@@ -310,6 +313,20 @@ class BuildPlanAssetRasterTests(unittest.TestCase):
         )
         self.assertEqual(_plan_asset_rasters(plan), [])
         self.assertFalse(_explicit_new_rasters(data))
+
+
+class UpgradeMissingNamedDestsTests(unittest.TestCase):
+    def test_gallery_attachment_vision_stays_none(self):
+        ask = (
+            "What is in the picture?\n\n"
+            "Attached project image: `generated-20260831-075225-3604973.png`"
+        )
+        plan = ImageTurnPlan(action="none", items=[])
+        upgraded = _upgrade_missing_named_dests(plan, ask, [])
+        self.assertEqual(upgraded.action, "none")
+        self.assertEqual(upgraded.items, [])
+        self.assertEqual(_plan_asset_dests(ask), [])
+        self.assertEqual(_named_image_dests(ask), [])
 
 
 class CurlFromLivingFilesTests(unittest.TestCase):
