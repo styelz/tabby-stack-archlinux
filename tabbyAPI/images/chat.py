@@ -67,14 +67,20 @@ _EXPLICIT_NEW_RE = re.compile(
     r"\b(?:generate|draw|render|create)\s+"
     r"(?:(?:real|gpu|new)\s+)*"
     r"(?:an?\s+)?"
-    r"(?:images?|pictures?|photos?|pics?)\b|"
+    r"(?:images?|pictures?|photos?|pics?|logo|hero(?:\s+photo)?|header\s+photo)\b|"
     r"\b(?:redo|recreate)\b|"
     r"\breplace\s+the\s+(?:logo|hero(?:\s+(?:image|photo))?|header\s+(?:image|photo)|image|photo)\b|"
     r"\bnew\s+(?:logo|hero(?:\s+photo)?|header\s+photo)\b"
     r")"
 )
 _RASTER_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
-_NAMED_DEST_RE = re.compile(r"(?i)\bimages/([A-Za-z][A-Za-z0-9._-]*)")
+_NAMED_DEST_RE = re.compile(r"(?i)\bimages/([A-Za-z][A-Za-z0-9_-]*)")
+_CREATE_SITE_RE = re.compile(
+    r"(?is)\b(?:create|write|make|build)\b.{0,160}?\b"
+    r"(?:landing(?:\s+page)?|website|web\s+page|webpage)\b"
+)
+_PAGE_LOGO_RE = re.compile(r"(?is)\b(?:a\s+)?logo\b")
+_PAGE_HERO_RE = re.compile(r"(?is)\b(?:header|hero)\s+(?:photo|image|picture)s?\b")
 _SKIP_DEST_STEMS = frozenset({"image", "images", "generated", "generated.png"})
 _APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
 _ASSETS_SECTION_RE = re.compile(
@@ -137,22 +143,34 @@ def _named_image_dests(text: str) -> list[str]:
     """Project dests the user named, such as images/logo or images/header."""
     found: list[str] = []
     seen: set[str] = set()
+
+    def add(dest: str) -> None:
+        if dest in seen:
+            return
+        seen.add(dest)
+        found.append(dest)
+
     for match in _NAMED_DEST_RE.finditer(text or ""):
-        raw = str(match.group(1) or "").strip()
-        stem = Path(raw).stem.lower().replace("_", "-")
+        raw = str(match.group(1) or "").strip(".-")
+        stem = Path(raw).stem.lower().replace("_", "-").strip(".-")
         if not stem or stem in _SKIP_DEST_STEMS:
             continue
-        if stem in _HERO_STEMS:
-            name = "header.png"
-        elif Path(raw).suffix:
+        if Path(raw).suffix:
             name = Path(raw).name
         else:
             name = f"{stem}.png"
-        dest = f"images/{name}"
-        if dest in seen:
-            continue
-        seen.add(dest)
-        found.append(dest)
+        add(f"images/{name}")
+    blob = text or ""
+    if _CREATE_SITE_RE.search(blob):
+        if _PAGE_LOGO_RE.search(blob):
+            add("images/logo.png")
+        if _PAGE_HERO_RE.search(blob):
+            have_hero = any(
+                Path(dest).stem.lower().replace("_", "-") in _HERO_STEMS
+                for dest in found
+            )
+            if not have_hero:
+                add("images/header.png")
     return found
 
 
@@ -340,6 +358,10 @@ def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
 
     text = (last_user_text(data) or "").strip()
     if _EXPLICIT_NEW_RE.search(text):
+        return True
+    if _CREATE_SITE_RE.search(text) and (
+        _PAGE_LOGO_RE.search(text) or _PAGE_HERO_RE.search(text)
+    ):
         return True
     if not is_build_prompt(text):
         return False

@@ -341,12 +341,25 @@ def user_task_text(data: ChatCompletionRequest) -> str:
     return stripped.strip()
 
 
+_SERVER_LAYOUT_BLOCK_RE = re.compile(r"(?is)<(?:layout_fix|layout_report)\b.*")
+
+
+def _strip_server_layout_blocks(text: str) -> str:
+    """Drop Code-mode <layout_fix> / <layout_report> suffixes from the user line.
+
+    Those blocks tell the coding model not to start pictures. They are not the
+    user's ask — leaving them in last_user_text made refuses_new_images skip
+    Comfy on a generate-logo follow-up that mentioned images/hero.
+    """
+    return _SERVER_LAYOUT_BLOCK_RE.sub("", text or "").strip()
+
+
 def last_user_text(data: ChatCompletionRequest) -> str:
     task = user_task_text(data)
     plain = _plain_user_ask(task) if task else ""
     if plain:
-        return plain
-    return _unwrap_query(last_user_raw(data))
+        return _strip_server_layout_blocks(plain)
+    return _strip_server_layout_blocks(_unwrap_query(last_user_raw(data)))
 
 
 def _command_candidates(data: ChatCompletionRequest) -> list[str]:

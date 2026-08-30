@@ -881,32 +881,55 @@ def referenced_project_paths(username: str, chat_id: str) -> set[str]:
     return {rel for rel in paths if _path_mentioned(blob, rel)}
 
 
+_PREVIEW_MIN_BYTES = 50_000
+_HERO_ALIAS_STEMS = frozenset(
+    {"header", "hero", "banner", "hero-background", "hero_background"}
+)
+
+
+def _preview_raster_ok(path: Path) -> bool:
+    """Skip dest stubs so preview can fall through to the GPU file."""
+    try:
+        return path.is_file() and path.stat().st_size >= _PREVIEW_MIN_BYTES
+    except OSError:
+        return False
+
+
 def resolve_image_rel(username: str, chat_id: str, rel: str) -> str:
     """Resolve an image path, preferring a same-stem sibling when the ext is stale."""
     root = workspace_root(username, chat_id, create=False)
     path = resolve_rel(root, rel)
-    if path.is_file() and is_image_path(rel):
+    if _preview_raster_ok(path) and is_image_path(rel):
         return path.relative_to(root.resolve()).as_posix()
     stem = path.stem
+    stems = [stem]
+    if stem.lower().replace("_", "-") in _HERO_ALIAS_STEMS:
+        stems.extend(
+            alias
+            for alias in ("hero", "header", "banner")
+            if alias != stem.lower()
+        )
     found: list[str] = []
     parent = path.parent
     if parent.is_dir():
-        for ext in sorted(IMAGE_SUFFIXES):
-            candidate = parent / f"{stem}{ext}"
-            if candidate.is_file():
-                found.append(candidate.relative_to(root.resolve()).as_posix())
+        for alias in stems:
+            for ext in sorted(IMAGE_SUFFIXES):
+                candidate = parent / f"{alias}{ext}"
+                if _preview_raster_ok(candidate):
+                    found.append(candidate.relative_to(root.resolve()).as_posix())
+            if found:
+                break
     if not found:
+        wanted = {item.lower().replace("_", "-") for item in stems}
         found = [
             str(row["path"])
             for row in list_files(username, chat_id)
-            if is_image_path(str(row["path"])) and Path(str(row["path"])).stem == stem
+            if is_image_path(str(row["path"]))
+            and Path(str(row["path"])).stem.lower().replace("_", "-") in wanted
+            and int(row.get("size") or 0) >= _PREVIEW_MIN_BYTES
         ]
-    if len(found) == 1:
-        return found[0]
     if found:
-        raise FileNotFoundError(
-            f"{rel} was not found. Existing images with that name: {', '.join(found)}"
-        )
+        return found[0]
     raise FileNotFoundError(rel)
 
 
@@ -2043,6 +2066,78 @@ def _sync_image_references(username: str, chat_id: str, actual_rel: str) -> list
     return list(dict.fromkeys(changed))
 
 
+def _publish_dest_aliases(username: str, chat_id: str, dests: list[str]) -> list[str]:
+    """Write hero/header aliases the page already references (hero.webp vs header.webp)."""
+    extra: list[str] = []
+    blob = ""
+    for row in list_files(username, chat_id):
+        if not row.get("editable"):
+            continue
+        try:
+            blob += read_text(username, chat_id, str(row["path"])) + "\n"
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+    for dest in dests:
+        stem = Path(dest).stem.lower().replace("_", "-")
+        if stem not in _HERO_ALIAS_STEMS:
+            continue
+        try:
+            src = resolve_file(username, chat_id, dest)
+            raw = src.read_bytes()
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+        if len(raw) < _PREVIEW_MIN_BYTES:
+            continue
+        suffix = Path(dest).suffix or ".webp"
+        for alias in ("hero", "header", "banner"):
+            if alias == Path(dest).stem.lower():
+                continue
+            mentioned = any(
+                f"{alias}{ext}" in blob for ext in IMAGE_SUFFIXES
+            )
+            if not mentioned:
+                continue
+            written = copy_bytes(username, chat_id, f"images/{alias}{suffix}", raw)
+            extra.append(written)
+    return extra
+
+
+def _ensure_logo_img(username: str, chat_id: str, dests: list[str]) -> None:
+    """If a GPU logo exists but the page only has a text .logo, insert the img."""
+    logo = next(
+        (dest for dest in dests if Path(dest).stem.lower() == "logo"),
+        "",
+    )
+    if not logo:
+        return
+    for row in list_files(username, chat_id):
+        rel = str(row.get("path") or "")
+        if not row.get("editable") or Path(rel).suffix.lower() not in {".html", ".htm"}:
+            continue
+        try:
+            text = read_text(username, chat_id, rel)
+        except (OSError, FileNotFoundError, ValueError):
+            continue
+        if re.search(r'(?is)<img\b[^>]+src=["\'][^"\']*logo', text):
+            continue
+        updated, n = re.subn(
+            r'(<([a-zA-Z0-9]+)\b[^>]*\bclass="[^"]*\blogo\b[^"]*"[^>]*>)([^<]*)(</\2>)',
+            rf'\1<img src="{logo}" alt="Logo">\4',
+            text,
+            count=1,
+        )
+        if n:
+            if ".logo img" not in updated and "</style>" in updated:
+                updated = updated.replace(
+                    "</style>",
+                    "        .logo img { height: 48px; width: auto; display: block; }\n"
+                    "    </style>",
+                    1,
+                )
+            write_text(username, chat_id, rel, updated, sync_images=False)
+            return
+
+
 def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
     from common.gpu_mode import generated_image_path
     from images.paths import generated_png_name_from_url, living_download_pairs
@@ -2089,7 +2184,10 @@ def copy_job_pngs(username: str, chat_id: str, job) -> list[str]:
             # Keep the original PNG and its already-written code reference if a
             # particular asset cannot be converted.
             optimized.append(dest)
-    return optimized
+    dests = optimized or copied
+    dests.extend(_publish_dest_aliases(username, chat_id, dests))
+    _ensure_logo_img(username, chat_id, dests)
+    return list(dict.fromkeys(dests))
 
 
 def drafts_path(username: str, chat_id: str) -> Path:

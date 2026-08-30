@@ -53,10 +53,12 @@ CLASSIFY_SYSTEM = (
     "the approved plan) explicitly asks to render NEW rasters now: generate/"
     "draw/render/recreate/replace a picture, qwen-image:, a new logo, a "
     "new hero photo, or ## Assets PNG/WebP dests that are not already in "
-    "the project. Fill images with one object per new file. Do not infer "
-    "generate from a landing page, website, or HTML/CSS that mentions a logo "
-    "or header unless This turn is Implement the approved plan and Assets "
-    "lists those dests. Mentions alone are page parts. Removing a border or "
+    "the project. Creating a landing page, website, or HTML page that should "
+    "include a logo and/or a hero/header photo is generate for those dests "
+    "when they are not already in the project. Fill images with one object "
+    "per new file. Do not infer generate from a CSS/layout follow-up that "
+    "only mentions an existing logo or header. Mentions of pictures that "
+    "already exist are reuse. Removing a border or "
     "frame on an attached picture is generate (img2img), not CSS.\n"
     "- reuse: files already exist (Already in the project / Already generated) "
     "and they only want them used in HTML/CSS. images must be []. Do not render.\n"
@@ -264,8 +266,6 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
         ):
             continue
         name = "logo.png" if slug == "logo" else f"{slug}.png"
-        if slug in {"header", "banner", "hero"}:
-            name = "header.png"
         subject = str(row.get("subject") or slug).strip() or slug
         seen.add(slug)
         items.append(

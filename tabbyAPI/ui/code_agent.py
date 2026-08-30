@@ -345,8 +345,19 @@ _PLAN_SPACE_THEME = re.compile(
     r"planet(?:s)? (?:mars|neptune|jupiter)|observation deck)\b"
 )
 _LAYOUT_ASK = re.compile(
-    r"(?i)\b(?:hero|align(?:ment|ed)?|off (?:to the )?left|off[- ]screen|"
+    r"(?i)(?:"
+    r"\b(?:align(?:ment|ed)?|off (?:to the )?left|off[- ]screen|"
     r"center(?:ed)?|pushed off|too (?:far )?(?:left|right)|layout)\b"
+    r"|(?<![/\w.])hero(?![\w.-])"
+    r")"
+)
+_IMAGE_GEN_ASK = re.compile(
+    r"(?is)\b(?:generate|draw|render)\s+"
+    r"(?:(?:a|an|the|new|real|gpu)\s+)*"
+    r"(?:images?|pictures?|photos?|pics?|logo)\b"
+    r"|\bcreate\s+(?:(?:a|an|the|new)\s+)+(?:logo|hero(?:\s+photo)?)\b"
+    r"|\bmissing (?:its |the )?(?:pictures?|images?|photos?|logo)"
+    r"|qwen-image:"
 )
 
 
@@ -404,9 +415,11 @@ def is_layout_fix_prompt(text: Any) -> bool:
     raw = _plain_content(text).strip()
     if not raw or is_build_prompt(raw):
         return False
+    user = _layout_fix_user_words(raw)
+    if _IMAGE_GEN_ASK.search(user):
+        return False
     if LAYOUT_FIX_MARK in raw:
         return True
-    user = _layout_fix_user_words(raw)
     if not user or len(user) > 240:
         return False
     return bool(_LAYOUT_ASK.search(user))
