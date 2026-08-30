@@ -21,6 +21,8 @@ from typing import Any, Optional
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
 _PAGE_SUFFIXES = frozenset({".html", ".htm", ".css", ".js", ".mjs"})
 # Editing is limited to what the console can safely round-trip as UTF-8 text.
 TEXT_SUFFIXES = frozenset(
@@ -342,17 +344,38 @@ def add_upload(username: str, chat_id: str, rel: str, data: bytes, filename: str
     raise ValueError("Only text and image files can be added.")
 
 
+def raster_head_ok(head: bytes) -> bool:
+    """True for a real PNG/JPEG/WebP/GIF header, not a text dest stub."""
+    raw = bytes(head or b"")
+    if len(raw) < 12:
+        return False
+    if raw.startswith(_PNG_MAGIC) or raw.startswith(_JPEG_MAGIC) or raw.startswith(b"GIF8"):
+        return True
+    return raw.startswith(b"RIFF") and b"WEBP" in raw[:12]
+
+
+def raster_file_ok(path: Path) -> bool:
+    """True when path is a real raster. Dest stubs are tiny text with an image suffix."""
+    try:
+        with path.open("rb") as fh:
+            return raster_head_ok(fh.read(16))
+    except OSError:
+        return False
+
+
 def list_files(username: str, chat_id: str) -> list[dict[str, Any]]:
     root = workspace_root(username, chat_id, create=False)
     rows: list[dict[str, Any]] = []
     for path in _iter_files(root):
         rel = path.relative_to(root.resolve()).as_posix()
         suffix = path.suffix.lower()
+        image = suffix in IMAGE_SUFFIXES
         rows.append(
             {
                 "path": rel,
                 "size": path.stat().st_size,
-                "kind": "image" if suffix in IMAGE_SUFFIXES else "text",
+                "kind": "image" if image else "text",
+                "raster": raster_file_ok(path) if image else False,
                 "editable": suffix in TEXT_SUFFIXES,
                 "page": suffix in PAGE_SUFFIXES,
             }
@@ -881,7 +904,6 @@ def referenced_project_paths(username: str, chat_id: str) -> set[str]:
     return {rel for rel in paths if _path_mentioned(blob, rel)}
 
 
-_PREVIEW_MIN_BYTES = 50_000
 _HERO_ALIAS_STEMS = frozenset(
     {"header", "hero", "banner", "hero-background", "hero_background"}
 )
@@ -890,7 +912,7 @@ _HERO_ALIAS_STEMS = frozenset(
 def _preview_raster_ok(path: Path) -> bool:
     """Skip dest stubs so preview can fall through to the GPU file."""
     try:
-        return path.is_file() and path.stat().st_size >= _PREVIEW_MIN_BYTES
+        return path.is_file() and raster_file_ok(path)
     except OSError:
         return False
 
@@ -926,7 +948,7 @@ def resolve_image_rel(username: str, chat_id: str, rel: str) -> str:
             for row in list_files(username, chat_id)
             if is_image_path(str(row["path"]))
             and Path(str(row["path"])).stem.lower().replace("_", "-") in wanted
-            and int(row.get("size") or 0) >= _PREVIEW_MIN_BYTES
+            and row.get("raster")
         ]
     if found:
         return found[0]
@@ -2086,7 +2108,7 @@ def _publish_dest_aliases(username: str, chat_id: str, dests: list[str]) -> list
             raw = src.read_bytes()
         except (OSError, FileNotFoundError, ValueError):
             continue
-        if len(raw) < _PREVIEW_MIN_BYTES:
+        if not raster_head_ok(raw[:16]):
             continue
         suffix = Path(dest).suffix or ".webp"
         for alias in ("hero", "header", "banner"):

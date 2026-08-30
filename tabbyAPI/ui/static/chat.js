@@ -519,7 +519,7 @@ function mountChat(root) {
     ".php", ".toml", ".ini", ".conf",
   ]);
   const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
-  const PREVIEW_MIN_BYTES = 50_000;
+  const RASTER_STUB_MAX_BYTES = 512;
   const BINARY_SUFFIXES = new Set([
     ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar", ".pdf", ".doc", ".docx",
     ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".dll", ".so", ".dylib", ".wasm",
@@ -2189,7 +2189,7 @@ function mountChat(root) {
         const action = isDir ? "toggle" : "open";
         const rasterStub = !isDir && !missing && row
           && IMAGE_SUFFIXES.has(fileSuffix(node.path))
-          && (Number(row.size) || 0) < PREVIEW_MIN_BYTES;
+          && listingRasterIsStub(row);
         const size = missing ? "deleted" : rasterStub ? "pending" : !isDir && row ? TabbyUI.formatBytes(row.size) : "";
         item.innerHTML =
           `<button type="button" class="chat-file-open" data-file="${action}" title="${TabbyUI.escapeHtml(node.path)}"${
@@ -6324,6 +6324,14 @@ function mountChat(root) {
     return IMAGE_SUFFIXES.has(fileSuffix(path));
   }
 
+  function listingRasterIsStub(row) {
+    if (!row || row.missing || row.kind === "dir") return false;
+    if (!IMAGE_SUFFIXES.has(fileSuffix(row.path || ""))) return false;
+    if (row.raster === true) return false;
+    if (row.raster === false) return true;
+    return (Number(row.size) || 0) < RASTER_STUB_MAX_BYTES;
+  }
+
   function listingRasterReady(path) {
     const clean = String(path || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
     if (!clean) return false;
@@ -6334,7 +6342,7 @@ function mountChat(root) {
       if (!have || item.missing || item.kind === "dir") return false;
       return have === lower || (base && (have.split("/").pop() || "") === base);
     });
-    return Boolean(row && (Number(row.size) || 0) >= PREVIEW_MIN_BYTES);
+    return Boolean(row && !listingRasterIsStub(row));
   }
 
   function assetItemRasterReady(item) {

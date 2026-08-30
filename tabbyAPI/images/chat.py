@@ -91,11 +91,6 @@ _ASSET_FILE_RE = re.compile(r"(?i)\b[\w./-]+\.(?:png|jpe?g|webp|gif)\b")
 _SKIP_ASSET_STEMS = frozenset(
     {"etc", "css", "css3", "html", "html5", "js", "javascript", "react", "vue"}
 )
-_MIN_GPU_RASTER_BYTES = 50_000
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-_JPEG_MAGIC = b"\xff\xd8\xff"
-
-
 def _readonly_agent(agent: str | None) -> bool:
     """UI Ask/Plan: inspect only. Do not start Comfy or write files."""
     return str(agent or "").strip().lower() in READONLY_AGENTS
@@ -186,22 +181,11 @@ def _workspace_gpu_raster(owner: str, chat_id: str, dest: str) -> bool:
     except (OSError, ValueError, FileNotFoundError):
         return False
     try:
-        size = path.stat().st_size
-        head = path.read_bytes()[:12]
+        from ui.workspace import raster_file_ok
+
+        return raster_file_ok(path)
     except OSError:
         return False
-    if size < _MIN_GPU_RASTER_BYTES:
-        return False
-    suffix = Path(wanted).suffix.lower()
-    if suffix == ".png":
-        return head.startswith(_PNG_MAGIC)
-    if suffix in {".jpg", ".jpeg"}:
-        return head.startswith(_JPEG_MAGIC)
-    if suffix == ".webp":
-        return head.startswith(b"RIFF") and b"WEBP" in head
-    if suffix == ".gif":
-        return head.startswith(b"GIF8")
-    return False
 
 
 def _gpu_dest_ready(
