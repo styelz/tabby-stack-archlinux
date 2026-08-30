@@ -88,7 +88,7 @@ class CodeAgentTests(unittest.TestCase):
     def test_ask_and_plan_tools_are_read_only(self):
         for kind in ("ask", "plan"):
             names = {spec.function.name for spec in code_agent.code_tool_specs(kind)}
-            self.assertEqual(names, {"Read", "List"})
+            self.assertEqual(names, {"Read", "List", "Grep", "Glob"})
         agent_names = {spec.function.name for spec in code_agent.code_tool_specs("agent")}
         self.assertIn("Write", agent_names)
         self.assertIn("Shell", agent_names)
@@ -109,7 +109,11 @@ class CodeAgentTests(unittest.TestCase):
         self.assertIn("earlier Plan or Ask", ask)
         self.assertIn("conversation and the project", ask)
         self.assertIn("revise that plan", plan)
+        self.assertIn("qwen-image:", plan)
+        self.assertIn("GPU will render", plan)
+        self.assertIn("canvas", plan)
         self.assertIn("<approved_plan>", agent)
+        self.assertIn("canvas-draw", agent)
 
     def test_attach_plan_contract_skips_build(self):
         quoted = (
@@ -121,6 +125,24 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"], quoted)
         self.assertFalse(code_agent.is_build_prompt("design a site"))
         self.assertTrue(code_agent.is_build_prompt(quoted))
+
+    def test_attach_build_contract_once(self):
+        quoted = (
+            f"{code_agent.BUILD_PROMPT}\n\n<approved_plan>\n"
+            "## Goal\nShip it.\n## Assets\n- images/liner.png\n</approved_plan>"
+        )
+        messages = [{"role": "user", "content": quoted}]
+        code_agent.attach_build_user_contract(messages)
+        code_agent.attach_build_user_contract(messages)
+        self.assertEqual(messages[0]["content"].count(code_agent.BUILD_CONTRACT_MARK), 1)
+        self.assertTrue(messages[0]["content"].startswith(code_agent.BUILD_PROMPT))
+        self.assertIn("Write and edit project files", messages[0]["content"])
+
+    def test_attach_build_contract_skips_non_build(self):
+        messages = [{"role": "user", "content": "design a site"}]
+        code_agent.attach_build_user_contract(messages)
+        self.assertEqual(messages[0]["content"], "design a site")
+        self.assertNotIn(code_agent.BUILD_CONTRACT_MARK, messages[0]["content"])
 
     def test_truncate_step_text(self):
         short = "hello"

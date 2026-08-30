@@ -76,6 +76,15 @@ _EXPLICIT_NEW_RE = re.compile(
 _RASTER_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _NAMED_DEST_RE = re.compile(r"(?i)\bimages/([A-Za-z][A-Za-z0-9._-]*)")
 _SKIP_DEST_STEMS = frozenset({"image", "images", "generated", "generated.png"})
+_APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
+_ASSETS_SECTION_RE = re.compile(
+    r"(?im)^#{1,3}\s+assets\b[^\n]*\n(.*?)(?=^#{1,3}\s+|\Z)"
+)
+_ASSET_NONE_RE = re.compile(r"(?is)^\s*(?:[-*]\s*)?none\b")
+_ASSET_FILE_RE = re.compile(r"(?i)\b[\w./-]+\.(?:png|jpe?g|webp|gif)\b")
+_SKIP_ASSET_STEMS = frozenset(
+    {"etc", "css", "css3", "html", "html5", "js", "javascript", "react", "vue"}
+)
 _MIN_GPU_RASTER_BYTES = 50_000
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -296,6 +305,32 @@ def _last_assistant_text(data: ChatCompletionRequest) -> str:
     return ""
 
 
+def _plan_asset_rasters(text: str) -> list[str]:
+    """PNG/WebP dests from an approved plan or ## Assets section."""
+    blob = text or ""
+    match = _APPROVED_PLAN_RE.search(blob)
+    if match:
+        blob = match.group(1) or ""
+    section = _ASSETS_SECTION_RE.search(blob)
+    if section:
+        body = section.group(1) or ""
+        if _ASSET_NONE_RE.search(body.strip()) and not _ASSET_FILE_RE.search(body):
+            return []
+        blob = body
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _ASSET_FILE_RE.findall(blob):
+        name = Path(str(raw).replace("\\", "/")).name
+        stem = Path(name).stem.lower().replace("_", "-")
+        if not stem or stem in _SKIP_DEST_STEMS or stem in _SKIP_ASSET_STEMS:
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        found.append(name)
+    return found
+
+
 def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
     from common.phrase_switch import last_user_text, requested_image_prompt
 
@@ -306,9 +341,14 @@ def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
     text = (last_user_text(data) or "").strip()
     if _EXPLICIT_NEW_RE.search(text):
         return True
-    if is_build_prompt(text):
-        return bool(_EXPLICIT_NEW_RE.search(_last_assistant_text(data) or ""))
-    return False
+    if not is_build_prompt(text):
+        return False
+    if _plan_asset_rasters(text):
+        return True
+    assistant = _last_assistant_text(data) or ""
+    if _EXPLICIT_NEW_RE.search(assistant):
+        return True
+    return bool(_plan_asset_rasters(assistant))
 
 
 def _classify_prior_facts(job, workspace_paths: list[str]) -> str:

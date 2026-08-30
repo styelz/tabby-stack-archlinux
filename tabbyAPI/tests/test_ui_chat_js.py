@@ -261,6 +261,7 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function lastUnbuiltPlanIndex()", self.src)
         self.assertIn("function canBuildPlan(idx)", self.src)
         self.assertIn("<approved_plan>", self.src)
+        self.assertIn("function buildApprovedPlan(", self.src)
         self.assertIn("opts.agent = replayAgent", self.src)
         self.assertIn("normalizeAgent((opts && opts.agent) || codeAgent)", self.src)
         self.assertIn("Agent edits files, Ask answers without changing them", self.src)

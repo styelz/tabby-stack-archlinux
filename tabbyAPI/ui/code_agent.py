@@ -45,7 +45,9 @@ CODE_SYSTEM = (
     "short summary of what you wrote or optimized. "
     "Earlier messages in this thread are the brief, including an "
     "<approved_plan> or the last Plan reply. Implement that; do not ask for "
-    "a new spec."
+    "a new spec. If the plan says to canvas-draw, Node-export, Pillow, or "
+    "base64 fake site PNGs, ignore those steps: point img src at the Asset "
+    "dest paths. JS/CSS may still animate stars."
 )
 ASK_SYSTEM = (
     "You are answering questions about a workspace project folder on this "
@@ -70,7 +72,12 @@ PLAN_SYSTEM = (
     "## Goal\n## Files\n## Steps\n## Assets\n## Risks\n"
     "Files: concrete relative paths and what each one is for. "
     "Steps: numbered and specific enough to implement without asking again. "
-    "Assets: dest paths for images (logo/text vs photo), or None. "
+    "Assets: dest paths the GPU will render after Build (hero/scene = Flux "
+    "photo; logos/text/named ships = qwen-image:), shown with img src, or "
+    "None. Do not plan canvas, toDataURL, Pillow, Node, or base64 fake "
+    "PNGs, or placeholders reserved for later. JS/CSS starfield and warp "
+    "animation is allowed and is not an Asset. OptimizeImage is after real "
+    "files exist, not canvas export. "
     "Do not implement."
 )
 PLAN_CONTRACT_MARK = "<plan_mode>"
@@ -78,8 +85,10 @@ PLAN_USER_SUFFIX = (
     "\n\n<plan_mode>\n"
     "Write the full implementation plan now as markdown with headings Goal, "
     "Files, Steps, Assets, and Risks. Name concrete relative paths. Number "
-    "the steps. Do not implement. Do not announce a plan — this reply is "
-    "the plan. The user will click Build later.\n"
+    "the steps. Assets are GPU dest paths (or None), not canvas/Node "
+    "exports. Page pictures use img tags. Starfields may be JS. Do not "
+    "implement. Do not announce a plan — this reply is the plan. The user "
+    "will click Build later.\n"
     "</plan_mode>"
 )
 PLAN_RETRY = (
@@ -109,6 +118,17 @@ _READONLY_REFUSE = (
     "to Agent to change files."
 )
 BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
+BUILD_CONTRACT_MARK = "<build_mode>"
+BUILD_USER_SUFFIX = (
+    "\n\n<build_mode>\n"
+    "The plan is already approved. Write and edit project files with tools "
+    "now. Do not reply with Goal, Files, Steps, Assets, or Risks headings. "
+    "Site images listed under Assets are GPU PNGs: point img src at those "
+    "dest paths; do not draw them on canvas or export Node/Pillow/base64 "
+    "PNGs. JS/CSS may still animate stars and warp effects. Use "
+    "OptimizeImage after real image files exist if they asked to optimize.\n"
+    "</build_mode>"
+)
 
 
 def normalize_agent(value: Any) -> str:
@@ -177,6 +197,20 @@ def attach_plan_user_contract(messages: list) -> None:
         if _content_has_mark(content, PLAN_CONTRACT_MARK):
             return
         item["content"] = _append_text_content(content, PLAN_USER_SUFFIX)
+        return
+
+
+def attach_build_user_contract(messages: list) -> None:
+    """Pin the Build contract on the last user turn (server-only)."""
+    for item in reversed(messages):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if not is_build_prompt(content):
+            return
+        if _content_has_mark(content, BUILD_CONTRACT_MARK):
+            return
+        item["content"] = _append_text_content(content, BUILD_USER_SUFFIX)
         return
 
 

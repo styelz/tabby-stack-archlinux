@@ -14,13 +14,19 @@ from endpoints.OAI.types.chat_completion import (
     ChatCompletionResponse,
 )
 from endpoints.OAI.types.tools import Tool, ToolCall
-from images.chat import handle, job_id_from_history
+from images.chat import (
+    _explicit_new_rasters,
+    _plan_asset_rasters,
+    handle,
+    job_id_from_history,
+)
 from images.paths import (
     image_download_command,
     living_download_pairs,
     planned_dest_fact_list,
 )
 from images.plan import (
+    CLASSIFY_SYSTEM,
     ImageTurnPlan,
     classify_blob,
     fallback_item,
@@ -254,6 +260,56 @@ class PlanTests(unittest.TestCase):
         self.assertIn("tabby-image-job: abc-123", blob)
         self.assertIn("This turn:", blob)
         self.assertIn("implement the new images into the webpage", blob)
+
+    def test_classify_system_build_uses_plan_assets(self):
+        self.assertIn("## Assets PNG/WebP dests", CLASSIFY_SYSTEM)
+        self.assertIn("CSS-only plan whose Assets are None", CLASSIFY_SYSTEM)
+        self.assertNotIn("Build of a CSS plan, questions", CLASSIFY_SYSTEM)
+
+
+class BuildPlanAssetRasterTests(unittest.TestCase):
+    def test_assets_list_is_explicit(self):
+        from ui.code_agent import BUILD_PROMPT
+
+        plan = (
+            "## Goal\nSite.\n## Files\n- index.html\n## Steps\n1. Write.\n"
+            "## Assets\n- images/liner-alpha.png — luxury liner\n"
+            "- images/liner-beta.png\n## Risks\nGPU time.\n"
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="user", content="design a space site"),
+                ChatCompletionMessage(role="assistant", content=plan),
+                ChatCompletionMessage(
+                    role="user",
+                    content=f"{BUILD_PROMPT}\n\n<approved_plan>\n{plan}\n</approved_plan>",
+                ),
+            ]
+        )
+        self.assertEqual(
+            _plan_asset_rasters(f"<approved_plan>\n{plan}\n</approved_plan>"),
+            ["liner-alpha.png", "liner-beta.png"],
+        )
+        self.assertTrue(_explicit_new_rasters(data))
+
+    def test_assets_none_is_not_explicit(self):
+        from ui.code_agent import BUILD_PROMPT
+
+        plan = (
+            "## Goal\nCSS only.\n## Files\n- styles.css\n## Steps\n1. Tweak.\n"
+            "## Assets\nNone\n## Risks\nNone.\n"
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="assistant", content=plan),
+                ChatCompletionMessage(
+                    role="user",
+                    content=f"{BUILD_PROMPT}\n\n<approved_plan>\n{plan}\n</approved_plan>",
+                ),
+            ]
+        )
+        self.assertEqual(_plan_asset_rasters(plan), [])
+        self.assertFalse(_explicit_new_rasters(data))
 
 
 class CurlFromLivingFilesTests(unittest.TestCase):

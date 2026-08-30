@@ -146,6 +146,25 @@ class UiManagerTests(unittest.TestCase):
         self.assertIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
         self.assertTrue(payload["messages"][-1]["content"].startswith("design a site"))
 
+    def test_sanitize_code_build_injects_contract(self):
+        from ui import code_agent
+
+        quoted = (
+            f"{code_agent.BUILD_PROMPT}\n\n<approved_plan>\n"
+            "## Assets\n- images/liner.png\n</approved_plan>"
+        )
+        payload = manager.sanitize_code_payload(
+            {
+                "messages": [{"role": "user", "content": quoted}],
+                "chat_id": "w1",
+                "agent": "agent",
+            }
+        )
+        self.assertEqual(payload["agent"], "agent")
+        self.assertIn(code_agent.BUILD_CONTRACT_MARK, payload["messages"][-1]["content"])
+        self.assertNotIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
+        self.assertTrue(payload["messages"][-1]["content"].startswith(code_agent.BUILD_PROMPT))
+
     def test_sanitize_code_ask_skips_plan_contract(self):
         from ui import code_agent
 
@@ -159,6 +178,7 @@ class UiManagerTests(unittest.TestCase):
         self.assertEqual(payload["agent"], "ask")
         self.assertIn("answering questions", payload["messages"][0]["content"])
         self.assertNotIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
+        self.assertNotIn(code_agent.BUILD_CONTRACT_MARK, payload["messages"][-1]["content"])
         self.assertEqual(payload["messages"][-1]["content"], "what files are here?")
 
     def test_update_missing_script(self):
