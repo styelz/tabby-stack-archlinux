@@ -3283,6 +3283,7 @@ button.chip {
   50% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .chat-todo-icon.is-spin,
   .is-working .think-icon,
   .is-working .think-spark,
   .think-icon.is-processing,
@@ -3298,6 +3299,143 @@ button.chip {
   }
 }
 .chat-compose { position: relative; flex: 0 0 auto; min-width: 0; }
+.chat-todo-list {
+  margin: 0 0 0.5rem;
+  padding: 0.25rem 0.375rem 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--bg-elev);
+  box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.18);
+}
+.chat-todo-list[hidden] { display: none; }
+.chat-todo-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.chat-todo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 0.375rem 0.25rem;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-todo-toggle:focus { outline: none; }
+.chat-todo-toggle:focus-visible {
+  outline: 0.125rem solid var(--focus-ring);
+  outline-offset: 0.125rem;
+  border-radius: 0.375rem;
+}
+.chat-todo-chevron {
+  width: 0;
+  height: 0;
+  flex: 0 0 auto;
+  border-left: 0.3125rem solid currentColor;
+  border-top: 0.25rem solid transparent;
+  border-bottom: 0.25rem solid transparent;
+  opacity: 0.7;
+  transition: transform 0.15s ease;
+}
+.chat-todo-list.is-open .chat-todo-chevron {
+  transform: rotate(90deg);
+}
+.chat-todo-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-todo-build {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+.chat-todo-items {
+  list-style: none;
+  margin: 0;
+  padding: 0.125rem 0.25rem 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: min(10rem, 28vh);
+  overflow: auto;
+}
+.chat-todo-items[hidden] { display: none; }
+.chat-todo-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+.chat-todo-item.is-done {
+  color: var(--muted);
+}
+.chat-todo-item.is-done .chat-todo-text {
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+.chat-todo-item.is-current .chat-todo-text {
+  color: var(--text);
+  font-weight: 600;
+}
+.chat-todo-icon {
+  flex: 0 0 auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 0.1rem solid var(--muted);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.chat-todo-item.is-done .chat-todo-icon {
+  display: grid;
+  place-items: center;
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.chat-todo-item.is-done .chat-todo-icon::after {
+  content: "";
+  width: 0.2rem;
+  height: 0.375rem;
+  border-right: 0.11rem solid var(--bg);
+  border-bottom: 0.11rem solid var(--bg);
+  transform: rotate(45deg) translateY(-0.05rem);
+}
+.chat-todo-icon.is-spin {
+  border: 0;
+  display: grid;
+  place-items: center;
+  animation: think-spin 0.85s linear infinite;
+}
+.chat-todo-icon.is-spin .think-spark {
+  width: 0.75rem;
+  height: 0.75rem;
+  clip-path: none;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--accent), var(--accent-2), var(--ok), transparent 72%);
+  -webkit-mask: radial-gradient(farthest-side, transparent 54%, #000 58%);
+  mask: radial-gradient(farthest-side, transparent 54%, #000 58%);
+  filter: drop-shadow(0 0 0.25rem rgba(var(--accent-rgb), 0.45));
+}
+.chat-todo-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .slash-menu {
   position: absolute;
   left: 0;

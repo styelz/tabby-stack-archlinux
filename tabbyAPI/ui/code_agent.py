@@ -133,6 +133,7 @@ BUILD_USER_SUFFIX = (
     "now. Do not reply with Goal, Files, Steps, Assets, Checklist, or Risks "
     "headings. Work the plan's ## Checklist in order (every `- [ ]` item). "
     "Do not skip items and do not start extra work that is not on the list. "
+    "After you finish each checklist item, write Done: <exact item> on its own line. "
     "After the last item, stop calling tools and give a short summary. "
     "Site images listed under Assets are GPU PNGs: point img src at those "
     "dest paths; do not draw them on canvas or export Node/Pillow/base64 "

@@ -186,6 +186,16 @@ function mountChat(root) {
         </div>
         <div class="chat-compose">
           <button type="button" class="chat-resize chat-resize-y" id="chat-compose-resize" aria-label="Resize input" title="Drag to resize"></button>
+          <div class="chat-todo-list" id="chat-todo-list" hidden>
+            <div class="chat-todo-head">
+              <button type="button" class="chat-todo-toggle" id="chat-todo-toggle" aria-expanded="true" aria-controls="chat-todo-items">
+                <span class="chat-todo-chevron" aria-hidden="true"></span>
+                <span class="chat-todo-title" id="chat-todo-title">Todos</span>
+              </button>
+              <button type="button" class="btn primary chat-todo-build" id="chat-todo-build" hidden title="Implement this plan" aria-label="Implement this plan">Build</button>
+            </div>
+            <ul class="chat-todo-items" id="chat-todo-items"></ul>
+          </div>
           <ul class="slash-menu" id="history-menu" hidden></ul>
           <ul class="slash-menu" id="slash-menu" hidden></ul>
           <div class="chat-edit-bar" id="chat-edit-bar" hidden>
@@ -307,6 +317,11 @@ function mountChat(root) {
   const jumpBtn = root.querySelector("#chat-jump");
   const form = root.querySelector("#chat-form");
   const input = root.querySelector("#chat-input");
+  const todoListEl = root.querySelector("#chat-todo-list");
+  const todoToggleEl = root.querySelector("#chat-todo-toggle");
+  const todoTitleEl = root.querySelector("#chat-todo-title");
+  const todoItemsEl = root.querySelector("#chat-todo-items");
+  const todoBuildBtn = root.querySelector("#chat-todo-build");
   const sendBtn = root.querySelector("#chat-send");
   const agentWrap = root.querySelector("#chat-agent");
   const agentBtn = root.querySelector("#chat-agent-btn");
@@ -451,6 +466,9 @@ function mountChat(root) {
   const PLAN_PLACEHOLDER = "Describe what to plan. Review it, then click Build to implement.";
   const BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation.";
   const AGENT_KEY = "tabby-ui-code-agent";
+  let livePlanChecklist = null;
+  let planChecklistOpen = true;
+  let planChecklistBuilding = false;
   const AGENT_LABELS = { agent: "Agent", ask: "Ask", plan: "Plan" };
   const AGENT_ORDER = ["agent", "ask", "plan"];
 
@@ -750,6 +768,17 @@ function mountChat(root) {
         }
         if (Array.isArray(item.tool_calls) && item.tool_calls.length) {
           out.tool_calls = item.tool_calls.map((call) => Object.assign({}, call));
+        }
+        if (Array.isArray(item.checklist) && item.checklist.length) {
+          const rows = item.checklist
+            .filter((row) => row && typeof row === "object" && String(row.text || "").trim())
+            .map((row) => {
+              const status = row.status === "in-progress" || row.status === "completed"
+                ? row.status
+                : "pending";
+              return { text: String(row.text).replace(/\s+/g, " ").trim(), status };
+            });
+          if (rows.length) out.checklist = rows;
         }
       }
       if (out.role === "tool") {
@@ -1388,6 +1417,7 @@ function mountChat(root) {
     paintTabs();
     paintFilesToggle();
     paintCodeAgent();
+    paintPlanChecklist();
   }
 
   function paintCodeAgent() {
@@ -5906,6 +5936,7 @@ function mountChat(root) {
   function canBuildPlan(idx) {
     if (activeMode() !== "code") return false;
     if (modelLoading || inFlight) return false;
+    if (!Number.isInteger(idx) || idx < 0) return false;
     return idx === lastUnbuiltPlanIndex();
   }
 
@@ -5913,9 +5944,11 @@ function mountChat(root) {
     if (!log) return;
     log.querySelectorAll(".chat-plan-build").forEach((node) => node.remove());
     const idx = lastUnbuiltPlanIndex();
-    if (idx < 0) return;
-    const host = log.querySelector(`[data-msg-idx="${idx}"]`);
-    if (host) attachPlanBuild(host, idx);
+    if (idx >= 0) {
+      const host = log.querySelector(`[data-msg-idx="${idx}"]`);
+      if (host) attachPlanBuild(host, idx);
+    }
+    paintPlanChecklist();
   }
 
   function attachPlanBuild(host, idx) {
@@ -5947,10 +5980,355 @@ function mountChat(root) {
       : BUILD_PROMPT;
     setCodeAgent("agent");
     hidePopovers();
+    startChecklistBuild(store.activeId);
     runLoop(prompt, { hidden: true }).catch((err) => {
       addBubble("assistant", `Error: ${err.message}`);
+      finishChecklistBuild({ chatId: store.activeId, stopped: true });
       persist();
     });
+  }
+
+  function parsePlanChecklist(text) {
+    let blob = String(text || "");
+    const approved = /<approved_plan>([\s\S]*?)<\/approved_plan>/i.exec(blob);
+    if (approved) blob = approved[1] || "";
+    const heading = blob.search(/^#{1,3}\s+(?:checklist|to-?dos?)\b/im);
+    if (heading < 0) return [];
+    const nl = blob.slice(heading).indexOf("\n");
+    const rest = nl < 0 ? "" : blob.slice(heading + nl + 1);
+    const next = rest.search(/^#{1,3}\s+/m);
+    const body = next < 0 ? rest : rest.slice(0, next);
+    const found = [];
+    const seen = new Set();
+    const itemRe = /^\s*(?:[-*]|\d+[.)])\s*\[\s*[xX ]?\s*\]\s+(.+?\S)\s*$/gm;
+    let match;
+    while ((match = itemRe.exec(body))) {
+      const line = String(match[1] || "").replace(/\s+/g, " ").trim();
+      const key = line.toLowerCase();
+      if (!line || key === "none" || key === "n/a" || seen.has(key)) continue;
+      seen.add(key);
+      found.push(line);
+    }
+    return found;
+  }
+
+  function cloneChecklist(list) {
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((row) => row && typeof row === "object" && String(row.text || "").trim())
+      .map((row) => ({
+        text: String(row.text).replace(/\s+/g, " ").trim(),
+        status: row.status === "in-progress" || row.status === "completed" ? row.status : "pending",
+      }));
+  }
+
+  function mergeChecklistItems(prev, texts) {
+    const oldByKey = new Map();
+    cloneChecklist(prev).forEach((item) => {
+      oldByKey.set(item.text.toLowerCase(), item);
+    });
+    return (texts || []).map((raw) => {
+      const text = String(raw || "").replace(/\s+/g, " ").trim();
+      const prior = oldByKey.get(text.toLowerCase());
+      if (prior && (prior.status === "completed" || prior.status === "in-progress")) {
+        return { text, status: prior.status };
+      }
+      return { text, status: "pending" };
+    }).filter((item) => item.text);
+  }
+
+  function latestPlanIndexIn(list) {
+    if (!Array.isArray(list)) return -1;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const item = list[i];
+      if (item && item.role === "assistant" && normalizeAgent(item.agent) === "plan") return i;
+    }
+    return -1;
+  }
+
+  function latestPlanMessage(list) {
+    const rows = list || messages;
+    const idx = latestPlanIndexIn(rows);
+    return idx >= 0 ? rows[idx] : null;
+  }
+
+  function planMessageFor(chatId) {
+    const list = liveMessages(chatId);
+    const idx = latestPlanIndexIn(list);
+    if (idx < 0) return null;
+    return { list, idx, item: list[idx] };
+  }
+
+  function planBuildOutcome(list) {
+    const rows = list || messages;
+    const idx = latestPlanIndexIn(rows);
+    if (idx < 0) return "none";
+    let sawBuild = false;
+    for (let i = idx + 1; i < rows.length; i += 1) {
+      const item = rows[i];
+      if (!item) continue;
+      if (item.role === "user" && isBuildPromptText(item.content)) {
+        sawBuild = true;
+        continue;
+      }
+      if (sawBuild && item.role === "assistant" && !(Array.isArray(item.tool_calls) && item.tool_calls.length)) {
+        return item.status_label === "Stopped" ? "stopped" : "done";
+      }
+    }
+    return sawBuild ? "building" : "unbuilt";
+  }
+
+  function visibleChecklistItems() {
+    if (livePlanChecklist && livePlanChecklist.chatId === store.activeId && livePlanChecklist.items.length) {
+      return livePlanChecklist.items;
+    }
+    const plan = latestPlanMessage();
+    if (plan && Array.isArray(plan.checklist) && plan.checklist.length) return plan.checklist;
+    if (plan) {
+      return parsePlanChecklist(plan.content).map((text) => ({ text, status: "pending" }));
+    }
+    return [];
+  }
+
+  function paintPlanChecklist(opts) {
+    if (!todoListEl) return;
+    const items = visibleChecklistItems();
+    const show = activeMode() === "code" && items.length > 0;
+    todoListEl.hidden = !show;
+    if (!show) return;
+    const done = items.filter((item) => item.status === "completed").length;
+    const current = items.find((item) => item.status === "in-progress");
+    const building = planChecklistBuilding && flightChatId === store.activeId;
+    if (todoTitleEl) {
+      todoTitleEl.textContent = !planChecklistOpen && building && current
+        ? current.text
+        : `Todos (${done}/${items.length})`;
+    }
+    todoListEl.classList.toggle("is-open", planChecklistOpen);
+    todoListEl.classList.toggle("is-building", building);
+    if (todoToggleEl) {
+      todoToggleEl.setAttribute("aria-expanded", planChecklistOpen ? "true" : "false");
+      todoToggleEl.setAttribute("aria-label", `Todos, ${done} of ${items.length} completed`);
+      todoToggleEl.title = !planChecklistOpen && building && current ? current.text : `Todos (${done}/${items.length})`;
+    }
+    if (todoItemsEl) todoItemsEl.hidden = !planChecklistOpen;
+    const canBuild = !planChecklistBuilding && canBuildPlan(lastUnbuiltPlanIndex());
+    if (todoBuildBtn) {
+      todoBuildBtn.hidden = !canBuild;
+      todoBuildBtn.disabled = !canBuild;
+    }
+    if (!todoItemsEl || !planChecklistOpen) return;
+    const frag = document.createDocumentFragment();
+    items.forEach((item) => {
+      const row = document.createElement("li");
+      const status = item.status === "in-progress" || item.status === "completed" ? item.status : "pending";
+      row.className = "chat-todo-item"
+        + (status === "completed" ? " is-done" : status === "in-progress" ? " is-current" : "");
+      const icon = document.createElement("span");
+      icon.className = "chat-todo-icon" + (status === "in-progress" ? " is-spin" : "");
+      icon.setAttribute("aria-hidden", "true");
+      if (status === "in-progress") {
+        const spark = document.createElement("span");
+        spark.className = "think-spark";
+        icon.appendChild(spark);
+      }
+      const label = document.createElement("span");
+      label.className = "chat-todo-text";
+      label.textContent = item.text;
+      label.title = item.text;
+      row.append(icon, label);
+      frag.appendChild(row);
+    });
+    todoItemsEl.replaceChildren(frag);
+    if (opts && opts.scrollCurrent) {
+      const currentEl = todoItemsEl.querySelector(".chat-todo-item.is-current");
+      if (currentEl && currentEl.scrollIntoView) {
+        currentEl.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+
+  function syncPlanChecklist() {
+    const plan = latestPlanMessage();
+    if (plan) {
+      if (!Array.isArray(plan.checklist) || !plan.checklist.length) {
+        const texts = parsePlanChecklist(plan.content);
+        if (texts.length) {
+          plan.checklist = texts.map((text) => ({ text, status: "pending" }));
+        }
+      }
+      if (
+        Array.isArray(plan.checklist)
+        && plan.checklist.length
+        && !planChecklistBuilding
+        && planBuildOutcome() === "done"
+        && plan.checklist.some((item) => item.status !== "completed")
+      ) {
+        plan.checklist.forEach((item) => {
+          item.status = "completed";
+        });
+      }
+    }
+    paintPlanChecklist();
+  }
+
+  function beginLivePlanChecklist(chatId) {
+    const found = planMessageFor(chatId);
+    let base = [];
+    if (found && Array.isArray(found.item.checklist) && found.item.checklist.length) {
+      base = cloneChecklist(found.item.checklist);
+    } else if (found) {
+      base = parsePlanChecklist(found.item.content).map((text) => ({ text, status: "pending" }));
+    }
+    livePlanChecklist = { chatId, items: base };
+    if (store.activeId === chatId) paintPlanChecklist();
+  }
+
+  function ingestLivePlanChecklist(text, chatId) {
+    if (!livePlanChecklist || livePlanChecklist.chatId !== chatId) {
+      livePlanChecklist = { chatId, items: [] };
+    }
+    const texts = parsePlanChecklist(text);
+    if (!texts.length) return;
+    livePlanChecklist.items = mergeChecklistItems(livePlanChecklist.items, texts);
+    if (store.activeId === chatId) paintPlanChecklist();
+  }
+
+  function promoteNextChecklist(items) {
+    let foundCurrent = false;
+    items.forEach((item) => {
+      if (item.status === "completed") return;
+      if (!foundCurrent && planChecklistBuilding) {
+        item.status = "in-progress";
+        foundCurrent = true;
+      } else if (item.status === "in-progress") {
+        item.status = "pending";
+      }
+    });
+  }
+
+  function startChecklistBuild(chatId) {
+    planChecklistBuilding = true;
+    planChecklistOpen = true;
+    livePlanChecklist = null;
+    const found = planMessageFor(chatId);
+    if (!found) {
+      paintPlanChecklist();
+      return;
+    }
+    const texts = parsePlanChecklist(found.item.content);
+    if (texts.length) {
+      found.item.checklist = mergeChecklistItems(found.item.checklist, texts);
+    }
+    const items = Array.isArray(found.item.checklist) ? found.item.checklist : [];
+    items.forEach((item) => {
+      if (item.status === "in-progress") item.status = "pending";
+    });
+    const first = items.find((item) => item.status !== "completed");
+    if (first) first.status = "in-progress";
+    persist();
+    if (store.activeId === chatId) paintPlanChecklist({ scrollCurrent: true });
+  }
+
+  function finishChecklistBuild({ chatId, stopped } = {}) {
+    if (!planChecklistBuilding) return;
+    const found = planMessageFor(chatId || flightChatId || store.activeId);
+    planChecklistBuilding = false;
+    if (!found || !Array.isArray(found.item.checklist)) {
+      paintPlanChecklist();
+      return;
+    }
+    if (stopped) {
+      found.item.checklist.forEach((item) => {
+        if (item.status === "in-progress") item.status = "pending";
+      });
+    } else {
+      found.item.checklist.forEach((item) => {
+        item.status = "completed";
+      });
+    }
+    persist();
+    paintPlanChecklist();
+  }
+
+  function checklistPathNeedles(step) {
+    const args = (step && step.args) || {};
+    const names = [args.path, args.to].filter(Boolean).map((value) => String(value));
+    const label = String((step && step.label) || "");
+    const fromLabel = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
+    if (fromLabel) names.push(fromLabel);
+    const needles = [];
+    names.forEach((raw) => {
+      const path = String(raw || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
+      if (!path) return;
+      const lower = path.toLowerCase();
+      needles.push(lower);
+      const base = lower.split("/").pop();
+      if (base && base !== lower) needles.push(base);
+    });
+    return needles;
+  }
+
+  function itemMentionsPath(item, needles) {
+    const hay = String((item && item.text) || "").toLowerCase();
+    return needles.some((needle) => needle.length >= 2 && hay.includes(needle));
+  }
+
+  function completeChecklistAt(chatId, idx) {
+    const found = planMessageFor(chatId);
+    if (!found || !Array.isArray(found.item.checklist)) return false;
+    const items = found.item.checklist;
+    if (idx < 0 || !items[idx] || items[idx].status === "completed") return false;
+    items[idx].status = "completed";
+    promoteNextChecklist(items);
+    persist();
+    if (store.activeId === chatId) paintPlanChecklist({ scrollCurrent: true });
+    return true;
+  }
+
+  function advanceChecklistFromTool(step, chatId) {
+    if (!planChecklistBuilding) return;
+    const label = String((step && step.label) || "");
+    if (!label || label === "Tool error") return;
+    if (!/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\b/.test(label)) return;
+    const found = planMessageFor(chatId);
+    if (!found || !Array.isArray(found.item.checklist)) return;
+    const items = found.item.checklist;
+    const current = items.findIndex((item) => item.status === "in-progress");
+    const idx = current >= 0 ? current : items.findIndex((item) => item.status === "pending");
+    if (idx < 0) return;
+    const needles = checklistPathNeedles(step);
+    if (!needles.length || !itemMentionsPath(items[idx], needles)) return;
+    completeChecklistAt(chatId, idx);
+  }
+
+  function applyChecklistDoneLines(text, chatId) {
+    if (!planChecklistBuilding) return;
+    const found = planMessageFor(chatId);
+    if (!found || !Array.isArray(found.item.checklist)) return;
+    const items = found.item.checklist;
+    const re = /(?:^|\n)\s*Done:\s*(.+?)\s*$/gim;
+    let match;
+    let changed = false;
+    while ((match = re.exec(String(text || "")))) {
+      const needle = String(match[1] || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (!needle) continue;
+      let idx = items.findIndex((item) => item.status !== "completed" && item.text.toLowerCase() === needle);
+      if (idx < 0) {
+        idx = items.findIndex((item) => {
+          if (item.status === "completed") return false;
+          const hay = item.text.toLowerCase();
+          return needle.length >= 8 && (hay.includes(needle) || needle.includes(hay));
+        });
+      }
+      if (idx < 0 || items[idx].status === "completed") continue;
+      items[idx].status = "completed";
+      changed = true;
+    }
+    if (!changed) return;
+    promoteNextChecklist(items);
+    persist();
+    if (store.activeId === chatId) paintPlanChecklist({ scrollCurrent: true });
   }
 
   function cancelEdit() {
@@ -8049,6 +8427,7 @@ function mountChat(root) {
     }
     paintEmpty();
     paintFindHits();
+    syncPlanChecklist();
     if (stickToEnd !== false) stickLog(true);
     else paintJump();
   }
@@ -9435,9 +9814,13 @@ function mountChat(root) {
     const sendAgent = chatMode(targetChat) === "code"
       ? normalizeAgent((opts && opts.agent) || codeAgent)
       : "";
+    if (sendAgent === "plan") beginLivePlanChecklist(chatId);
     const viewing = store.activeId === chatId;
     abortController = new AbortController();
     const outboundText = expandSlash(text);
+    if (isBuildPromptText(outboundText) && !planChecklistBuilding) {
+      startChecklistBuild(chatId);
+    }
     const list = liveMessages(chatId);
     if (resume) {
       const prompt = String((opts && opts.prompt) || "").trim();
@@ -9528,6 +9911,7 @@ function mountChat(root) {
         if (response.status === 401) {
           poll.stop();
           working.stopClock();
+          finishChecklistBuild({ chatId, stopped: true });
           persist();
           window.location.href = TabbyUI.path("login");
           return;
@@ -9560,6 +9944,8 @@ function mountChat(root) {
           }
           if (reasoning) working.setReasoning(reasoning);
           if (assembled) working.setAnswer(assembled);
+          if (assembled && sendAgent === "plan") ingestLivePlanChecklist(assembled, chatId);
+          if (assembled && planChecklistBuilding) applyChecklistDoneLines(assembled, chatId);
           if (data.usage) applyUsage(data.usage, chatId);
         } else {
           const reader = response.body.getReader();
@@ -9619,6 +10005,9 @@ function mountChat(root) {
                 hideStackQueue(working);
                 if (event.step.type === "demote") assembled = "";
                 working.addStep(event.step);
+                if (event.step.type === "tool" && event.step.result) {
+                  advanceChecklistFromTool(event.step, chatId);
+                }
               }
               if (event.tool_calls) toolCalls = event.tool_calls;
               if (event.reasoning) {
@@ -9630,6 +10019,8 @@ function mountChat(root) {
                 hideStackQueue(working, { label: activity.label || "Thinking", processing: false });
                 assembled += event.content;
                 working.setAnswer(assembled);
+                if (sendAgent === "plan") ingestLivePlanChecklist(assembled, chatId);
+                if (planChecklistBuilding) applyChecklistDoneLines(assembled, chatId);
               } else if (event.content) {
                 // Preserve whitespace-only chunks for final assembly without
                 // promoting an empty bubble.
@@ -9696,6 +10087,13 @@ function mountChat(root) {
           args: call.arguments,
           result: ran.result,
         });
+        advanceChecklistFromTool({
+          type: "tool",
+          name: call.name,
+          label: ran.label,
+          args: call.arguments,
+          result: ran.result,
+        }, chatId);
         list.push({
           role: "tool",
           content: ran.result,
@@ -9768,6 +10166,16 @@ function mountChat(root) {
       else if (statusLabel) item.status_label = statusLabel;
       if (sendAgent === "ask" || sendAgent === "plan") item.agent = sendAgent;
       if (savedSteps.length) item.steps = savedSteps;
+      if (sendAgent === "plan") {
+        const texts = parsePlanChecklist(assembled);
+        const live = livePlanChecklist && livePlanChecklist.chatId === chatId
+          ? livePlanChecklist.items
+          : [];
+        if (texts.length || live.length) {
+          item.checklist = mergeChecklistItems(live, texts.length ? texts : live.map((row) => row.text));
+        }
+        if (livePlanChecklist && livePlanChecklist.chatId === chatId) livePlanChecklist = null;
+      }
       const last = messages.length ? messages[messages.length - 1] : null;
       const already = Boolean(
         last && last.role === "assistant" && String(last.content || "") === assembled
@@ -9781,10 +10189,14 @@ function mountChat(root) {
           assembled || (userStopped ? STOPPED_NOTE : "")
         );
         attachPlanBuild(working.node, messages.length - 1);
+        paintPlanChecklist();
         stickLog();
       }
     } else if (store.activeId === chatId) {
       persist();
+    }
+    if (planChecklistBuilding && isBuildPromptText(outboundText)) {
+      finishChecklistBuild({ chatId, stopped: userStopped });
     }
     if (flightWorking === working) flightWorking = null;
     if (chatMode(store.chats.find((item) => item.id === chatId)) === "code") {
@@ -9853,6 +10265,7 @@ function mountChat(root) {
       }
     } finally {
       if (filesTicker) clearInterval(filesTicker);
+      const endedChatId = flightChatId;
       inFlight = false;
       loopBusy = false;
       abortController = null;
@@ -9860,6 +10273,12 @@ function mountChat(root) {
       paintCompose();
       renderSidebar();
       refreshPlanBuild();
+      if (planChecklistBuilding) {
+        finishChecklistBuild({
+          chatId: endedChatId || store.activeId,
+          stopped: stopKind === "stop",
+        });
+      }
       input.focus();
     }
   }
@@ -9867,6 +10286,17 @@ function mountChat(root) {
   root.querySelector("#chat-new").addEventListener("click", startNewChat);
   root.querySelector("#chat-clear").addEventListener("click", clearHistory);
 
+  if (todoToggleEl) {
+    todoToggleEl.addEventListener("click", () => {
+      planChecklistOpen = !planChecklistOpen;
+      paintPlanChecklist();
+    });
+  }
+  if (todoBuildBtn) {
+    todoBuildBtn.addEventListener("click", () => {
+      buildApprovedPlan(lastUnbuiltPlanIndex());
+    });
+  }
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     stopMic();
