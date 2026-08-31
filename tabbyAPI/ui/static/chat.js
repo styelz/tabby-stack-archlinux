@@ -491,6 +491,7 @@ function mountChat(root) {
   let termSlot = "1";
   let speakUtter = null;
   let speakWatch = 0;
+  let speakPaused = false;
   let filesFocusDir = "";
   let extraFolders = [];
   let folderOpen = Object.create(null);
@@ -2740,12 +2741,19 @@ function mountChat(root) {
     const active = Boolean(speakUtter);
     speakBar.hidden = !active;
     if (!speakPauseBtn) return;
-    const paused = Boolean(active && window.speechSynthesis && window.speechSynthesis.paused);
+    const paused = Boolean(active && speakPaused);
     speakPauseBtn.innerHTML = paused ? PLAY_SVG : PAUSE_SVG;
     const pauseLabel = paused ? "Resume speaking" : "Pause speaking";
     speakPauseBtn.setAttribute("aria-label", pauseLabel);
     speakPauseBtn.title = pauseLabel;
     speakPauseBtn.classList.toggle("is-live", active && !paused);
+  }
+
+  function clearSpeak() {
+    speakUtter = null;
+    speakPaused = false;
+    stopSpeakWatch();
+    paintSpeak();
   }
 
   function watchSpeak() {
@@ -2759,26 +2767,35 @@ function mountChat(root) {
       }
       const synth = window.speechSynthesis;
       if (Date.now() - started < 800) return;
-      if (synth && !synth.pending && !synth.speaking && !synth.paused) {
-        speakUtter = null;
-        stopSpeakWatch();
-        paintSpeak();
+      if (synth && !synth.pending && !synth.speaking && !synth.paused && !speakPaused) {
+        clearSpeak();
       }
     }, 250);
   }
 
   function stopSpeak() {
     if (window.speechSynthesis) speechSynthesis.cancel();
-    speakUtter = null;
-    stopSpeakWatch();
-    paintSpeak();
+    clearSpeak();
+  }
+
+  function applySpeakPause() {
+    const synth = window.speechSynthesis;
+    if (!synth || !speakUtter) return;
+    if (speakPaused) {
+      synth.pause();
+      // Chromium often ignores the first pause() until a boundary, and
+      // speechSynthesis.paused can stay false after cancel()/speak().
+      if (!synth.paused) synth.pause();
+    } else {
+      synth.resume();
+      if (synth.paused) synth.resume();
+    }
   }
 
   function toggleSpeakPause() {
-    const synth = window.speechSynthesis;
-    if (!synth || !speakUtter) return;
-    if (synth.paused) synth.resume();
-    else synth.pause();
+    if (!window.speechSynthesis || !speakUtter) return;
+    speakPaused = !speakPaused;
+    applySpeakPause();
     paintSpeak();
   }
 
@@ -2786,19 +2803,33 @@ function mountChat(root) {
     stopSpeak();
     if (!window.speechSynthesis) return;
     const utter = new SpeechSynthesisUtterance(String(text || "").slice(0, 4000));
+    utter.onstart = () => {
+      if (speakUtter !== utter) return;
+      if (speakPaused) applySpeakPause();
+    };
+    utter.onboundary = () => {
+      if (speakUtter !== utter || !speakPaused) return;
+      const synth = window.speechSynthesis;
+      if (synth && synth.speaking && !synth.paused) synth.pause();
+    };
+    utter.onpause = () => {
+      if (speakUtter === utter) paintSpeak();
+    };
+    utter.onresume = () => {
+      if (speakUtter === utter) paintSpeak();
+    };
     utter.onend = () => {
       if (speakUtter !== utter) return;
-      speakUtter = null;
-      stopSpeakWatch();
-      paintSpeak();
+      clearSpeak();
     };
     utter.onerror = () => {
       if (speakUtter !== utter) return;
-      speakUtter = null;
-      stopSpeakWatch();
-      paintSpeak();
+      clearSpeak();
     };
     speakUtter = utter;
+    speakPaused = false;
+    // cancel() can leave paused stuck true; resume so speak() starts clean.
+    if (speechSynthesis.paused) speechSynthesis.resume();
     speechSynthesis.speak(utter);
     paintSpeak();
     watchSpeak();
