@@ -191,7 +191,7 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(recovered.client_saved)
                 await reset_mcp_image_jobs_for_tests()
 
-    async def test_interrupted_job_keeps_finished_items_but_errors(self):
+    async def test_interrupted_job_keeps_finished_items_and_resumes(self):
         from endpoints.core.image_jobs import (
             McpImageItem,
             McpImageJob,
@@ -234,16 +234,18 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 _persist_jobs()
 
                 await reset_mcp_image_jobs_for_tests()
-                self.assertIsNone(active_mcp_image_job())
+                active = active_mcp_image_job()
+                self.assertIsNotNone(active)
+                self.assertEqual(active.id, "job-restart-partial")
                 recovered = get_mcp_image_job("job-restart-partial")
-                self.assertEqual(recovered.status, "error")
-                self.assertIn("restarted", recovered.error.lower())
+                self.assertEqual(recovered.status, "queued")
+                self.assertEqual(recovered.error, "")
                 self.assertEqual(recovered.urls, ["https://gpu.example/v1/images/a.png"])
                 self.assertEqual(recovered.items[0].status, "done")
-                self.assertEqual(recovered.items[1].status, "error")
+                self.assertEqual(recovered.items[1].status, "queued")
                 disk = json.loads((Path(raw) / "mcp_jobs.json").read_text(encoding="utf-8"))
-                self.assertEqual(disk[-1]["status"], "error")
-                self.assertEqual(disk[-1]["items"][1]["status"], "error")
+                self.assertEqual(disk[-1]["status"], "queued")
+                self.assertEqual(disk[-1]["items"][1]["status"], "queued")
                 await reset_mcp_image_jobs_for_tests()
 
     async def test_coding_job_survives_restart_without_starting_comfy(self):
@@ -336,6 +338,57 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered.items[1].status, "error")
                 await reset_mcp_image_jobs_for_tests()
 
+    async def test_restart_abandon_error_resumes_unfinished_items(self):
+        from endpoints.core.image_jobs import (
+            McpImageItem,
+            McpImageJob,
+            RESTART_ABANDON_REASON,
+            _MCP_JOBS,
+            _MCP_ORDER,
+            _persist_jobs,
+            get_mcp_image_job,
+            reset_mcp_image_jobs_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch("common.gpu_mode.GENERATED_DIR", Path(raw)):
+                await reset_mcp_image_jobs_for_tests()
+                job = McpImageJob(
+                    id="job-restart-abandon-partial",
+                    items=[
+                        McpImageItem(
+                            prompt="logo",
+                            output_path="images/logo.png",
+                            status="done",
+                            urls=["https://gpu.example/v1/images/a.png"],
+                        ),
+                        McpImageItem(
+                            prompt="hero",
+                            output_path="images/hero.png",
+                            status="error",
+                            error=RESTART_ABANDON_REASON,
+                        ),
+                    ],
+                    restore=True,
+                    api_base="https://gpu.example/v1",
+                    wait_text="",
+                    wait_s=0,
+                    status="error",
+                    phase="error",
+                    error=f"{RESTART_ABANDON_REASON} 1/2 image(s) already rendered — those URLs are still below.",
+                    urls=["https://gpu.example/v1/images/a.png"],
+                )
+                _MCP_JOBS[job.id] = job
+                _MCP_ORDER.append(job.id)
+                _persist_jobs()
+                await reset_mcp_image_jobs_for_tests()
+                recovered = get_mcp_image_job("job-restart-abandon-partial")
+                self.assertEqual(recovered.status, "queued")
+                self.assertEqual(recovered.items[0].status, "done")
+                self.assertEqual(recovered.items[1].status, "queued")
+                self.assertEqual(recovered.error, "")
+                await reset_mcp_image_jobs_for_tests()
+
     async def test_abandon_inflight_jobs_clears_running_and_disk(self):
         from endpoints.core.image_jobs import (
             McpImageItem,
@@ -425,7 +478,7 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(task.cancelled() or task.done())
                 await reset_mcp_image_jobs_for_tests()
 
-    async def test_get_job_drops_orphan_running_status(self):
+    async def test_get_job_requeues_orphan_running_status(self):
         from endpoints.core.image_jobs import (
             McpImageItem,
             McpImageJob,
@@ -451,10 +504,10 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 _MCP_JOBS[job.id] = job
                 _MCP_ORDER.append(job.id)
                 recovered = get_mcp_image_job("job-orphan-get")
-                self.assertEqual(recovered.status, "error")
+                self.assertEqual(recovered.status, "queued")
                 await reset_mcp_image_jobs_for_tests()
 
-    async def test_running_job_with_no_worker_is_not_active(self):
+    async def test_running_job_with_no_worker_stays_active(self):
         from endpoints.core.image_jobs import (
             McpImageItem,
             McpImageJob,
@@ -479,8 +532,10 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
                 )
                 _MCP_JOBS[job.id] = job
                 _MCP_ORDER.append(job.id)
-                self.assertIsNone(active_mcp_image_job())
-                self.assertEqual(job.status, "error")
+                active = active_mcp_image_job()
+                self.assertIsNotNone(active)
+                self.assertEqual(active.id, "job-orphan")
+                self.assertEqual(job.status, "queued")
                 await reset_mcp_image_jobs_for_tests()
 
     def test_new_items_uniquify_paths(self):

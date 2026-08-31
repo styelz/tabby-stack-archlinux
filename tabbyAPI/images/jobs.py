@@ -425,28 +425,7 @@ def _job_from_persist(data: dict) -> Optional[McpImageJob]:
         owner=str(data.get("owner") or ""),
         chat_id=str(data.get("chat_id") or ""),
     )
-    if job.status == "coding":
-        job.phase = "writing_code"
-        return job
-    if job.status not in ("done", "error"):
-        # The render task that owned this job is gone; it cannot resume.
-        # Keep any items that already finished so Shell can still save them.
-        if job.done_count:
-            reason = (
-                f"{RESTART_ABANDON_REASON} "
-                f"{job.done_count}/{job.count} image(s) already rendered — "
-                "those URLs are still below."
-            )
-        else:
-            reason = RESTART_ABANDON_REASON
-        _mark_job_abandoned(job, reason)
-    else:
-        for item in job.items:
-            if item.status in ("queued", "running"):
-                item.status = "error"
-                if not item.error:
-                    item.error = job.error or RESTART_ABANDON_REASON
-    return job
+    return _maybe_revive_restarted_job(job)
 
 
 def _persist_jobs() -> None:
@@ -508,8 +487,55 @@ def _mark_job_abandoned(job: McpImageJob, reason: str) -> None:
                 item.error = reason
 
 
+def _is_restart_abandon(job: McpImageJob) -> bool:
+    return (job.error or "").startswith(RESTART_ABANDON_REASON)
+
+
+def _requeue_unfinished_items(job: McpImageJob) -> None:
+    """Reset unfinished items so a new worker can finish the batch."""
+    for item in job.items:
+        if item.status == "done" and item.urls:
+            continue
+        item.status = "queued"
+        item.error = ""
+    job.status = "queued"
+    job.phase = "queued"
+    job.error = ""
+    job.client_saved = False
+
+
+def _maybe_revive_restarted_job(job: McpImageJob) -> McpImageJob:
+    """Keep unfinished Comfy work after an API bounce; honor explicit cancels."""
+    if job.status == "coding":
+        job.phase = "writing_code"
+        return job
+    if job.status == "done":
+        return job
+    if job.status == "error":
+        if not _is_restart_abandon(job):
+            for item in job.items:
+                if item.status in ("queued", "running"):
+                    item.status = "error"
+                    if not item.error:
+                        item.error = job.error or RESTART_ABANDON_REASON
+            return job
+        if all(item.status == "done" and item.urls for item in job.items):
+            job.status = "done"
+            job.phase = "done"
+            job.error = ""
+            return job
+        _requeue_unfinished_items(job)
+        return job
+    _requeue_unfinished_items(job)
+    return job
+
+
 def _drop_dead_jobs() -> None:
-    """A queued/running job with no worker is leftover from a crash or reboot."""
+    """A queued/running job with no worker is leftover from a crash or reboot.
+
+    Requeue unfinished items. Startup resumes the worker; leaving the id as
+    error dropped rasters Comfy had already finished.
+    """
     live_id = _MCP_JOB_ID if _worker_is_alive() else None
     changed = False
     for job in _MCP_JOBS.values():
@@ -517,17 +543,58 @@ def _drop_dead_jobs() -> None:
             continue
         if live_id and job.id == live_id:
             continue
-        _mark_job_abandoned(job, "Image job was interrupted (process restarted).")
+        _requeue_unfinished_items(job)
         changed = True
     if changed:
         _persist_jobs()
 
 
+def _persist_job_reply(job: McpImageJob) -> None:
+    """Write the finished reply so a dropped Code hold can unlock."""
+    owner = str(getattr(job, "owner", "") or "").strip()
+    chat_id = str(getattr(job, "chat_id", "") or "").strip()
+    if not owner or not chat_id:
+        return
+    urls = [str(url) for url in (job.urls or []) if url]
+    mark = f"tabby-image-job: {job.id}"
+    if job.status == "done" and urls:
+        n = len(urls)
+        lead = "Here's the picture." if n == 1 else f"Here are the {n} pictures."
+        lines = [mark, "", lead, ""]
+        lines.extend(f"![]({url})" for url in urls)
+        text = "\n".join(lines)
+    elif job.status == "error":
+        text = f"{mark}\nError: {job.error or 'Image generation failed.'}"
+    else:
+        return
+    try:
+        from ui.chats import append_flight_assistant, load_store
+
+        store = load_store(owner)
+        for chat in store.get("chats") or []:
+            if str(chat.get("id") or "") != chat_id:
+                continue
+            messages = chat.get("messages") or []
+            last = messages[-1] if messages else None
+            content = str((last or {}).get("content") or "")
+            if (
+                isinstance(last, dict)
+                and last.get("role") == "assistant"
+                and job.id in content
+                and ("/v1/images/generated-" in content or content.lstrip().startswith("Error:"))
+            ):
+                return
+            break
+        append_flight_assistant(owner, chat_id, content=text)
+    except Exception as exc:
+        xlogger.warning(f"Could not persist image reply for job {job.id}: {exc}")
+
+
 def abandon_inflight_jobs(reason: str = RESTART_ABANDON_REASON) -> int:
     """Mark every queued/running job as error and cancel the render worker.
 
-    Call this on process startup and before a systemd bounce. A restart
-    cannot resume Comfy; leaving the old id as running blocks every chat.
+    Call this before an explicit systemd bounce (chat ``restart``) and on
+    process shutdown. Unexpected kills resume leftover items on the next boot.
     """
     global _MCP_TASK, _MCP_JOB_ID
     _load_persisted_jobs()
@@ -545,6 +612,30 @@ def abandon_inflight_jobs(reason: str = RESTART_ABANDON_REASON) -> int:
     if task is not None and not task.done():
         task.cancel()
     return count
+
+
+async def resume_persisted_jobs() -> int:
+    """Finish Comfy batches that were still open when this process started."""
+    _load_persisted_jobs()
+    _drop_dead_jobs()
+    ready = 0
+    first: Optional[McpImageJob] = None
+    for job_id in _MCP_ORDER:
+        job = _MCP_JOBS.get(job_id)
+        if not job:
+            continue
+        if job.status == "done":
+            copy_job_to_workspace(job)
+            _persist_job_reply(job)
+            continue
+        if job.status not in ("queued", "running"):
+            continue
+        ready += 1
+        if first is None:
+            first = job
+    if first is not None and not _worker_is_alive():
+        await launch_mcp_image_job(first)
+    return ready
 
 
 def refresh_job_wait(job: McpImageJob) -> None:
@@ -1018,6 +1109,9 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
                         item = job.items[index]
                     job.phase = "generating"
                     job.current_index = index
+                    if item.status == "done" and item.urls:
+                        index += 1
+                        continue
                     item.status = "running"
                     _signal(job)
                     paths = await _render_specs(
@@ -1063,6 +1157,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.status = "done"
         job.phase = "done"
         copy_job_to_workspace(job)
+        _persist_job_reply(job)
         _signal(job)
     except asyncio.CancelledError:
         if job.status not in ("done", "error"):
@@ -1072,6 +1167,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
             _mark_job_items_failed(job, job.error)
             _signal(job)
         copy_job_to_workspace(job)
+        _persist_job_reply(job)
         raise
     except Exception as exc:
         job.status = "error"
@@ -1079,6 +1175,7 @@ async def _run_mcp_image_job(job: McpImageJob, delay: float) -> None:
         job.error = str(exc)
         _mark_job_items_failed(job, str(exc))
         copy_job_to_workspace(job)
+        _persist_job_reply(job)
         _signal(job)
     finally:
         if _MCP_JOB_ID == job.id:

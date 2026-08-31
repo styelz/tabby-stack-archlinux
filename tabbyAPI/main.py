@@ -147,11 +147,11 @@ async def entrypoint_async():
         except FileNotFoundError as e:
             logger.warning(str(e))
 
-    from images.jobs import abandon_inflight_jobs
+    from images.jobs import abandon_inflight_jobs, resume_persisted_jobs
 
-    stale = abandon_inflight_jobs()
-    if stale:
-        logger.info(f"Cleared {stale} stale image job(s) left from the previous process")
+    resumed = await resume_persisted_jobs()
+    if resumed:
+        logger.info(f"Resumed {resumed} interrupted image job(s)")
 
     await start_api(host, port)
 

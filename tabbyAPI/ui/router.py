@@ -525,7 +525,7 @@ async def ui_workspace_upload_file(
         raise HTTPException(400, "JSON body required") from exc
     path = str(body.get("path") or "")
     raw_b64 = body.get("bytes_b64")
-    if not isinstance(raw_b64, str) or not raw_b64.strip():
+    if not isinstance(raw_b64, str):
         raise HTTPException(400, "bytes_b64 is required")
     try:
         data = base64.b64decode(raw_b64, validate=True)

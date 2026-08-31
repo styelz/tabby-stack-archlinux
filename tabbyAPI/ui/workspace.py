@@ -52,7 +52,7 @@ TEXT_SUFFIXES = frozenset(
     }
 )
 PAGE_SUFFIXES = frozenset({".html", ".htm"})
-# Agent Delete may not drop these unless the user named the exact path.
+# Agent Delete may not drop these, even if the user names the exact path.
 CORE_KEEP_SUFFIXES = frozenset(
     {".html", ".htm", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx"}
 )

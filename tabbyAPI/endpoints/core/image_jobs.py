@@ -36,6 +36,7 @@ from images.jobs import (  # noqa: F401
     refresh_job_wait,
     reload_last_llm,
     reset_mcp_image_jobs_for_tests,
+    resume_persisted_jobs,
     start_mcp_image_job,
     wait_mcp_job_progress,
     wait_until_done,

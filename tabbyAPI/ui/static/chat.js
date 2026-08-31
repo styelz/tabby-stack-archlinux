@@ -1307,7 +1307,7 @@ function mountChat(root) {
     });
   }
 
-  function persist() {
+  function persist(opts) {
     rememberActiveMode();
     const chat = activeChat();
     if (chat && !isWorkspaceRoot(chat)) {
@@ -1358,11 +1358,13 @@ function mountChat(root) {
       if (kept.has(item.id)) return;
       forgetTabs(item.id);
     });
+    const flush = Boolean(opts && opts.flush);
+    const snapshot = flush ? JSON.parse(JSON.stringify(store)) : null;
     const gen = (persistGen += 1);
     persistTail = persistTail
       .then(() => {
-        if (gen !== persistGen) return;
-        return TabbyUI.api("chats", { method: "PUT", body: store }).then(() => {
+        if (!flush && gen !== persistGen) return;
+        return TabbyUI.api("chats", { method: "PUT", body: flush ? snapshot : store }).then(() => {
           writeLegacyBackup();
         });
       })
@@ -8002,7 +8004,7 @@ function mountChat(root) {
     const promptAgent = normalizeAgent(agent);
     if (promptAgent === "ask" || promptAgent === "plan") {
       return {
-        label: promptAgent === "plan" ? "Planning" : "Thinking",
+        label: promptAgent === "plan" ? "Planning" : "Reading project",
         kind: "chat",
         processing: true,
       };
@@ -10297,7 +10299,7 @@ function mountChat(root) {
     let toolRounds = 0;
     let toolCalls = [];
     let agentEmptyNudges = 0;
-    await persist();
+    await persist({ flush: true });
     agentTurn:
     while (true) {
     toolCalls = [];

@@ -83,6 +83,9 @@ _CREATE_SITE_RE = re.compile(
 )
 _PAGE_LOGO_RE = re.compile(r"(?is)\b(?:a\s+)?logo\b")
 _PAGE_HERO_RE = re.compile(r"(?is)\b(?:header|hero)\s+(?:photo|image|picture)s?\b")
+_NAMED_HTML_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9._/-])((?:[A-Za-z0-9._/-]+/)?[A-Za-z0-9._-]+\.html?)\b"
+)
 _SKIP_DEST_STEMS = frozenset({"image", "images", "generated", "generated.png"})
 _GALLERY_OUTPUT_STEM_RE = re.compile(r"^generated(?:-\d+){3}$")
 _APPROVED_PLAN_RE = re.compile(r"(?is)<approved_plan>(.*?)</approved_plan>")
@@ -617,6 +620,35 @@ def _pages_on_disk(owner: str | None, chat_id: str | None) -> bool:
         if Path(path).suffix.lower() in {".html", ".htm", ".css", ".js", ".mjs"}:
             return True
     return False
+
+
+def _requested_page_paths(data) -> list[str]:
+    from common.phrase_switch import last_user_text
+
+    text = last_user_text(data) or ""
+    return [m.group(1).replace("\\", "/") for m in _NAMED_HTML_RE.finditer(text)]
+
+
+def _requested_pages_on_disk(owner: str | None, chat_id: str | None, data) -> bool:
+    """True when named HTML dests exist; if none named, any page file counts."""
+    required = _requested_page_paths(data)
+    if not required:
+        return _pages_on_disk(owner, chat_id)
+    if not owner or not chat_id:
+        return False
+    try:
+        from ui.workspace import list_files
+
+        rows = list_files(owner, chat_id)
+    except Exception:
+        return False
+    have = {str(row.get("path") or "").replace("\\", "/") for row in rows or []}
+    have_names = {Path(p).name.lower() for p in have}
+    for rel in required:
+        name = Path(rel).name.lower()
+        if rel not in have and name not in have_names:
+            return False
+    return True
 
 
 _LINKED_PAGE_RE = re.compile(
@@ -1470,7 +1502,7 @@ async def handle(
                 code_response = await _write_site_code(data, disconnect_handler)
                 keep = _first_code_pass_holds_llm(
                     code_response,
-                    page_ready=_pages_on_disk(owner, chat_id)
+                    page_ready=_requested_pages_on_disk(owner, chat_id, data)
                     and _explicit_new_rasters(data),
                 )
                 started = await _start_mixed_job(
