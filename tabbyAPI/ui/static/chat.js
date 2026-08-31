@@ -6331,9 +6331,9 @@ function mountChat(root) {
   function checklistPathNeedles(step) {
     const args = (step && step.args) || {};
     const names = [args.path, args.to].filter(Boolean).map((value) => String(value));
-    const label = String((step && step.label) || "");
-    const fromLabel = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
-    if (fromLabel) names.push(fromLabel);
+    const change = (step && step.change) || null;
+    if (change && change.path) names.push(String(change.path));
+    if (change && change.previous) names.push(String(change.previous));
     const needles = [];
     names.forEach((raw) => {
       const path = String(raw || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
@@ -6396,9 +6396,9 @@ function mountChat(root) {
 
   function advanceChecklistFromTool(step, chatId) {
     if (!planChecklistBuilding) return;
-    const label = String((step && step.label) || "");
-    if (!label || label === "Tool error") return;
-    if (!/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\b/.test(label)) return;
+    // Only a tool that actually changed a file advances the checklist. The
+    // server reports that as `change`; reads and failures have none.
+    if (!step || !step.change || !step.change.path) return;
     const found = planMessageFor(chatId);
     if (!found || !Array.isArray(found.item.checklist)) return;
     const items = found.item.checklist;
@@ -10200,9 +10200,25 @@ function mountChat(root) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = data.detail || (data.error && data.error.message) || data.error || "Tool failed";
-      return { label: "Tool error", result: String(detail) };
+      return { label: "Tool error", result: String(detail), change: null };
     }
-    return { label: data.label || name, result: String(data.result || "") };
+    return {
+      label: data.label || name,
+      result: String(data.result || ""),
+      change: normalizeToolChange(data.change),
+    };
+  }
+
+  // What a mutating tool actually touched, straight from the server. The status
+  // label is prose for humans; never drive behaviour off its wording.
+  function normalizeToolChange(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const path = String(raw.path || "");
+    const kind = String(raw.kind || "");
+    if (!path || !kind) return null;
+    const change = { kind, path };
+    if (raw.previous) change.previous = String(raw.previous);
+    return change;
   }
 
   function lastUserTextFor(chatId) {
@@ -10421,16 +10437,6 @@ function mountChat(root) {
                 if (label) working.setActivity(label, { processing: true, note: label });
                 if (planChecklistBuilding) advanceChecklistForImageStatus(label, chatId);
                 if (chatsShareWorkspace(chatId)) refreshFilesSoon();
-                if (/^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(label) && chatsShareWorkspace(chatId)) {
-                  const written = label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
-                  if (isChangePath(written)) {
-                    reloadPreviewIfNeeded(written);
-                    if (!/^Deleting\b/.test(label)) noteAgentWrite(written);
-                    if (planChecklistBuilding) {
-                      advanceChecklistFromTool({ label, args: { path: written } }, chatId);
-                    }
-                  }
-                }
               }
               if (event.model) {
                 const named = cleanReplyModel(event.model);
@@ -10524,20 +10530,16 @@ function mountChat(root) {
           userText,
           historyRun
         );
-        working.addStep({
+        const toolStep = {
           type: "tool",
           name: call.name,
           label: ran.label,
           args: call.arguments,
           result: ran.result,
-        });
-        advanceChecklistFromTool({
-          type: "tool",
-          name: call.name,
-          label: ran.label,
-          args: call.arguments,
-          result: ran.result,
-        }, chatId);
+          change: ran.change,
+        };
+        working.addStep(toolStep);
+        advanceChecklistFromTool(toolStep, chatId);
         list.push({
           role: "tool",
           content: ran.result,
@@ -10545,14 +10547,11 @@ function mountChat(root) {
           name: call.name,
           createdAt: Date.now(),
         });
-        if (
-          /^(?:Writing|Editing|Deleting|Optimizing|Renaming) \S/.test(ran.label)
-          && chatsShareWorkspace(chatId)
-        ) {
-          const written = ran.label.replace(/^(?:Writing|Editing|Deleting|Optimizing|Renaming)\s+/, "").split(/\s/)[0];
+        if (ran.change && chatsShareWorkspace(chatId)) {
+          const written = ran.change.path;
           if (isChangePath(written)) {
             reloadPreviewIfNeeded(written);
-            if (!/^Deleting\b/.test(ran.label)) noteAgentWrite(written);
+            if (ran.change.kind !== "delete") noteAgentWrite(written);
           }
           refreshFilesSoon();
         }

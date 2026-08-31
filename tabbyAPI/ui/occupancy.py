@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
 QUEUE_MARK = "tabby-stack-queue:"
@@ -367,3 +367,43 @@ class StackGate:
         if waiter is not None:
             await drop_waiter(waiter)
         await release(occupant_id)
+
+
+async def drain_sse(response) -> AsyncIterator[Any]:
+    """Yield a streaming response's items verbatim, then close its iterator.
+
+    Byte-transparent on purpose: third-party IDEs read the same SSE stream as
+    the browser UI, so nothing here may add, drop, reorder, or buffer items.
+    """
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        return
+    try:
+        async for item in iterator:
+            yield item
+    finally:
+        closer = getattr(iterator, "aclose", None)
+        if closer is not None:
+            try:
+                await closer()
+            except Exception:
+                pass
+
+
+async def stream_and_release(
+    gate: StackGate, response, *, adopt: bool = False
+) -> AsyncIterator[Any]:
+    """drain_sse, releasing the gate lease once the stream is done.
+
+    Every streaming path that holds a lease must go through this. Forgetting the
+    release strands the lease and the stack looks busy until it ages out.
+    Pass adopt=True when the lease was taken by a different task than the one
+    that will drain the stream.
+    """
+    if adopt:
+        await gate.adopt_task()
+    try:
+        async for item in drain_sse(response):
+            yield item
+    finally:
+        await gate.release()

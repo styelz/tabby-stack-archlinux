@@ -38,7 +38,13 @@ from ui.flight import (
     stream_response,
 )
 from ui.manager import sanitize_chat_payload, sanitize_code_payload
-from ui.occupancy import StackGate, queue_comment, wait_tick
+from ui.occupancy import (
+    StackGate,
+    drain_sse,
+    queue_comment,
+    stream_and_release,
+    wait_tick,
+)
 
 
 USAGE_MARK = "tabby-context-usage:"
@@ -121,20 +127,13 @@ def _completion_text(result: Any) -> str:
     return str(getattr(message, "content", None) or "")
 
 
-async def _iter_sse(response) -> Any:
-    iterator = getattr(response, "body_iterator", None)
-    if iterator is None:
-        return
-    try:
-        async for item in iterator:
-            yield item
-    finally:
-        closer = getattr(iterator, "aclose", None)
-        if closer is not None:
-            try:
-                await closer()
-            except Exception:
-                pass
+def _iter_sse(response) -> Any:
+    """Drain a streaming response without touching any gate lease.
+
+    Used where the items go into a flight rather than out to a client, so there
+    is no lease to release here.
+    """
+    return drain_sse(response)
 
 
 async def _run_console_work(
@@ -182,13 +181,8 @@ def _proxy_request(request: Request):
     return generation_request(SimpleNamespace(state=SimpleNamespace(id=req_id)))
 
 
-async def _stream_held_result(gate: StackGate, result):
-    await gate.adopt_task()
-    try:
-        async for item in _iter_sse(result):
-            yield item
-    finally:
-        await gate.release()
+def _stream_held_result(gate: StackGate, result):
+    return stream_and_release(gate, result, adopt=True)
 
 
 def _sse(content):
@@ -319,6 +313,9 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         return stream_response(flight)
 
     disconnect_handler = DisconnectHandler(request, "/v1/ui/chat")
+    # An image hold can answer a non-streaming request with a stream. When it
+    # does, the returned generator owns the lease and we must not release here.
+    handed_off = False
     try:
         while True:
             info = await gate.step(disconnect_handler)
@@ -336,10 +333,10 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
             disconnect_handler,
             agent,
         )
-    except Exception:
-        await gate.release()
-        raise
-    if isinstance(result, EventSourceResponse):
-        return _sse(_stream_held_result(gate, result))
-    await gate.release()
-    return result
+        if isinstance(result, EventSourceResponse):
+            handed_off = True
+            return _sse(_stream_held_result(gate, result))
+        return result
+    finally:
+        if not handed_off:
+            await gate.release()

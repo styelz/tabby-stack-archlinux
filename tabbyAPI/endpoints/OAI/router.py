@@ -130,9 +130,12 @@ async def chat_completion_request(
     # an img2img render of it.
     source_image = latest_turn_image(data)
     disconnect_handler = DisconnectHandler(request, "/v1/chat/completions")
-    from ui.occupancy import StackGate
+    from ui.occupancy import StackGate, stream_and_release
 
     gate = StackGate(str(getattr(data, "user", None) or "api"), kind="chat")
+    # On the streaming path the returned generator owns the lease, so this
+    # request must not release it on the way out.
+    handed_off = False
     try:
         await gate.wait_until_acquired(disconnect_handler)
         result = await run_chat_completion_turn(
@@ -143,36 +146,18 @@ async def chat_completion_request(
             source_image=source_image,
         )
         if isinstance(result, EventSourceResponse):
+            handed_off = True
             return EventSourceResponse(
-                _stream_then_release(gate, result),
+                stream_and_release(gate, result),
                 ping=get_sse_ping_interval(),
                 sep="\n",
             )
-        await gate.release()
         return result
     except (CancelledError, InvalidStateError) as ex:
-        await gate.release()
         raise HTTPException(422, "/v1/chat/completions request cancelled by user.") from ex
-    except Exception:
-        await gate.release()
-        raise
-
-
-async def _stream_then_release(gate, result):
-    try:
-        iterator = getattr(result, "body_iterator", None)
-        if iterator is None:
-            return
-        async for item in iterator:
-            yield item
     finally:
-        closer = getattr(getattr(result, "body_iterator", None), "aclose", None)
-        if closer is not None:
-            try:
-                await closer()
-            except Exception:
-                pass
-        await gate.release()
+        if not handed_off:
+            await gate.release()
 
 
 # Embeddings endpoint

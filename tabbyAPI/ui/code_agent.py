@@ -4,19 +4,13 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, Optional
 
-from common.logger import xlogger
-from endpoints.OAI.types.chat_completion import ChatCompletionMessage, ChatCompletionRequest
-from endpoints.OAI.types.common import ChatCompletionStreamOptions
 from endpoints.OAI.types.tools import Function, ToolSpec
 from ui import workspace
 
-MAX_CODE_TURNS = 16
 MAX_BRIEF_FILES = 80
-MAX_PLAN_NUDGES = 2
 MAX_STEP_RESULT = 500
 MAX_STEP_ARG = 200
 MAX_DELETES_PER_TURN = 8
@@ -1003,6 +997,21 @@ def _delete_refusal(
     return ""
 
 
+def _note_change(sink: Optional[dict], kind: str, path: str, **extra: str) -> None:
+    """Record what a mutating tool actually changed, for the browser to act on.
+
+    The status label is prose meant for humans and is free to be reworded; this
+    is the machine-readable channel, so nothing has to parse the label.
+    """
+    if sink is None or not path:
+        return
+    sink.clear()
+    sink.update({"kind": kind, "path": path})
+    for key, value in extra.items():
+        if value:
+            sink[key] = value
+
+
 def execute_tool(
     username: str,
     chat_id: str,
@@ -1014,11 +1023,16 @@ def execute_tool(
     protected: Optional[set[str]] = None,
     deletes_used: int = 0,
     history_run: str = "",
-) -> tuple[str, str]:
-    """Run one tool. Returns (status_label, result_text)."""
+) -> tuple[str, str, dict]:
+    """Run one tool. Returns (status_label, result_text, change).
+
+    change is {} for read-only tools and for any failure, otherwise
+    {"kind": write|edit|delete|rename|optimize, "path": <resolved path>}.
+    """
     token = workspace.push_history_run(history_run)
+    change: dict[str, str] = {}
     try:
-        return _execute_tool(
+        label, result = _execute_tool(
             username,
             chat_id,
             name,
@@ -1027,7 +1041,9 @@ def execute_tool(
             user_text=user_text,
             protected=protected,
             deletes_used=deletes_used,
+            change=change,
         )
+        return label, result, change
     finally:
         workspace.pop_history_run(token)
 
@@ -1042,6 +1058,7 @@ def _execute_tool(
     user_text: str = "",
     protected: Optional[set[str]] = None,
     deletes_used: int = 0,
+    change: Optional[dict] = None,
 ) -> tuple[str, str]:
     kind = _kind(name)
     if normalize_agent(agent) != "agent" and kind in _MUTATE_KINDS:
@@ -1122,6 +1139,7 @@ def _execute_tool(
         ):
             return "Tool error", _LAYOUT_WRITE_REFUSE
         written = workspace.write_text(username, chat_id, rel, _arg_contents(args))
+        _note_change(change, "write", written)
         return f"Writing {written}", f"Wrote {written}"
     if kind == "replace":
         old = str(args.get("old_string") or args.get("oldStr") or "")
@@ -1132,6 +1150,7 @@ def _execute_tool(
             if old_imgs != new_imgs:
                 return "Tool error", _LAYOUT_SRC_REFUSE
         workspace.str_replace(username, chat_id, rel, old, new)
+        _note_change(change, "edit", rel)
         return f"Editing {rel}", f"Updated {rel}"
     if kind == "read":
         offset = args.get("offset")
@@ -1153,6 +1172,7 @@ def _execute_tool(
         dest = workspace.resolve_rel(root, rel)
         if dest.is_dir():
             written = workspace.delete_empty_dir(username, chat_id, rel)
+            _note_change(change, "delete", written)
             return f"Deleting {written}", f"Removed empty folder {written}"
         reason = _delete_refusal(
             username,
@@ -1165,12 +1185,14 @@ def _execute_tool(
         if reason:
             return "Tool error", reason
         workspace.delete_file(username, chat_id, rel)
+        _note_change(change, "delete", rel)
         return f"Deleting {rel}", f"Deleted {rel}"
     if kind == "rename":
         dest = _arg_dest(args)
         if not dest:
             return "Tool error", "to is required"
         written = workspace.rename_file(username, chat_id, rel, dest)
+        _note_change(change, "rename", written, previous=rel)
         return f"Renaming {written}", f"Renamed {rel} to {written}"
     if kind == "optimize":
         result = workspace.optimize_image(
@@ -1185,6 +1207,7 @@ def _execute_tool(
             lossless=_arg_bool(args, "lossless", False),
             trim_border=_arg_bool(args, "trim_border", False),
         )
+        _note_change(change, "optimize", str(result.get("path") or ""))
         return f"Optimizing {result['path']}", json.dumps(result, separators=(",", ":"))
     return (
         "Tool error",
@@ -1296,305 +1319,6 @@ def parse_completion_chunk(raw: Any) -> Optional[dict[str, Any]]:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def _tool_calls_from_dumps(dumps: Any) -> Optional[list]:
-    from endpoints.OAI.types.tools import Tool, ToolCall
-
-    if not dumps:
-        return None
-    calls = []
-    for item in dumps:
-        if isinstance(item, ToolCall):
-            calls.append(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        fn = item.get("function") or {}
-        if not isinstance(fn, dict):
-            continue
-        name = str(fn.get("name") or "")
-        if not name:
-            continue
-        args = fn.get("arguments")
-        if isinstance(args, dict):
-            args = json.dumps(args, separators=(",", ":"))
-        else:
-            args = str(args or "")
-        fields: dict[str, Any] = {
-            "function": Tool(name=name, arguments=args),
-            "type": "function",
-        }
-        if item.get("id"):
-            fields["id"] = str(item["id"])
-        if item.get("index") is not None:
-            fields["index"] = item["index"]
-        calls.append(ToolCall(**fields))
-    return calls or None
-
-
-def message_from_stream(
-    content: str,
-    reasoning: str,
-    tool_dumps: Any,
-) -> ChatCompletionMessage:
-    return ChatCompletionMessage(
-        role="assistant",
-        content=content or None,
-        reasoning_content=reasoning or None,
-        tool_calls=_tool_calls_from_dumps(tool_dumps),
-    )
-
-
-def _chunk_error(parsed: dict[str, Any]) -> str:
-    err = parsed.get("error")
-    if not err:
-        return ""
-    if isinstance(err, dict):
-        return str(err.get("message") or "Chat failed")
-    return str(err)
-
-
-def sse_for_code_event(
-    event: tuple,
-    data: ChatCompletionRequest,
-    *,
-    chunk_id: str,
-    created: int,
-) -> list[Any]:
-    """Turn one iter_code_turns event into SSE comments or OpenAI chunk JSON."""
-    from common.phrase_switch import stream_chat_delta
-    from images.chat import STATUS_MARK
-    from sse_starlette import ServerSentEvent
-
-    kind = event[0]
-    if kind == "status":
-        return [ServerSentEvent(comment=f"{STATUS_MARK} {event[1]}")]
-    if kind == "reasoning":
-        return [
-            stream_chat_delta(
-                data,
-                {"reasoning_content": event[1]},
-                chunk_id=chunk_id,
-                created=created,
-            )
-        ]
-    if kind == "content":
-        return [
-            stream_chat_delta(
-                data,
-                {"content": event[1]},
-                chunk_id=chunk_id,
-                created=created,
-            )
-        ]
-    if kind == "demote":
-        return [ServerSentEvent(comment=format_agent_step_comment({"type": "demote"}))]
-    if kind == "tool":
-        payload = event[1] if isinstance(event[1], dict) else {"type": "tool"}
-        return [ServerSentEvent(comment=format_agent_step_comment(payload))]
-    return []
-
-
-async def stream_code_completion(
-    working: ChatCompletionRequest,
-    prompt,
-    embeddings,
-    request,
-    model_path,
-    disconnect_handler,
-) -> AsyncIterator[tuple[str, Any]]:
-    """Yield reasoning/content deltas, then ('turn', message, usage, error)."""
-    from common.assistant_text import strip_apology_sse
-    from endpoints.OAI.utils.chat_completion import stream_generate_chat_completion
-
-    streamed = working.model_copy(update={"stream": True, "n": 1})
-    content = ""
-    reasoning = ""
-    tool_dumps: Any = None
-    usage = None
-    error = ""
-    async for raw in strip_apology_sse(
-        stream_generate_chat_completion(
-            prompt, embeddings, streamed, request, model_path, disconnect_handler
-        )
-    ):
-        parsed = parse_completion_chunk(raw)
-        if parsed is None:
-            continue
-        err = _chunk_error(parsed)
-        if err:
-            error = err
-            break
-        if parsed.get("usage") is not None:
-            usage = parsed["usage"]
-        choice = (parsed.get("choices") or [{}])[0] or {}
-        if not isinstance(choice, dict):
-            continue
-        delta = choice.get("delta") or {}
-        if not isinstance(delta, dict):
-            delta = {}
-        reason_delta = delta.get("reasoning_content") or ""
-        content_delta = delta.get("content") or ""
-        if reason_delta:
-            reasoning += str(reason_delta)
-            yield ("reasoning", str(reason_delta))
-        if content_delta:
-            content += str(content_delta)
-            yield ("content", str(content_delta))
-        tools = delta.get("tool_calls")
-        if tools:
-            tool_dumps = tools
-    yield ("turn", message_from_stream(content, reasoning, tool_dumps), usage, error)
-
-
-async def iter_code_turns(
-    data: ChatCompletionRequest,
-    disconnect_handler,
-    username: str,
-    chat_id: str,
-    agent: str = "agent",
-) -> AsyncIterator[tuple[str, Any]]:
-    """Yield status, live tokens, tool steps, usage, then ('done', text, written_paths)."""
-    from common import model
-    from common.networking import DisconnectHandler, generation_request
-    from endpoints.OAI.utils.chat_completion import apply_chat_template
-
-    container = getattr(model, "container", None)
-    if not container or not getattr(container, "loaded", False):
-        yield ("done", "No model is loaded, so files were not written.", [])
-        return
-    if getattr(container, "prompt_template", None) is None:
-        yield ("done", "Chat is disabled because no prompt template is set.", [])
-        return
-    model_path = getattr(container, "model_dir", None)
-    if model_path is None:
-        yield ("done", "No model is loaded, so files were not written.", [])
-        return
-    request = generation_request(
-        getattr(disconnect_handler, "request", None) if disconnect_handler else None
-    )
-
-    kind = normalize_agent(agent)
-    empty = "empty project" in workspace_file_brief(username, chat_id)
-    user_text = _latest_user_text(getattr(data, "messages", None))
-    all_user_text = _all_user_text(getattr(data, "messages", None)) or user_text
-    protected = workspace.referenced_project_paths(username, chat_id)
-    for row in workspace.list_files(username, chat_id):
-        path = str(row.get("path") or "")
-        if path and Path(path).suffix.lower() in workspace.CORE_KEEP_SUFFIXES:
-            protected.add(path)
-    deletes_used = 0
-    history_run = secrets.token_hex(8)
-    working = data.model_copy(
-        update={
-            "stream": True,
-            "n": 1,
-            "tools": code_tool_specs(kind),
-            "tool_choice": "none" if kind == "plan" and empty else "auto",
-            "messages": list(data.messages or []),
-            "stream_options": ChatCompletionStreamOptions(include_usage=True),
-        }
-    )
-    written: list[str] = []
-    last_text = ""
-    plan_nudges = 0
-    nested = DisconnectHandler(
-        request=request,
-        description="ui code tools",
-        abort_event=getattr(disconnect_handler, "abort_event", None),
-    )
-    for _turn in range(MAX_CODE_TURNS):
-        if disconnect_handler:
-            await disconnect_handler.poll()
-        message = None
-        usage = None
-        turn_error = ""
-        try:
-            prompt, embeddings = await apply_chat_template(working)
-            async for event in stream_code_completion(
-                working, prompt, embeddings, request, model_path, nested
-            ):
-                if event[0] in ("reasoning", "content"):
-                    yield event
-                elif event[0] == "turn":
-                    message, usage, turn_error = event[1], event[2], event[3]
-        except Exception as exc:
-            xlogger.warning(f"UI code turn failed: {exc}")
-            yield ("done", last_text or f"Coding stopped: {exc}", written)
-            return
-        if usage is not None:
-            yield ("usage", usage)
-        if turn_error:
-            yield ("done", last_text or f"Coding stopped: {turn_error}", written)
-            return
-        if message is None:
-            yield ("done", last_text or "The model returned an empty reply.", written)
-            return
-        last_text = _content_text(getattr(message, "content", None))
-        pairs = _tool_pairs(message)
-        if not pairs:
-            retry = ""
-            if kind == "plan" and plan_nudges < MAX_PLAN_NUDGES:
-                if not plan_looks_complete(last_text):
-                    retry = PLAN_RETRY
-                elif plan_copies_forbidden_example(all_user_text, last_text):
-                    retry = PLAN_THEME_RETRY
-            if retry:
-                plan_nudges += 1
-                if last_text.strip():
-                    yield ("demote",)
-                working.messages.append(message)
-                working.messages.append(
-                    ChatCompletionMessage(role="user", content=retry)
-                )
-                yield ("status", "Writing plan")
-                continue
-            yield ("done", last_text, written)
-            return
-        if last_text.strip():
-            yield ("demote",)
-        working.messages.append(message)
-        for name, args, call_id in pairs:
-            try:
-                label, result = execute_tool(
-                    username,
-                    chat_id,
-                    name,
-                    args,
-                    agent=kind,
-                    user_text=user_text,
-                    protected=protected,
-                    deletes_used=deletes_used,
-                    history_run=history_run,
-                )
-            except (ValueError, FileNotFoundError, OSError) as exc:
-                label, result = "Tool error", str(exc)
-            if label.startswith("Deleting "):
-                deletes_used += 1
-            if (
-                label.startswith("Writing ")
-                or label.startswith("Editing ")
-                or label.startswith("Renaming ")
-                or label.startswith("Optimizing ")
-            ):
-                path = (
-                    label.removeprefix("Optimizing ")
-                    if label.startswith("Optimizing ")
-                    else _arg_path(args)
-                )
-                if path and path not in written:
-                    written.append(path)
-            yield ("status", label)
-            yield ("tool", tool_step_payload(name, args, label, result))
-            working.messages.append(
-                ChatCompletionMessage(
-                    role="tool",
-                    content=result,
-                    tool_call_id=call_id or None,
-                )
-            )
-    yield ("done", last_text or summarize_writes(written), written)
 
 
 def final_code_text(text: str, written: list[str]) -> str:

@@ -444,7 +444,7 @@ async def ui_workspace_tool(chat_id: str, request: Request, _user: str = Depends
     user_text = str(body.get("user_text") or "")
     history_run = str(body.get("history_run") or "")
     try:
-        label, result = execute_tool(
+        label, result, change = execute_tool(
             _user,
             cid,
             name,
@@ -455,7 +455,13 @@ async def ui_workspace_tool(chat_id: str, request: Request, _user: str = Depends
         )
     except (ValueError, FileNotFoundError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "name": name, "label": label, "result": result}
+    return {
+        "ok": True,
+        "name": name,
+        "label": label,
+        "result": result,
+        "change": change or None,
+    }
 
 
 @router.get("/workspace/{chat_id}", include_in_schema=False)
