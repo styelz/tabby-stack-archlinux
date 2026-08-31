@@ -1128,7 +1128,7 @@ def _save_history_index(folder: Path, index: dict[str, list[dict[str, Any]]]) ->
 
 
 def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
-    if not is_text_path(rel):
+    if is_image_path(rel):
         return
     try:
         data.decode("utf-8")
@@ -1250,7 +1250,7 @@ def history_revision(
 
 
 def restore_revision(username: str, chat_id: str, rel: str, rev_id: str) -> str:
-    if not is_text_path(rel):
+    if is_image_path(rel):
         raise ValueError("Only text files can be restored.")
     data = history_revision(username, chat_id, rel, rev_id)
     return write_text(username, chat_id, rel, data["contents"])
@@ -1586,7 +1586,7 @@ def delete_file(username: str, chat_id: str, rel: str) -> None:
     path = resolve_rel(root, rel)
     if not path.is_file():
         raise FileNotFoundError(rel)
-    if is_text_path(rel):
+    if not is_image_path(rel):
         try:
             _record_history(username, chat_id, rel, path.read_bytes())
         except OSError:
@@ -2568,7 +2568,7 @@ def load_drafts(username: str, chat_id: str) -> list[dict[str, Any]]:
             continue
         rel = str(item.get("path") or "").strip()
         text = item.get("text")
-        if not rel or not isinstance(text, str) or not is_text_path(rel):
+        if not rel or not isinstance(text, str) or is_image_path(rel):
             continue
         if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
             continue
@@ -2593,7 +2593,7 @@ def save_drafts(username: str, chat_id: str, drafts: Any) -> list[dict[str, Any]
             continue
         rel = str(item.get("path") or "").strip().replace("\\", "/")
         text = item.get("text")
-        if not rel or not isinstance(text, str) or not is_text_path(rel):
+        if not rel or not isinstance(text, str) or is_image_path(rel):
             continue
         root = workspace_root(username, chat_id, create=False)
         try:

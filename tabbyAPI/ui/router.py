@@ -567,7 +567,7 @@ async def ui_workspace_file(
 async def ui_workspace_write_file(
     chat_id: str, request: Request, path: str = "", _user: str = Depends(require_ui_user)
 ):
-    from ui.workspace import is_text_path, listing, site_entry, write_text
+    from ui.workspace import is_image_path, listing, site_entry, write_text
 
     if not path:
         raise HTTPException(400, "path is required")
@@ -579,7 +579,7 @@ async def ui_workspace_write_file(
     if not isinstance(contents, str):
         raise HTTPException(400, "contents must be a string")
     cid = _workspace_chat_id(chat_id, _user)
-    if not is_text_path(path):
+    if is_image_path(path):
         raise HTTPException(400, "Only text files can be edited here.")
     try:
         written = write_text(_user, cid, path, contents)

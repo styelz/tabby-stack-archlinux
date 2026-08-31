@@ -1518,6 +1518,17 @@ button.chip {
   white-space: nowrap;
 }
 .chat-mic-status[hidden] { display: none; }
+.chat-speak {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+.chat-speak[hidden] { display: none; }
+.chat-form-actions .chat-speak .chat-icon svg {
+  fill: currentColor;
+  stroke: none;
+}
+#chat-speak-pause.is-live { color: var(--accent); }
 @keyframes mic-live-pulse {
   0% { box-shadow: 0 0 0 0 rgba(var(--bad-rgb), 0.5); }
   70% { box-shadow: 0 0 0 0.5rem rgba(var(--bad-rgb), 0); }
@@ -2710,6 +2721,19 @@ button.chip {
 /* Very large files skip the overlay, so the textarea has to draw its own text. */
 .code-edit.is-plain .code-hl { display: none; }
 .code-edit.is-plain .chat-files-edit { color: var(--editor-fg); }
+.chat-editor-body.is-hex {
+  padding: 0.75rem;
+  overflow: auto;
+}
+.chat-hex {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--editor-fg, var(--text));
+}
+.chat-editor-body.is-hex > .muted + .chat-hex { margin-top: 0.5rem; }
 .chat-editor-body.is-monaco {
   padding: 0;
   display: flex;

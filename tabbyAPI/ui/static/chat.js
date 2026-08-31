@@ -73,6 +73,12 @@ const FILES_TERM_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5 7.2 8 5 9.5"/><path d="M8.2 9.5H11" /></svg>';
 const MIC_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="5.5" y="1.75" width="5" height="7.5" rx="2.5"/><path d="M3.5 8.25a4.5 4.5 0 0 0 9 0"/><path d="M8 12.75v1.75M5.5 14.5h5"/></svg>';
+const PAUSE_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="4.25" y="3.25" width="2.5" height="9.5" rx="0.6"/><rect x="9.25" y="3.25" width="2.5" height="9.5" rx="0.6"/></svg>';
+const PLAY_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5 3.25v9.5L13.25 8z"/></svg>';
+const STOP_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="4" y="4" width="8" height="8" rx="1.25"/></svg>';
 
 function mountChat(root) {
   root.innerHTML = `
@@ -263,6 +269,10 @@ function mountChat(root) {
               </div>
               <button class="btn ghost chat-icon" type="button" id="chat-mic" hidden aria-pressed="false" aria-label="Voice input" title="Voice input">${MIC_SVG}</button>
               <span class="chat-mic-status" id="chat-mic-status" hidden>Listening</span>
+              <div class="chat-speak" id="chat-speak" hidden>
+                <button class="btn ghost chat-icon" type="button" id="chat-speak-pause" aria-label="Pause speaking" title="Pause speaking">${PAUSE_SVG}</button>
+                <button class="btn ghost chat-icon" type="button" id="chat-speak-stop" aria-label="Stop speaking" title="Stop speaking">${STOP_SVG}</button>
+              </div>
               <span id="chat-count"></span>
               <span class="chat-keys"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> line · <kbd>Esc</kbd> close</span>
               <div class="chat-agent" id="chat-agent" hidden>
@@ -380,6 +390,9 @@ function mountChat(root) {
   const uploadDirInput = root.querySelector("#chat-upload-dir");
   const micBtn = root.querySelector("#chat-mic");
   const micStatus = root.querySelector("#chat-mic-status");
+  const speakBar = root.querySelector("#chat-speak");
+  const speakPauseBtn = root.querySelector("#chat-speak-pause");
+  const speakStopBtn = root.querySelector("#chat-speak-stop");
   let stopMic = () => false;
   const countEl = root.querySelector("#chat-count");
   const loadingBar = root.querySelector("#chat-loading");
@@ -477,6 +490,7 @@ function mountChat(root) {
   let termSlots = [{ id: "1", label: "1" }];
   let termSlot = "1";
   let speakUtter = null;
+  let speakWatch = 0;
   let filesFocusDir = "";
   let extraFolders = [];
   let folderOpen = Object.create(null);
@@ -599,6 +613,8 @@ function mountChat(root) {
     ".avi", ".wav", ".ogg", ".flac", ".iso", ".bin", ".dat", ".db", ".sqlite",
     ".pkl", ".npy", ".pt", ".onnx", ".safetensors", ".gguf", ".whl", ".pyc",
   ]);
+  const INSPECT_MAX_BYTES = 2 * 1024 * 1024;
+  const HEX_RENDER_MAX_BYTES = 256 * 1024;
   const ATTACH_TEXT_LIMIT = 80_000;
   const MAX_ATTACH = 12;
   const STORAGE_KEY = "tabby-ui-chat-store";
@@ -2709,18 +2725,83 @@ function mountChat(root) {
     });
   }
 
+  function stopSpeakWatch() {
+    if (!speakWatch) return;
+    clearInterval(speakWatch);
+    speakWatch = 0;
+  }
+
+  function paintSpeak() {
+    if (!speakBar) return;
+    const active = Boolean(speakUtter);
+    speakBar.hidden = !active;
+    if (!speakPauseBtn) return;
+    const paused = Boolean(active && window.speechSynthesis && window.speechSynthesis.paused);
+    speakPauseBtn.innerHTML = paused ? PLAY_SVG : PAUSE_SVG;
+    const pauseLabel = paused ? "Resume speaking" : "Pause speaking";
+    speakPauseBtn.setAttribute("aria-label", pauseLabel);
+    speakPauseBtn.title = pauseLabel;
+    speakPauseBtn.classList.toggle("is-live", active && !paused);
+  }
+
+  function watchSpeak() {
+    if (speakWatch) return;
+    const started = Date.now();
+    speakWatch = setInterval(() => {
+      if (!speakUtter) {
+        stopSpeakWatch();
+        paintSpeak();
+        return;
+      }
+      const synth = window.speechSynthesis;
+      if (Date.now() - started < 800) return;
+      if (synth && !synth.pending && !synth.speaking && !synth.paused) {
+        speakUtter = null;
+        stopSpeakWatch();
+        paintSpeak();
+      }
+    }, 250);
+  }
+
   function stopSpeak() {
     if (window.speechSynthesis) speechSynthesis.cancel();
     speakUtter = null;
+    stopSpeakWatch();
+    paintSpeak();
+  }
+
+  function toggleSpeakPause() {
+    const synth = window.speechSynthesis;
+    if (!synth || !speakUtter) return;
+    if (synth.paused) synth.resume();
+    else synth.pause();
+    paintSpeak();
   }
 
   function speakText(text) {
     stopSpeak();
     if (!window.speechSynthesis) return;
     const utter = new SpeechSynthesisUtterance(String(text || "").slice(0, 4000));
+    utter.onend = () => {
+      if (speakUtter !== utter) return;
+      speakUtter = null;
+      stopSpeakWatch();
+      paintSpeak();
+    };
+    utter.onerror = () => {
+      if (speakUtter !== utter) return;
+      speakUtter = null;
+      stopSpeakWatch();
+      paintSpeak();
+    };
     speakUtter = utter;
     speechSynthesis.speak(utter);
+    paintSpeak();
+    watchSpeak();
   }
+
+  if (speakPauseBtn) speakPauseBtn.addEventListener("click", toggleSpeakPause);
+  if (speakStopBtn) speakStopBtn.addEventListener("click", stopSpeak);
 
   function selectedFilePaths() {
     const picked = [...filesSelectedSet];
@@ -2839,6 +2920,7 @@ function mountChat(root) {
       '<div class="chat-editor-head">' +
       `<strong>${TabbyUI.escapeHtml(tab.path)}</strong></div>` +
       editorBodyHtml(tab, view);
+    fillHexDump(editorSplitPane, tab);
     const host = editorSplitPane.querySelector(".code-monaco");
     if (!host || !window.TabbyMonaco) return;
     TabbyMonaco.onChange(onMonacoChange);
@@ -3373,6 +3455,53 @@ function mountChat(root) {
     return window.TabbyHighlight ? window.TabbyHighlight.pathLanguage(path) : "";
   }
 
+  function looksLikeTextBytes(bytes) {
+    const raw = bytes || new Uint8Array();
+    if (!raw.length) return true;
+    for (let i = 0; i < raw.length; i += 1) {
+      if (raw[i] === 0) return false;
+    }
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    } catch {
+      return false;
+    }
+    let weird = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      const b = raw[i];
+      if (b < 32 && b !== 9 && b !== 10 && b !== 13) weird += 1;
+    }
+    return weird / raw.length < 0.02;
+  }
+
+  function formatHexDump(bytes) {
+    const raw = bytes || new Uint8Array();
+    const lines = ["Offset    00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII"];
+    const n = raw.length;
+    for (let i = 0; n === 0 ? i === 0 : i < n; i += 16) {
+      const cells = [];
+      let ascii = "";
+      for (let j = 0; j < 16; j += 1) {
+        if (i + j < n) {
+          const b = raw[i + j];
+          cells.push(b.toString(16).padStart(2, "0"));
+          ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
+        } else {
+          cells.push("  ");
+        }
+      }
+      const hex = `${cells.slice(0, 8).join(" ")}  ${cells.slice(8).join(" ")}`;
+      lines.push(`${i.toString(16).padStart(8, "0")}  ${hex}  |${ascii}|`);
+      if (n === 0) break;
+    }
+    return lines.join("\n");
+  }
+
+  function fillHexDump(root, tab) {
+    const pre = root && root.querySelector(".chat-hex");
+    if (pre) pre.textContent = tab && tab.hex ? tab.hex : "";
+  }
+
   function editorLangLabel(tab, view) {
     if (isHistoryTab(tab)) return "vs previous";
     const suffix = fileSuffix(tab.path).replace(/^\./, "");
@@ -3380,6 +3509,7 @@ function mountChat(root) {
       if (suffix === "jpg" || suffix === "jpeg") return "jpeg";
       return suffix || "image";
     }
+    if (view === "hex") return "hex";
     if (view === "binary") return suffix || "binary";
     return fileLang(tab.path) || (window.TabbyMonaco ? window.TabbyMonaco.languageFor(tab.path) : "");
   }
@@ -3551,8 +3681,14 @@ function mountChat(root) {
         `<div class="chat-crop-box" data-crop-box>${handles}</div></div></div>`
       );
     }
+    if (view === "hex") {
+      const note = tab.hexTruncated
+        ? `<p class="muted">Showing first ${TabbyUI.formatBytes(HEX_RENDER_MAX_BYTES)} of ${TabbyUI.formatBytes(tab.size)}.</p>`
+        : "";
+      return `<div class="chat-editor-body is-hex">${note}<pre class="chat-hex"></pre></div>`;
+    }
     if (view === "binary") {
-      return '<div class="chat-editor-body"><p class="muted">Download this file to open it.</p></div>';
+      return '<div class="chat-editor-body"><p class="muted">This file is too large to preview. Download it to open it.</p></div>';
     }
     if (view === "error") {
       return '<div class="chat-editor-body"><p class="muted">Could not read this file.</p></div>';
@@ -3637,6 +3773,7 @@ function mountChat(root) {
           : "") +
       editorBodyHtml(tab, view) +
       '<p class="muted chat-editor-note"></p>';
+    fillHexDump(editorPane, tab);
     mountMonaco(tab, view);
     if (view === "image" && tab.cropping) mountCropOverlay(tab);
     if (view === "image" && tab.punching) mountPunchOverlay(tab);
@@ -3836,7 +3973,76 @@ function mountChat(root) {
       TEXT_SUFFIXES.has(suffix) ||
       (tab.dirty && typeof tab.text === "string");
     if (!editable) {
-      tab.state = "binary";
+      const size = Number(tab.size) || 0;
+      if (size > INSPECT_MAX_BYTES) {
+        tab.state = "binary";
+        tab.sniffed = "";
+        return;
+      }
+      const chatId = activeWorkspaceId();
+      tab.loading = true;
+      fetch(fileUrl(chatId, tab.path), { credentials: "same-origin" })
+        .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error("read"))))
+        .then((buf) => {
+          tab.loading = false;
+          if (chatId !== activeWorkspaceId() || !findTab(tab.path)) return;
+          if (buf.byteLength > INSPECT_MAX_BYTES) {
+            tab.size = buf.byteLength;
+            tab.state = "binary";
+            tab.sniffed = "";
+            tab.rev += 1;
+            if (activeTab === tab.path) renderEditorPane();
+            if (splitOpen && splitPath === tab.path) mountSplitEditor();
+            return;
+          }
+          const bytes = new Uint8Array(buf);
+          tab.size = bytes.length;
+          if (BINARY_SUFFIXES.has(suffix) || !looksLikeTextBytes(bytes)) {
+            const slice = bytes.length > HEX_RENDER_MAX_BYTES
+              ? bytes.subarray(0, HEX_RENDER_MAX_BYTES)
+              : bytes;
+            tab.hex = formatHexDump(slice);
+            tab.hexTruncated = bytes.length > HEX_RENDER_MAX_BYTES;
+            tab.sniffed = "hex";
+            tab.editable = false;
+            tab.state = "hex";
+          } else {
+            const text = new TextDecoder("utf-8").decode(bytes);
+            tab.original = text;
+            if (tab.dirty && typeof tab.text === "string" && tab.text !== text) {
+              tab.dirty = true;
+            } else {
+              tab.text = text;
+              tab.dirty = false;
+              tab.caret = null;
+              tab.scrollTop = 0;
+              tab.scrollLeft = 0;
+            }
+            tab.hex = "";
+            tab.hexTruncated = false;
+            tab.sniffed = "text";
+            tab.editable = true;
+            tab.kind = "text";
+            tab.state = "ready";
+          }
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
+          paintTabs();
+        })
+        .catch(() => {
+          tab.loading = false;
+          if (chatId !== activeWorkspaceId() || !findTab(tab.path)) return;
+          if (tab.dirty && typeof tab.text === "string") {
+            tab.state = "ready";
+            tab.gone = true;
+          } else {
+            tab.state = "error";
+          }
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
+        });
       return;
     }
     tab.editable = true;
@@ -4230,12 +4436,17 @@ function mountChat(root) {
       }
       tab.gone = false;
       tab.kind = row.kind;
-      tab.editable = Boolean(row.editable);
+      if (tab.sniffed === "text") tab.editable = true;
+      else if (tab.sniffed === "hex") tab.editable = false;
+      else tab.editable = Boolean(row.editable);
       const size = Number(row.size) || 0;
       if (size === tab.size) continue;
       tab.size = size;
       // A code turn rewrote the file. Unsaved edits win until the user decides.
-      if (!tab.dirty && !tab.busy) tab.state = "loading";
+      if (!tab.dirty && !tab.busy) {
+        tab.state = "loading";
+        tab.sniffed = "";
+      }
     }
     if (activeTab && !findTab(activeTab)) activeTab = "";
     // Keep a tree/history selection when Chat is showing so a deleted file
@@ -5413,7 +5624,8 @@ function mountChat(root) {
     (list || []).forEach((tab) => {
       if (!tab) return;
       const path = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
-      if (!tab.dirty || !TEXT_SUFFIXES.has(fileSuffix(path))) return;
+      if (!tab.dirty || IMAGE_SUFFIXES.has(fileSuffix(path))) return;
+      if (tab.state === "hex" || tab.state === "binary") return;
       if (seen.has(path)) return;
       seen.add(path);
       tabs.push({
@@ -5463,7 +5675,7 @@ function mountChat(root) {
       const drafts = Array.isArray(data.drafts) ? data.drafts : [];
       drafts.forEach((draft) => {
         if (!draft || !draft.path || typeof draft.text !== "string") return;
-        if (!TEXT_SUFFIXES.has(fileSuffix(draft.path))) return;
+        if (IMAGE_SUFFIXES.has(fileSuffix(draft.path))) return;
         let tab = findTab(draft.path);
         if (!tab) {
           const row = filesListing.find((item) => item.path === draft.path);
