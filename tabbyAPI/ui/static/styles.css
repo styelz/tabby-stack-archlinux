@@ -1992,23 +1992,22 @@ button.chip {
   background: linear-gradient(90deg, transparent, var(--fade-base) 0.875rem);
 }
 .chat-file:hover .chat-file-tools,
-.chat-file:focus-within .chat-file-tools,
-.chat-file.is-active .chat-file-tools,
+.chat-file:has(.chat-file-tools:focus-within) .chat-file-tools,
 .chat-file:has(.is-on) .chat-file-tools {
   opacity: 1;
   pointer-events: auto;
 }
 .chat-file:hover .chat-file-tools,
-.chat-file:focus-within .chat-file-tools {
+.chat-file:has(.chat-file-tools:focus-within) .chat-file-tools {
   background: linear-gradient(90deg, transparent, var(--fade-hover) 0.875rem);
 }
-.chat-file.is-active .chat-file-tools,
+.chat-file.is-active:hover .chat-file-tools,
+.chat-file.is-active:has(.chat-file-tools:focus-within) .chat-file-tools,
 .chat-file:has(.is-on) .chat-file-tools {
   background: linear-gradient(90deg, transparent, var(--fade-active) 0.875rem);
 }
 .chat-file:hover .chat-file-size,
-.chat-file:focus-within .chat-file-size,
-.chat-file.is-active .chat-file-size,
+.chat-file:has(.chat-file-tools:focus-within) .chat-file-size,
 .chat-file:has(.is-on) .chat-file-size {
   visibility: hidden;
 }
