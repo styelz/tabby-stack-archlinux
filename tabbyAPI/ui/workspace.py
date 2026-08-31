@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import threading
 import time
@@ -18,6 +19,7 @@ import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
@@ -62,6 +64,9 @@ MAX_TEXT_BYTES = 8 * 1024 * 1024
 MAX_GREP_MATCHES = 200
 MAX_GREP_LINE = 400
 LAYOUT_REPORT_MAX = 2048
+INSTRUCTIONS_NAMES = ("AGENTS.md", ".tabby.md")
+INSTRUCTIONS_MAX = 8000
+CLONE_TIMEOUT_S = 120
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
 DRAFTS_SUFFIX = ".drafts.json"
@@ -1224,6 +1229,130 @@ def restore_revision(username: str, chat_id: str, rel: str, rev_id: str) -> str:
     return write_text(username, chat_id, rel, data["contents"])
 
 
+def restore_run(
+    username: str,
+    chat_id: str,
+    run_id: str,
+    created: Optional[list[str]] = None,
+) -> dict[str, list[str]]:
+    """Undo one Code-mode prompt run: restore pre-run snapshots, delete created files."""
+    wanted = _clean_history_run(run_id)
+    if not wanted:
+        raise ValueError("Invalid run")
+    folder = history_dir(username, chat_id)
+    targets: list[tuple[str, str]] = []
+    with _HISTORY_LOCK:
+        index = _load_history_index(folder)
+        for key, rows in index.items():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("run") or "") != wanted:
+                    continue
+                rev_id = str(row.get("id") or "").strip()
+                if rev_id:
+                    targets.append((key, rev_id))
+                break
+    restored: list[str] = []
+    for rel, rev_id in targets:
+        try:
+            restore_revision(username, chat_id, rel, rev_id)
+            restored.append(rel)
+        except (ValueError, FileNotFoundError, OSError):
+            continue
+    deleted: list[str] = []
+    restored_set = set(restored)
+    for raw in created or []:
+        rel = str(raw or "").strip().replace("\\", "/")
+        if not rel or rel in restored_set:
+            continue
+        try:
+            delete_file(username, chat_id, rel)
+            deleted.append(rel)
+        except (ValueError, FileNotFoundError, OSError):
+            continue
+    return {"restored": restored, "deleted": deleted}
+
+
+def workspace_instructions(username: str, chat_id: str) -> str:
+    """Capped AGENTS.md / .tabby.md excerpt for the Code-mode system prompt."""
+    for name in INSTRUCTIONS_NAMES:
+        if not _workspace_file_exists(username, chat_id, name):
+            continue
+        try:
+            text = read_text(username, chat_id, name)
+        except (OSError, ValueError, FileNotFoundError):
+            continue
+        if not text or text.startswith("[binary"):
+            continue
+        body = text.strip()
+        if not body:
+            continue
+        if len(body) > INSTRUCTIONS_MAX:
+            body = body[: INSTRUCTIONS_MAX - 1].rstrip() + "…"
+        return body
+    return ""
+
+
+def _https_clone_url(raw: str) -> tuple[str, str]:
+    parsed = urlparse(str(raw or "").strip())
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Clone URL must be https.")
+    if parsed.username or parsed.password:
+        raise ValueError("Clone URL must not include credentials.")
+    host = str(parsed.hostname or "").strip().lower()
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Clone URL host is not allowed.")
+    path = parsed.path or ""
+    clean = urlunparse(("https", parsed.netloc, path, "", "", ""))
+    name = Path(path.rstrip("/")).name or "repo"
+    if name.endswith(".git"):
+        name = name[:-4]
+    dest = safe_name(name) or "repo"
+    return clean, dest
+
+
+def clone_git(username: str, chat_id: str, url: str) -> dict[str, str]:
+    """Clone an HTTPS git repo into this workspace via the jail container."""
+    clean, dest = _https_clone_url(url)
+    files = [
+        row
+        for row in list_files(username, chat_id)
+        if row.get("path") and row.get("kind") != "dir"
+    ]
+    empty = not files
+    target = "." if empty else dest
+    if not empty:
+        root = workspace_root(username, chat_id, create=True)
+        try:
+            dest_path = resolve_rel(root, dest)
+        except ValueError as exc:
+            raise ValueError("Invalid repository name.") from exc
+        if dest_path.exists():
+            raise ValueError(f"{dest} already exists.")
+    from ui import codebox
+
+    cmd = (
+        "git clone --depth 1 -- "
+        + shlex.quote(clean)
+        + " "
+        + shlex.quote(target)
+    )
+    try:
+        code, output = codebox.run_shell(
+            username, chat_id, cmd, timeout=CLONE_TIMEOUT_S
+        )
+    except codebox.CodeboxError as exc:
+        raise ValueError(str(exc)) from exc
+    if code:
+        detail = (output or "git clone failed").strip()
+        raise ValueError(detail[:1500] or "git clone failed")
+    _check_caps(workspace_root(username, chat_id, create=False))
+    return {"path": "" if target == "." else dest, "url": clean}
+
+
 def resolve_file(username: str, chat_id: str, rel: str) -> Path:
     root = workspace_root(username, chat_id, create=False)
     path = resolve_rel(root, rel)
@@ -1323,20 +1452,21 @@ def _glob_match(rel: str, pattern: str) -> bool:
     return False
 
 
-def grep_text(
+def grep_hits(
     username: str,
     chat_id: str,
     pattern: str,
     path: str = "",
     glob_pat: str = "",
     max_matches: int = MAX_GREP_MATCHES,
-) -> str:
+    literal: bool = False,
+) -> list[dict[str, Any]]:
     try:
-        regex = re.compile(pattern)
+        regex = re.compile(re.escape(pattern) if literal else pattern)
     except re.error as exc:
         raise ValueError(f"Invalid regex: {exc}") from exc
     prefix = str(path or "").strip().strip("/")
-    hits: list[str] = []
+    hits: list[dict[str, Any]] = []
     for row in list_files(username, chat_id):
         rel = str(row.get("path") or "")
         if not rel or row.get("kind") == "image" or not row.get("editable"):
@@ -1355,10 +1485,50 @@ def grep_text(
             if not regex.search(line):
                 continue
             snippet = line if len(line) <= MAX_GREP_LINE else line[:MAX_GREP_LINE] + "…"
-            hits.append(f"{rel}:{index}:{snippet}")
+            hits.append({"path": rel, "line": index, "text": snippet})
             if len(hits) >= max_matches:
-                return "\n".join(hits) + f"\n…stopped after {max_matches} matches"
-    return "\n".join(hits) if hits else "No matches."
+                return hits
+    return hits
+
+
+def grep_text(
+    username: str,
+    chat_id: str,
+    pattern: str,
+    path: str = "",
+    glob_pat: str = "",
+    max_matches: int = MAX_GREP_MATCHES,
+) -> str:
+    hits = grep_hits(
+        username,
+        chat_id,
+        pattern,
+        path=path,
+        glob_pat=glob_pat,
+        max_matches=max_matches,
+    )
+    if not hits:
+        return "No matches."
+    lines = [f"{row['path']}:{row['line']}:{row['text']}" for row in hits]
+    if len(hits) >= max_matches:
+        lines.append(f"…stopped after {max_matches} matches")
+    return "\n".join(lines)
+
+
+def replace_all_text(
+    username: str, chat_id: str, rel: str, old: str, new: str
+) -> int:
+    """Replace every occurrence of old in one text file. Returns the count."""
+    if not str(old):
+        raise ValueError("Find text is required.")
+    text = read_text(username, chat_id, rel)
+    if text.startswith("[binary"):
+        raise ValueError(f"{rel} is not text.")
+    count = text.count(old)
+    if not count:
+        return 0
+    write_text(username, chat_id, rel, text.replace(old, new))
+    return count
 
 
 def glob_paths(username: str, chat_id: str, pattern: str) -> str:
@@ -2471,18 +2641,38 @@ def delete_user_workspaces(username: str) -> None:
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def zip_bytes(username: str, chat_id: str) -> bytes:
+def zip_bytes(
+    username: str, chat_id: str, paths: Optional[list[str]] = None
+) -> bytes:
     root = workspace_root(username, chat_id, create=False)
     files = _iter_files(root)
+    wanted: Optional[set[str]] = None
+    if paths:
+        wanted = set()
+        for raw in paths:
+            rel = str(raw or "").strip().replace("\\", "/").lstrip("/")
+            if not rel or rel.startswith("/") or ".." in Path(rel).parts:
+                continue
+            wanted.add(rel)
+        if not wanted:
+            wanted = None
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         file_arcs: list[str] = []
         for path in files:
             arc = path.relative_to(root.resolve()).as_posix()
+            if wanted is not None:
+                keep = arc in wanted or any(
+                    arc.startswith(item.rstrip("/") + "/") for item in wanted
+                )
+                if not keep:
+                    continue
             zf.write(path, arcname=arc)
             file_arcs.append(arc)
         for path in _iter_dirs(root):
             rel = path.relative_to(root.resolve()).as_posix()
+            if wanted is not None and rel not in wanted:
+                continue
             prefix = rel.rstrip("/") + "/"
             if any(arc == rel or arc.startswith(prefix) for arc in file_arcs):
                 continue

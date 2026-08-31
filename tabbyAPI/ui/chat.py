@@ -95,6 +95,20 @@ def usage_comment(usage: Any) -> str:
 
 
 CODE_DEFAULT_MAX_TOKENS = 16384
+_SAMPLER_KEYS = (
+    "temperature",
+    "top_p",
+    "min_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "max_tokens",
+)
+
+
+def _apply_sampler_fields(payload: dict[str, Any], fields: dict[str, Any]) -> None:
+    for key in _SAMPLER_KEYS:
+        if payload.get(key) is not None:
+            fields[key] = payload[key]
 
 
 def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRequest:
@@ -104,11 +118,8 @@ def completion_request_from_payload(payload: dict[str, Any]) -> ChatCompletionRe
         "tools": payload.get("tools"),
         "stream_options": {"include_usage": True},
     }
-    if payload.get("temperature") is not None:
-        fields["temperature"] = payload["temperature"]
-    if payload.get("max_tokens") is not None:
-        fields["max_tokens"] = payload["max_tokens"]
-    elif payload.get("mode") == "code":
+    _apply_sampler_fields(payload, fields)
+    if fields.get("max_tokens") is None and payload.get("mode") == "code":
         fields["max_tokens"] = CODE_DEFAULT_MAX_TOKENS
     if payload.get("tool_choice") is not None:
         fields["tool_choice"] = payload["tool_choice"]

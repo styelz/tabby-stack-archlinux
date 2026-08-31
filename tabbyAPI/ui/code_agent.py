@@ -527,10 +527,17 @@ def workspace_file_brief(username: str, chat_id: str) -> str:
 
 def code_system_for(username: str, chat_id: str, agent: str = "agent") -> str:
     base = _system_for_agent(agent)
+    parts = [base]
+    try:
+        notes = workspace.workspace_instructions(username, chat_id)
+    except Exception:
+        notes = ""
+    if notes:
+        parts.append("Workspace instructions (AGENTS.md):\n" + notes)
     brief = workspace_file_brief(username, chat_id)
-    if not brief:
-        return base
-    return f"{base}\n\n{brief}"
+    if brief:
+        parts.append(brief)
+    return "\n\n".join(parts)
 
 
 _WRITE_NAMES = (
@@ -1138,8 +1145,10 @@ def _execute_tool(
             and _existing_page_file(username, chat_id, rel)
         ):
             return "Tool error", _LAYOUT_WRITE_REFUSE
+        created = not workspace._workspace_file_exists(username, chat_id, rel)
         written = workspace.write_text(username, chat_id, rel, _arg_contents(args))
-        _note_change(change, "write", written)
+        extra = {"created": "1"} if created else {}
+        _note_change(change, "write", written, **extra)
         return f"Writing {written}", f"Wrote {written}"
     if kind == "replace":
         old = str(args.get("old_string") or args.get("oldStr") or "")

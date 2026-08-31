@@ -3,15 +3,19 @@
   const CDN = `https://cdn.jsdelivr.net/npm/monaco-editor@${VERSION}/min/vs`;
 
   let loadPromise = null;
-  let editor = null;
-  let diffEditor = null;
-  let originalModel = null;
-  let modifiedModel = null;
   let onChange = null;
   let onSave = null;
   let ignoreChange = false;
   let currentPath = "";
   let mountGen = 0;
+  const hosts = {
+    main: { editor: null, diffEditor: null, originalModel: null, modifiedModel: null, path: "" },
+    split: { editor: null, diffEditor: null, originalModel: null, modifiedModel: null, path: "" },
+  };
+
+  function hostOf(name) {
+    return hosts[name] || hosts.main;
+  }
 
   function localVs() {
     const rel = window.TabbyUI ? window.TabbyUI.path("assets/vs") : "/v1/ui/assets/vs";
@@ -225,27 +229,54 @@
     return window.monaco.Uri.parse(`inmemory://tabby/${clean}`);
   }
 
-  function disposeModels() {
-    if (originalModel) {
-      originalModel.dispose();
-      originalModel = null;
+  function disposeHostModels(host) {
+    if (host.originalModel) {
+      host.originalModel.dispose();
+      host.originalModel = null;
     }
-    if (modifiedModel) {
-      modifiedModel.dispose();
-      modifiedModel = null;
+    if (host.modifiedModel && host.diffEditor) {
+      host.modifiedModel.dispose();
+      host.modifiedModel = null;
     }
   }
 
+  function disposeHost(name) {
+    const host = hostOf(name);
+    if (host.editor) {
+      host.editor.dispose();
+      host.editor = null;
+    }
+    if (host.diffEditor) {
+      host.diffEditor.dispose();
+      host.diffEditor = null;
+    }
+    disposeHostModels(host);
+    host.path = "";
+  }
+
   function disposeEditors() {
-    if (editor) {
-      editor.dispose();
-      editor = null;
+    disposeHost("main");
+    disposeHost("split");
+  }
+
+  function getOrCreateModel(path, text) {
+    const monaco = window.monaco;
+    const uri = modelUri(path);
+    const existing = monaco.editor.getModel(uri);
+    if (existing) {
+      if (text != null && existing.getValue() !== String(text || "")) {
+        ignoreChange = true;
+        existing.setValue(String(text || ""));
+        ignoreChange = false;
+      }
+      return existing;
     }
-    if (diffEditor) {
-      diffEditor.dispose();
-      diffEditor = null;
-    }
-    disposeModels();
+    return monaco.editor.createModel(String(text || ""), languageFor(path), uri);
+  }
+
+  function pathForModel(model) {
+    if (!model || !model.uri) return "";
+    return String(model.uri.path || "").replace(/^\/+/, "");
   }
 
   function zoomFactor() {
@@ -268,14 +299,17 @@
 
   function applyEditorZoom() {
     const opts = { fontSize: editorFontSize(), padding: editorPadding() };
-    if (editor) editor.updateOptions(opts);
-    if (diffEditor) {
-      diffEditor.updateOptions(opts);
-      const modified = diffEditor.getModifiedEditor && diffEditor.getModifiedEditor();
-      const original = diffEditor.getOriginalEditor && diffEditor.getOriginalEditor();
-      if (modified) modified.updateOptions(opts);
-      if (original) original.updateOptions(opts);
-    }
+    Object.keys(hosts).forEach((name) => {
+      const host = hosts[name];
+      if (host.editor) host.editor.updateOptions(opts);
+      if (host.diffEditor) {
+        host.diffEditor.updateOptions(opts);
+        const modified = host.diffEditor.getModifiedEditor && host.diffEditor.getModifiedEditor();
+        const original = host.diffEditor.getOriginalEditor && host.diffEditor.getOriginalEditor();
+        if (modified) modified.updateOptions(opts);
+        if (original) original.updateOptions(opts);
+      }
+    });
   }
 
   const common = {
@@ -318,67 +352,89 @@
     });
   }
 
-  function getEditEditor() {
-    if (editor) return editor;
-    if (diffEditor) return diffEditor.getModifiedEditor();
+  function getEditEditor(name) {
+    const host = hostOf(name || focusedHost());
+    if (host.editor) return host.editor;
+    if (host.diffEditor) return host.diffEditor.getModifiedEditor();
+    if (name) return null;
+    const main = hosts.main;
+    if (main.editor) return main.editor;
+    if (main.diffEditor) return main.diffEditor.getModifiedEditor();
     return null;
+  }
+
+  function focusedHost() {
+    const active = document.activeElement;
+    if (hosts.split.editor && hosts.split.el && hosts.split.el.contains(active)) return "split";
+    if (hosts.split.diffEditor && hosts.split.el && hosts.split.el.contains(active)) return "split";
+    return "main";
   }
 
   async function showFile(el, opts) {
     if (!el) return;
-    const gen = ++mountGen;
+    const name = (opts && opts.host) === "split" ? "split" : "main";
+    const host = hostOf(name);
+    host.gen = (host.gen || 0) + 1;
+    const gen = host.gen;
     const monaco = await ensure();
-    if (gen !== mountGen) return;
-    currentPath = opts.path || "";
-    disposeEditors();
+    if (gen !== host.gen) return;
+    const path = (opts && opts.path) || "";
+    currentPath = path;
+    disposeHost(name);
     el.innerHTML = "";
-    const uri = modelUri(currentPath);
-    const existing = monaco.editor.getModel(uri);
-    if (existing) existing.dispose();
-    modifiedModel = monaco.editor.createModel(
-      opts.text || "",
-      languageFor(currentPath),
-      uri
-    );
-    editor = monaco.editor.create(el, {
+    host.el = el;
+    host.path = path;
+    const model = getOrCreateModel(path, opts && opts.text);
+    host.editor = monaco.editor.create(el, {
       ...common,
       fontSize: editorFontSize(),
       padding: editorPadding(),
-      model: modifiedModel,
-      readOnly: Boolean(opts.readOnly),
+      model,
+      readOnly: Boolean(opts && opts.readOnly),
     });
-    editor.onDidChangeModelContent(() => {
+    host.editor.onDidChangeModelContent(() => {
       if (ignoreChange || typeof onChange !== "function") return;
-      onChange(editor.getValue());
+      onChange(host.editor.getValue(), name, host.path);
     });
-    bindSave(editor);
-    if (Array.isArray(opts.caret) && modifiedModel) {
-      const pos = modifiedModel.getPositionAt(Math.max(0, opts.caret[0] || 0));
-      editor.setPosition(pos);
-      editor.revealPositionInCenter(pos);
+    host.editor.onDidFocusEditorText(() => {
+      currentPath = host.path;
+    });
+    bindSave(host.editor);
+    if (Array.isArray(opts && opts.caret) && model) {
+      const pos = model.getPositionAt(Math.max(0, opts.caret[0] || 0));
+      host.editor.setPosition(pos);
+      host.editor.revealPositionInCenter(pos);
     }
-    editor.focus();
-    if (window.TabbyLsp) window.TabbyLsp.attachMonaco(currentPath, editor);
+    if (opts && opts.line) {
+      const line = Math.max(1, Number(opts.line) || 1);
+      const col = Math.max(1, Number(opts.column) || 1);
+      host.editor.setPosition({ lineNumber: line, column: col });
+      host.editor.revealLineInCenter(line);
+    }
+    host.editor.focus();
+    if (window.TabbyLsp) window.TabbyLsp.attachMonaco(path, host.editor);
   }
 
   async function showDiff(el, opts) {
     if (!el) return;
-    const gen = ++mountGen;
+    const name = "main";
+    const host = hostOf(name);
+    host.gen = (host.gen || 0) + 1;
+    const gen = host.gen;
     const monaco = await ensure();
-    if (gen !== mountGen) return;
-    currentPath = opts.path || "";
-    disposeEditors();
+    if (gen !== host.gen) return;
+    const path = (opts && opts.path) || "";
+    currentPath = path;
+    disposeHost(name);
     el.innerHTML = "";
-    originalModel = monaco.editor.createModel(
-      opts.original || "",
-      languageFor(currentPath)
+    host.el = el;
+    host.path = path;
+    host.originalModel = monaco.editor.createModel(
+      (opts && opts.original) || "",
+      languageFor(path)
     );
-    modifiedModel = monaco.editor.createModel(
-      opts.modified || "",
-      languageFor(currentPath),
-      modelUri(currentPath)
-    );
-    diffEditor = monaco.editor.createDiffEditor(el, {
+    host.modifiedModel = getOrCreateModel(path, (opts && opts.modified) || "");
+    host.diffEditor = monaco.editor.createDiffEditor(el, {
       ...common,
       fontSize: editorFontSize(),
       padding: editorPadding(),
@@ -387,15 +443,15 @@
       useInlineViewWhenSpaceIsLimited: true,
       readOnly: false,
     });
-    diffEditor.setModel({ original: originalModel, modified: modifiedModel });
-    const modified = diffEditor.getModifiedEditor();
+    host.diffEditor.setModel({ original: host.originalModel, modified: host.modifiedModel });
+    const modified = host.diffEditor.getModifiedEditor();
     modified.onDidChangeModelContent(() => {
       if (ignoreChange || typeof onChange !== "function") return;
-      onChange(modified.getValue());
+      onChange(modified.getValue(), name, host.path);
     });
     bindSave(modified);
     modified.focus();
-    if (window.TabbyLsp) window.TabbyLsp.attachMonaco(currentPath, modified);
+    if (window.TabbyLsp) window.TabbyLsp.attachMonaco(path, modified);
   }
 
   document.addEventListener("tabby-theme-change", applyMonacoTheme);
@@ -409,8 +465,8 @@
       const ed = getEditEditor();
       return ed ? ed.getValue() : "";
     },
-    setValue(text) {
-      const ed = getEditEditor();
+    setValue(text, name) {
+      const ed = getEditEditor(name);
       if (!ed) return;
       ignoreChange = true;
       ed.setValue(String(text || ""));
@@ -424,8 +480,11 @@
       return [model.getOffsetAt(sel.getStartPosition()), model.getOffsetAt(sel.getEndPosition())];
     },
     layout() {
-      if (editor) editor.layout();
-      if (diffEditor) diffEditor.layout();
+      Object.keys(hosts).forEach((name) => {
+        const host = hosts[name];
+        if (host.editor) host.editor.layout();
+        if (host.diffEditor) host.diffEditor.layout();
+      });
     },
     find() {
       const ed = getEditEditor();
@@ -433,6 +492,23 @@
       const action = ed.getAction("actions.find");
       if (action) action.run();
     },
+    insertAtCursor(text) {
+      const ed = getEditEditor();
+      if (!ed) return false;
+      const sel = ed.getSelection();
+      if (!sel) return false;
+      ed.executeEdits("tabby", [{ range: sel, text: String(text || ""), forceMoveMarkers: true }]);
+      return true;
+    },
+    format() {
+      const ed = getEditEditor();
+      if (!ed) return;
+      const action = ed.getAction("editor.action.formatDocument");
+      if (action) action.run();
+    },
+    pathForModel,
+    focusedHost,
+    disposeHost,
     setMarkers(path, items) {
       if (!window.monaco) return;
       const model = window.monaco.editor.getModel(modelUri(path));

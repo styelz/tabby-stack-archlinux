@@ -25,6 +25,19 @@ class ChatStoreNormalizeTests(unittest.TestCase):
         self.assertEqual(store["lastByMode"], {"chat": "c1", "code": "p1"})
         self.assertEqual([c["mode"] for c in store["chats"]], ["chat", "code"])
 
+    def test_keeps_chat_folder(self):
+        store = normalize_store(
+            {
+                "chats": [
+                    {"id": "c1", "mode": "chat", "title": "Hi", "folder": "Work", "messages": []},
+                    {"id": "c2", "mode": "code", "title": "App", "folder": "Nope", "messages": []},
+                ]
+            }
+        )
+        by_id = {chat["id"]: chat for chat in store["chats"]}
+        self.assertEqual(by_id["c1"]["folder"], "Work")
+        self.assertNotIn("folder", by_id["c2"])
+
     def test_drops_last_id_when_mode_does_not_match(self):
         store = normalize_store(
             {

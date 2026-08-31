@@ -251,6 +251,9 @@ def normalize_store(raw: Any) -> dict[str, Any]:
             "parentId": parent_id,
             "messages": messages,
         }
+        folder = str(item.get("folder") or "").strip()[:80]
+        if mode == "chat" and folder:
+            row["folder"] = folder
         usage = _usage_payload(item.get("usage"))
         if usage:
             row["usage"] = usage

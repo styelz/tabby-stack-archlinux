@@ -289,18 +289,21 @@ def drop_all_code_containers() -> None:
         _run([docker_bin(), "rm", "-f", *ids], timeout=60)
 
 
-def run_shell(username: str, chat_id: str, command: str) -> tuple[int, str]:
+def run_shell(
+    username: str, chat_id: str, command: str, *, timeout: float | None = None
+) -> tuple[int, str]:
     """Run one command in the chat container. Returns (exit_code, output)."""
     text = str(command or "").strip()
     if not text:
         return 0, ""
     ensure_container(username, chat_id)
     argv = exec_args(username, chat_id, ["bash", "-lc", text])
+    limit = SHELL_TIMEOUT_S if timeout is None else max(1.0, float(timeout))
     try:
         proc = subprocess.run(
             argv,
             capture_output=True,
-            timeout=SHELL_TIMEOUT_S,
+            timeout=limit,
             check=False,
         )
     except FileNotFoundError as exc:

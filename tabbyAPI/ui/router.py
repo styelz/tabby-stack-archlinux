@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import json
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -464,6 +465,77 @@ async def ui_workspace_tool(chat_id: str, request: Request, _user: str = Depends
     }
 
 
+@router.post("/workspace/{chat_id}/grep", include_in_schema=False)
+async def ui_workspace_grep(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import grep_hits
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body is required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object is required")
+    pattern = str(body.get("pattern") or body.get("query") or "")
+    if not pattern:
+        raise HTTPException(400, "pattern is required")
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        hits = grep_hits(
+            _user,
+            cid,
+            pattern,
+            path=str(body.get("path") or ""),
+            glob_pat=str(body.get("glob") or ""),
+            literal=bool(body.get("literal", True)),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "hits": hits, "count": len(hits)}
+
+
+@router.post("/workspace/{chat_id}/replace", include_in_schema=False)
+async def ui_workspace_replace(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, replace_all_text, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body is required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object is required")
+    find = str(body.get("find") or body.get("old") or "")
+    repl = str(body.get("replace") or body.get("new") or "")
+    paths = body.get("paths") or body.get("path")
+    if isinstance(paths, str):
+        paths = [paths]
+    if not find:
+        raise HTTPException(400, "find is required")
+    if not isinstance(paths, list) or not paths:
+        raise HTTPException(400, "paths are required")
+    cid = _workspace_chat_id(chat_id, _user)
+    changed: list[dict[str, Any]] = []
+    try:
+        for raw in paths:
+            rel = str(raw or "").strip()
+            if not rel:
+                continue
+            count = replace_all_text(_user, cid, rel, find, repl)
+            if count:
+                changed.append({"path": rel, "count": count})
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "changed": changed,
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
+
+
 @router.get("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import listing, site_entry
@@ -842,6 +914,35 @@ async def ui_workspace_history_restore(
     return {"ok": True, "path": written, **listing(_user, cid), "entry": site_entry(_user, cid)}
 
 
+@router.post("/workspace/{chat_id}/history/restore-run", include_in_schema=False)
+async def ui_workspace_history_restore_run(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import listing, restore_run, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    run_id = str((body or {}).get("run") or (body or {}).get("id") or "")
+    created = (body or {}).get("created") if isinstance(body, dict) else None
+    if isinstance(created, str):
+        created = [created]
+    if not isinstance(created, list):
+        created = []
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        result = restore_run(_user, cid, run_id, created=[str(item or "") for item in created])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        **result,
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
+
+
 @router.post("/workspace/{chat_id}/preview", include_in_schema=False)
 async def ui_workspace_preview(
     chat_id: str, request: Request, _user: str = Depends(require_ui_user)
@@ -865,17 +966,44 @@ async def ui_workspace_preview(
 
 
 @router.get("/workspace/{chat_id}/zip", include_in_schema=False)
-async def ui_workspace_zip(chat_id: str, _user: str = Depends(require_ui_user)):
+async def ui_workspace_zip(
+    chat_id: str, paths: str = "", _user: str = Depends(require_ui_user)
+):
     from ui.workspace import zip_bytes
 
     cid = _workspace_chat_id(chat_id, _user)
-    data = zip_bytes(_user, cid)
+    wanted = [part.strip() for part in str(paths or "").split(",") if part.strip()]
+    data = zip_bytes(_user, cid, wanted or None)
     filename = f"{cid}.zip"
     return Response(
         content=data,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/workspace/{chat_id}/clone", include_in_schema=False)
+async def ui_workspace_clone(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.workspace import clone_git, listing, site_entry
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    url = str((body or {}).get("url") or "")
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        result = clone_git(_user, cid, url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        **result,
+        **listing(_user, cid),
+        "entry": site_entry(_user, cid),
+    }
 
 
 @router.get("/workspace/{chat_id}/drafts", include_in_schema=False)
@@ -918,13 +1046,14 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
         await websocket.close(code=4400)
         return
     await websocket.accept()
-    gate = shell.connection_gate(user, cid)
+    slot = shell.slot_name(websocket.query_params.get("slot") or "1")
+    gate = shell.connection_gate(user, cid, slot)
     await gate.acquire()
     session = None
     reader = None
     try:
         try:
-            session = await shell.get_session(user, cid)
+            session = await shell.get_session(user, cid, slot)
         except shell.ShellError as exc:
             with contextlib.suppress(Exception):
                 await websocket.send_json({"type": "error", "message": str(exc)})
@@ -969,7 +1098,7 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
         if reader:
             reader.cancel()
         if session:
-            await shell.release_session(user, cid, session)
+            await shell.release_session(user, cid, session, slot)
         if reader:
             try:
                 await asyncio.wait_for(reader, 1.0)

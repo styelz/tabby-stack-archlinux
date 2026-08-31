@@ -173,6 +173,24 @@
     return kinds.Text;
   }
 
+  function pathFromModel(model) {
+    if (window.TabbyMonaco && typeof TabbyMonaco.pathForModel === "function") {
+      return TabbyMonaco.pathForModel(model);
+    }
+    const value = model && model.uri && (model.uri.path || model.uri.fsPath || "");
+    return String(value || "").replace(/^\/+/, "");
+  }
+
+  function locationToMonaco(item) {
+    const monaco = window.monaco;
+    if (!monaco || !item || !item.path) return null;
+    const line = Number(item.line) || 0;
+    const character = Number(item.character) || 0;
+    const uri = monaco.Uri.parse(`inmemory://tabby/${String(item.path).replace(/^\/+/, "")}`);
+    const pos = new monaco.Range(line + 1, character + 1, line + 1, character + 1);
+    return { uri, range: pos };
+  }
+
   function registerProviders() {
     if (state.providers || !window.monaco) return;
     state.providers = true;
@@ -181,7 +199,7 @@
       monaco.languages.registerCompletionItemProvider(language, {
         triggerCharacters: [".", "<", '"', "'", "/", "-", ":", "("],
         provideCompletionItems: async (model, position) => {
-          const path = window.TabbyMonaco ? window.TabbyMonaco.path() : "";
+          const path = pathFromModel(model);
           const reply = await request({
             type: "completion",
             path,
@@ -207,7 +225,7 @@
       });
       monaco.languages.registerHoverProvider(language, {
         provideHover: async (model, position) => {
-          const path = window.TabbyMonaco ? window.TabbyMonaco.path() : "";
+          const path = pathFromModel(model);
           const reply = await request({
             type: "hover",
             path,
@@ -219,7 +237,67 @@
           return { contents: [{ value: String(text) }] };
         },
       });
+      monaco.languages.registerDefinitionProvider(language, {
+        provideDefinition: async (model, position) => {
+          const path = pathFromModel(model);
+          const reply = await request({
+            type: "definition",
+            path,
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+          });
+          return (reply && reply.locations || []).map(locationToMonaco).filter(Boolean);
+        },
+      });
+      monaco.languages.registerReferenceProvider(language, {
+        provideReferences: async (model, position) => {
+          const path = pathFromModel(model);
+          const reply = await request({
+            type: "references",
+            path,
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+          });
+          return (reply && reply.locations || []).map(locationToMonaco).filter(Boolean);
+        },
+      });
+      monaco.languages.registerDocumentFormattingEditProvider(language, {
+        provideDocumentFormattingEdits: async (model, options) => {
+          const path = pathFromModel(model);
+          const reply = await request({
+            type: "format",
+            path,
+            tabSize: options && options.tabSize,
+            insertSpaces: !(options && options.insertSpaces === false),
+          });
+          const edits = (reply && reply.edits) || [];
+          return edits.map((item) => ({
+            range: new monaco.Range(
+              (item.startLine || 0) + 1,
+              (item.startCharacter || 0) + 1,
+              (item.endLine || 0) + 1,
+              (item.endCharacter || 0) + 1
+            ),
+            text: String(item.text || ""),
+          }));
+        },
+      });
     });
+    if (typeof monaco.editor.registerEditorOpener === "function") {
+      monaco.editor.registerEditorOpener({
+        openCodeEditor(_source, resource, selection) {
+          const path = String((resource && resource.path) || "").replace(/^\/+/, "");
+          if (!path) return false;
+          if (typeof window.tabbyOpenWorkspaceFile === "function") {
+            const line = selection && (selection.startLineNumber || selection.selectionStartLineNumber);
+            const column = selection && (selection.startColumn || selection.selectionStartColumn);
+            window.tabbyOpenWorkspaceFile(path, line, column);
+            return true;
+          }
+          return false;
+        },
+      });
+    }
   }
 
   window.TabbyLsp = {
@@ -254,6 +332,10 @@
         state.path = path;
         this.didOpen(path, editor.getValue());
       }
+    },
+    format() {
+      const ed = window.TabbyMonaco && window.TabbyMonaco.getEditor();
+      if (ed) ed.getAction("editor.action.formatDocument").run();
     },
     reset() {
       resetSocket(true);

@@ -81,6 +81,7 @@ function mountChat(root) {
       <aside class="chat-sidebar" id="chat-sidebar">
         <div class="chat-side-head">
           <button class="btn primary" type="button" id="chat-new">New chat</button>
+          <button class="btn ghost" type="button" id="chat-folder-new" hidden>New folder</button>
         </div>
         <div class="chat-side-search">
           <input id="chat-search" type="search" placeholder="Search chats" autocomplete="off" />
@@ -109,6 +110,8 @@ function mountChat(root) {
               <button type="button" data-more="copy">Copy conversation</button>
               <button type="button" data-more="regen">Regenerate last reply</button>
               <button type="button" data-more="settings">Sampling</button>
+              <button type="button" data-more="instructions" hidden>Workspace instructions</button>
+              <button type="button" data-more="handoff">Continue in new chat</button>
               <button type="button" data-more="keys">Keyboard shortcuts</button>
               <button type="button" data-more="sidebar">Hide sidebar</button>
               <button type="button" data-more="thread" hidden>New chat in this workspace</button>
@@ -150,7 +153,20 @@ function mountChat(root) {
               <button type="button" class="btn ghost chat-icon" id="editor-find-next" aria-label="Next match" title="Next match">↓</button>
               <button type="button" class="btn ghost chat-icon" id="editor-find-close" aria-label="Close find" title="Close find">×</button>
             </div>
+            <div class="chat-find chat-project-find" id="project-find" hidden>
+              <input id="project-find-input" type="search" placeholder="Find in files" autocomplete="off" />
+              <input id="project-replace-input" type="search" placeholder="Replace" autocomplete="off" />
+              <span class="chat-find-count" id="project-find-count"></span>
+              <button type="button" class="btn ghost" id="project-find-go">Find</button>
+              <button type="button" class="btn ghost" id="project-replace-one">Replace</button>
+              <button type="button" class="btn ghost" id="project-replace-all">All</button>
+              <button type="button" class="btn ghost chat-icon" id="project-find-close" aria-label="Close find" title="Close find">×</button>
+            </div>
+            <div class="chat-editors" id="chat-editors">
             <section class="chat-editor" id="chat-editor" aria-label="File editor"></section>
+            <button type="button" class="chat-resize" id="chat-split-resize" hidden aria-label="Resize split editor" title="Drag to resize"></button>
+            <section class="chat-editor chat-editor-split" id="chat-editor-split" hidden aria-label="Split editor"></section>
+            </div>
           </div>
           <section class="chat-preview" id="chat-preview" hidden>
             <button type="button" class="chat-resize" id="chat-preview-resize" aria-label="Resize preview" title="Drag to resize"></button>
@@ -177,6 +193,8 @@ function mountChat(root) {
             <button type="button" class="chat-resize chat-resize-y" id="chat-term-resize" aria-label="Resize terminal" title="Drag to resize"></button>
             <div class="chat-term-head">
               <strong>Terminal</strong>
+              <div class="chat-term-tabs" id="chat-term-tabs" hidden></div>
+              <button type="button" class="btn ghost chat-icon" id="chat-term-new" aria-label="New terminal" title="New terminal">+</button>
               <span class="muted" id="chat-term-note"></span>
               <span class="spacer"></span>
               <button type="button" class="btn ghost chat-icon" id="chat-term-close" aria-label="Close terminal" title="Close terminal">×</button>
@@ -196,6 +214,7 @@ function mountChat(root) {
             </div>
             <ul class="chat-todo-items" id="chat-todo-items"></ul>
           </div>
+          <div class="chat-followups" id="chat-followups" hidden></div>
           <ul class="slash-menu" id="history-menu" hidden></ul>
           <ul class="slash-menu" id="slash-menu" hidden></ul>
           <div class="chat-edit-bar" id="chat-edit-bar" hidden>
@@ -270,6 +289,7 @@ function mountChat(root) {
             <div class="chat-more-menu" id="chat-files-more-menu" hidden>
               <button type="button" data-files-more="refresh">Refresh</button>
               <button type="button" data-files-more="zip" id="chat-files-zip">Download zip</button>
+              <button type="button" data-files-more="clone">Clone git repo</button>
               <button type="button" data-files-more="clear" id="chat-files-clear">Clear files</button>
             </div>
           </div>
@@ -288,6 +308,9 @@ function mountChat(root) {
             <button class="btn ghost chat-icon" type="button" id="chat-files-preview" aria-label="Preview">${FILES_PREVIEW_SVG}</button>
             <button class="btn ghost chat-icon" type="button" id="chat-files-term" aria-label="Terminal" aria-keyshortcuts="Control+\`" title="Terminal (Ctrl+\`)">${FILES_TERM_SVG}</button>
           </div>
+        </div>
+        <div class="chat-files-filter" id="chat-files-filter-wrap">
+          <input id="chat-files-filter" type="search" placeholder="Filter files" autocomplete="off" />
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
         <div class="chat-files-history" id="chat-files-changes">
@@ -361,6 +384,7 @@ function mountChat(root) {
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const filesPane = root.querySelector("#chat-files");
   const filesTree = root.querySelector("#chat-files-tree");
+  const filesFilterEl = root.querySelector("#chat-files-filter");
   const filesHistoryList = root.querySelector("#chat-files-history-list");
   const filesChangesList = root.querySelector("#chat-files-changes-list");
   const filesChangesToggle = root.querySelector("#chat-files-changes-toggle");
@@ -368,7 +392,16 @@ function mountChat(root) {
   const tabsBar = root.querySelector("#chat-tabs");
   const logWrap = root.querySelector("#chat-log-wrap");
   const editorPane = root.querySelector("#chat-editor");
+  const editorSplitPane = root.querySelector("#chat-editor-split");
   const editorCol = root.querySelector("#chat-editor-col");
+  const followupsEl = root.querySelector("#chat-followups");
+  const projectFindBar = root.querySelector("#project-find");
+  const projectFindInput = root.querySelector("#project-find-input");
+  const projectReplaceInput = root.querySelector("#project-replace-input");
+  const projectFindCount = root.querySelector("#project-find-count");
+  const termTabsEl = root.querySelector("#chat-term-tabs");
+  const termNewBtn = root.querySelector("#chat-term-new");
+  const folderNewBtn = root.querySelector("#chat-folder-new");
   const previewPane = root.querySelector("#chat-preview");
   const previewFrames = root.querySelector("#chat-preview-frames");
   const previewTabsEl = root.querySelector("#chat-preview-tabs");
@@ -416,7 +449,26 @@ function mountChat(root) {
   const DEFAULT_PLACEHOLDER = input.getAttribute("placeholder") || "";
   let filesListing = [];
   let filesSelected = "";
+  let filesSelectedSet = new Set();
+  let filesFilter = "";
+  let splitOpen = false;
+  let splitPath = "";
+  let lastHistoryRun = "";
+  let projectFindHits = [];
+  let projectFindIndex = 0;
+  let termSlots = [{ id: "1", label: "1" }];
+  let termSlot = "1";
+  let speakUtter = null;
   let filesFocusDir = "";
+  let extraFolders = [];
+  let folderOpen = Object.create(null);
+  const FOLDER_EXTRA_KEY = "tabby-ui-chat-extra-folders";
+  try {
+    const raw = JSON.parse(localStorage.getItem(FOLDER_EXTRA_KEY) || "[]");
+    if (Array.isArray(raw)) extraFolders = raw.map((item) => String(item || "").trim()).filter(Boolean);
+  } catch {
+    extraFolders = [];
+  }
   let filesOpenFolders = new Set();
   let filesSeenPaths = new Set();
   let filesRevealed = "";
@@ -538,6 +590,7 @@ function mountChat(root) {
   const FILES_KEY = "tabby-ui-chat-files";
   const FILES_W_KEY = "tabby-ui-chat-files-w";
   const PREVIEW_W_KEY = "tabby-ui-chat-preview-w";
+  const SPLIT_W_KEY = "tabby-ui-chat-split-w";
   const TERM_H_KEY = "tabby-ui-chat-term-h";
   const COMPOSE_H_KEY = "tabby-ui-chat-compose-h";
   const FILES_FR_KEY = "tabby-ui-chat-files-fr";
@@ -550,6 +603,9 @@ function mountChat(root) {
   const PREVIEW_W_MIN = 22;
   const PREVIEW_W_MAX = 78;
   const PREVIEW_W_DEFAULT = 42;
+  const SPLIT_W_MIN = 22;
+  const SPLIT_W_MAX = 78;
+  const SPLIT_W_DEFAULT = 50;
   const TERM_H_MIN = 80;
   const TERM_H_DEFAULT = 220;
   const COMPOSE_H_MIN = 56;
@@ -606,6 +662,7 @@ function mountChat(root) {
       titleLocked: false,
       mode: mode === "code" ? "code" : "chat",
       parentId: "",
+      folder: "",
       messages: [{ ...SYSTEM }],
     };
     if (mode === "code") {
@@ -1035,6 +1092,8 @@ function mountChat(root) {
         parentId: "",
         messages,
       };
+      const folder = String(item.folder || "").trim();
+      if (row.mode === "chat" && folder) row.folder = folder;
       const usage = cloneUsage(item.usage);
       if (usage) row.usage = usage;
       chats.push(row);
@@ -1141,11 +1200,22 @@ function mountChat(root) {
   const SKIP_UPLOAD_DIRS = new Set([".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache"]);
   const SKIP_UPLOAD_FILES = new Set([".ds_store", "thumbs.db"]);
   let renaming = false;
-  let settings = { temperature: null };
+  let settings = {
+    temperature: null,
+    top_p: null,
+    min_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+    max_tokens: null,
+  };
+  const SAMPLER_KEYS = ["temperature", "top_p", "min_p", "frequency_penalty", "presence_penalty", "max_tokens"];
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
-    if (raw && typeof raw === "object" && (raw.temperature == null || Number.isFinite(Number(raw.temperature)))) {
-      settings.temperature = raw.temperature == null ? null : Number(raw.temperature);
+    if (raw && typeof raw === "object") {
+      SAMPLER_KEYS.forEach((key) => {
+        if (raw[key] == null) settings[key] = null;
+        else if (Number.isFinite(Number(raw[key]))) settings[key] = Number(raw[key]);
+      });
     }
   } catch {
     /* ignore */
@@ -1183,6 +1253,7 @@ function mountChat(root) {
   let sidebarW = readStoredWidth(SIDEBAR_W_KEY, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
   let filesW = readStoredWidth(FILES_W_KEY, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
   let previewW = readStoredWidth(PREVIEW_W_KEY, PREVIEW_W_DEFAULT, PREVIEW_W_MIN, PREVIEW_W_MAX);
+  let splitW = readStoredWidth(SPLIT_W_KEY, SPLIT_W_DEFAULT, SPLIT_W_MIN, SPLIT_W_MAX);
   let termH = readStoredWidth(TERM_H_KEY, TERM_H_DEFAULT, TERM_H_MIN, 800);
   let composeH = readStoredWidth(COMPOSE_H_KEY, 0, 0, 800);
   let filesFr = readFilesFr();
@@ -1251,6 +1322,7 @@ function mountChat(root) {
       .filter((chat) => {
         if (!q) return true;
         if (String(chat.title || "").toLowerCase().includes(q)) return true;
+        if (chatFolderName(chat).toLowerCase().includes(q)) return true;
         if ((chat.messages || []).some((msg) => String(msg.content || "").toLowerCase().includes(q))) {
           return true;
         }
@@ -1412,6 +1484,9 @@ function mountChat(root) {
     if (threadBtn) {
       threadBtn.hidden = activeMode() !== "code";
     }
+    const instructBtn = moreMenu && moreMenu.querySelector('[data-more="instructions"]');
+    if (instructBtn) instructBtn.hidden = activeMode() !== "code";
+    if (folderNewBtn) folderNewBtn.hidden = activeMode() !== "chat";
     const deleteBtn = moreMenu && moreMenu.querySelector('[data-more="delete"]');
     if (deleteBtn) {
       deleteBtn.textContent = isWorkspaceRoot(chat) ? "Delete this workspace" : "Delete this chat";
@@ -1457,6 +1532,7 @@ function mountChat(root) {
     paintFilesToggle();
     paintCodeAgent();
     paintPlanChecklist();
+    if (activeMode() !== "chat") paintFollowups("");
   }
 
   function paintCodeAgent() {
@@ -1700,6 +1776,7 @@ function mountChat(root) {
     btn.dataset.id = item.id;
     btn.setAttribute("role", "button");
     btn.tabIndex = 0;
+    if (activeMode() === "chat") btn.draggable = true;
     if (row.kind === "root") {
       btn.setAttribute("aria-expanded", canExpand ? (expanded ? "true" : "false") : "false");
     }
@@ -1725,37 +1802,71 @@ function mountChat(root) {
   function renderSidebar() {
     if (!navList) return;
     const code = activeMode() === "code";
-    const rows = code ? listedWorkspaceRows() : listedChats().map((chat) => ({ chat, kind: "flat", kids: 0, showKids: false }));
-    if (!rows.length) {
-      navList.innerHTML = code
-        ? '<div class="chat-nav-empty">No workspaces match.</div>'
-        : '<div class="chat-nav-empty">No chats match.</div>';
+    if (code) {
+      const rows = listedWorkspaceRows();
+      if (!rows.length) {
+        navList.innerHTML = '<div class="chat-nav-empty">No workspaces match.</div>';
+        return;
+      }
+      const active = activeChat();
+      const frag = document.createDocumentFragment();
+      let group = null;
+      rows.forEach((row) => {
+        const btn = navRowEl(row, active);
+        if (row.kind === "root") {
+          group = document.createElement("div");
+          group.className = "chat-nav-group"
+            + (row.showKids ? " is-open" : "")
+            + (row.kids > 0 ? " is-branch" : "")
+            + (active && chatParentId(active) === row.chat.id ? " is-current" : "");
+          group.dataset.id = row.chat.id;
+          group.setAttribute("role", "group");
+          group.setAttribute("aria-label", workspaceDisplayTitle(row.chat));
+          group.appendChild(btn);
+          frag.appendChild(group);
+          return;
+        }
+        if (row.kind === "child" && group) {
+          group.appendChild(btn);
+          return;
+        }
+        group = null;
+        frag.appendChild(btn);
+      });
+      navList.replaceChildren(frag);
+      return;
+    }
+    const chats = listedChats();
+    if (!chats.length && !knownFolders().length) {
+      navList.innerHTML = '<div class="chat-nav-empty">No chats match.</div>';
       return;
     }
     const active = activeChat();
     const frag = document.createDocumentFragment();
-    let group = null;
-    rows.forEach((row) => {
-      const btn = navRowEl(row, active);
-      if (row.kind === "root") {
-        group = document.createElement("div");
-        group.className = "chat-nav-group"
-          + (row.showKids ? " is-open" : "")
-          + (row.kids > 0 ? " is-branch" : "")
-          + (active && chatParentId(active) === row.chat.id ? " is-current" : "");
-        group.dataset.id = row.chat.id;
-        group.setAttribute("role", "group");
-        group.setAttribute("aria-label", workspaceDisplayTitle(row.chat));
-        group.appendChild(btn);
-        frag.appendChild(group);
-        return;
-      }
-      if (row.kind === "child" && group) {
-        group.appendChild(btn);
-        return;
-      }
-      group = null;
-      frag.appendChild(btn);
+    const pinned = chats.filter((chat) => chat.pinned);
+    const rest = chats.filter((chat) => !chat.pinned);
+    pinned.forEach((chat) => frag.appendChild(navRowEl({ chat, kind: "flat", kids: 0, showKids: false }, active)));
+    knownFolders().forEach((name) => {
+      const kids = rest.filter((chat) => chatFolderName(chat) === name);
+      if (!kids.length && !extraFolders.includes(name)) return;
+      const group = document.createElement("div");
+      const open = folderExpanded(name);
+      group.className = "chat-nav-group chat-nav-folder" + (open ? " is-open" : "");
+      group.dataset.folder = name;
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", name);
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "chat-nav-folder-head";
+      head.dataset.nav = "folder-twist";
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      head.textContent = name;
+      group.appendChild(head);
+      kids.forEach((chat) => group.appendChild(navRowEl({ chat, kind: "flat", kids: 0, showKids: false }, active)));
+      frag.appendChild(group);
+    });
+    rest.filter((chat) => !chatFolderName(chat)).forEach((chat) => {
+      frag.appendChild(navRowEl({ chat, kind: "flat", kids: 0, showKids: false }, active));
     });
     navList.replaceChildren(frag);
   }
@@ -2183,7 +2294,9 @@ function mountChat(root) {
       );
     }
     if (filesPreviewBtn) {
-      filesPreviewBtn.disabled = !filesEntry;
+      const tab = activeTabRow();
+      const md = Boolean(tab && /\.md$/i.test(tab.path || ""));
+      filesPreviewBtn.disabled = !filesEntry && !md && !previewOpen;
       filesPreviewBtn.classList.toggle("is-on", previewOpen);
     }
     if (filesTermBtn) filesTermBtn.classList.toggle("is-on", termOpen);
@@ -2202,22 +2315,33 @@ function mountChat(root) {
     }
     syncTreeFolders(filesListing);
     revealSelectedIfNeeded();
+    const needle = String(filesFilter || "").trim().toLowerCase();
     const frag = document.createDocumentFragment();
     const walk = (nodes, depth) => {
       nodes.forEach((node) => {
+        if (needle) {
+          const hay = `${node.path || ""} ${node.name || ""}`.toLowerCase();
+          const childHit = node.kind === "dir" && node.children && node.children.some(function hit(child) {
+            if (`${child.path || ""} ${child.name || ""}`.toLowerCase().includes(needle)) return true;
+            return Boolean(child.children && child.children.some(hit));
+          });
+          if (!hay.includes(needle) && !childHit) return;
+        }
         const isDir = node.kind === "dir";
-        const expanded = isDir && filesOpenFolders.has(node.path);
+        const expanded = isDir && (filesOpenFolders.has(node.path) || Boolean(needle));
         const row = node.row;
         const item = document.createElement("div");
         const missing = Boolean(row && row.missing);
+        const selected = !isDir && (filesSelectedSet.has(node.path) || node.path === filesSelected);
         item.className =
           "chat-file" +
           (isDir ? " is-dir" : "") +
           (expanded ? " is-expanded" : "") +
-          (!isDir && node.path === filesSelected ? " is-active" : "") +
+          (selected ? " is-active" : "") +
           (!isDir && findTab(node.path) ? " is-open" : "") +
           (!isDir && isPendingFile(node.path) ? " is-attached" : "") +
-          (!isDir && missing ? " is-missing" : "");
+          (!isDir && missing ? " is-missing" : "") +
+          (filesSelectedSet.has(node.path) ? " is-picked" : "");
         item.dataset.path = node.path;
         item.dataset.kind = node.kind;
         item.draggable = !missing;
@@ -2260,7 +2384,7 @@ function mountChat(root) {
     return true;
   }
 
-  function noteChange(path, written) {
+  function noteChange(path, written, extra) {
     const clean = String(path || "").replace(/^\/+/, "");
     if (!isChangePath(clean)) return;
     const prev = filesChanged.find((row) => row.path === clean);
@@ -2269,6 +2393,8 @@ function mountChat(root) {
       path: clean,
       ts: Date.now(),
       written: Boolean(written || (prev && prev.written)),
+      run: (extra && extra.run) || (prev && prev.run) || lastHistoryRun || "",
+      created: Boolean((extra && extra.created) || (prev && prev.created)),
     });
     if (filesChanged.length > 40) filesChanged.length = 40;
     paintFilesChanges();
@@ -2281,9 +2407,9 @@ function mountChat(root) {
     paintFilesChanges();
   }
 
-  function noteAgentWrite(path) {
+  function noteAgentWrite(path, extra) {
     if (!path) return;
-    noteChange(path, true);
+    noteChange(path, true, extra);
     filesSelected = path;
     filesFocusDir = fileDir(path);
   }
@@ -2316,6 +2442,15 @@ function mountChat(root) {
       return;
     }
     const frag = document.createDocumentFragment();
+    const runId = lastHistoryRun || (rows.find((row) => row.run) || {}).run || "";
+    if (runId) {
+      const bar = document.createElement("div");
+      bar.className = "chat-changes-run";
+      bar.innerHTML =
+        '<button type="button" class="btn ghost" data-change="keep-all">Keep all</button>' +
+        '<button type="button" class="btn ghost" data-change="discard-run">Discard this run</button>';
+      frag.appendChild(bar);
+    }
     rows.forEach((row) => {
       const tab = findTab(row.path);
       const item = document.createElement("div");
@@ -2332,6 +2467,457 @@ function mountChat(root) {
       frag.appendChild(item);
     });
     filesChangesList.replaceChildren(frag);
+  }
+
+  function paletteFileItems() {
+    return filesListing
+      .filter((row) => row && row.path && row.kind !== "dir" && !row.missing)
+      .map((row) => ({
+        id: row.path,
+        path: row.path,
+        label: row.path.split("/").pop() || row.path,
+        hint: row.path,
+      }));
+  }
+
+  function openJumpPalette() {
+    if (activeMode() !== "code" || typeof window.TabbyPalette !== "object") return;
+    TabbyPalette.open({
+      title: "Jump to file",
+      placeholder: "File name…",
+      items: paletteFileItems(),
+      onPick: (item) => openFileTab(item.path, { host: editorFocusHost() }),
+    });
+  }
+
+  function editorFocusHost() {
+    if (splitOpen && window.TabbyMonaco && TabbyMonaco.focusedHost() === "split") return "split";
+    return "main";
+  }
+
+  function insertAtMention(path) {
+    const start = input.selectionStart || 0;
+    const value = input.value || "";
+    const before = value.slice(0, start);
+    const at = before.lastIndexOf("@");
+    const prefix = at >= 0 ? value.slice(0, at) : before;
+    const after = value.slice(start);
+    const token = `@${path}`;
+    setCompose(`${prefix}${token} ${after}`);
+    const pos = (prefix + token + " ").length;
+    input.setSelectionRange(pos, pos);
+    attachProjectFile(path, { toggle: false }).catch((err) => {
+      addBubble("assistant", `Error: ${err.message}`);
+    });
+  }
+
+  function maybeOpenAtPalette() {
+    if (activeMode() !== "code" || typeof window.TabbyPalette !== "object") return false;
+    const start = input.selectionStart || 0;
+    const before = (input.value || "").slice(0, start);
+    const match = before.match(/(^|[\s])@([^\s@]*)$/);
+    if (!match) {
+      TabbyPalette.close();
+      return false;
+    }
+    TabbyPalette.open({
+      title: "Attach file",
+      placeholder: "File name…",
+      query: match[2] || "",
+      items: paletteFileItems(),
+      onPick: (item) => insertAtMention(item.path),
+    });
+    return true;
+  }
+
+  function keepAllChanges() {
+    filesChanged = filesChanged.map((row) => ({ ...row, run: "", created: false }));
+    lastHistoryRun = "";
+    paintFilesChanges();
+  }
+
+  async function discardAgentRun() {
+    const run = lastHistoryRun;
+    if (!run) return;
+    const created = filesChanged.filter((row) => row.run === run && row.created).map((row) => row.path);
+    try {
+      await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/history/restore-run`, {
+        method: "POST",
+        body: { run, created },
+      });
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+      return;
+    }
+    filesChanged = filesChanged.filter((row) => row.run !== run);
+    lastHistoryRun = "";
+    await refreshFiles();
+    paintFilesChanges();
+  }
+
+  function contextBrief() {
+    const turns = messages.filter((item) => item && (item.role === "user" || item.role === "assistant"));
+    const recent = turns.slice(-8);
+    const lines = [];
+    recent.forEach((item) => {
+      const role = item.role === "user" ? "User" : "Assistant";
+      const text = String(item.content || "").replace(/\s+/g, " ").trim().slice(0, 400);
+      if (text) lines.push(`${role}: ${text}`);
+    });
+    const title = (activeChat() && activeChat().title) || "chat";
+    return `Continued from “${title}”.\n\n${lines.join("\n")}\n\nContinue from this brief. Do not repeat the whole history.`;
+  }
+
+  function continueInNewChat() {
+    const brief = contextBrief();
+    if (activeMode() === "code") {
+      const nested = startNestedChat(activeWorkspaceId());
+      if (nested) setCompose(brief);
+      return;
+    }
+    startNewChat();
+    setCompose(brief);
+  }
+
+  async function openWorkspaceInstructions() {
+    const path = "AGENTS.md";
+    const exists = filesListing.some((row) => row.path === path);
+    if (!exists) {
+      try {
+        await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/file?path=${encodeURIComponent(path)}`, {
+          method: "PUT",
+          body: { contents: "# Workspace instructions\n\n" },
+        });
+        await refreshFiles();
+      } catch (err) {
+        addBubble("assistant", `Error: ${err.message}`);
+        return;
+      }
+    }
+    openFileTab(path);
+  }
+
+  function applyFenceToFile(code) {
+    const tab = activeTabRow();
+    if (!tab || isHistoryTab(tab) || isPreviewTab(tab) || !window.TabbyMonaco) return;
+    const go = () => {
+      TabbyMonaco.setValue(code);
+      onMonacoChange(code);
+      saveTab();
+    };
+    if (tab.dirty) {
+      TabbyUI.confirmModal({
+        title: "Replace this file?",
+        text: `${tab.path} has unsaved edits.`,
+        yes: "Replace",
+        no: "Cancel",
+      }).then((ok) => { if (ok) go(); });
+      return;
+    }
+    go();
+  }
+
+  function insertFenceAtCursor(code) {
+    if (window.TabbyMonaco && TabbyMonaco.insertAtCursor(code)) {
+      onMonacoChange(TabbyMonaco.getValue());
+      return;
+    }
+    insertCompose(code);
+  }
+
+  function paintFollowups(text) {
+    if (!followupsEl) return;
+    if (activeMode() !== "chat" || inFlight) {
+      followupsEl.hidden = true;
+      followupsEl.replaceChildren();
+      return;
+    }
+    const chips = TabbyUI.followUpSuggestions ? TabbyUI.followUpSuggestions(text) : [];
+    if (!chips.length) {
+      followupsEl.hidden = true;
+      followupsEl.replaceChildren();
+      return;
+    }
+    followupsEl.hidden = false;
+    followupsEl.replaceChildren();
+    chips.forEach((label) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.addEventListener("click", () => {
+        setCompose(label);
+        form.requestSubmit();
+      });
+      followupsEl.appendChild(btn);
+    });
+  }
+
+  function stopSpeak() {
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    speakUtter = null;
+  }
+
+  function speakText(text) {
+    stopSpeak();
+    if (!window.speechSynthesis) return;
+    const utter = new SpeechSynthesisUtterance(String(text || "").slice(0, 4000));
+    speakUtter = utter;
+    speechSynthesis.speak(utter);
+  }
+
+  function selectedFilePaths() {
+    const picked = [...filesSelectedSet];
+    if (picked.length) return picked;
+    return filesSelected ? [filesSelected] : [];
+  }
+
+  async function runProjectFind() {
+    if (!projectFindInput) return;
+    const pattern = projectFindInput.value;
+    if (!pattern) {
+      projectFindHits = [];
+      if (projectFindCount) projectFindCount.textContent = "";
+      return;
+    }
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/grep`, {
+        method: "POST",
+        body: { pattern, literal: true },
+      });
+      projectFindHits = data.hits || [];
+      projectFindIndex = 0;
+      if (projectFindCount) {
+        projectFindCount.textContent = projectFindHits.length
+          ? `1/${projectFindHits.length}`
+          : "0";
+      }
+      const hit = projectFindHits[0];
+      if (hit) openFileTab(hit.path, { line: hit.line });
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function cycleProjectFind(delta) {
+    if (!projectFindHits.length) {
+      runProjectFind();
+      return;
+    }
+    projectFindIndex = (projectFindIndex + delta + projectFindHits.length) % projectFindHits.length;
+    const hit = projectFindHits[projectFindIndex];
+    if (projectFindCount) {
+      projectFindCount.textContent = `${projectFindIndex + 1}/${projectFindHits.length}`;
+    }
+    if (hit) openFileTab(hit.path, { line: hit.line });
+  }
+
+  async function runProjectReplace(all) {
+    const find = projectFindInput && projectFindInput.value;
+    const repl = projectReplaceInput ? projectReplaceInput.value : "";
+    if (!find) return;
+    const paths = all
+      ? [...new Set(projectFindHits.map((hit) => hit.path))]
+      : (projectFindHits[projectFindIndex] ? [projectFindHits[projectFindIndex].path] : selectedFilePaths());
+    if (!paths.length) return;
+    const ok = await TabbyUI.confirmModal({
+      title: all ? "Replace all?" : "Replace in file?",
+      text: `Replace “${find}” in ${paths.length} file${paths.length === 1 ? "" : "s"}.`,
+      yes: "Replace",
+      no: "Cancel",
+    });
+    if (!ok) return;
+    try {
+      await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/replace`, {
+        method: "POST",
+        body: { find, replace: repl, paths },
+      });
+      await refreshFiles();
+      runProjectFind();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function openProjectFind() {
+    if (projectFindBar) projectFindBar.hidden = false;
+    if (projectFindInput) {
+      projectFindInput.focus();
+      projectFindInput.select();
+    }
+  }
+
+  function closeProjectFind() {
+    if (projectFindBar) projectFindBar.hidden = true;
+  }
+
+  function toggleSplitEditor() {
+    splitOpen = !splitOpen;
+    if (editorSplitPane) editorSplitPane.hidden = !splitOpen;
+    const handle = root.querySelector("#chat-split-resize");
+    if (handle) handle.hidden = !splitOpen;
+    if (editorCol) editorCol.classList.toggle("has-split", splitOpen);
+    if (splitOpen) {
+      const other = openTabs.find((tab) => tab.path && tab.path !== activeTab && !isPreviewTab(tab) && !isHistoryTab(tab));
+      splitPath = (other && other.path) || activeTab || "";
+      mountSplitEditor();
+    } else if (window.TabbyMonaco) {
+      TabbyMonaco.disposeHost("split");
+      splitPath = "";
+    }
+    if (window.TabbyMonaco) TabbyMonaco.layout();
+  }
+
+  function mountSplitEditor() {
+    if (!splitOpen || !editorSplitPane) return;
+    const tab = findTab(splitPath) || activeTabRow();
+    if (!tab || isPreviewTab(tab) || isHistoryTab(tab)) {
+      editorSplitPane.innerHTML =
+        '<div class="chat-editor-head"><strong>Split</strong></div>' +
+        '<div class="chat-editor-body"><p class="muted">Open a file in this pane.</p></div>';
+      return;
+    }
+    splitPath = tab.path;
+    const view = tabView(tab) === "diff" ? "ready" : tabView(tab);
+    editorSplitPane.innerHTML =
+      '<div class="chat-editor-head">' +
+      `<strong>${TabbyUI.escapeHtml(tab.path)}</strong></div>` +
+      editorBodyHtml(tab, view);
+    const host = editorSplitPane.querySelector(".code-monaco");
+    if (!host || !window.TabbyMonaco) return;
+    TabbyMonaco.onChange(onMonacoChange);
+    TabbyMonaco.showFile(host, {
+      host: "split",
+      path: tab.path,
+      text: tab.text || "",
+      line: tab.revealLine,
+    }).catch((err) => {
+      const body = editorSplitPane.querySelector(".chat-editor-body");
+      if (body) body.outerHTML = monacoLoadErrorHtml(err && err.message);
+    });
+  }
+
+  function showMarkdownPreview(tab) {
+    if (!tab || !/\.md$/i.test(tab.path || "") || !previewFrames || !previewPane) return false;
+    const inner = TabbyUI.renderMarkdown(tab.text || "", { inlineImages: true });
+    previewOpen = true;
+    previewPane.hidden = false;
+    previewFrames.replaceChildren();
+    const frame = document.createElement("iframe");
+    frame.className = "chat-preview-frame";
+    frame.title = tab.path;
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font:16px/1.5 system-ui,sans-serif;padding:1.5rem;max-width:52rem;margin:0 auto;color:#e8ecf4;background:#0b0d12}pre{overflow:auto;background:#161b22;padding:0.75rem;border-radius:0.5rem}a{color:#7aa2ff}img{max-width:100%}</style></head><body>${inner}</body></html>`;
+    previewFrames.appendChild(frame);
+    previewPane.classList.add("is-md");
+    if (filesPreviewBtn) filesPreviewBtn.classList.add("is-on");
+    return true;
+  }
+
+  async function cloneGitRepo() {
+    const url = await TabbyUI.promptModal({
+      title: "Clone git repo",
+      text: "HTTPS URL only.",
+      value: "https://",
+      yes: "Clone",
+    });
+    if (!url) return;
+    try {
+      await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/clone`, {
+        method: "POST",
+        body: { url },
+      });
+      await refreshFiles();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function chatFolderName(chat) {
+    return chatMode(chat) === "chat" ? String(chat.folder || "").trim() : "";
+  }
+
+  function saveExtraFolders() {
+    const used = new Set();
+    store.chats.forEach((chat) => {
+      const name = chatFolderName(chat);
+      if (name) used.add(name);
+    });
+    extraFolders = extraFolders.filter((name) => name && !used.has(name));
+    try {
+      localStorage.setItem(FOLDER_EXTRA_KEY, JSON.stringify(extraFolders));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function knownFolders() {
+    const names = new Set(extraFolders);
+    store.chats.forEach((chat) => {
+      const name = chatFolderName(chat);
+      if (name) names.add(name);
+    });
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }
+
+  function folderExpanded(name) {
+    if (Object.prototype.hasOwnProperty.call(folderOpen, name)) return folderOpen[name] !== false;
+    return true;
+  }
+
+  function setFolderOpen(name, open) {
+    folderOpen[name] = Boolean(open);
+    renderSidebar();
+  }
+
+  async function promptNewFolder(assignId) {
+    const name = await TabbyUI.promptModal({
+      title: "New folder",
+      text: "Name for this group of chats.",
+      value: "",
+      yes: "Create",
+    });
+    const folder = String(name || "").trim().slice(0, 80);
+    if (!folder) return;
+    const id = assignId || store.activeId;
+    const chat = store.chats.find((item) => item.id === id);
+    if (chat && chatMode(chat) === "chat") setChatFolder(id, folder);
+    else if (!extraFolders.includes(folder)) {
+      extraFolders.push(folder);
+      saveExtraFolders();
+      renderSidebar();
+    }
+  }
+
+  async function renameChatFolder(oldName) {
+    const next = await TabbyUI.promptModal({
+      title: "Rename folder",
+      text: "New folder name.",
+      value: oldName,
+      yes: "Rename",
+    });
+    const name = String(next || "").trim().slice(0, 80);
+    if (!name || name === oldName) return;
+    store.chats.forEach((chat) => {
+      if (chatFolderName(chat) === oldName) chat.folder = name;
+    });
+    extraFolders = extraFolders.map((item) => (item === oldName ? name : item));
+    if (folderOpen[oldName] != null) {
+      folderOpen[name] = folderOpen[oldName];
+      delete folderOpen[oldName];
+    }
+    saveExtraFolders();
+    persist();
+    renderSidebar();
+  }
+
+  function setChatFolder(id, folder) {
+    const chat = store.chats.find((item) => item.id === id);
+    if (!chat || chatMode(chat) !== "chat") return;
+    const name = String(folder || "").trim().slice(0, 80);
+    if (name) chat.folder = name;
+    else delete chat.folder;
+    saveExtraFolders();
+    persist();
+    renderSidebar();
   }
 
   async function openChange(path) {
@@ -2650,8 +3236,10 @@ function mountChat(root) {
       view === "ready" || view === "diff"
         ? (view === "diff"
             ? '<button type="button" class="btn ghost" data-edit="restore">Restore old</button>'
-            : '<button type="button" class="btn ghost" data-edit="compare">Changes</button>') +
+            :           '<button type="button" class="btn ghost" data-edit="compare">Changes</button>') +
           '<button type="button" class="btn ghost" data-edit="revert" hidden>Revert</button>' +
+          (/\.md$/i.test(tab.path || "") ? '<button type="button" class="btn ghost" data-edit="md-preview">Preview</button>' : "") +
+          '<button type="button" class="btn ghost" data-edit="split">Split</button>' +
           '<button type="button" class="btn primary" data-edit="save" disabled>Saved</button>'
         : view === "image" && !isHistoryTab(tab)
           ? (tab.cropping
@@ -2703,8 +3291,10 @@ function mountChat(root) {
     paintEditorHead();
   }
 
-  function onMonacoChange(text) {
-    const tab = activeTabRow();
+  function onMonacoChange(text, host, pathHint) {
+    let tab = activeTabRow();
+    if (host === "split" && splitPath) tab = findTab(splitPath) || tab;
+    if (pathHint) tab = findTab(pathHint) || tab;
     if (!tab) return;
     tab.text = text;
     queueDrafts();
@@ -2754,7 +3344,9 @@ function mountChat(root) {
             path,
             text: tab.text || "",
             caret: tab.caret,
+            line: tab.revealLine,
           });
+    if (tab.revealLine) tab.revealLine = 0;
     Promise.resolve(pending).catch((err) => {
       const body = editorPane.querySelector(".chat-editor-body");
       if (body) body.outerHTML = monacoLoadErrorHtml(err && err.message);
@@ -2835,6 +3427,7 @@ function mountChat(root) {
           tab.state = "diff";
           tab.rev += 1;
           if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
           paintTabs();
           paintFilesHistory();
         })
@@ -2844,6 +3437,7 @@ function mountChat(root) {
           tab.state = "error";
           tab.rev += 1;
           if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
         });
       return;
     }
@@ -2884,6 +3478,7 @@ function mountChat(root) {
         tab.state = "ready";
         tab.rev += 1;
         if (activeTab === tab.path) renderEditorPane();
+        if (splitOpen && splitPath === tab.path) mountSplitEditor();
         paintTabs();
       })
       .catch(() => {
@@ -2897,6 +3492,7 @@ function mountChat(root) {
         }
         tab.rev += 1;
         if (activeTab === tab.path) renderEditorPane();
+        if (splitOpen && splitPath === tab.path) mountSplitEditor();
       });
   }
 
@@ -2927,6 +3523,15 @@ function mountChat(root) {
     if (showEditor) {
       ensureTabLoaded(tab);
       renderEditorPane();
+      if (splitOpen) {
+        const other = findTab(splitPath);
+        if (other) ensureTabLoaded(other);
+        if (editorSplitPane) editorSplitPane.hidden = false;
+        const handle = root.querySelector("#chat-split-resize");
+        if (handle) handle.hidden = false;
+        if (editorCol) editorCol.classList.add("has-split");
+        mountSplitEditor();
+      }
       return;
     }
     if (editorPane) editorPane.dataset.key = "";
@@ -3000,7 +3605,7 @@ function mountChat(root) {
     if (path) openFileTab(path);
   }
 
-  function openFileTab(path) {
+  function openFileTab(path, opts) {
     const row = filesListing.find((item) => item.path === path);
     if (!row) return;
     stashEditor();
@@ -3023,11 +3628,30 @@ function mountChat(root) {
         scrollLeft: 0,
       });
     }
+    if (opts && opts.host === "split") {
+      if (!splitOpen) {
+        splitOpen = true;
+        if (editorSplitPane) editorSplitPane.hidden = false;
+        const handle = root.querySelector("#chat-split-resize");
+        if (handle) handle.hidden = false;
+        if (editorCol) editorCol.classList.add("has-split");
+      }
+      splitPath = path;
+      if (opts.line) {
+        const tab = findTab(path);
+        if (tab) tab.revealLine = Number(opts.line) || 1;
+      }
+      paintTabsAndFiles();
+      return;
+    }
     activeTab = path;
     filesSelected = path;
+    if (opts && opts.line) {
+      const tab = findTab(path);
+      if (tab) tab.revealLine = Number(opts.line) || 1;
+    }
     paintTabsAndFiles();
     refreshHistory();
-    // On a phone the files pane covers the chat column the tab just opened in.
     if (narrowChat.matches && filesOpen) setFilesOpen(false);
   }
 
@@ -3204,7 +3828,7 @@ function mountChat(root) {
     previewOpen = false;
     if (previewPane) {
       previewPane.hidden = true;
-      previewPane.classList.remove("is-tab");
+      previewPane.classList.remove("is-tab", "is-md");
     }
     clearBrowserTabs();
     if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
@@ -4357,7 +4981,10 @@ function mountChat(root) {
     };
     previewOpen = true;
     ensurePreviewTab();
-    if (previewPane) previewPane.hidden = false;
+    if (previewPane) {
+      previewPane.hidden = false;
+      previewPane.classList.remove("is-md");
+    }
     if (opts.newTab && browserTabs.length) addBrowserTab(spec);
     else if (!browserTabs.length) addBrowserTab(spec);
     else loadBrowserTab(activeBrowserTabRow(), spec);
@@ -4906,7 +5533,7 @@ function mountChat(root) {
     clearBrowserTabs();
     if (previewPane) {
       previewPane.hidden = true;
-      previewPane.classList.remove("is-tab");
+      previewPane.classList.remove("is-tab", "is-md");
     }
     if (filesPreviewBtn) filesPreviewBtn.classList.remove("is-on");
     paintTabsAndFiles();
@@ -5070,7 +5697,7 @@ function mountChat(root) {
     termTerm.onData((data) => {
       if (termSocket && termSocket.readyState === 1) termSocket.send(new TextEncoder().encode(data));
     });
-    const socket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell`));
+    const socket = new WebSocket(wsUrl(`workspace/${encodeURIComponent(chatId)}/shell?slot=${encodeURIComponent(termSlot || "1")}`));
     termSocket = socket;
     let fatal = false;
     socket.binaryType = "arraybuffer";
@@ -5128,6 +5755,7 @@ function mountChat(root) {
   function openTerm() {
     const chatId = activeWorkspaceId();
     if (!chatId) return;
+    paintTermTabs();
     const gen = ++termGen;
     termWanted = true;
     termOpen = true;
@@ -5147,6 +5775,49 @@ function mountChat(root) {
   function toggleTerm() {
     if (termOpen) closeTerm();
     else openTerm();
+  }
+
+  function paintTermTabs() {
+    if (!termTabsEl) return;
+    termTabsEl.hidden = termSlots.length < 2;
+    termTabsEl.replaceChildren();
+    termSlots.forEach((slot) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chat-term-tab" + (slot.id === termSlot ? " is-active" : "");
+      btn.dataset.termSlot = slot.id;
+      btn.textContent = slot.label || slot.id;
+      termTabsEl.appendChild(btn);
+    });
+  }
+
+  function switchTermSlot(id) {
+    const next = String(id || "1");
+    if (next === termSlot && termOpen) return;
+    termSlot = next;
+    if (!termSlots.some((slot) => slot.id === next)) {
+      termSlots.push({ id: next, label: next });
+    }
+    paintTermTabs();
+    if (termOpen) {
+      const chatId = activeWorkspaceId();
+      const gen = ++termGen;
+      disposeTermClient().then(() => {
+        if (termGen !== gen || !termWanted) return;
+        connectTerm(chatId, gen, 0);
+      });
+    } else openTerm();
+  }
+
+  function addTermSlot() {
+    const used = new Set(termSlots.map((slot) => slot.id));
+    let n = 1;
+    while (used.has(String(n)) && n <= 8) n += 1;
+    if (n > 8) {
+      if (termNote) termNote.textContent = "Terminal limit is 8.";
+      return;
+    }
+    switchTermSlot(String(n));
   }
 
   function collectEditorFindHits(query) {
@@ -5378,6 +6049,7 @@ function mountChat(root) {
     hideAttachMenu();
     hideUploadMenu();
     hideAgentMenu();
+    if (window.TabbyPalette) TabbyPalette.close();
     if (TabbyUI.hideContextMenu) TabbyUI.hideContextMenu();
   }
 
@@ -5416,6 +6088,7 @@ function mountChat(root) {
     shell.style.setProperty("--chat-sidebar-w", `${sidebarW}px`);
     shell.style.setProperty("--chat-files-w", `${filesW}px`);
     shell.style.setProperty("--chat-preview-w", `${previewW}%`);
+    shell.style.setProperty("--chat-split-w", `${splitW}%`);
     shell.style.setProperty("--chat-term-h", `${termH}px`);
     const sideHandle = root.querySelector("#chat-sidebar-resize");
     const filesHandle = root.querySelector("#chat-files-resize");
@@ -5481,6 +6154,13 @@ function mountChat(root) {
     applyPaneWidths();
     if (persist) persistPaneWidth(PREVIEW_W_KEY, previewW);
     return previewW;
+  }
+
+  function setSplitW(next, persist) {
+    splitW = Math.min(SPLIT_W_MAX, Math.max(SPLIT_W_MIN, next));
+    applyPaneWidths();
+    if (persist) persistPaneWidth(SPLIT_W_KEY, splitW);
+    return splitW;
   }
 
   function termMax() {
@@ -5781,6 +6461,23 @@ function mountChat(root) {
     set: (next, persist) => setPreviewW(next, persist),
     persist: () => persistPaneWidth(PREVIEW_W_KEY, previewW),
   });
+  bindDragResize(root.querySelector("#chat-split-resize"), {
+    axis: "x",
+    invert: true,
+    min: SPLIT_W_MIN,
+    max: SPLIT_W_MAX,
+    def: SPLIT_W_DEFAULT,
+    scale: () => {
+      const box = root.querySelector("#chat-editors");
+      const w = box ? box.clientWidth : 0;
+      return w > 0 ? 100 / w : 1;
+    },
+    step: 2,
+    shiftStep: 8,
+    get: () => splitW,
+    set: (next, persist) => setSplitW(next, persist),
+    persist: () => persistPaneWidth(SPLIT_W_KEY, splitW),
+  });
   bindDragResize(root.querySelector("#chat-term-resize"), {
     axis: "y",
     invert: true,
@@ -5954,6 +6651,7 @@ function mountChat(root) {
       add("edit", "Edit");
       add("delete", "Delete");
     } else {
+      if (window.speechSynthesis) add("speak", "Speak", "Read aloud");
       if (idx === lastAssistantIndex()) add("regen", "Regen");
       if (/^Error:/i.test(String(text || ""))) add("retry", "Retry");
     }
@@ -7454,9 +8152,14 @@ function mountChat(root) {
     }
   }
 
-  function downloadZip() {
-    if (!filesListing.length) return;
-    fetch(TabbyUI.path(`workspace/${encodeURIComponent(activeWorkspaceId())}/zip`), {
+  function downloadZip(paths) {
+    const listing = filesListing.filter((row) => row && row.path && row.kind !== "dir" && !row.missing);
+    if (!listing.length) return;
+    const picked = Array.isArray(paths) ? paths.filter(Boolean) : selectedFilePaths();
+    const query = picked.length && picked.length < listing.length
+      ? `?paths=${encodeURIComponent(picked.join(","))}`
+      : "";
+    fetch(TabbyUI.path(`workspace/${encodeURIComponent(activeWorkspaceId())}/zip${query}`), {
       credentials: "same-origin",
     })
       .then((response) => {
@@ -7889,26 +8592,45 @@ function mountChat(root) {
   }
 
   function showSettings() {
-    const current = settings.temperature;
-    const value = current == null ? 0.7 : current;
+    const fields = [
+      { key: "temperature", label: "Temperature", min: "0", max: "2", step: "0.1", fallback: 0.7 },
+      { key: "top_p", label: "Top P", min: "0", max: "1", step: "0.05", fallback: 1 },
+      { key: "min_p", label: "Min P", min: "0", max: "1", step: "0.01", fallback: 0 },
+      { key: "frequency_penalty", label: "Frequency penalty", min: "-2", max: "2", step: "0.1", fallback: 0 },
+      { key: "presence_penalty", label: "Presence penalty", min: "-2", max: "2", step: "0.1", fallback: 0 },
+      { key: "max_tokens", label: "Max tokens", min: "16", max: "32768", step: "16", fallback: 2048 },
+    ];
     const wrap = document.createElement("div");
     wrap.className = "dialog-modal";
     wrap.setAttribute("role", "dialog");
     wrap.setAttribute("aria-modal", "true");
     wrap.innerHTML =
       '<div class="dialog-card"><h2>Sampling</h2>' +
-      '<label>Temperature <strong id="chat-temp-val"></strong><input id="chat-temp" type="range" min="0" max="2" step="0.1" /></label>' +
+      '<div class="dialog-sampler">' +
+      fields.map((field) => (
+        `<label>${TabbyUI.escapeHtml(field.label)} <strong data-val="${field.key}"></strong>` +
+        `<input data-key="${field.key}" type="range" min="${field.min}" max="${field.max}" step="${field.step}" /></label>`
+      )).join("") +
+      "</div>" +
       '<p class="muted">Leave at model default unless you want a fixed value for this browser.</p>' +
       '<div class="dialog-actions">' +
       '<button type="button" class="btn" id="chat-temp-default">Model default</button>' +
       '<button type="button" class="btn primary" id="chat-temp-save">Save</button>' +
       "</div></div>";
-    const range = wrap.querySelector("#chat-temp");
-    const label = wrap.querySelector("#chat-temp-val");
-    range.value = String(value);
-    label.textContent = settings.temperature == null ? "default" : String(settings.temperature);
-    range.addEventListener("input", () => {
-      label.textContent = range.value;
+    const paintField = (field) => {
+      const range = wrap.querySelector(`[data-key="${field.key}"]`);
+      const label = wrap.querySelector(`[data-val="${field.key}"]`);
+      const current = settings[field.key];
+      range.value = String(current == null ? field.fallback : current);
+      label.textContent = current == null ? "default" : String(current);
+    };
+    fields.forEach((field) => {
+      paintField(field);
+      const range = wrap.querySelector(`[data-key="${field.key}"]`);
+      const label = wrap.querySelector(`[data-val="${field.key}"]`);
+      range.addEventListener("input", () => {
+        label.textContent = range.value;
+      });
     });
     const close = () => {
       document.removeEventListener("keydown", onKey);
@@ -7918,12 +8640,15 @@ function mountChat(root) {
       if (ev.key === "Escape") close();
     };
     wrap.querySelector("#chat-temp-default").addEventListener("click", () => {
-      settings.temperature = null;
+      SAMPLER_KEYS.forEach((key) => { settings[key] = null; });
       saveSettings();
       close();
     });
     wrap.querySelector("#chat-temp-save").addEventListener("click", () => {
-      settings.temperature = Number(range.value);
+      fields.forEach((field) => {
+        const range = wrap.querySelector(`[data-key="${field.key}"]`);
+        settings[field.key] = Number(range.value);
+      });
       saveSettings();
       close();
     });
@@ -8912,6 +9637,7 @@ function mountChat(root) {
     hideHistoryMenu();
     hideMoreMenu();
     input.focus();
+    return chat;
   }
 
   function startNewChat() {
@@ -9146,6 +9872,17 @@ function mountChat(root) {
       event.preventDefault();
       event.stopPropagation();
       cycleCodeAgent();
+      return;
+    }
+    if (
+      event.altKey &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      event.key.toLowerCase() === "f"
+    ) {
+      event.preventDefault();
+      if (window.TabbyMonaco) TabbyMonaco.format();
     }
   }
 
@@ -9169,6 +9906,11 @@ function mountChat(root) {
       }
       if (editorFindBar && !editorFindBar.hidden) {
         closeEditorFind();
+        event.preventDefault();
+        return;
+      }
+      if (projectFindBar && !projectFindBar.hidden) {
+        closeProjectFind();
         event.preventDefault();
         return;
       }
@@ -9251,6 +9993,27 @@ function mountChat(root) {
         setSidebarOpen(true);
         searchEl.focus();
         searchEl.select();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+      if (activeMode() === "code") {
+        event.preventDefault();
+        openProjectFind();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "p") {
+      if (activeMode() === "code") {
+        event.preventDefault();
+        openJumpPalette();
+      }
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key === "\\") {
+      if (activeMode() === "code") {
+        event.preventDefault();
+        toggleSplitEditor();
       }
       return;
     }
@@ -9941,6 +10704,7 @@ function mountChat(root) {
 
   function abortSession(kind) {
     stopKind = kind || "stop";
+    stopSpeak();
     TabbyUI.api("chat", { method: "POST", body: { cancel: true } }).catch(() => {});
     if (abortController) abortController.abort();
   }
@@ -10218,6 +10982,7 @@ function mountChat(root) {
     if (!path || !kind) return null;
     const change = { kind, path };
     if (raw.previous) change.previous = String(raw.previous);
+    if (raw.created === "1" || raw.created === true) change.created = true;
     return change;
   }
 
@@ -10305,6 +11070,7 @@ function mountChat(root) {
     const historyRun = sendAgent
       ? (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now().toString(36)}`)
       : "";
+    if (historyRun) lastHistoryRun = historyRun;
     let assembled = "";
     let reasoning = "";
     let elapsedSec = null;
@@ -10323,12 +11089,14 @@ function mountChat(root) {
       const body = streamResume
         ? { resume: true, conversation_id: chatId, stream: true }
         : { messages: outboundMessagesFor(chatId), stream: true, conversation_id: chatId };
-      if (!streamResume && settings.temperature != null) body.temperature = settings.temperature;
       if (!streamResume && sendAgent) {
         body.mode = "code";
         body.chat_id = workspaceId(targetChat) || activeWorkspaceId();
         body.agent = sendAgent;
       }
+      SAMPLER_KEYS.forEach((key) => {
+        if (!streamResume && settings[key] != null) body[key] = settings[key];
+      });
       try {
         const response = await fetch(TabbyUI.path("chat"), {
           method: "POST",
@@ -10551,7 +11319,9 @@ function mountChat(root) {
           const written = ran.change.path;
           if (isChangePath(written)) {
             reloadPreviewIfNeeded(written);
-            if (ran.change.kind !== "delete") noteAgentWrite(written);
+            if (ran.change.kind !== "delete") {
+              noteAgentWrite(written, { run: historyRun, created: Boolean(ran.change.created) });
+            }
           }
           refreshFilesSoon();
         }
@@ -10714,6 +11484,8 @@ function mountChat(root) {
     loopBusy = true;
     flightChatId = store.activeId;
     inFlight = true;
+    stopSpeak();
+    paintFollowups("");
     paintCompose();
     renderSidebar();
     let filesTicker = 0;
@@ -10773,6 +11545,12 @@ function mountChat(root) {
       paintCompose();
       renderSidebar();
       refreshPlanBuild();
+      if (endedChatId && store.activeId === endedChatId && activeMode() === "chat") {
+        const last = [...messages].reverse().find((item) => item && item.role === "assistant");
+        paintFollowups(last && last.content);
+      } else {
+        paintFollowups("");
+      }
       if (planChecklistBuilding) {
         finishChecklistBuild({
           chatId: endedChatId || store.activeId,
@@ -10862,6 +11640,7 @@ function mountChat(root) {
     } else {
       hideMenu();
       if (!historyMenu.hidden && input.value) hideHistoryMenu();
+      maybeOpenAtPalette();
     }
     paintCompose();
     resizeInput();
@@ -10995,6 +11774,13 @@ function mountChat(root) {
           ? { label: chat.pinned ? "Unpin" : "Pin", run: () => togglePin(id) }
           : null),
     ];
+    if (chatMode(chat) === "chat") {
+      items.push(
+        { sep: true },
+        { label: "Move to folder…", run: () => promptNewFolder(id) },
+        chatFolderName(chat) ? { label: "Remove from folder", run: () => setChatFolder(id, "") } : null
+      );
+    }
     if (!root) {
       items.push(
         { sep: true },
@@ -11024,6 +11810,9 @@ function mountChat(root) {
         { label: "Delete turn", danger: true, disabled: busyLocked(), run: () => deleteTurn(idx) }
       );
     } else {
+      if (window.speechSynthesis) {
+        items.push({ label: "Read aloud", run: () => speakText(text) });
+      }
       if (idx === lastAssistantIndex()) {
         items.push({ label: "Regenerate", disabled: busyLocked(), run: () => regenerateLast() });
       }
@@ -11039,6 +11828,29 @@ function mountChat(root) {
   }
 
   function fileMenuItems(path) {
+    const picked = selectedFilePaths();
+    if (picked.length > 1) {
+      return [
+        { label: `Attach ${picked.length} files`, run: () => {
+          picked.forEach((item) => attachProjectFile(item, { toggle: false }).catch((err) => addBubble("assistant", `Error: ${err.message}`)));
+        } },
+        { label: "Copy paths", run: () => copyText(picked.join("\n")) },
+        { label: "Download zip", run: () => downloadZip(picked) },
+        { sep: true },
+        { label: `Delete ${picked.length} files`, danger: true, run: () => {
+          TabbyUI.confirmModal({
+            title: "Delete files",
+            text: `Delete ${picked.length} selected files?`,
+            yes: "Delete",
+            no: "Cancel",
+          }).then((ok) => {
+            if (!ok) return;
+            picked.forEach((item) => deleteProjectFile(item));
+            filesSelectedSet.clear();
+          });
+        } },
+      ];
+    }
     const attached = isPendingFile(path);
     const row = filesListing.find((item) => item.path === path);
     return [
@@ -11118,6 +11930,7 @@ function mountChat(root) {
       { label: "Collapse all", disabled: !filesListing.length, run: () => collapseAllFolders() },
       { sep: true },
       { label: "Download zip", disabled: !filesListing.length, run: () => downloadZip() },
+      { label: "Clone git repo", run: () => cloneGitRepo() },
       { label: "Clear files", danger: true, disabled: !filesListing.length, run: () => clearProjectFiles() },
     ];
   }
@@ -11269,6 +12082,13 @@ function mountChat(root) {
       return;
     }
     const group = event.target.closest(".chat-nav-group");
+    if (group && navList.contains(group) && group.dataset.folder) {
+      openCtx(event, [
+        { label: "Rename folder", run: () => renameChatFolder(group.dataset.folder) },
+        { label: folderExpanded(group.dataset.folder) ? "Collapse" : "Expand", run: () => setFolderOpen(group.dataset.folder, !folderExpanded(group.dataset.folder)) },
+      ]);
+      return;
+    }
     if (group && navList.contains(group) && group.dataset.id) {
       openCtx(event, navMenuItems(group.dataset.id));
       return;
@@ -11276,6 +12096,7 @@ function mountChat(root) {
     if (event.target.closest("#chat-nav-list, #chat-sidebar")) {
       openCtx(event, [
         { label: activeMode() === "code" ? "New workspace" : "New chat", run: () => startNewChat() },
+        activeMode() === "chat" ? { label: "New folder", run: () => promptNewFolder() } : null,
         activeMode() === "code" ? { label: "New chat in this workspace", run: () => startNestedChat(activeWorkspaceId()) } : null,
         { label: activeMode() === "code" ? "Search workspaces" : "Search chats", kbd: "Ctrl+K", run: () => { if (searchEl) { searchEl.focus(); searchEl.select(); } } },
         { label: "Clear history", danger: true, run: () => clearHistory() },
@@ -11498,6 +12319,12 @@ function mountChat(root) {
         copyText(text, actBtn);
         return;
       }
+      if (act === "speak" && item) {
+        speakText(item.role === "assistant" && TabbyUI.formatAssistantContent
+          ? TabbyUI.formatAssistantContent(item.content)
+          : item.content);
+        return;
+      }
       if (act === "edit") beginEdit(idx);
       if (act === "delete") deleteTurn(idx);
       if (act === "split") splitAfterTurn(idx);
@@ -11505,13 +12332,16 @@ function mountChat(root) {
       if (act === "build") buildApprovedPlan(idx);
       return;
     }
-    const btn = event.target.closest(".md-code-copy");
+    const btn = event.target.closest(".md-code-copy, .md-code-apply, .md-code-insert");
     if (!btn || !log.contains(btn)) return;
     event.preventDefault();
     const block = btn.closest(".md-code");
     const code = block && block.querySelector("code");
     if (!code) return;
-    copyText(code.textContent || "", btn);
+    const text = code.textContent || "";
+    if (btn.classList.contains("md-code-apply")) applyFenceToFile(text);
+    else if (btn.classList.contains("md-code-insert")) insertFenceAtCursor(text);
+    else copyText(text, btn);
   });
   log.addEventListener("mouseup", (event) => {
     if (event.target.closest("button, a, textarea, input")) return;
@@ -11560,6 +12390,12 @@ function mountChat(root) {
         setWorkspaceOpen(id, !workspaceExpanded(id));
         return;
       }
+      if (tool.dataset.nav === "folder-twist") {
+        const folder = event.target.closest(".chat-nav-folder");
+        const name = folder && folder.dataset.folder;
+        if (name) setFolderOpen(name, !folderExpanded(name));
+        return;
+      }
       if (tool.dataset.nav === "thread") {
         startNestedChat(id);
         return;
@@ -11581,7 +12417,36 @@ function mountChat(root) {
       loadChat(row.dataset.id);
       return;
     }
+    if (group && group.dataset.folder) {
+      setFolderOpen(group.dataset.folder, !folderExpanded(group.dataset.folder));
+      return;
+    }
     if (group && group.dataset.id) openWorkspaceNav(group.dataset.id);
+  });
+  navList.addEventListener("dragstart", (event) => {
+    const row = event.target.closest(".chat-nav");
+    if (!row || !navList.contains(row) || activeMode() !== "chat") return;
+    event.dataTransfer.setData("application/x-tabby-chat", row.dataset.id || "");
+    event.dataTransfer.effectAllowed = "move";
+  });
+  navList.addEventListener("dragover", (event) => {
+    if (activeMode() !== "chat") return;
+    if (![...event.dataTransfer.types].includes("application/x-tabby-chat")) return;
+    const folder = event.target.closest(".chat-nav-folder");
+    event.preventDefault();
+    navList.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
+    if (folder) folder.classList.add("is-drop-target");
+  });
+  navList.addEventListener("drop", (event) => {
+    const id = event.dataTransfer.getData("application/x-tabby-chat");
+    if (!id) return;
+    event.preventDefault();
+    navList.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
+    const folder = event.target.closest(".chat-nav-folder");
+    setChatFolder(id, folder ? folder.dataset.folder : "");
+  });
+  navList.addEventListener("dragend", () => {
+    navList.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
   });
   navList.addEventListener("keydown", (event) => {
     const row = event.target.closest(".chat-nav");
@@ -11613,6 +12478,8 @@ function mountChat(root) {
     if (act === "copy") copyText(conversationMarkdown(), btn);
     if (act === "regen") regenerateLast();
     if (act === "settings") showSettings();
+    if (act === "instructions") openWorkspaceInstructions();
+    if (act === "handoff") continueInNewChat();
     if (act === "keys") showShortcuts();
     if (act === "thread") startNestedChat(activeWorkspaceId());
     if (act === "sidebar") {
@@ -11675,10 +12542,33 @@ function mountChat(root) {
           refreshHistory();
           return;
         }
-        if (fileRow && fileRow.page && (event.ctrlKey || event.metaKey)) {
-          showPreview({ path, newTab: previewOpen });
+        if (event.altKey) {
+          openFileTab(path, { host: "split" });
           return;
         }
+        if (event.ctrlKey || event.metaKey) {
+          if (filesSelectedSet.has(path)) filesSelectedSet.delete(path);
+          else filesSelectedSet.add(path);
+          filesSelected = path;
+          paintFilesTree();
+          return;
+        }
+        if (event.shiftKey) {
+          const visible = [...filesTree.querySelectorAll(".chat-file:not(.is-dir)")].map((node) => node.dataset.path);
+          const from = filesSelected ? visible.indexOf(filesSelected) : -1;
+          const to = visible.indexOf(path);
+          if (from >= 0 && to >= 0) {
+            const lo = Math.min(from, to);
+            const hi = Math.max(from, to);
+            filesSelectedSet = new Set(visible.slice(lo, hi + 1));
+          } else {
+            filesSelectedSet = new Set([path]);
+          }
+          filesSelected = path;
+          paintFilesTree();
+          return;
+        }
+        filesSelectedSet = new Set([path]);
         openFileTab(path);
         return;
       }
@@ -11738,6 +12628,14 @@ function mountChat(root) {
     filesChangesList.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-change]");
       if (!btn) return;
+      if (btn.dataset.change === "keep-all") {
+        keepAllChanges();
+        return;
+      }
+      if (btn.dataset.change === "discard-run") {
+        discardAgentRun();
+        return;
+      }
       const row = btn.closest(".chat-history");
       const path = row && row.dataset.path;
       if (btn.dataset.change === "open" && path) openChange(path);
@@ -11753,6 +12651,10 @@ function mountChat(root) {
       if (!item) return;
       if (event.target.closest("[data-tab-close]")) {
         closeTab(item.dataset.tab);
+        return;
+      }
+      if (event.altKey && item.dataset.tab) {
+        openFileTab(item.dataset.tab, { host: "split" });
         return;
       }
       activateTab(item.dataset.tab);
@@ -11826,6 +12728,8 @@ function mountChat(root) {
         saveUrl(fileUrl(activeWorkspaceId(), tab.path), tab.path.split("/").pop() || "file");
       }
       if (btn.dataset.edit === "retry-editor") remountEditor();
+      if (btn.dataset.edit === "md-preview" && tab) showMarkdownPreview(tab);
+      if (btn.dataset.edit === "split") toggleSplitEditor();
       if (btn.dataset.edit === "crop" && tab) beginCrop(tab);
       if (btn.dataset.edit === "crop-cancel" && tab) cancelCrop(tab);
       if (btn.dataset.edit === "crop-apply" && tab) applyCrop(tab);
@@ -11855,10 +12759,50 @@ function mountChat(root) {
   }
   if (filesPreviewBtn) {
     filesPreviewBtn.addEventListener("click", () => {
-      if (previewOpen) hidePreview();
-      else showPreview();
+      if (previewOpen) {
+        hidePreview();
+        return;
+      }
+      const tab = activeTabRow();
+      if (tab && /\.md$/i.test(tab.path || "") && showMarkdownPreview(tab)) return;
+      showPreview();
     });
   }
+  if (filesFilterEl) {
+    filesFilterEl.addEventListener("input", () => {
+      filesFilter = filesFilterEl.value;
+      paintFilesTree();
+    });
+  }
+  if (projectFindInput) {
+    projectFindInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (event.shiftKey) cycleProjectFind(-1);
+        else if (projectFindHits.length && projectFindInput.value) cycleProjectFind(1);
+        else runProjectFind();
+      }
+    });
+  }
+  if (projectFindCount) {
+    projectFindCount.addEventListener("click", () => cycleProjectFind(1));
+  }
+  const projectFindGo = root.querySelector("#project-find-go");
+  const projectReplaceOne = root.querySelector("#project-replace-one");
+  const projectReplaceAll = root.querySelector("#project-replace-all");
+  const projectFindClose = root.querySelector("#project-find-close");
+  if (projectFindGo) projectFindGo.addEventListener("click", () => runProjectFind());
+  if (projectReplaceOne) projectReplaceOne.addEventListener("click", () => runProjectReplace(false));
+  if (projectReplaceAll) projectReplaceAll.addEventListener("click", () => runProjectReplace(true));
+  if (projectFindClose) projectFindClose.addEventListener("click", () => closeProjectFind());
+  if (termNewBtn) termNewBtn.addEventListener("click", () => addTermSlot());
+  if (termTabsEl) {
+    termTabsEl.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-term-slot]");
+      if (btn) switchTermSlot(btn.dataset.termSlot);
+    });
+  }
+  if (folderNewBtn) folderNewBtn.addEventListener("click", () => promptNewFolder());
   if (previewTabBtn) {
     previewTabBtn.addEventListener("click", () => {
       if (isPreviewTab(activeTabRow())) dockPreview();
@@ -11977,6 +12921,7 @@ function mountChat(root) {
       const act = btn.dataset.filesMore;
       if (act === "refresh") refreshFiles();
       if (act === "zip") downloadZip();
+      if (act === "clone") cloneGitRepo();
       if (act === "clear") clearProjectFiles();
     });
   }
@@ -12432,6 +13377,10 @@ function mountChat(root) {
   window.addEventListener("tabby-gallery-use", consumeGalleryUse);
   loadStore();
   consumeGalleryUse();
+  window.tabbyContinueInNewChat = continueInNewChat;
+  window.tabbyOpenWorkspaceFile = (path, line, column) => {
+    openFileTab(path, { line, column });
+  };
   return {
     pause() {
       stopMic();

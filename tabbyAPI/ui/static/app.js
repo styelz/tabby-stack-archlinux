@@ -521,6 +521,14 @@
       else openContextMenu();
     });
   }
+  const contextHandoff = document.getElementById("context-handoff");
+  if (contextHandoff) {
+    contextHandoff.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeContextMenu();
+      if (typeof window.tabbyContinueInNewChat === "function") window.tabbyContinueInNewChat();
+    });
+  }
 
   document.addEventListener("pointerdown", (event) => {
     if (userMenuOpen && userMenu && !userMenu.contains(event.target)) closeUserMenu();

@@ -243,7 +243,11 @@
     return (
       `<div class="md-code">` +
       `<div class="md-code-head"><span class="md-code-lang">${escapeHtml(label)}</span>` +
-      `<button type="button" class="md-code-copy">Copy</button></div>` +
+      `<span class="md-code-tools">` +
+      `<button type="button" class="md-code-copy">Copy</button>` +
+      `<button type="button" class="md-code-apply">Apply</button>` +
+      `<button type="button" class="md-code-insert">Insert</button>` +
+      `</span></div>` +
       `<pre><code${langClass}>${body}</code></pre></div>`
     );
   }
@@ -1204,6 +1208,7 @@
         shortcutRow("Send", "<kbd>Enter</kbd>") +
         shortcutRow("New line", "<kbd>Shift</kbd>+<kbd>Enter</kbd>") +
         shortcutRow("Slash commands", "<kbd>/</kbd>") +
+        shortcutRow("Attach a project file", "<kbd>@</kbd>") +
         shortcutRow("Recall sent text", "<kbd>↑</kbd><kbd>↓</kbd>") +
         "</ul></section>" +
         '<section><h3>Chats</h3><ul class="shortcuts-list">' +
@@ -1214,7 +1219,13 @@
         shortcutRow("Stop or close", "<kbd>Esc</kbd>") +
         "</ul></section>" +
         '<section><h3>Workspace</h3><ul class="shortcuts-list">' +
+        shortcutRow("Jump to file", "<kbd>Ctrl</kbd>+<kbd>P</kbd>") +
+        shortcutRow("Find in files", "<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd>") +
         shortcutRow("Save file", "<kbd>Ctrl</kbd>+<kbd>S</kbd>") +
+        shortcutRow("Split editor", "<kbd>Ctrl</kbd>+<kbd>\\</kbd>") +
+        shortcutRow("Go to definition", "<kbd>F12</kbd>") +
+        shortcutRow("Find references", "<kbd>Shift</kbd>+<kbd>F12</kbd>") +
+        shortcutRow("Format document", "<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>") +
         shortcutRow("Cycle Agent / Ask / Plan", "<kbd>Shift</kbd>+<kbd>Tab</kbd>") +
         shortcutRow("Toggle terminal", "<kbd>Ctrl</kbd>+<kbd>`</kbd>") +
         shortcutRow("New preview tab", "<kbd>Ctrl</kbd>+<kbd>T</kbd>") +
@@ -1346,6 +1357,30 @@
 
   applyZoom();
 
+  function followUpSuggestions(text) {
+    const clean = String(text || "")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/[#*_`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const out = [];
+    const seen = new Set();
+    const add = (value) => {
+      const item = String(value || "").replace(/\s+/g, " ").trim();
+      if (item.length < 8 || item.length > 90) return;
+      const key = item.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(item);
+    };
+    const questions = clean.match(/[^.!?]{12,80}\?/g) || [];
+    questions.slice(0, 2).forEach((item) => add(item));
+    add("Explain that in more detail");
+    add("Give a concrete example");
+    if (/\b(how|steps|install|setup|config)/i.test(clean)) add("Walk through the steps");
+    return out.slice(0, 3);
+  }
+
   if (window.matchMedia) {
     const schemeQuery = matchMedia("(prefers-color-scheme: dark)");
     const onScheme = () => {
@@ -1382,6 +1417,7 @@
     formatBytes,
     formatDuration,
     formatAssistantContent,
+    followUpSuggestions,
     renderMarkdown,
     cssVar,
     getTheme,

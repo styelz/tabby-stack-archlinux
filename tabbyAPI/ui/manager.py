@@ -679,10 +679,16 @@ def sanitize_chat_payload(body: dict[str, Any], *, keep_tools: bool = False) -> 
     conv = str(body.get("conversation_id") or "").strip()[:80]
     if conv:
         payload["conversation_id"] = conv
-    if body.get("temperature") is not None:
-        payload["temperature"] = body["temperature"]
-    if body.get("max_tokens") is not None:
-        payload["max_tokens"] = body["max_tokens"]
+    for key in (
+        "temperature",
+        "top_p",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "max_tokens",
+    ):
+        if body.get(key) is not None:
+            payload[key] = body[key]
     return payload
 
 

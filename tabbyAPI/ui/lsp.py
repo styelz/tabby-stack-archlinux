@@ -67,6 +67,35 @@ def uri_to_rel(uri: str) -> str:
     return ""
 
 
+def _lsp_locations(result: Any) -> list[dict[str, Any]]:
+    items = result if isinstance(result, list) else ([result] if result else [])
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        uri = item.get("uri") or item.get("targetUri")
+        rng = (
+            item.get("range")
+            or item.get("targetSelectionRange")
+            or item.get("targetRange")
+            or {}
+        )
+        if not isinstance(rng, dict):
+            rng = {}
+        start = rng.get("start") if isinstance(rng.get("start"), dict) else {}
+        rel = uri_to_rel(str(uri or ""))
+        if not rel:
+            continue
+        out.append(
+            {
+                "path": rel,
+                "line": int(start.get("line") or 0),
+                "character": int(start.get("character") or 0),
+            }
+        )
+    return out
+
+
 class LspServer:
     def __init__(self, username: str, chat_id: str, language: str, argv: list[str]) -> None:
         self.username = username
@@ -108,6 +137,9 @@ class LspServer:
                         "synchronization": {"didSave": True, "dynamicRegistration": False},
                         "completion": {"completionItem": {"snippetSupport": False}},
                         "hover": {"contentFormat": ["plaintext", "markdown"]},
+                        "definition": {"linkSupport": True},
+                        "references": {},
+                        "formatting": {},
                         "publishDiagnostics": {},
                     }
                 },
@@ -369,4 +401,60 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
                 first = raw[0]
                 contents = first if isinstance(first, str) else str((first or {}).get("value") or "")
         return {"type": "hover", "id": message.get("id"), "path": path, "contents": contents}
+    if kind == "definition":
+        result = await server.request(
+            "textDocument/definition",
+            {"textDocument": {"uri": uri}, "position": pos},
+        )
+        return {
+            "type": "definition",
+            "id": message.get("id"),
+            "path": path,
+            "locations": _lsp_locations(result),
+        }
+    if kind == "references":
+        result = await server.request(
+            "textDocument/references",
+            {
+                "textDocument": {"uri": uri},
+                "position": pos,
+                "context": {"includeDeclaration": True},
+            },
+        )
+        return {
+            "type": "references",
+            "id": message.get("id"),
+            "path": path,
+            "locations": _lsp_locations(result),
+        }
+    if kind == "format":
+        tab_size = max(1, int(message.get("tabSize") or 2))
+        result = await server.request(
+            "textDocument/formatting",
+            {
+                "textDocument": {"uri": uri},
+                "options": {
+                    "tabSize": tab_size,
+                    "insertSpaces": bool(message.get("insertSpaces", True)),
+                },
+            },
+        )
+        edits = result if isinstance(result, list) else []
+        out = []
+        for item in edits:
+            if not isinstance(item, dict):
+                continue
+            rng = item.get("range") if isinstance(item.get("range"), dict) else {}
+            start = rng.get("start") if isinstance(rng.get("start"), dict) else {}
+            end = rng.get("end") if isinstance(rng.get("end"), dict) else start
+            out.append(
+                {
+                    "text": str(item.get("newText") or ""),
+                    "startLine": int(start.get("line") or 0),
+                    "startCharacter": int(start.get("character") or 0),
+                    "endLine": int(end.get("line") or 0),
+                    "endCharacter": int(end.get("character") or 0),
+                }
+            )
+        return {"type": "format", "id": message.get("id"), "path": path, "edits": out}
     return {"type": "error", "message": f"Unknown LSP request {kind!r}."}

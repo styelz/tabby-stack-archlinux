@@ -262,9 +262,29 @@ class ConsoleChatRequestTests(unittest.TestCase):
     def test_missing_temperature_uses_default(self):
         payload = sanitize_chat_payload({"messages": [{"role": "user", "content": "hello?"}]})
         self.assertNotIn("temperature", payload)
+        self.assertNotIn("top_p", payload)
+        self.assertNotIn("min_p", payload)
         req = completion_request_from_payload(payload)
         self.assertIsNotNone(req.temperature)
         self.assertGreater(req.temperature, 0)
+
+    def test_sampler_keys_are_forwarded(self):
+        payload = sanitize_chat_payload({
+            "messages": [{"role": "user", "content": "hello?"}],
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "min_p": 0.05,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "max_tokens": 128,
+        })
+        self.assertEqual(payload["temperature"], 0.2)
+        self.assertEqual(payload["top_p"], 0.9)
+        self.assertEqual(payload["min_p"], 0.05)
+        req = completion_request_from_payload(payload)
+        self.assertEqual(req.temperature, 0.2)
+        self.assertEqual(req.top_p, 0.9)
+        self.assertEqual(req.max_tokens, 128)
 
     def test_ui_chat_requests_include_usage(self):
         payload = sanitize_chat_payload({"messages": [{"role": "user", "content": "hello?"}]})
