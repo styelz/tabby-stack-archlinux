@@ -433,6 +433,27 @@ def is_workspace_root(chat: Any) -> bool:
     return not str(chat.get("parentId") or "").strip()
 
 
+def forget_workspace(username: str, chat_id: str) -> dict[str, Any]:
+    """Drop a Code workspace row after DELETE has already removed its folder."""
+    from ui.workspace import safe_name
+
+    raw = str(chat_id or "").strip()
+    drop = {item for item in (raw, safe_name(raw) if raw else "") if item}
+    store = load_store(username)
+    chats = [
+        chat
+        for chat in store.get("chats") or []
+        if isinstance(chat, dict)
+        and str(chat.get("id") or "") not in drop
+        and str(chat.get("parentId") or "").strip() not in drop
+    ]
+    if len(chats) == len(store.get("chats") or []):
+        return store
+    next_store = dict(store)
+    next_store["chats"] = chats
+    return save_store(username, next_store)
+
+
 def workspace_root_chat_id(username: str, chat_id: str) -> str:
     """The Code-mode workspace id that owns this chat's project folder."""
     raw = str(chat_id or "").strip()

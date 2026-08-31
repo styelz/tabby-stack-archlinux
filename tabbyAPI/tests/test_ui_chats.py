@@ -217,6 +217,57 @@ class ChatStoreSaveWorkspaceTests(unittest.TestCase):
         self.assertIn("w1", ids)
         self.assertIn("c1", ids)
 
+    def test_empty_leftover_dir_does_not_rehydrate(self):
+        root = workspace.workspace_root("u", "w1", create=True, box=False)
+        (root / "empty").mkdir()
+        loaded = chats.load_store("u")
+        self.assertEqual(loaded["chats"], [])
+
+    def test_delete_workspace_then_put_does_not_restore(self):
+        workspace.write_text("u", "w1", "index.html", "<title>Cafe Night</title><p>hi</p>")
+        chats.save_store(
+            "u",
+            {
+                "chats": [
+                    {
+                        "id": "w1",
+                        "mode": "code",
+                        "title": "Cafe",
+                        "messages": [{"role": "user", "content": "x"}],
+                    },
+                    {
+                        "id": "t1",
+                        "mode": "code",
+                        "parentId": "w1",
+                        "title": "New chat",
+                        "messages": [],
+                    },
+                ]
+            },
+        )
+        workspace.delete_workspace("u", "w1")
+        chats.forget_workspace("u", "w1")
+        chats.save_store(
+            "u",
+            {
+                "chats": [
+                    {
+                        "id": "c1",
+                        "mode": "chat",
+                        "title": "Hi",
+                        "messages": [{"role": "user", "content": "y"}],
+                    }
+                ]
+            },
+        )
+        loaded = chats.load_store("u")
+        ids = {chat["id"] for chat in loaded["chats"]}
+        self.assertNotIn("w1", ids)
+        self.assertNotIn("t1", ids)
+        self.assertIn("c1", ids)
+        titles = {chat.get("title") for chat in loaded["chats"]}
+        self.assertNotIn("Recovered workspace", titles)
+
 
 if __name__ == "__main__":
     unittest.main()

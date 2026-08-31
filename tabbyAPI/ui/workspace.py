@@ -244,7 +244,7 @@ def _stats(root: Path) -> tuple[int, int]:
 
 
 def has_files(username: str, chat_id: str) -> bool:
-    """True as soon as a file or folder turns up, so a badge check stays cheap."""
+    """True as soon as a listed file turns up, so a badge check stays cheap."""
     root = workspace_root(username, chat_id, create=False)
     if not root.is_dir():
         return False
@@ -260,8 +260,13 @@ def has_files(username: str, chat_id: str) -> bool:
             name = str(entry.name or "")
             if name == ".git" or name in SKIP_LISTING_NAMES:
                 continue
-            if entry.is_file() or entry.is_dir():
-                return True
+            try:
+                if entry.is_file():
+                    return True
+                if entry.is_dir():
+                    pending.append(entry.path)
+            except OSError:
+                continue
     return False
 
 
@@ -2645,13 +2650,32 @@ def drop_drafts(username: str, chat_id: str) -> None:
         pass
 
 
+def _rmtree(path: Path) -> None:
+    """Remove a folder even when some files are not writable."""
+    if not path.exists() and not path.is_symlink():
+        return
+
+    def _retry(func, item, _exc):
+        try:
+            os.chmod(item, 0o700)
+            func(item)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=_retry)
+    except TypeError:
+        shutil.rmtree(path, onerror=_retry)
+    if path.exists() or path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def delete_workspace(username: str, chat_id: str) -> None:
     from ui.codebox import drop_container
 
     drop_container(username, chat_id)
     root = workspace_root(username, chat_id, create=False, box=False)
-    if root.is_dir():
-        shutil.rmtree(root, ignore_errors=True)
+    _rmtree(root)
     drop_history(username, chat_id)
     drop_drafts(username, chat_id)
     from ui.preview import drop_storage

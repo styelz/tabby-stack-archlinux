@@ -1264,7 +1264,7 @@ async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
 @router.delete("/workspace/{chat_id}", include_in_schema=False)
 async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui import lsp, shell
-    from ui.chats import is_workspace_root, load_store
+    from ui.chats import forget_workspace, is_workspace_root, load_store
     from ui.preview import drop_chat
     from ui.workspace import delete_workspace, safe_name
 
@@ -1287,6 +1287,7 @@ async def ui_workspace_clear(chat_id: str, _user: str = Depends(require_ui_user)
     drop_chat(_user, cid)
     shell.drop_chat(_user, cid)
     lsp.drop_chat(_user, cid)
+    forget_workspace(_user, raw)
     return {"ok": True, "files": [], "bytes": 0, "count": 0}
 
 

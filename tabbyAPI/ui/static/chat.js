@@ -1415,6 +1415,10 @@ function mountChat(root) {
       if (!chat || !chat.id) return;
       if (!hasUserTurn(chat) && !isWorkspaceRoot(chat)) return;
       const existing = byId.get(chat.id);
+      if (!existing) {
+        if (isWorkspaceRoot(chat)) return;
+        if (chatParentId(chat) && !byId.has(chatParentId(chat))) return;
+      }
       if (!existing || (chat.updatedAt || 0) > (existing.updatedAt || 0)) {
         byId.set(chat.id, chat);
       }
@@ -1949,9 +1953,9 @@ function mountChat(root) {
   }
 
   function dropWorkspace(chatId) {
-    if (!chatId) return;
+    if (!chatId) return Promise.resolve();
     forgetTabs(chatId);
-    TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
+    return TabbyUI.api(`workspace/${encodeURIComponent(chatId)}`, { method: "DELETE" }).catch(() => {});
   }
 
   function tabsAreDirty(tabs) {
@@ -10189,10 +10193,10 @@ function mountChat(root) {
     const ids = new Set(doomed.map((item) => item.id));
     if (ids.has(store.activeId) || ids.has(flightChatId)) abortSession("stop");
     if (ids.has(store.activeId)) cancelEdit();
-    persist();
+    if (root) await dropWorkspace(id);
     const mode = chatMode(chat);
     store.chats = store.chats.filter((item) => !ids.has(item.id));
-    if (root) dropWorkspace(id);
+    writeLegacyBackup();
     if (ids.has(store.activeId)) {
       const parentId = chatParentId(chat);
       const next = mode === "code"
@@ -10300,10 +10304,11 @@ function mountChat(root) {
     }
     cancelEdit();
     clearPendingImage();
-    doomed.forEach((item) => {
-      if (isWorkspaceRoot(item)) dropWorkspace(item.id);
-    });
+    await Promise.all(
+      doomed.filter((item) => isWorkspaceRoot(item)).map((item) => dropWorkspace(item.id))
+    );
     store.chats = store.chats.filter((item) => chatMode(item) !== mode);
+    writeLegacyBackup();
     const chat = mode === "code" ? addCodeWorkspace() : emptyChat(mode);
     if (mode !== "code") store.chats.unshift(chat);
     store = {
