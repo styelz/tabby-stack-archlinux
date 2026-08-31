@@ -210,6 +210,7 @@ function mountChat(root) {
         </div>
         <div class="chat-compose">
           <button type="button" class="chat-resize chat-resize-y" id="chat-compose-resize" aria-label="Resize input" title="Drag to resize"></button>
+          <div class="chat-compose-body">
           <div class="chat-todo-list" id="chat-todo-list" hidden>
             <div class="chat-todo-head">
               <button type="button" class="chat-todo-toggle" id="chat-todo-toggle" aria-expanded="true" aria-controls="chat-todo-items">
@@ -286,6 +287,7 @@ function mountChat(root) {
               <button class="btn primary chat-send" type="submit" id="chat-send">Send</button>
             </div>
           </form>
+          </div>
         </div>
       </div>
       <aside class="chat-files" id="chat-files" hidden>
@@ -1582,6 +1584,7 @@ function mountChat(root) {
     const newBtn = root.querySelector("#chat-new");
     if (newBtn) newBtn.textContent = code ? "New workspace" : "New chat";
     paintTabs();
+    paintView();
     paintFilesToggle();
     paintCodeAgent();
     paintPlanChecklist();
@@ -1930,6 +1933,7 @@ function mountChat(root) {
       item.role === "assistant" || (userTurnHasContent(item) && !isHiddenUserTurn(item))
     ));
     emptyEl.hidden = !empty;
+    if (logWrap) logWrap.classList.toggle("is-empty", empty);
     if (!empty) return;
     const code = activeMode() === "code";
     const title = emptyEl.querySelector("#chat-empty-title");
@@ -4131,10 +4135,13 @@ function mountChat(root) {
   function paintView() {
     const tab = activeTabRow();
     if (activeTab && !tab) activeTab = "";
+    const code = activeMode() === "code";
     const previewAsTab = previewOpen && isPreviewTab(tab);
     const showEditor = Boolean(tab) && !previewAsTab;
-    const showLog = !showEditor && !previewAsTab;
+    const showLog = !previewAsTab && (!showEditor || code);
     const logWasHidden = Boolean(logWrap && logWrap.hidden);
+    shell.classList.toggle("is-chat-focus", !code && showLog);
+    shell.classList.toggle("is-code-context", code && showEditor);
     if (!logWasHidden && !showLog) logScroll = log.scrollTop;
     if (logWrap) logWrap.hidden = !showLog;
     if (editorCol) editorCol.hidden = !showEditor;
