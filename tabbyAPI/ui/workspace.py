@@ -67,6 +67,7 @@ LAYOUT_REPORT_MAX = 2048
 INSTRUCTIONS_NAMES = ("AGENTS.md", ".tabby.md")
 INSTRUCTIONS_MAX = 8000
 CLONE_TIMEOUT_S = 120
+SKIP_LISTING_NAMES = frozenset({".gitconfig", ".git-credentials"})
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
 DRAFTS_SUFFIX = ".drafts.json"
@@ -165,12 +166,33 @@ def _is_inside(root: Path, path: Path) -> bool:
     return resolved == base or base in resolved.parents
 
 
+def skip_listing_rel(rel: str) -> bool:
+    """True for git metadata that must not appear in Files, zip, grep, or caps."""
+    text = str(rel or "").replace("\\", "/").strip("/")
+    if not text:
+        return False
+    parts = Path(text).parts
+    if ".git" in parts:
+        return True
+    return bool(parts) and parts[-1] in SKIP_LISTING_NAMES
+
+
+def _skip_listing_path(root: Path, path: Path) -> bool:
+    try:
+        rel = path.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return True
+    return skip_listing_rel(rel)
+
+
 def _iter_files(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
     out: list[Path] = []
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.is_file():
+            continue
+        if _skip_listing_path(root, path):
             continue
         if _is_inside(root, path):
             out.append(path)
@@ -187,6 +209,8 @@ def _iter_dirs(root: Path) -> list[Path]:
         return []
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.is_dir():
+            continue
+        if _skip_listing_path(root, path):
             continue
         if _is_inside(root, path):
             try:
@@ -232,6 +256,9 @@ def has_files(username: str, chat_id: str) -> bool:
             continue
         for entry in entries:
             if entry.is_symlink():
+                continue
+            name = str(entry.name or "")
+            if name == ".git" or name in SKIP_LISTING_NAMES:
                 continue
             if entry.is_file() or entry.is_dir():
                 return True

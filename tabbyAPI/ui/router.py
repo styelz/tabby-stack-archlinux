@@ -1006,6 +1006,72 @@ async def ui_workspace_clone(
     }
 
 
+@router.get("/workspace/{chat_id}/git", include_in_schema=False)
+async def ui_workspace_git_status(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.git import GitError, git_status
+
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        return git_status(_user, cid)
+    except GitError as exc:
+        if exc.needs_auth:
+            return {"ok": False, "needs_auth": True, "error": str(exc)}
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/workspace/{chat_id}/git/diff", include_in_schema=False)
+async def ui_workspace_git_diff(
+    chat_id: str,
+    path: str = "",
+    staged: str = "",
+    _user: str = Depends(require_ui_user),
+):
+    from ui.git import GitError, git_diff
+
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        return git_diff(
+            _user,
+            cid,
+            path,
+            staged=str(staged or "").strip().lower() in {"1", "true", "yes"},
+        )
+    except GitError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/workspace/{chat_id}/git/log", include_in_schema=False)
+async def ui_workspace_git_log(chat_id: str, _user: str = Depends(require_ui_user)):
+    from ui.git import GitError, git_log
+
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        return git_log(_user, cid)
+    except GitError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/workspace/{chat_id}/git", include_in_schema=False)
+async def ui_workspace_git_action(
+    chat_id: str, request: Request, _user: str = Depends(require_ui_user)
+):
+    from ui.git import GitError, git_action
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    cid = _workspace_chat_id(chat_id, _user)
+    try:
+        return git_action(_user, cid, body)
+    except GitError as exc:
+        if exc.needs_auth:
+            return {"ok": False, "needs_auth": True, "error": str(exc)}
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/workspace/{chat_id}/drafts", include_in_schema=False)
 async def ui_workspace_drafts(chat_id: str, _user: str = Depends(require_ui_user)):
     from ui.workspace import load_drafts

@@ -276,6 +276,22 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         css = CHAT_CSS.read_text(encoding="utf-8")
         self.assertIn(".chat-agent-hint", css)
 
+    def test_code_git_pane(self):
+        css = CHAT_CSS.read_text(encoding="utf-8")
+        self.assertIn('id="chat-files-git"', self.src)
+        self.assertIn('id="chat-files-git-list"', self.src)
+        self.assertIn('id="chat-files-git-toggle"', self.src)
+        self.assertIn("function refreshGit(", self.src)
+        self.assertIn("function openGitDiff(", self.src)
+        self.assertIn("__git__/", self.src)
+        self.assertIn("Initialize repository", self.src)
+        self.assertIn('data-git="commit"', self.src)
+        self.assertIn('data-git="push"', self.src)
+        self.assertIn("workspace/${encodeURIComponent(chatId)}/git", self.src)
+        self.assertIn("tabby-ui-chat-git", self.src)
+        self.assertIn(".chat-git-commit", css)
+        self.assertIn("#chat-files-git:not(.is-collapsed)", css)
+
 
 if __name__ == "__main__":
     unittest.main()

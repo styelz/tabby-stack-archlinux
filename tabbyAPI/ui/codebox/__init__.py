@@ -60,6 +60,17 @@ def _uid_gid() -> tuple[int, int]:
     return os.getuid(), os.getgid()
 
 
+def _git_env_pairs() -> list[str]:
+    from ui.git import GIT_HELPER
+
+    return [
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=credential.helper",
+        f"GIT_CONFIG_VALUE_0={GIT_HELPER}",
+        "GIT_TERMINAL_PROMPT=0",
+    ]
+
+
 def write_identity(username: str, chat_id: str) -> tuple[Path, Path]:
     name = unix_name(username)
     uid, gid = _uid_gid()
@@ -82,9 +93,12 @@ def run_args(username: str, chat_id: str, workspace: Path) -> list[str]:
     if not root.is_dir():
         root.mkdir(parents=True, exist_ok=True)
     passwd, group = write_identity(username, chat_id)
+    from ui.git import GIT_CREDS_MOUNT, ensure_creds_file
+
+    creds = ensure_creds_file(username, chat_id)
     name = unix_name(username)
     uid, gid = _uid_gid()
-    return [
+    argv = [
         docker_bin(),
         "run",
         "-d",
@@ -112,36 +126,45 @@ def run_args(username: str, chat_id: str, workspace: Path) -> list[str]:
         "TERM=xterm-256color",
         "--env",
         "PS1=\\W $ ",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--memory",
-        MEMORY,
-        "--pids-limit",
-        PIDS,
-        "--cpus",
-        CPUS,
-        "--tmpfs",
-        "/tmp",
-        "-v",
-        f"{root}:{WORK_DIR}",
-        "-v",
-        f"{passwd}:/etc/passwd:ro",
-        "-v",
-        f"{group}:/etc/group:ro",
-        "--restart",
-        "no",
-        IMAGE,
-        "sleep",
-        "infinity",
     ]
+    for pair in _git_env_pairs():
+        argv.extend(["--env", pair])
+    argv.extend(
+        [
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--memory",
+            MEMORY,
+            "--pids-limit",
+            PIDS,
+            "--cpus",
+            CPUS,
+            "--tmpfs",
+            "/tmp",
+            "-v",
+            f"{root}:{WORK_DIR}",
+            "-v",
+            f"{passwd}:/etc/passwd:ro",
+            "-v",
+            f"{group}:/etc/group:ro",
+            "-v",
+            f"{creds.resolve()}:{GIT_CREDS_MOUNT}",
+            "--restart",
+            "no",
+            IMAGE,
+            "sleep",
+            "infinity",
+        ]
+    )
+    return argv
 
 
 def exec_args(username: str, chat_id: str, argv: list[str]) -> list[str]:
     name = unix_name(username)
     uid, gid = _uid_gid()
-    return [
+    out = [
         docker_bin(),
         "exec",
         "-i",
@@ -155,9 +178,11 @@ def exec_args(username: str, chat_id: str, argv: list[str]) -> list[str]:
         f"USER={name}",
         "-e",
         f"LOGNAME={name}",
-        container_name(username, chat_id),
-        *argv,
     ]
+    for pair in _git_env_pairs():
+        out.extend(["-e", pair])
+    out.extend([container_name(username, chat_id), *argv])
+    return out
 
 
 def _run(argv: list[str], timeout: float = 60) -> subprocess.CompletedProcess:
@@ -194,6 +219,15 @@ def _stale_container(name: str) -> bool:
     return current != wanted
 
 
+def _missing_git_creds_mount(name: str) -> bool:
+    from ui.git import GIT_CREDS_MOUNT
+
+    mounts = _inspect_field(name, "{{range .Mounts}}{{.Destination}}\n{{end}}")
+    if mounts is None:
+        return False
+    return GIT_CREDS_MOUNT not in mounts.split()
+
+
 def _docker_error(proc: subprocess.CompletedProcess, fallback: str) -> str:
     err = ((proc.stderr or b"") + (proc.stdout or b"")).decode("utf-8", "replace").strip()
     lower = err.lower()
@@ -222,7 +256,7 @@ def ensure_container(username: str, chat_id: str) -> str:
     root = workspace_root(username, chat_id, create=True, box=False)
     with _name_lock(name):
         status = _inspect_status(name)
-        if status and _stale_container(name):
+        if status and (_stale_container(name) or _missing_git_creds_mount(name)):
             _run([docker_bin(), "rm", "-f", name], timeout=30)
             status = None
         if status == "running":
@@ -290,7 +324,12 @@ def drop_all_code_containers() -> None:
 
 
 def run_shell(
-    username: str, chat_id: str, command: str, *, timeout: float | None = None
+    username: str,
+    chat_id: str,
+    command: str,
+    *,
+    timeout: float | None = None,
+    max_bytes: int | None = None,
 ) -> tuple[int, str]:
     """Run one command in the chat container. Returns (exit_code, output)."""
     text = str(command or "").strip()
@@ -299,6 +338,7 @@ def run_shell(
     ensure_container(username, chat_id)
     argv = exec_args(username, chat_id, ["bash", "-lc", text])
     limit = SHELL_TIMEOUT_S if timeout is None else max(1.0, float(timeout))
+    cap = SHELL_MAX_BYTES if max_bytes is None else max(1024, int(max_bytes))
     try:
         proc = subprocess.run(
             argv,
@@ -311,8 +351,8 @@ def run_shell(
     except subprocess.TimeoutExpired:
         return 124, "command timed out"
     out = (proc.stdout or b"") + (proc.stderr or b"")
-    if len(out) > SHELL_MAX_BYTES:
-        out = out[:SHELL_MAX_BYTES] + b"\n[truncated]"
+    if len(out) > cap:
+        out = out[:cap] + b"\n[truncated]"
     return int(proc.returncode), out.decode("utf-8", "replace")
 
 
@@ -384,6 +424,7 @@ def create_exec(username: str, chat_id: str, argv: list[str], tty: bool = True) 
                 f"LOGNAME={name}",
                 "TERM=xterm-256color",
                 "PS1=\\W $ ",
+                *_git_env_pairs(),
             ],
             "Cmd": argv,
         },

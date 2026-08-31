@@ -313,6 +313,15 @@ function mountChat(root) {
           <input id="chat-files-filter" type="search" placeholder="Filter files" autocomplete="off" />
         </div>
         <div class="chat-files-tree" id="chat-files-tree"></div>
+        <div class="chat-files-history is-collapsed" id="chat-files-git">
+          <button type="button" class="chat-resize chat-resize-y" id="chat-files-git-resize" aria-label="Resize git pane" title="Drag to resize"></button>
+          <button type="button" class="chat-files-history-head" id="chat-files-git-toggle" aria-expanded="false">
+            <span class="chat-files-twist" aria-hidden="true"></span>
+            <span class="chat-files-history-title">Git</span>
+            <span class="chat-files-history-count" id="chat-files-git-count"></span>
+          </button>
+          <div class="chat-files-history-list" id="chat-files-git-list"></div>
+        </div>
         <div class="chat-files-history" id="chat-files-changes">
           <button type="button" class="chat-resize chat-resize-y" id="chat-files-changes-resize" aria-label="Resize changes pane" title="Drag to resize"></button>
           <button type="button" class="chat-files-history-head" id="chat-files-changes-toggle" aria-expanded="true">
@@ -384,6 +393,10 @@ function mountChat(root) {
   const switchLlmBtn = root.querySelector("#chat-switch-llm");
   const filesPane = root.querySelector("#chat-files");
   const filesTree = root.querySelector("#chat-files-tree");
+  const filesGitList = root.querySelector("#chat-files-git-list");
+  const filesGitToggle = root.querySelector("#chat-files-git-toggle");
+  const filesGitPane = root.querySelector("#chat-files-git");
+  const filesGitCountEl = root.querySelector("#chat-files-git-count");
   const filesFilterEl = root.querySelector("#chat-files-filter");
   const filesHistoryList = root.querySelector("#chat-files-history-list");
   const filesChangesList = root.querySelector("#chat-files-changes-list");
@@ -454,6 +467,11 @@ function mountChat(root) {
   let splitOpen = false;
   let splitPath = "";
   let lastHistoryRun = "";
+  let gitStatus = null;
+  let gitLogRows = [];
+  let gitCommitMsg = "";
+  let gitBusy = false;
+  let gitReq = 0;
   let projectFindHits = [];
   let projectFindIndex = 0;
   let termSlots = [{ id: "1", label: "1" }];
@@ -614,6 +632,7 @@ function mountChat(root) {
   const CHAT_COL_MIN = 280;
   const HISTORY_KEY = "tabby-ui-chat-history";
   const CHANGES_KEY = "tabby-ui-chat-changes";
+  const GIT_KEY = "tabby-ui-chat-git";
   const WS_OPEN_KEY = "tabby-ui-chat-ws-open";
   const LISTING_STORE_KEY = "tabby-ui-code-listings";
   const MAX_CHATS = 50;
@@ -623,6 +642,7 @@ function mountChat(root) {
   let filesOpen = narrowChat.matches ? false : readFilesOpen();
   let historyOpen = readHistoryOpen();
   let changesOpen = readChangesOpen();
+  let gitOpen = readGitOpen();
 
   function readFilesOpen() {
     try {
@@ -645,6 +665,14 @@ function mountChat(root) {
       return localStorage.getItem(CHANGES_KEY) !== "closed";
     } catch {
       return true;
+    }
+  }
+
+  function readGitOpen() {
+    try {
+      return localStorage.getItem(GIT_KEY) === "open";
+    } catch {
+      return false;
     }
   }
 
@@ -1239,16 +1267,20 @@ function mountChat(root) {
   function readFilesFr() {
     try {
       const parts = String(localStorage.getItem(FILES_FR_KEY) || "").split(",");
-      if (parts.length === 3) {
-        const nums = parts.map((n) => Number.parseFloat(n));
-        if (nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)) {
-          return { tree: nums[0], changes: nums[1], history: nums[2] };
-        }
+      const nums = parts.map((n) => Number.parseFloat(n));
+      if (
+        parts.length === 4 &&
+        nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)
+      ) {
+        return { tree: nums[0], git: nums[1], changes: nums[2], history: nums[3] };
+      }
+      if (parts.length === 3 && nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)) {
+        return { tree: nums[0], git: 1, changes: nums[1], history: nums[2] };
       }
     } catch {
       /* ignore */
     }
-    return { tree: 2, changes: 1, history: 1 };
+    return { tree: 2, git: 1, changes: 1, history: 1 };
   }
   let sidebarW = readStoredWidth(SIDEBAR_W_KEY, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
   let filesW = readStoredWidth(FILES_W_KEY, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
@@ -2058,6 +2090,8 @@ function mountChat(root) {
       filesFocusDir = "";
     }
     filesChanged = (chatId && changesByChat[chatId] ? changesByChat[chatId] : []).slice();
+    gitStatus = null;
+    gitLogRows = [];
     paintFiles();
     paintFilesChanges();
     closeTerm();
@@ -2250,6 +2284,17 @@ function mountChat(root) {
     paintSectionCount(filesHistoryCountEl, n);
   }
 
+  function gitDirtyCount() {
+    const files = gitStatus && Array.isArray(gitStatus.files) ? gitStatus.files : [];
+    return files.length;
+  }
+
+  function paintGitPane() {
+    if (filesGitPane) filesGitPane.classList.toggle("is-collapsed", !gitOpen);
+    if (filesGitToggle) filesGitToggle.setAttribute("aria-expanded", gitOpen ? "true" : "false");
+    paintSectionCount(filesGitCountEl, gitDirtyCount());
+  }
+
   function setChangesOpen(open) {
     changesOpen = Boolean(open);
     try {
@@ -2270,10 +2315,22 @@ function mountChat(root) {
     paintHistoryPane();
   }
 
+  function setGitOpen(open) {
+    gitOpen = Boolean(open);
+    try {
+      localStorage.setItem(GIT_KEY, gitOpen ? "open" : "closed");
+    } catch {
+      /* ignore */
+    }
+    paintGitPane();
+    if (gitOpen) refreshGit();
+  }
+
   function paintFilesHead() {
     paintFilesToggle();
     paintHistoryPane();
     paintChangesPane();
+    paintGitPane();
     const fileRows = filesListing.filter((row) => row.kind !== "dir" && !row.missing);
     const total = fileRows.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
     if (filesCountEl) {
@@ -2826,6 +2883,270 @@ function mountChat(root) {
         body: { url },
       });
       await refreshFiles();
+      refreshGit();
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+    }
+  }
+
+  function gitTabKey(path, staged) {
+    return `__git__/${staged ? "staged" : "work"}/${path}`;
+  }
+
+  function openGitDiff(path, staged) {
+    if (!path) return;
+    const key = gitTabKey(path, staged);
+    stashEditor();
+    if (!findTab(key)) {
+      openTabs.push({
+        path: key,
+        filePath: path,
+        revId: staged ? "staged" : "work",
+        revTs: Date.now(),
+        size: 0,
+        kind: "diff",
+        git: true,
+        staged: Boolean(staged),
+        editable: false,
+        state: "loading",
+        rev: 0,
+        original: "",
+        text: "",
+        diff: [],
+        dirty: false,
+        busy: false,
+        note: "",
+        gone: false,
+        caret: null,
+        scrollTop: 0,
+        scrollLeft: 0,
+      });
+    }
+    activeTab = key;
+    filesSelected = path;
+    paintTabsAndFiles();
+    if (narrowChat.matches && filesOpen) setFilesOpen(false);
+  }
+
+  function gitFileMark(row) {
+    if (!row) return "";
+    if (row.index === "?" && row.work === "?") return "U";
+    if (row.staged && row.unstaged) return "M";
+    if (row.staged) return row.index === "A" ? "A" : row.index === "D" ? "D" : "S";
+    if (row.work === "D") return "D";
+    return "M";
+  }
+
+  function paintGitList() {
+    if (!filesGitList) return;
+    paintGitPane();
+    if (activeMode() !== "code") {
+      filesGitList.innerHTML = "";
+      return;
+    }
+    if (gitBusy && !gitStatus) {
+      filesGitList.innerHTML = '<p class="muted chat-files-empty">Loading…</p>';
+      return;
+    }
+    if (!gitStatus || !gitStatus.repo) {
+      filesGitList.innerHTML =
+        '<p class="muted chat-files-empty">No git repository in this workspace.</p>' +
+        '<div class="chat-git-actions">' +
+        '<button type="button" class="btn ghost" data-git="clone">Clone git repo</button>' +
+        '<button type="button" class="btn ghost" data-git="init">Initialize repository</button>' +
+        "</div>";
+      return;
+    }
+    const branch = gitStatus.branch || "HEAD";
+    let track = "";
+    if (gitStatus.ahead) track += ` ↑${gitStatus.ahead}`;
+    if (gitStatus.behind) track += ` ↓${gitStatus.behind}`;
+    const files = Array.isArray(gitStatus.files) ? gitStatus.files : [];
+    const frag = document.createDocumentFragment();
+    const head = document.createElement("div");
+    head.className = "chat-git-head";
+    head.innerHTML =
+      `<span class="chat-git-branch" title="${TabbyUI.escapeHtml(gitStatus.upstream || branch)}">${TabbyUI.escapeHtml(branch)}${TabbyUI.escapeHtml(track)}</span>` +
+      '<button type="button" class="btn ghost" data-git="branch">Branch</button>';
+    frag.appendChild(head);
+    const commitWrap = document.createElement("div");
+    commitWrap.className = "chat-git-commit";
+    commitWrap.innerHTML =
+      `<textarea id="chat-git-message" rows="2" placeholder="Commit message">${TabbyUI.escapeHtml(gitCommitMsg)}</textarea>` +
+      '<button type="button" class="btn primary" data-git="commit">Commit</button>';
+    frag.appendChild(commitWrap);
+    if (!files.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted chat-files-empty";
+      empty.textContent = "No local changes.";
+      frag.appendChild(empty);
+    } else {
+      files.forEach((row) => {
+        const item = document.createElement("div");
+        item.className =
+          "chat-history" +
+          (selectedPathFromTab(activeTab) === row.path && isGitTab(activeTabRow()) ? " is-active" : "");
+        item.dataset.path = row.path;
+        const staged = Boolean(row.staged);
+        item.innerHTML =
+          `<label class="chat-git-stage"><input type="checkbox" data-git="toggle" ${staged ? "checked" : ""} aria-label="Stage ${TabbyUI.escapeHtml(row.path)}" /></label>` +
+          `<button type="button" class="chat-history-open" data-git="open" title="Diff ${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
+          `<span class="chat-file-size">${TabbyUI.escapeHtml(gitFileMark(row))}</span>`;
+        frag.appendChild(item);
+      });
+    }
+    const remote = document.createElement("div");
+    remote.className = "chat-git-actions";
+    remote.innerHTML =
+      '<button type="button" class="btn ghost" data-git="fetch">Fetch</button>' +
+      '<button type="button" class="btn ghost" data-git="pull">Pull</button>' +
+      '<button type="button" class="btn ghost" data-git="push">Push</button>' +
+      (gitStatus.has_creds
+        ? '<button type="button" class="btn ghost" data-git="clear-creds">Forget token</button>'
+        : "");
+    frag.appendChild(remote);
+    if (gitLogRows.length) {
+      const logHead = document.createElement("p");
+      logHead.className = "chat-git-log-title";
+      logHead.textContent = "Recent commits";
+      frag.appendChild(logHead);
+      gitLogRows.slice(0, 12).forEach((row) => {
+        const item = document.createElement("div");
+        item.className = "chat-history chat-git-log";
+        item.innerHTML =
+          `<span class="chat-history-open" title="${TabbyUI.escapeHtml(row.subject || "")}">${TabbyUI.escapeHtml(row.short || "")} ${TabbyUI.escapeHtml(row.subject || "")}</span>`;
+        frag.appendChild(item);
+      });
+    }
+    filesGitList.replaceChildren(frag);
+    const msg = filesGitList.querySelector("#chat-git-message");
+    if (msg) {
+      msg.value = gitCommitMsg;
+      msg.addEventListener("input", () => {
+        gitCommitMsg = msg.value;
+      });
+    }
+  }
+
+  async function refreshGit() {
+    const chatId = activeWorkspaceId();
+    if (!filesGitList || activeMode() !== "code" || !chatId) {
+      gitStatus = null;
+      gitLogRows = [];
+      paintGitList();
+      return;
+    }
+    const req = (gitReq += 1);
+    gitBusy = true;
+    paintGitPane();
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`);
+      if (req !== gitReq || chatId !== activeWorkspaceId()) return;
+      gitStatus = data && data.repo ? data : { repo: false, files: [], has_creds: Boolean(data && data.has_creds) };
+      if (gitStatus.repo) {
+        try {
+          const log = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git/log`);
+          if (req !== gitReq || chatId !== activeWorkspaceId()) return;
+          gitLogRows = Array.isArray(log.commits) ? log.commits : [];
+        } catch {
+          gitLogRows = [];
+        }
+      } else {
+        gitLogRows = [];
+      }
+    } catch {
+      if (req !== gitReq || chatId !== activeWorkspaceId()) return;
+      gitStatus = gitStatus || { repo: false, files: [] };
+    }
+    gitBusy = false;
+    paintGitList();
+  }
+
+  async function gitPromptToken() {
+    const token = await TabbyUI.promptModal({
+      title: "Git remote token",
+      text: "HTTPS personal access token. Stored only in this workspace jail.",
+      label: "Token",
+      type: "password",
+      autocomplete: "off",
+      yes: "Save",
+    });
+    return token || "";
+  }
+
+  async function runGitAction(action, extra) {
+    const chatId = activeWorkspaceId();
+    if (!chatId) return null;
+    const body = Object.assign({ action }, extra || {});
+    const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`, {
+      method: "POST",
+      body,
+    });
+    if (data && data.needs_auth) {
+      const token = await gitPromptToken();
+      if (!token) throw new Error(data.error || "A personal access token is required.");
+      await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`, {
+        method: "POST",
+        body: { action: "creds", token },
+      });
+      return runGitAction(action, extra);
+    }
+    if (data && data.repo) gitStatus = data;
+    if (data && Array.isArray(data.files)) gitStatus = data;
+    return data;
+  }
+
+  async function gitHandle(act, path, staged) {
+    try {
+      if (act === "clone") {
+        await cloneGitRepo();
+        return;
+      }
+      if (act === "open" && path) {
+        openGitDiff(path, Boolean(staged));
+        return;
+      }
+      if (act === "toggle" && path) {
+        const row = (gitStatus && gitStatus.files || []).find((item) => item.path === path);
+        await runGitAction(row && row.staged ? "unstage" : "stage", { paths: [path] });
+        await refreshGit();
+        return;
+      }
+      if (act === "init" || act === "fetch" || act === "pull" || act === "push" || act === "clear-creds") {
+        await runGitAction(act);
+        if (act === "init") await refreshFiles();
+        else await refreshGit();
+        return;
+      }
+      if (act === "commit") {
+        const message = String(gitCommitMsg || "").trim();
+        if (!message) {
+          addBubble("assistant", "Error: A commit message is required.");
+          return;
+        }
+        await runGitAction("commit", { message });
+        gitCommitMsg = "";
+        await refreshGit();
+        return;
+      }
+      if (act === "branch") {
+        const name = await TabbyUI.promptModal({
+          title: "Branch",
+          text: "Checkout an existing branch, or create a new one.",
+          label: "Branch name",
+          value: (gitStatus && gitStatus.branch) || "",
+          yes: "Checkout",
+        });
+        if (!name) return;
+        const current = gitStatus && gitStatus.branch;
+        if (name === current) return;
+        try {
+          await runGitAction("checkout", { name });
+        } catch (err) {
+          await runGitAction("checkout", { name, create: true });
+        }
+        await refreshGit();
+      }
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
@@ -2935,6 +3256,10 @@ function mountChat(root) {
 
   function isHistoryTab(tab) {
     return Boolean(tab && tab.kind === "diff");
+  }
+
+  function isGitTab(tab) {
+    return Boolean(tab && tab.git);
   }
 
   function isPreviewPath(path) {
@@ -3055,6 +3380,10 @@ function mountChat(root) {
 
   function tabLabel(tab) {
     if (isPreviewTab(tab)) return "Preview";
+    if (isGitTab(tab)) {
+      const base = (tab.filePath || tab.path).split("/").pop() || "file";
+      return `${base} · git`;
+    }
     if (isHistoryTab(tab)) {
       const base = (tab.filePath || tab.path).split("/").pop() || "file";
       return `${base} · ${timeLabel(tab.revTs)}`;
@@ -3409,6 +3738,36 @@ function mountChat(root) {
 
   function ensureTabLoaded(tab) {
     if (!tab || isPreviewTab(tab) || tab.state !== "loading" || tab.loading) return;
+    if (isGitTab(tab)) {
+      const chatId = activeWorkspaceId();
+      tab.loading = true;
+      const staged = tab.staged ? "1" : "";
+      TabbyUI.api(
+        `workspace/${encodeURIComponent(chatId)}/git/diff?path=${encodeURIComponent(tab.filePath || "")}&staged=${staged}`
+      )
+        .then((data) => {
+          tab.loading = false;
+          if (chatId !== activeWorkspaceId() || !findTab(tab.path)) return;
+          tab.oldText = String(data.original || "");
+          tab.original = String(data.original || "");
+          tab.text = String(data.modified || "");
+          tab.state = "diff";
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
+          paintTabs();
+          paintGitList();
+        })
+        .catch(() => {
+          tab.loading = false;
+          if (chatId !== activeWorkspaceId() || !findTab(tab.path)) return;
+          tab.state = "error";
+          tab.rev += 1;
+          if (activeTab === tab.path) renderEditorPane();
+          if (splitOpen && splitPath === tab.path) mountSplitEditor();
+        });
+      return;
+    }
     if (isHistoryTab(tab)) {
       const chatId = activeWorkspaceId();
       tab.loading = true;
@@ -3864,6 +4223,7 @@ function mountChat(root) {
     syncTabs();
     paintTabsAndFiles();
     refreshHistory();
+    refreshGit();
   }
 
   let cropDrag = null;
@@ -4933,6 +5293,7 @@ function mountChat(root) {
       paintEditorHead();
       paintFilesChanges();
       refreshHistory();
+      refreshGit();
     } catch (err) {
       tab.busy = false;
       tab.note = err.message;
@@ -6229,10 +6590,13 @@ function mountChat(root) {
   function applyFilesFr() {
     if (!filesPane) return;
     filesPane.style.setProperty("--chat-files-tree-fr", String(filesFr.tree));
+    filesPane.style.setProperty("--chat-files-git-fr", String(filesFr.git || 1));
     filesPane.style.setProperty("--chat-files-changes-fr", String(filesFr.changes));
     filesPane.style.setProperty("--chat-files-history-fr", String(filesFr.history));
+    const gitHandle = root.querySelector("#chat-files-git-resize");
     const changesHandle = root.querySelector("#chat-files-changes-resize");
     const historyHandle = root.querySelector("#chat-files-history-resize");
+    if (gitHandle) gitHandle.setAttribute("aria-valuenow", String(Math.round((filesFr.git || 1) * 100)));
     if (changesHandle) changesHandle.setAttribute("aria-valuenow", String(Math.round(filesFr.changes * 100)));
     if (historyHandle) historyHandle.setAttribute("aria-valuenow", String(Math.round(filesFr.history * 100)));
   }
@@ -6240,13 +6604,14 @@ function mountChat(root) {
   function persistFilesFr() {
     persistPaneWidth(
       FILES_FR_KEY,
-      `${filesFr.tree.toFixed(3)},${filesFr.changes.toFixed(3)},${filesFr.history.toFixed(3)}`
+      `${filesFr.tree.toFixed(3)},${(filesFr.git || 1).toFixed(3)},${filesFr.changes.toFixed(3)},${filesFr.history.toFixed(3)}`
     );
   }
 
   function filesSplitSections() {
     return [
       { key: "tree", el: filesTree, open: true },
+      { key: "git", el: filesGitPane, open: gitOpen },
       { key: "changes", el: filesChangesPane, open: changesOpen },
       { key: "history", el: filesHistoryPane, open: historyOpen },
     ];
@@ -6389,7 +6754,7 @@ function mountChat(root) {
     });
     handle.addEventListener("dblclick", () => {
       if (isNarrowChat()) return;
-      filesFr = { tree: 2, changes: 1, history: 1 };
+      filesFr = { tree: 2, git: 1, changes: 1, history: 1 };
       applyFilesFr();
       persistFilesFr();
     });
@@ -6397,7 +6762,7 @@ function mountChat(root) {
       if (isNarrowChat()) return;
       if (event.key === "Home") {
         event.preventDefault();
-        filesFr = { tree: 2, changes: 1, history: 1 };
+        filesFr = { tree: 2, git: 1, changes: 1, history: 1 };
         applyFilesFr();
         persistFilesFr();
         return;
@@ -6498,6 +6863,7 @@ function mountChat(root) {
     set: (next, persist) => setComposeH(next, persist),
     persist: () => persistPaneWidth(COMPOSE_H_KEY, composeH),
   });
+  bindFilesSplit(root.querySelector("#chat-files-git-resize"), "git");
   bindFilesSplit(root.querySelector("#chat-files-changes-resize"), "changes");
   bindFilesSplit(root.querySelector("#chat-files-history-resize"), "history");
   window.addEventListener("tabby-zoom-change", () => {
@@ -11969,6 +12335,17 @@ function mountChat(root) {
     ];
   }
 
+  function gitPaneMenuItems() {
+    return [
+      { label: gitOpen ? "Collapse" : "Expand", run: () => setGitOpen(!gitOpen) },
+      { sep: true },
+      { label: "Clone git repo", run: () => cloneGitRepo() },
+      gitStatus && gitStatus.repo
+        ? { label: "Forget token", run: () => gitHandle("clear-creds") }
+        : { label: "Initialize repository", run: () => gitHandle("init") },
+    ];
+  }
+
   function tabMenuItems(path) {
     if (!path) {
       return [
@@ -11989,6 +12366,14 @@ function mountChat(root) {
     }
     const tab = findTab(path);
     if (isHistoryTab(tab)) {
+      if (isGitTab(tab)) {
+        return [
+          { label: "Open", run: () => activateTab(path) },
+          { label: "Close", run: () => closeTab(path) },
+          { label: "Close others", disabled: openTabs.length < 2, run: () => closeOtherTabs(path) },
+          { label: "Close all", run: () => closeAllTabs() },
+        ];
+      }
       return [
         { label: "Open", run: () => activateTab(path) },
         { label: "Close", run: () => closeTab(path) },
@@ -12125,6 +12510,10 @@ function mountChat(root) {
     }
     if (event.target.closest("#chat-files-changes")) {
       openCtx(event, changesPaneMenuItems());
+      return;
+    }
+    if (event.target.closest("#chat-files-git")) {
+      openCtx(event, gitPaneMenuItems());
       return;
     }
     const historyRow = event.target.closest(".chat-history");
@@ -12644,6 +13033,27 @@ function mountChat(root) {
   }
   if (filesChangesToggle) {
     filesChangesToggle.addEventListener("click", () => setChangesOpen(!changesOpen));
+  }
+  if (filesGitToggle) {
+    filesGitToggle.addEventListener("click", () => setGitOpen(!gitOpen));
+  }
+  if (filesGitList) {
+    filesGitList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-git]");
+      if (!btn) return;
+      const act = btn.dataset.git;
+      const row = btn.closest(".chat-history");
+      const path = (row && row.dataset.path) || "";
+      if (act === "toggle") return;
+      gitHandle(act, path, act === "open" && gitStatus && (gitStatus.files || []).some((item) => item.path === path && item.staged && !item.unstaged));
+    });
+    filesGitList.addEventListener("change", (event) => {
+      const box = event.target.closest("[data-git=\"toggle\"]");
+      if (!box) return;
+      const row = box.closest(".chat-history");
+      const path = row && row.dataset.path;
+      if (path) gitHandle("toggle", path);
+    });
   }
   if (tabsBar) {
     tabsBar.addEventListener("click", (event) => {
