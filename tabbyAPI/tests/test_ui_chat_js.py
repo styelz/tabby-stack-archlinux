@@ -285,6 +285,8 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("function openGitDiff(", self.src)
         self.assertIn("__git__/", self.src)
         self.assertIn("Initialize repository", self.src)
+        self.assertIn("This workspace has a .git folder", self.src)
+        self.assertIn('data-git="refresh"', self.src)
         self.assertIn('data-git="commit"', self.src)
         self.assertIn('data-git="push"', self.src)
         self.assertIn("workspace/${encodeURIComponent(chatId)}/git", self.src)

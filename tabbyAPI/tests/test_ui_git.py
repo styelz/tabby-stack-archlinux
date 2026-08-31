@@ -106,5 +106,50 @@ class GitCredsHostTests(unittest.TestCase):
                 workspace.set_workspaces_dir(None)
 
 
+class FindRepoTests(unittest.TestCase):
+    def test_finds_git_dir_at_workspace_root(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / ".git").mkdir()
+            (root / "README.md").write_text("x", encoding="utf-8")
+            from ui.git import find_repo_on_disk
+
+            self.assertEqual(find_repo_on_disk(root), "")
+
+    def test_finds_single_child_repo(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            dest = root / "tabby-stack"
+            dest.mkdir()
+            (dest / ".git").mkdir()
+            from ui.git import find_repo_on_disk
+
+            self.assertEqual(find_repo_on_disk(root), "tabby-stack")
+
+    def test_status_stays_a_repo_when_git_command_fails(self):
+        from unittest import mock
+        from ui.git import GitError, git_status
+
+        with tempfile.TemporaryDirectory() as raw:
+            workspace.set_workspaces_dir(Path(raw))
+            try:
+                root = workspace.workspace_root("alice", "c1", create=True, box=False)
+                (root / ".git").mkdir()
+                with mock.patch("ui.git._run_git", side_effect=GitError("docker down")):
+                    data = git_status("alice", "c1")
+                self.assertTrue(data["repo"])
+                self.assertEqual(data["root"], "")
+                self.assertIn("docker down", data["error"])
+            finally:
+                workspace.set_workspaces_dir(None)
+
+    def test_git_cmd_quotes_safe_directory(self):
+        from ui.git import _git_cmd
+
+        cmd = _git_cmd("", ["status", "--porcelain=v1", "-b"])
+        self.assertIn("safe.directory=*", cmd)
+        self.assertIn("'safe.directory=*'", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

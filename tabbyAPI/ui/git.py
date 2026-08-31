@@ -216,12 +216,19 @@ def clear_creds(username: str, chat_id: str) -> None:
         pass
 
 
-def find_repo_rel(username: str, chat_id: str) -> Optional[str]:
-    """Relative workspace path to the git repo ('' for /work). None if none."""
-    root = workspace_root(username, chat_id, create=False)
+def _git_dir(path: Path) -> bool:
+    git = path / ".git"
+    try:
+        return git.is_dir() or git.is_file()
+    except OSError:
+        return False
+
+
+def find_repo_on_disk(root: Path) -> Optional[str]:
+    """Relative path to a repo under root ('' for root). None if none."""
     if not root.is_dir():
         return None
-    if (root / ".git").exists():
+    if _git_dir(root):
         return ""
     kids: list[str] = []
     try:
@@ -229,18 +236,47 @@ def find_repo_rel(username: str, chat_id: str) -> Optional[str]:
     except OSError:
         return None
     for entry in entries:
-        if entry.is_symlink() or not entry.is_dir():
-            continue
         name = str(entry.name or "")
         if not name or name.startswith("."):
             continue
         try:
-            if (Path(entry.path) / ".git").exists():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            if _git_dir(Path(entry.path)):
                 kids.append(name)
         except OSError:
             continue
     if len(kids) == 1:
         return kids[0]
+    return None
+
+
+def find_repo_rel(username: str, chat_id: str) -> Optional[str]:
+    """Relative workspace path to the git repo ('' for /work). None if none."""
+    root = workspace_root(username, chat_id, create=False)
+    found = find_repo_on_disk(root)
+    if found is not None:
+        return found
+    try:
+        code, output = _run_git(
+            username, chat_id, ".", ["rev-parse", "--show-toplevel"]
+        )
+    except GitError:
+        return None
+    if code:
+        return None
+    top = (output or "").strip().splitlines()
+    top = top[-1].strip() if top else ""
+    if not top:
+        return None
+    work = "/work"
+    if top == work or top.rstrip("/") == work:
+        return ""
+    prefix = work + "/"
+    if top.startswith(prefix):
+        rel = top[len(prefix) :].strip("/")
+        if rel and ".." not in Path(rel).parts:
+            return rel
     return None
 
 
@@ -264,7 +300,15 @@ def _workspace_file_text(root: Path, rel: str) -> str:
 
 
 def _git_cmd(repo_rel: str, args: list[str]) -> str:
-    parts = ["git", "--no-pager", "-C", repo_rel or ".", *args]
+    parts = [
+        "git",
+        "--no-pager",
+        "-c",
+        "safe.directory=*",
+        "-C",
+        repo_rel or ".",
+        *args,
+    ]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -348,11 +392,29 @@ def git_status(username: str, chat_id: str) -> dict[str, Any]:
     repo_rel = find_repo_rel(username, chat_id)
     if repo_rel is None:
         return {"ok": True, "repo": False, "has_creds": has_creds(username, chat_id)}
-    code, output = _run_git(
-        username, chat_id, repo_rel, ["status", "--porcelain=v1", "-b"]
-    )
+    empty = {
+        "ok": False,
+        "repo": True,
+        "root": repo_rel,
+        "branch": "",
+        "upstream": "",
+        "ahead": 0,
+        "behind": 0,
+        "detached": False,
+        "shallow": False,
+        "files": [],
+        "has_creds": has_creds(username, chat_id),
+    }
+    try:
+        code, output = _run_git(
+            username, chat_id, repo_rel, ["status", "--porcelain=v1", "-b"]
+        )
+    except GitError as exc:
+        empty["error"] = str(exc)
+        return empty
     if code:
-        _raise_git(output, "git status failed")
+        empty["error"] = (redact_git_output(output).strip() or "git status failed")[:1500]
+        return empty
     parsed = parse_status_porcelain(output)
     root = workspace_root(username, chat_id, create=False)
     files = []

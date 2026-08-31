@@ -2948,13 +2948,23 @@ function mountChat(root) {
       filesGitList.innerHTML = '<p class="muted chat-files-empty">Loading…</p>';
       return;
     }
+    const listingHasGit = filesListing.some((row) => {
+      const first = String(row.path || "").replace(/\\/g, "/").split("/")[0];
+      return first === ".git";
+    });
     if (!gitStatus || !gitStatus.repo) {
-      filesGitList.innerHTML =
-        '<p class="muted chat-files-empty">No git repository in this workspace.</p>' +
-        '<div class="chat-git-actions">' +
-        '<button type="button" class="btn ghost" data-git="clone">Clone git repo</button>' +
-        '<button type="button" class="btn ghost" data-git="init">Initialize repository</button>' +
-        "</div>";
+      const err = gitStatus && gitStatus.error
+        ? `<p class="muted chat-files-empty">${TabbyUI.escapeHtml(gitStatus.error)}</p>`
+        : listingHasGit
+          ? '<p class="muted chat-files-empty">This workspace has a .git folder, but git status did not load.</p>'
+          : '<p class="muted chat-files-empty">No git repository in this workspace.</p>';
+      const actions = listingHasGit
+        ? '<div class="chat-git-actions"><button type="button" class="btn ghost" data-git="refresh">Retry</button></div>'
+        : '<div class="chat-git-actions">' +
+          '<button type="button" class="btn ghost" data-git="clone">Clone git repo</button>' +
+          '<button type="button" class="btn ghost" data-git="init">Initialize repository</button>' +
+          "</div>";
+      filesGitList.innerHTML = err + actions;
       return;
     }
     const branch = gitStatus.branch || "HEAD";
@@ -2963,6 +2973,12 @@ function mountChat(root) {
     if (gitStatus.behind) track += ` ↓${gitStatus.behind}`;
     const files = Array.isArray(gitStatus.files) ? gitStatus.files : [];
     const frag = document.createDocumentFragment();
+    if (gitStatus.error) {
+      const note = document.createElement("p");
+      note.className = "muted chat-files-empty";
+      note.textContent = gitStatus.error;
+      frag.appendChild(note);
+    }
     const head = document.createElement("div");
     head.className = "chat-git-head";
     head.innerHTML =
@@ -3042,7 +3058,7 @@ function mountChat(root) {
     try {
       const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`);
       if (req !== gitReq || chatId !== activeWorkspaceId()) return;
-      gitStatus = data && data.repo ? data : { repo: false, files: [], has_creds: Boolean(data && data.has_creds) };
+      gitStatus = data && data.repo ? data : { repo: false, files: [], has_creds: Boolean(data && data.has_creds), error: data && data.error };
       if (gitStatus.repo) {
         try {
           const log = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git/log`);
@@ -3054,9 +3070,13 @@ function mountChat(root) {
       } else {
         gitLogRows = [];
       }
-    } catch {
+    } catch (err) {
       if (req !== gitReq || chatId !== activeWorkspaceId()) return;
-      gitStatus = gitStatus || { repo: false, files: [] };
+      gitStatus = {
+        repo: false,
+        files: [],
+        error: (err && err.message) || "Could not load git status.",
+      };
     }
     gitBusy = false;
     paintGitList();
@@ -3112,7 +3132,11 @@ function mountChat(root) {
         await refreshGit();
         return;
       }
-      if (act === "init" || act === "fetch" || act === "pull" || act === "push" || act === "clear-creds") {
+      if (act === "init" || act === "fetch" || act === "pull" || act === "push" || act === "clear-creds" || act === "refresh") {
+        if (act === "refresh") {
+          await refreshGit();
+          return;
+        }
         await runGitAction(act);
         if (act === "init") await refreshFiles();
         else await refreshGit();
