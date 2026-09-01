@@ -31,15 +31,13 @@ Usage: $(basename "$0") [--update]
               Does not pacman -Syu; only installs missing OS packages.
   -h, --help  This text
 
-  ISO chroot resume (after tsos-installer failed). Do not use dialog:
+  ISO chroot (from tsos-installer, or a resume): dest and cache come from
+  tsos; this script asks for model set and API URLs. Resume:
     arch-chroot /mnt /usr/bin/runuser -u USER -- env \\
-      HOME=/home/USER USER=USER LOGNAME=USER \\
-      TABBY_NONINTERACTIVE=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
+      HOME=/home/USER USER=USER LOGNAME=USER TERM=linux \\
+      TABBY_ISO_CHROOT=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
       TABBY_INSTALL_ROOT=/home/USER/tabby-stack \\
       bash /home/USER/tabby-stack/install.sh
-  Or: cd ~/tabby-stack && ./install.sh  (skips menus when systemd is not running)
-  TABBY_FORCE_MENUS=1 keeps the screens. dialog --stdout needs /dev/tty and
-  fails in arch-chroot with "cannot open tty output".
 EOF
 }
 
@@ -110,13 +108,6 @@ dialog_read() {
   cat "$tmp"
   rm -f "$tmp"
   return 0
-}
-
-in_chroot() {
-  if need_cmd systemd-detect-virt; then
-    systemd-detect-virt --quiet --chroot && return 0
-  fi
-  [[ ! -d /run/systemd/system ]]
 }
 
 ui_msg() {
@@ -845,16 +836,6 @@ if [[ "${TABBY_NONINTERACTIVE:-}" == 1 ]] || [[ ! -t 0 ]]; then
   INTERACTIVE=0
 elif [[ -n "${TABBY_INSTALL_ROOT:-}" && -n "${TABBY_MODELS:-}" ]]; then
   INTERACTIVE=0
-elif [[ "$UPDATE_MODE" -eq 0 && "${TABBY_FORCE_MENUS:-}" != 1 ]] && \
-     [[ -f "$STACK_ROOT/tabbyAPI/main.py" ]] && in_chroot; then
-  # arch-chroot + su: dialog --stdout dies with "cannot open tty output".
-  # Keep going in this tree (tsos ISO resume) instead of showing menus.
-  echo "No systemd / chroot detected. Continuing $STACK_ROOT without dialog menus."
-  echo "TABBY_FORCE_MENUS=1 ./install.sh  forces the screens."
-  INTERACTIVE=0
-  load_tabby_env_file "$STACK_ROOT/tabbyAPI/deploy/arch/tabby.env"
-  TABBY_INSTALL_ROOT="${TABBY_INSTALL_ROOT:-$STACK_ROOT}"
-  TABBY_MODELS="${TABBY_MODELS:-core}"
 fi
 ensure_sudo
 if [[ "$INTERACTIVE" -eq 1 ]]; then
@@ -980,6 +961,7 @@ TABBY_PUBLIC_BASE=$TABBY_PUBLIC_BASE
 TABBY_INSTALL_ROOT=$DEST
 TABBY_NETWORK_HOST=$TABBY_NETWORK_HOST
 TABBY_NETWORK_PORT=$TABBY_NETWORK_PORT
+TABBY_MODELS=$MODEL_SET
 EOF
   if [[ -n "$TABBY_SSH_REMOTE" ]]; then
     cat >> "$env_file" <<EOF
@@ -1041,6 +1023,14 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
     exit 1
   fi
 else
+  if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
+    ui_msg "tabby-stack" \
+"Arch is on the disk. Dest is already
+  ${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}
+The weights cache was set before the wipe (or Hugging Face).
+
+Next screens: model set, listen address, optional public URL / SSH."
+  else
   ui_msg "What this installer does" \
 "tabby-stack: local OpenAI-compatible API for coding and agents,
 plus ComfyUI image generation on Arch. Any client that speaks /v1
@@ -1074,8 +1064,23 @@ More detail: ${SCRIPT_DIR}/README.md
 
 Next screens ask where to install, whether you have a cache,
 which model set to fetch, and the API / tunnel URLs."
+  fi
 
   while true; do
+    if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
+      DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+      DEST="${DEST:-$DEFAULT_DEST}"
+      WIN_ROOT="${TABBY_CACHE:-}"
+      step_models="1 / 4  — Model set"
+      step_host="2 / 4  — TabbyAPI listen host"
+      step_port="2 / 4  — TabbyAPI listen port"
+      step_comfy="2 / 4  — ComfyUI URL"
+      step_public="3 / 4  — Public API base URL"
+      step_ssh="3 / 4  — Reverse SSH tunnel"
+      step_fwd="3 / 4  — SSH forward spec"
+      step_key="3 / 4  — SSH private key"
+      step_confirm="4 / 4  — Confirm"
+    else
     DEST="$(ui_input "1 / 6  — Arch install root" \
 "Linux disk folder that will contain tabbyAPI/ and ComfyUI/.
 
@@ -1122,6 +1127,17 @@ Blank = download from Hugging Face." \
       *) WIN_ROOT="$cache_choice" ;;
     esac
 
+      step_models="3 / 6  — Model set"
+      step_host="4 / 6  — TabbyAPI listen host"
+      step_port="4 / 6  — TabbyAPI listen port"
+      step_comfy="4 / 6  — ComfyUI URL"
+      step_public="5 / 6  — Public API base URL"
+      step_ssh="5 / 6  — Reverse SSH tunnel"
+      step_fwd="5 / 6  — SSH forward spec"
+      step_key="5 / 6  — SSH private key"
+      step_confirm="6 / 6  — Confirm"
+    fi
+
     if [[ -n "$WIN_ROOT" && ! -d "$WIN_ROOT/tabbyAPI" ]]; then
       if ! ui_yesno "Cache not found" \
 "No tabbyAPI folder at:
@@ -1139,7 +1155,7 @@ No = go back and pick another cache." 0; then
     if [[ -n "$WIN_ROOT" && -d "$WIN_ROOT/tabbyAPI/models" ]]; then
       default_set="all"
     fi
-    MODEL_SET="$(ui_menu "3 / 6  — Model set" \
+    MODEL_SET="$(ui_menu "$step_models" \
 "Which weights to copy or download. Re-run later to add more; existing
 files are skipped.
 
@@ -1195,7 +1211,7 @@ Use the Linux disk, for example ${HOME}/tabby-stack or /data/tabby-stack."
       continue
     fi
 
-    TABBY_NETWORK_HOST="$(ui_input "4 / 6  — TabbyAPI listen host" \
+    TABBY_NETWORK_HOST="$(ui_input "$step_host" \
 "Address TabbyAPI binds on. Clients (and Cursor) use this host.
 
   127.0.0.1  — this machine only (usual)
@@ -1205,7 +1221,7 @@ Do not put a public hostname here." \
 "${TABBY_NETWORK_HOST}")"
     TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 
-    TABBY_NETWORK_PORT="$(ui_input "4 / 6  — TabbyAPI listen port" \
+    TABBY_NETWORK_PORT="$(ui_input "$step_port" \
 "TCP port for the API. Default 5000.
 
 Health:  http://${TABBY_NETWORK_HOST}:PORT/health
@@ -1228,7 +1244,7 @@ This machine:  http://${LAN_IP}:8188"
         LAN_HINT+="  (also ${LAN_EXTRAS})"
       fi
     fi
-    COMFYUI_URL="$(ui_input "4 / 6  — ComfyUI URL" \
+    COMFYUI_URL="$(ui_input "$step_comfy" \
 "HTTP URL for ComfyUI after “switch to comfy”.
 
 Usual value:  http://127.0.0.1:8188${LAN_HINT}
@@ -1236,7 +1252,7 @@ Change this only if ComfyUI will listen somewhere else." \
 "${COMFYUI_URL}")"
     COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
 
-    TABBY_PUBLIC_BASE="$(ui_input "5 / 6  — Public API base URL" \
+    TABBY_PUBLIC_BASE="$(ui_input "$step_public" \
 "Optional URL written into image links and the public gallery.
 
 Examples
@@ -1247,7 +1263,7 @@ Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
 Leave blank if you do not have a reverse proxy or tunnel." \
 "${TABBY_PUBLIC_BASE}")"
 
-    TABBY_SSH_REMOTE="$(ui_input "5 / 6  — Reverse SSH tunnel" \
+    TABBY_SSH_REMOTE="$(ui_input "$step_ssh" \
 "Optional SSH target that forwards a remote port to TabbyAPI.
 
 Example:  user@host.example
@@ -1256,13 +1272,13 @@ Blank = no tunnel (API stays on this machine).
 If you set a host, the next screens ask for the forward spec and key." \
 "${TABBY_SSH_REMOTE}")"
     if [[ -n "$TABBY_SSH_REMOTE" ]]; then
-      TABBY_SSH_FORWARD="$(ui_input "5 / 6  — SSH forward spec" \
+      TABBY_SSH_FORWARD="$(ui_input "$step_fwd" \
 "ssh -R spec: remote listen → local TabbyAPI.
 
 Default matches the listen port you chose (${TABBY_NETWORK_PORT})." \
 "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")"
       TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
-      TABBY_SSH_KEY="$(ui_input "5 / 6  — SSH private key" \
+      TABBY_SSH_KEY="$(ui_input "$step_key" \
 "Key file for ${TABBY_SSH_REMOTE}.
 
 The installer copies ~/.ssh/id_ed25519 from a cache if present.
@@ -1281,7 +1297,7 @@ Use that path unless your key has another name." \
     fi
     API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
 
-    if ui_yesno "6 / 6  — Confirm" \
+    if ui_yesno "$step_confirm" \
 "Start the install with these settings?
 
   Arch dest:     ${DEST}
@@ -1977,8 +1993,8 @@ If something fails
                          CUDA-built wheels (torch.version.cuda), not
                          torch.cuda.is_available(). Re-run with current install.sh.
   cannot open tty output arch-chroot + su has no /dev/tty for dialog --stdout.
-                         Copy this install.sh in, then: cd ~/tabby-stack && ./install.sh
-                         (skips menus in a chroot). Or TABBY_NONINTERACTIVE=1.
+                         Use runuser (not su -). Current install.sh does not
+                         use dialog --stdout. ISO path: TABBY_ISO_CHROOT=1.
   USB NTFS dirty/read-only  sudo ntfsfix /dev/sdXN then remount
   missing models         re-run install.sh (downloads from Hugging Face; skips what exists)
   HF 401/403 gated       huggingface-cli login  or  export HF_TOKEN=...

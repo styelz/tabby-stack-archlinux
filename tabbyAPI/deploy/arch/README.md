@@ -8,7 +8,7 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-From the official Arch live ISO, `tsos-installer.sh` installs Arch, then runs `install.sh` in the chroot (Python, venvs, weights) and does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`. Omarchy is optional: `now` (LUKS required) or `skip`.
+From the official Arch live ISO, `tsos-installer.sh` installs Arch (disk, user, Omarchy, optional weights cache — cache must be named before `/mnt` is wiped). Then `install.sh` asks for model set and API URLs and installs Python, venvs, and weights. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`. Omarchy is optional: `now` (LUKS required) or `skip`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
