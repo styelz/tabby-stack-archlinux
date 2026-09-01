@@ -80,7 +80,7 @@ It will:
 - Patch Linux spawn / chat-switch so `switch to …` does not 500 or look like Comfy
 - Set the startup model to **qwen 9B** and `embedding_model_name` to **Qwen3-Embedding-0.6B**
 - Enable **linger** + `tabbyapi` so it **starts at boot with no login**
-- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. `tsos-installer.sh` runs `install.sh` in the live-ISO chroot and will not reboot if that fails. After a successful reboot, linger starts the API. Omarchy is optional (`now` with LUKS, or `skip`).
+- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. `tsos-installer.sh` runs `install.sh` in the live-ISO chroot and will not reboot if that fails. Venv checks require CUDA-built torch wheels, not `torch.cuda.is_available()` (no driver in the chroot). After a successful reboot, linger starts the API. Omarchy is optional (`now` with LUKS, or `skip`).
 - Write `$DEST/start.sh` at the install root
 - Write `$DEST/AGENTS.md` (IDE / agent notes for any editor)
 - Write `HOW-TO-ARCH.txt`
@@ -165,6 +165,8 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Problem | What to do |
 |---|---|
 | `nvidia-smi` fails after a new driver | Standalone `install.sh` reboots once and resumes. `tsos-installer.sh` finishes `install.sh` in the ISO chroot and does not reboot on failure; after a successful reboot linger starts the API. If the driver still fails: `nvidia-smi` and `journalctl -k \| grep -i nvidia` |
+| `TabbyAPI venv check failed` on the ISO | Expected if an old `install.sh` required `torch.cuda.is_available()`. Current `install.sh` only requires CUDA-built wheels in the chroot. Re-run with this tree (`--tabby-local-src` or the script next to `install.sh`). |
+| `cannot open tty output` after Enter on the first install screen | `arch-chroot` + `su` has no `/dev/tty` for `dialog --stdout`. Current `install.sh` skips menus in a chroot. Copy this `install.sh` into `/mnt/home/USER/tabby-stack/` and run `cd ~/tabby-stack && ./install.sh`, or `runuser -u USER -- env TABBY_NONINTERACTIVE=1 TABBY_SKIP_NVIDIA_REBOOT=1 bash .../install.sh`. |
 | USB NTFS read-only / dirty | `sudo ntfsfix /dev/sdXN` then remount |
 | Missing model folder | Re-run `install.sh`. It downloads from Hugging Face and skips files that already exist. |
 | Hugging Face 401/403 | Gated repo. `huggingface-cli login` or `export HF_TOKEN=...` then re-run. |

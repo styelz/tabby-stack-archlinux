@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.7"
+SCRIPT_VERSION="1.0.9"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -37,6 +37,7 @@ OMARCHY_MODE="${OMARCHY_MODE:-skip}" # now | skip
 OMARCHY_USER_NAME="${OMARCHY_USER_NAME:-}"
 OMARCHY_USER_EMAIL="${OMARCHY_USER_EMAIL:-}"
 TABBY_REPO="${TABBY_REPO:-https://github.com/styelz/tabby-stack-archlinux.git}"
+TABBY_LOCAL_SRC="${TABBY_LOCAL_SRC:-}"
 TABBY_MODELS="${TABBY_MODELS:-core}"
 TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
@@ -102,6 +103,7 @@ OPTIONS
   --tabby-port N           TabbyAPI listen port (default: 5000)
   --tabby-cache PATH       Optional local weights cache (USB copy of tabby-stack)
   --tabby-repo URL         Git remote to clone (default: tabby-stack-archlinux)
+  --tabby-local-src PATH   Overlay this tabby-stack tree after clone (install.sh, etc.)
   --confirm-wipe PATH      Non-interactive wipe confirmation; must equal --disk
   --password-env           Read PASSWORD / LUKS_PASSWORD / USER_PASSWORD / ROOT_PASSWORD
                            from the environment instead of prompting
@@ -115,7 +117,7 @@ ENVIRONMENT
   PASSWORD                 Used for LUKS + user + root if the split passwords are unset
   LUKS_PASSWORD, USER_PASSWORD, ROOT_PASSWORD
   OMARCHY_USER_NAME, OMARCHY_USER_EMAIL, OMARCHY_MODE (now|skip)
-  TABBY_REPO, TABBY_MODELS, TABBY_NETWORK_HOST, TABBY_NETWORK_PORT
+  TABBY_REPO, TABBY_LOCAL_SRC, TABBY_MODELS, TABBY_NETWORK_HOST, TABBY_NETWORK_PORT
   TABBY_CACHE, TABBY_PUBLIC_BASE, COMFYUI_URL, HF_TOKEN
 
 One password is used for the user, root, and disk encryption (when enabled)
@@ -199,6 +201,24 @@ ui_cancel() {
   die "Installer cancelled."
 }
 
+# dialog --stdout needs /dev/tty. That fails in some chroots. UI stays on
+# stdout; the typed value is read from stderr via a temp file.
+dialog_read() {
+  local tmp rc
+  tmp=$(mktemp "${TMPDIR:-/tmp}/tsos-dialog.XXXXXX") || return 1
+  set +e
+  dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  cat "$tmp"
+  rm -f "$tmp"
+  return 0
+}
+
 ui_msg() {
   local title="$1"
   local text="$2"
@@ -219,7 +239,7 @@ ui_input() {
   local default="$3"
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --inputbox "$text" 18 74 "$default")" || ui_cancel
+    out="$(dialog_read --title "$title" --inputbox "$text" 18 74 "$default")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 18 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -234,7 +254,7 @@ ui_menu() {
   shift 2
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --menu "$text" 20 74 8 "$@")" || ui_cancel
+    out="$(dialog_read --title "$title" --menu "$text" 20 74 8 "$@")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 20 74 8 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -292,7 +312,7 @@ ui_password() {
   local text="$2"
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --insecure --passwordbox "$text" 12 74)" || ui_cancel
+    out="$(dialog_read --title "$title" --insecure --passwordbox "$text" 12 74)" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" 12 74 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -951,6 +971,10 @@ parse_args() {
         TABBY_REPO=${2:?}
         shift 2
         ;;
+      --tabby-local-src)
+        TABBY_LOCAL_SRC=${2:?}
+        shift 2
+        ;;
       --config)
         [[ -f "${2:?}" ]] || die "config file not found: $2"
         # shellcheck disable=SC1090
@@ -1002,6 +1026,10 @@ validate_names() {
   normalize_encrypt
   if [[ "$OMARCHY_MODE" == "now" && "$ENCRYPT" -eq 0 ]]; then
     die "Omarchy requires LUKS. Re-run with encryption, or skip Omarchy."
+  fi
+  if [[ -n "$TABBY_LOCAL_SRC" ]]; then
+    [[ -f "$TABBY_LOCAL_SRC/install.sh" && -f "$TABBY_LOCAL_SRC/tabbyAPI/pyproject.toml" ]] || \
+      die "TABBY_LOCAL_SRC is not a tabby-stack tree: $TABBY_LOCAL_SRC"
   fi
 }
 
@@ -1234,6 +1262,7 @@ $root_line
   tabby listen:  ${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}
   tabby cache:   ${TABBY_CACHE:-'(none — Hugging Face)'}
   tabby repo:    $TABBY_REPO
+  tabby overlay: ${TABBY_LOCAL_SRC:-'(script dir if it contains install.sh)'}
   nvidia:        nvidia-open (Turing / RTX 20-series+; Arch no longer ships nvidia)
 
 Layout
@@ -1816,6 +1845,52 @@ PROFILE
     git clone "$TABBY_REPO" "$stack_home"; then
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
+  overlay_local_tabby_sources "$TARGET$stack_home"
+}
+
+# curl | bash clones GitHub. A local tree (this script's directory, or
+# TABBY_LOCAL_SRC) is copied over that clone so ISO testing picks up
+# install.sh fixes that are not on origin yet.
+overlay_local_tabby_sources() {
+  local dest="$1"
+  local src=""
+  if [[ -n "$TABBY_LOCAL_SRC" ]]; then
+    [[ -d "$TABBY_LOCAL_SRC" ]] || die "TABBY_LOCAL_SRC is not a directory: $TABBY_LOCAL_SRC"
+    src="$(cd "$TABBY_LOCAL_SRC" && pwd)"
+  else
+    local script="${BASH_SOURCE[0]:-}"
+    case "$script" in
+      "" | /dev/fd/* | /proc/self/fd/* | -) return 0 ;;
+    esac
+    [[ "$script" == /* ]] || script="$PWD/$script"
+    src="$(cd "$(dirname "$script")" && pwd)"
+  fi
+  [[ -f "$src/install.sh" && -f "$src/tabbyAPI/pyproject.toml" ]] || {
+    [[ -n "$TABBY_LOCAL_SRC" ]] && die "TABBY_LOCAL_SRC is not a tabby-stack tree: $src"
+    return 0
+  }
+  [[ "$src" == "$dest" ]] && return 0
+  log "Overlaying local tabby-stack from $src"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a \
+      --exclude '.git/' \
+      --exclude 'tabbyAPI/venv/' \
+      --exclude 'tabbyAPI/models/' \
+      --exclude 'ComfyUI/' \
+      --exclude 'tabby-install.log' \
+      --exclude '.tabby-update-backup/' \
+      "$src/" "$dest/"
+  else
+    local name
+    for name in install.sh update.sh uninstall.sh tsos-installer.sh AGENTS.md README.md; do
+      [[ -e "$src/$name" ]] && cp -a "$src/$name" "$dest/$name"
+    done
+    mkdir -p "$dest/tabbyAPI"
+    cp -a "$src/tabbyAPI/." "$dest/tabbyAPI/"
+    rm -rf "$dest/tabbyAPI/venv" "$dest/tabbyAPI/models"
+  fi
+  arch-chroot "$TARGET" /usr/bin/chown -R "${TARGET_USER}:${TARGET_USER}" \
+    "/home/${TARGET_USER}/tabby-stack"
 }
 
 # If the weights cache is under $TARGET (often /mnt/usb), mounting the new

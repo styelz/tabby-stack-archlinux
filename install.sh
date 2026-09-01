@@ -30,6 +30,16 @@ Usage: $(basename "$0") [--update]
               Reuses tabby.env; does not overwrite config.yml or tabby.env.
               Does not pacman -Syu; only installs missing OS packages.
   -h, --help  This text
+
+  ISO chroot resume (after tsos-installer failed). Do not use dialog:
+    arch-chroot /mnt /usr/bin/runuser -u USER -- env \\
+      HOME=/home/USER USER=USER LOGNAME=USER \\
+      TABBY_NONINTERACTIVE=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
+      TABBY_INSTALL_ROOT=/home/USER/tabby-stack \\
+      bash /home/USER/tabby-stack/install.sh
+  Or: cd ~/tabby-stack && ./install.sh  (skips menus when systemd is not running)
+  TABBY_FORCE_MENUS=1 keeps the screens. dialog --stdout needs /dev/tty and
+  fails in arch-chroot with "cannot open tty output".
 EOF
 }
 
@@ -83,6 +93,32 @@ ensure_dialog() {
   tui_cmd
 }
 
+# dialog --stdout sends the UI to /dev/tty. That node exists in arch-chroot
+# after su/runuser but cannot be opened ("cannot open tty output"). Default
+# dialog: UI on stdout (this console), typed value on stderr.
+dialog_read() {
+  local tmp rc
+  tmp=$(mktemp "${TMPDIR:-/tmp}/tabby-dialog.XXXXXX") || return 1
+  set +e
+  dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  cat "$tmp"
+  rm -f "$tmp"
+  return 0
+}
+
+in_chroot() {
+  if need_cmd systemd-detect-virt; then
+    systemd-detect-virt --quiet --chroot && return 0
+  fi
+  [[ ! -d /run/systemd/system ]]
+}
+
 ui_msg() {
   local title="$1"
   local text="$2"
@@ -106,7 +142,7 @@ ui_input() {
   local default="$3"
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --inputbox "$text" 18 74 "$default")" || ui_cancel
+    out="$(dialog_read --title "$title" --inputbox "$text" 18 74 "$default")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 18 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -129,7 +165,7 @@ ui_menu() {
   shift 2
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --menu "$text" 20 74 8 "$@")" || ui_cancel
+    out="$(dialog_read --title "$title" --menu "$text" 20 74 8 "$@")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 20 74 8 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -809,10 +845,23 @@ if [[ "${TABBY_NONINTERACTIVE:-}" == 1 ]] || [[ ! -t 0 ]]; then
   INTERACTIVE=0
 elif [[ -n "${TABBY_INSTALL_ROOT:-}" && -n "${TABBY_MODELS:-}" ]]; then
   INTERACTIVE=0
+elif [[ "$UPDATE_MODE" -eq 0 && "${TABBY_FORCE_MENUS:-}" != 1 ]] && \
+     [[ -f "$STACK_ROOT/tabbyAPI/main.py" ]] && in_chroot; then
+  # arch-chroot + su: dialog --stdout dies with "cannot open tty output".
+  # Keep going in this tree (tsos ISO resume) instead of showing menus.
+  echo "No systemd / chroot detected. Continuing $STACK_ROOT without dialog menus."
+  echo "TABBY_FORCE_MENUS=1 ./install.sh  forces the screens."
+  INTERACTIVE=0
+  load_tabby_env_file "$STACK_ROOT/tabbyAPI/deploy/arch/tabby.env"
+  TABBY_INSTALL_ROOT="${TABBY_INSTALL_ROOT:-$STACK_ROOT}"
+  TABBY_MODELS="${TABBY_MODELS:-core}"
 fi
 ensure_sudo
 if [[ "$INTERACTIVE" -eq 1 ]]; then
   ensure_dialog
+  case "${TERM:-}" in
+    "" | dumb | unknown) export TERM=linux ;;
+  esac
   if [[ -n "$TUI" && -t 0 && -t 1 ]]; then
     USE_TUI=1
   fi
@@ -1344,6 +1393,9 @@ PACKAGES=(
   openjpeg2
   lcms2
   ffmpeg
+  # ffmpeg depends on virtual "jack"; pin jack2 so pacman does not stop
+  # for jack2 vs pipewire-jack on the ISO.
+  jack2
   mesa
   libglvnd
   dos2unix
@@ -1443,8 +1495,15 @@ if [[ "$NVIDIA_SMI_OK" -eq 1 ]]; then
 fi
 
 enable_docker() {
-  sudo -n systemctl enable --now docker >>"$INSTALL_LOG" 2>&1 || \
-    echo "WARNING: could not enable docker.service" >> "$INSTALL_LOG"
+  # ISO chroot has no systemd. Enable the unit; start it only on a real boot.
+  if [[ -d /run/systemd/system ]]; then
+    sudo -n systemctl enable --now docker >>"$INSTALL_LOG" 2>&1 || \
+      echo "WARNING: could not enable docker.service" >> "$INSTALL_LOG"
+  else
+    sudo -n systemctl enable docker >>"$INSTALL_LOG" 2>&1 || \
+      echo "WARNING: could not enable docker.service" >> "$INSTALL_LOG"
+    echo "systemd is not running; docker will start on the first real boot." >> "$INSTALL_LOG"
+  fi
   sudo -n usermod -aG docker "$USER" >>"$INSTALL_LOG" 2>&1 || true
 }
 
@@ -1571,9 +1630,29 @@ if [[ -n "$WIN_ROOT" && -f "$WIN_ROOT/.ssh/$SSH_KEY_NAME" ]]; then
   fi
 fi
 
+# Wheels + imports. Runtime GPU only when nvidia-smi already works — the ISO
+# chroot has nvidia-open on disk but no loaded driver, so
+# torch.cuda.is_available() is false even with a good cu12/cu13 install.
+venv_cuda_ok() {
+  local py="$1"
+  local imports="$2"
+  local err
+  [[ -x "$py" ]] || return 1
+  local pycode
+  pycode="import ${imports}
+assert torch.version.cuda, 'torch is a CPU build (torch.version.cuda is empty)'"
+  if [[ "${NVIDIA_SMI_OK:-0}" -eq 1 ]]; then
+    pycode+=$'\n'"assert torch.cuda.is_available(), 'torch.cuda.is_available() is False'"
+  fi
+  if err=$("$py" -c "$pycode" 2>&1); then
+    return 0
+  fi
+  echo "$err" >> "$INSTALL_LOG"
+  return 1
+}
+
 tabby_venv_ok() {
-  [[ -x "$DEST_TABBY/venv/bin/python" ]] && \
-    "$DEST_TABBY/venv/bin/python" -c "import torch, exllamav3; assert torch.cuda.is_available()"
+  venv_cuda_ok "$DEST_TABBY/venv/bin/python" "torch, exllamav3"
 }
 
 progress 40 "TabbyAPI Python environment"
@@ -1583,7 +1662,10 @@ if ! tabby_venv_ok; then
   run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U pip setuptools wheel packaging
   run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[cu12]"
   if ! tabby_venv_ok; then
-    echo "TabbyAPI venv check failed (torch/exllamav3/CUDA)." >> "$INSTALL_LOG"
+    echo "TabbyAPI venv check failed (torch/exllamav3 import or CUDA-built torch)." >> "$INSTALL_LOG"
+    if [[ "${NVIDIA_SMI_OK:-0}" -eq 0 ]]; then
+      echo "nvidia-smi is down (expected in the ISO chroot); runtime CUDA was not required." >> "$INSTALL_LOG"
+    fi
     progress_fail 1
   fi
 elif [[ "$UPDATE_MODE" -eq 1 ]]; then
@@ -1604,8 +1686,7 @@ if [[ "$UPDATE_MODE" -eq 0 && -x "$DEST_TABBY/venv/bin/python" && -f "$DEST_TABB
 fi
 
 comfy_venv_ok() {
-  [[ -x "$DEST_COMFY/venv/bin/python" ]] && \
-    "$DEST_COMFY/venv/bin/python" -c "import torch; assert torch.cuda.is_available()"
+  venv_cuda_ok "$DEST_COMFY/venv/bin/python" "torch"
 }
 
 # Comfy kitchen CUDA kernels need a PyTorch build for CUDA 13.0+.
@@ -1643,7 +1724,10 @@ if ! comfy_venv_ok; then
     run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -r "$DEST_COMFY/requirements.txt"
   fi
   if ! comfy_venv_ok || ! comfy_torch_cu13; then
-    echo "ComfyUI venv check failed (torch CUDA 13)." >> "$INSTALL_LOG"
+    echo "ComfyUI venv check failed (import or CUDA 13 torch build)." >> "$INSTALL_LOG"
+    if [[ "${NVIDIA_SMI_OK:-0}" -eq 0 ]]; then
+      echo "nvidia-smi is down (expected in the ISO chroot); runtime CUDA was not required." >> "$INSTALL_LOG"
+    fi
     progress_fail 1
   fi
 elif ! comfy_torch_cu13; then
@@ -1889,6 +1973,12 @@ If something fails
   nvidia-smi fails       standalone install reboots once if it just installed the
                          driver; tsos ISO chroot skips that reboot and continues.
                          if it still fails: nvidia-smi ; journalctl -k | grep -i nvidia
+  venv check / CUDA      ISO chroot has no loaded driver. The check requires
+                         CUDA-built wheels (torch.version.cuda), not
+                         torch.cuda.is_available(). Re-run with current install.sh.
+  cannot open tty output arch-chroot + su has no /dev/tty for dialog --stdout.
+                         Copy this install.sh in, then: cd ~/tabby-stack && ./install.sh
+                         (skips menus in a chroot). Or TABBY_NONINTERACTIVE=1.
   USB NTFS dirty/read-only  sudo ntfsfix /dev/sdXN then remount
   missing models         re-run install.sh (downloads from Hugging Face; skips what exists)
   HF 401/403 gated       huggingface-cli login  or  export HF_TOKEN=...

@@ -331,9 +331,17 @@ ask_update_kind() {
   local text="Update git pulls new code. At the end you can restart tabbyapi (or pass --restart).
 Update all also refreshes Python deps, installs missing OS packages, and restarts the API."
   if need_cmd dialog; then
-    out="$(dialog --backtitle "tabby-stack" --title "$title" --stdout --menu "$text" 16 74 2 \
+    local tmp rc
+    tmp=$(mktemp "${TMPDIR:-/tmp}/tabby-dialog.XXXXXX")
+    set +e
+    dialog --backtitle "tabby-stack" --title "$title" --menu "$text" 16 74 2 \
       git "Update git" \
-      all "Update all")" || die "Update cancelled."
+      all "Update all" 2> "$tmp"
+    rc=$?
+    set -e
+    out=$(cat "$tmp" || true)
+    rm -f "$tmp"
+    [[ "$rc" -eq 0 ]] || die "Update cancelled."
   elif need_cmd whiptail; then
     out="$(whiptail --backtitle "tabby-stack" --title "$title" --menu "$text" 16 74 2 \
       git "Update git" \
