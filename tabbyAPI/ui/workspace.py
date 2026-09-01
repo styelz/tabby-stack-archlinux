@@ -67,6 +67,8 @@ LAYOUT_REPORT_MAX = 2048
 INSTRUCTIONS_NAMES = ("AGENTS.md", ".tabby.md")
 INSTRUCTIONS_MAX = 8000
 CLONE_TIMEOUT_S = 120
+# Match git log's window so Recent commits is populated without a follow-up Pull.
+CLONE_DEPTH = 50
 SKIP_LISTING_NAMES = frozenset({".gitconfig", ".git-credentials"})
 HISTORY_SUFFIX = ".file-history"
 MAX_HISTORY_VERSIONS = 40
@@ -1367,7 +1369,7 @@ def clone_git(username: str, chat_id: str, url: str) -> dict[str, str]:
     from ui import codebox
 
     cmd = (
-        "git clone --depth 1 -- "
+        f"git clone --depth {CLONE_DEPTH} -- "
         + shlex.quote(clean)
         + " "
         + shlex.quote(target)

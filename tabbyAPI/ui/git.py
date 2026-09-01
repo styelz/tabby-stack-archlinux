@@ -14,6 +14,7 @@ from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
 from ui.workspace import (
+    CLONE_DEPTH,
     CLONE_TIMEOUT_S,
     MAX_TEXT_BYTES,
     _https_clone_url,
@@ -479,7 +480,7 @@ def git_log(username: str, chat_id: str) -> dict[str, Any]:
         username,
         chat_id,
         repo_rel,
-        ["log", "-n", "50", "--pretty=format:%H%x09%h%x09%an%x09%ct%x09%s"],
+        ["log", "-n", str(CLONE_DEPTH), "--pretty=format:%H%x09%h%x09%an%x09%ct%x09%s"],
     )
     if code and "does not have any commits" not in (output or "").lower():
         if "bad default revision" in (output or "").lower() or "needed a single revision" in (

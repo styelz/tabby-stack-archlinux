@@ -3007,6 +3007,12 @@ function mountChat(root) {
           method: "POST",
           body: { url },
         });
+        gitOpen = true;
+        try {
+          localStorage.setItem(GIT_KEY, "open");
+        } catch {
+          /* ignore */
+        }
         await refreshFiles();
         await refreshGit();
       });
@@ -4572,7 +4578,7 @@ function mountChat(root) {
     syncTabs();
     paintTabsAndFiles();
     refreshHistory();
-    refreshGit();
+    if (!gitBusy) refreshGit();
   }
 
   let cropDrag = null;
