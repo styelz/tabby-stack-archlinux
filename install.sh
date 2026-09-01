@@ -314,7 +314,7 @@ progress_start() {
     dialog --backtitle "$BACKTITLE" --title "$gauge_title" \
       --gauge "Starting..." 8 70 0 < "$GAUGE_FIFO" &
     GAUGE_PID=$!
-    exec 3>"$GAUGE_FIFO"
+    exec 3<>"$GAUGE_FIFO"
     GAUGE_MODE="dialog"
     return 0
   fi
@@ -778,8 +778,15 @@ ensure_sudo() {
     echo "If sudo is missing, the script will ask for the root password once to install it."
     exit 1
   fi
-  if need_cmd sudo && sudo -n true 2>/dev/null; then
-    return 0
+  # ISO chroot: sudo use_pty / pam_systemd can block forever. Cap the check.
+  if need_cmd sudo; then
+    if need_cmd timeout; then
+      if timeout 15 sudo -n true >/dev/null 2>&1; then
+        return 0
+      fi
+    elif sudo -n true >/dev/null 2>&1; then
+      return 0
+    fi
   fi
   # First-boot / systemd has no TTY. sudo -v and su both fail with
   # "a terminal is required" / "Authentication token manipulation error".
@@ -928,6 +935,9 @@ if [[ "${TABBY_NONINTERACTIVE:-}" == 1 || "${TABBY_NESTED_UI:-}" == 1 ]] || [[ !
   INTERACTIVE=0
 elif [[ -n "${TABBY_INSTALL_ROOT:-}" && -n "${TABBY_MODELS:-}" ]]; then
   INTERACTIVE=0
+fi
+if [[ "${TABBY_NESTED_UI:-}" == 1 ]]; then
+  echo "install.sh nested start $(date -Iseconds)" >> "${TABBY_INSTALL_ROOT:-$STACK_ROOT}/tabby-install.log"
 fi
 ensure_sudo
 if [[ "$INTERACTIVE" -eq 1 ]]; then

@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.12"
+SCRIPT_VERSION="1.0.13"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -249,7 +249,8 @@ gauge_start() {
   dialog --backtitle "$BACKTITLE" --title "Installing" \
     --gauge "Starting..." 10 74 0 <"$TSOS_GAUGE_FIFO" &
   TSOS_GAUGE_PID=$!
-  exec 3>"$TSOS_GAUGE_FIFO"
+  # O_RDWR does not block if dialog has not opened the read end yet.
+  exec 3<>"$TSOS_GAUGE_FIFO"
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
@@ -287,31 +288,49 @@ gauge_stop() {
 }
 
 # install.sh writes "==> [N%] message" to tabby-install.log. Map that onto
-# the outer 45–95% range so this UI never yields to a second dialog.
+# the outer 45–95% range. Heartbeat so a long pacman/pyenv step does not
+# look frozen. Always run this — not only when the dialog gauge is up.
 watch_tabby_progress() {
   local log="$1"
   local stop="$2"
-  local last="" line pct msg scaled
-  [[ -n "${TSOS_GAUGE_PID:-}" ]] || return 0
+  local last="" line pct msg scaled elapsed=0 show
   while [[ ! -f "$stop" ]]; do
+    elapsed=$((elapsed + 1))
+    line=""
     if [[ -f "$log" ]]; then
       line=$(grep -E '^==> \[[0-9]+%\]' "$log" 2>/dev/null | tail -n1 || true)
-      if [[ -n "$line" && "$line" != "$last" ]]; then
-        last=$line
-        pct=${line#*\[}
-        pct=${pct%%\%*}
-        msg=${line#*\] }
-        if [[ "$pct" =~ ^[0-9]+$ ]]; then
-          scaled=$((45 + pct * 50 / 100))
-          if ((scaled > 95)); then
-            scaled=95
-          fi
-          printf 'XXX\n%s\n%s\nXXX\n' "$scaled" "$msg" >&3 || true
-        fi
+      if [[ -z "$line" ]]; then
+        line=$(tail -n1 "$log" 2>/dev/null || true)
       fi
+    fi
+    msg="${line:-starting install.sh}"
+    pct=4
+    if [[ "$msg" == "==> ["* ]]; then
+      pct=${msg#*\[}
+      pct=${pct%%\%*}
+      msg=${msg#*\] }
+    fi
+    [[ "$pct" =~ ^[0-9]+$ ]] || pct=4
+    scaled=$((45 + pct * 50 / 100))
+    if ((scaled > 95)); then
+      scaled=95
+    fi
+    if [[ "$line" == "$last" ]]; then
+      show="${msg}  (${elapsed}s)"
+    else
+      last=$line
+      show=$msg
+    fi
+    if [[ -n "${TSOS_GAUGE_PID:-}" ]] && kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+      printf 'XXX\n%s\n%s\nXXX\n' "$scaled" "$show" >&3 || true
+    else
+      printf '\r\033[K==> [%s%%] %s' "$scaled" "$show" >/dev/tty 2>/dev/null || true
     fi
     sleep 1
   done
+  if [[ -z "${TSOS_GAUGE_PID:-}" ]]; then
+    printf '\n' >/dev/tty 2>/dev/null || true
+  fi
 }
 
 ui_cancel() {
@@ -1676,7 +1695,8 @@ install -d -m 0750 /etc/sudoers.d
 printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
 chmod 0440 /etc/sudoers.d/10-wheel
 # Passwordless sudo only while tabby-stack install.sh runs in the ISO chroot.
-printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
+printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >>/etc/sudoers.d/zz-tsos-firstboot
 chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
 if [[ "$OMARCHY_MODE" != "skip" ]]; then
   printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/99-omarchy-installer
@@ -2184,22 +2204,25 @@ run_tabby_install_chroot() {
 
   local status=0 watcher="" stop=""
   local tabby_log="$TARGET$stack_home/tabby-install.log"
-  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
-    stop=$(mktemp "${TMPDIR:-/tmp}/tsos-watch.XXXXXX")
-    rm -f "$stop"
-    watch_tabby_progress "$tabby_log" "$stop" &
-    watcher=$!
-  fi
+  mkdir -p "$(dirname "$tabby_log")"
+  {
+    echo "launching install.sh $(date -Iseconds)"
+    echo "nested=1 stdin=/dev/null (no dialog, no sudo password prompt)"
+  } >>"$tabby_log"
+  stop=$(mktemp "${TMPDIR:-/tmp}/tsos-watch.XXXXXX")
+  rm -f "$stop"
+  watch_tabby_progress "$tabby_log" "$stop" &
+  watcher=$!
   set +e
+  # Close the parent gauge fifo (fd 3) so install.sh cannot block on it.
+  # stdin is /dev/null so pacman/sudo/dialog cannot wait for a key.
   arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
-    bash "$stack_home/install.sh"
+    bash "$stack_home/install.sh" </dev/null >>"$tabby_log" 2>&1 3>&-
   status=$?
   set -e
-  if [[ -n "$watcher" ]]; then
-    touch "$stop"
-    wait "$watcher" 2>/dev/null || true
-    rm -f "$stop"
-  fi
+  touch "$stop"
+  wait "$watcher" 2>/dev/null || true
+  rm -f "$stop"
 
   if ((status != 0)); then
     die "install.sh failed in the chroot (exit ${status}). Not rebooting.
@@ -2251,7 +2274,10 @@ write_firstboot_sudoers() {
   if [[ -f "$root/etc/sudoers" ]] && ! grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers.d' "$root/etc/sudoers"; then
     printf '\n@includedir /etc/sudoers.d\n' >>"$root/etc/sudoers"
   fi
-  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >"$root/etc/sudoers.d/zz-tsos-firstboot"
+  {
+    printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$TARGET_USER"
+    printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER"
+  } >"$root/etc/sudoers.d/zz-tsos-firstboot"
   chmod 0440 "$root/etc/sudoers.d/zz-tsos-firstboot"
 }
 
