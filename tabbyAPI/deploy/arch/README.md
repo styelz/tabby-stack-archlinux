@@ -74,7 +74,7 @@ It will:
 - Patch Linux spawn / chat-switch so `switch to …` does not 500 or look like Comfy
 - Set the startup model to **qwen 9B** and `embedding_model_name` to **Qwen3-Embedding-0.6B**
 - Enable **linger** + `tabbyapi` so it **starts at boot with no login**
-- If a newly installed NVIDIA driver does not load, reboot once and resume automatically
+- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. After tsos-installer (packages already on disk), first boot skips that reboot and finishes venvs and weights without the GPU.
 - Write `$DEST/start.sh` at the install root
 - Write `$DEST/AGENTS.md` (IDE / agent notes for any editor)
 - Write `HOW-TO-ARCH.txt`

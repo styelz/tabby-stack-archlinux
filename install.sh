@@ -1351,13 +1351,14 @@ progress_start
 trap 'rc=$?; if [[ "$INSTALL_FAILED" -eq 0 && "$rc" -ne 0 ]]; then progress_fail "$rc"; else progress_stop; fi' EXIT
 
 NVIDIA_DRIVER_INSTALLED_NOW=0
+NVIDIA_SMI_OK=0
 if [[ "$UPDATE_MODE" -eq 0 ]]; then
   progress 4 "Syncing packages"
   run_quiet sudo -n pacman -Sy --noconfirm
 fi
 
 if nvidia_smi_ok; then
-  :
+  NVIDIA_SMI_OK=1
 else
   nvidia_kmod=$(nvidia_kernel_pkg) || {
     echo "NVIDIA kernel package not in the repos (tried nvidia-open, then nvidia)." >> "$INSTALL_LOG"
@@ -1365,7 +1366,11 @@ else
   }
   PACKAGES+=("$nvidia_kmod")
   echo "NVIDIA kernel package: $nvidia_kmod" >> "$INSTALL_LOG"
-  NVIDIA_DRIVER_INSTALLED_NOW=1
+  # Only a package that was missing this run needs a reboot. tsos-installer
+  # already pacstrapped nvidia-open; --needed is a no-op after the ISO reboot.
+  if ! pacman -Q "$nvidia_kmod" >/dev/null 2>&1; then
+    NVIDIA_DRIVER_INSTALLED_NOW=1
+  fi
   if pacman -Q linux >/dev/null 2>&1; then
     PACKAGES+=(linux-headers)
   fi
@@ -1396,25 +1401,35 @@ if ! need_cmd nvidia-smi; then
   progress_fail 1
 fi
 if nvidia_smi_ok; then
-  :
+  NVIDIA_SMI_OK=1
 elif try_load_nvidia; then
   echo "Loaded NVIDIA kernel module without reboot." >> "$INSTALL_LOG"
+  NVIDIA_SMI_OK=1
 elif [[ "${TABBY_NVIDIA_REBOOT_DONE:-}" == 1 ]]; then
   echo "nvidia-smi still fails after the NVIDIA reboot." >> "$INSTALL_LOG"
   nvidia-smi >>"$INSTALL_LOG" 2>&1 || true
   progress_fail 1
-elif [[ "$NVIDIA_DRIVER_INSTALLED_NOW" -eq 1 ]] && pci_has_nvidia; then
+elif [[ "$NVIDIA_DRIVER_INSTALLED_NOW" -eq 1 ]] && pci_has_nvidia && \
+     [[ "${TABBY_SKIP_NVIDIA_REBOOT:-}" != 1 ]]; then
   if [[ "$UPDATE_MODE" -eq 1 ]]; then
     echo "nvidia-smi failed during update; not rebooting." >> "$INSTALL_LOG"
     progress_fail 1
   fi
   schedule_nvidia_reboot
+elif pci_has_nvidia; then
+  # tsos already rebooted off the ISO with nvidia-open on disk. venvs and
+  # weights do not need the GPU. Enable tabbyapi; start it only if smi works.
+  echo "nvidia-smi failed; skipping mid-install reboot (driver already installed)." >> "$INSTALL_LOG"
+  nvidia-smi >>"$INSTALL_LOG" 2>&1 || true
+  NVIDIA_SMI_OK=0
 else
   echo "nvidia-smi failed and a reboot will not help." >> "$INSTALL_LOG"
   nvidia-smi >>"$INSTALL_LOG" 2>&1 || true
   progress_fail 1
 fi
-run_quiet nvidia-smi
+if [[ "$NVIDIA_SMI_OK" -eq 1 ]]; then
+  run_quiet nvidia-smi
+fi
 
 enable_docker() {
   sudo -n systemctl enable --now docker >>"$INSTALL_LOG" 2>&1 || \
@@ -1733,6 +1748,9 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl; then
     # The unit file was just rewritten for this dest; restart so it takes effect
     # instead of leaving an old process on the port.
     systemctl --user restart tabbyapi >>"$INSTALL_LOG" 2>&1 || true
+  elif [[ "${NVIDIA_SMI_OK:-0}" -eq 0 ]]; then
+    START_NOTE="NVIDIA is not loaded yet, so tabbyapi was enabled but not started. After nvidia-smi works: systemctl --user start tabbyapi"
+    echo "WARNING: $START_NOTE" >> "$INSTALL_LOG"
   elif port_in_use "$TABBY_NETWORK_PORT"; then
     START_NOTE="Port $TABBY_NETWORK_PORT is in use by another process, so tabbyapi was enabled but not started."
     echo "WARNING: $START_NOTE" >> "$INSTALL_LOG"
@@ -1845,7 +1863,8 @@ Embeddings (CPU, no GPU switch)
   stays loaded beside the LLM
 
 If something fails
-  nvidia-smi fails       installer reboots once if the new driver is not loaded;
+  nvidia-smi fails       standalone install reboots once if it just installed the
+                         driver; tsos first-boot skips that reboot and continues.
                          if it still fails: nvidia-smi ; journalctl -k | grep -i nvidia
   USB NTFS dirty/read-only  sudo ntfsfix /dev/sdXN then remount
   missing models         re-run install.sh (downloads from Hugging Face; skips what exists)

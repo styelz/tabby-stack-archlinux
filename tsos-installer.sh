@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.0.3"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -1514,6 +1514,7 @@ export USER="$TARGET_USER"
 export LOGNAME="$TARGET_USER"
 export XDG_RUNTIME_DIR="$runtime"
 export TABBY_NONINTERACTIVE=1
+export TABBY_SKIP_NVIDIA_REBOOT=1
 export TABBY_INSTALL_ROOT="$STACK"
 export TABBY_MODELS="${TABBY_MODELS:-core}"
 export TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
@@ -1533,6 +1534,7 @@ runuser -u "$TARGET_USER" -- env \
   LOGNAME="$LOGNAME" \
   XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
   TABBY_NONINTERACTIVE=1 \
+  TABBY_SKIP_NVIDIA_REBOOT=1 \
   TABBY_INSTALL_ROOT="$TABBY_INSTALL_ROOT" \
   TABBY_MODELS="$TABBY_MODELS" \
   TABBY_NETWORK_HOST="$TABBY_NETWORK_HOST" \
@@ -1620,6 +1622,20 @@ install_omarchy_chroot() {
 
   log "Installing Omarchy as ${TARGET_USER} (not root)"
   log "This is the official installer. It can take a long time."
+  log "When Omarchy says Reboot Now, that prompt is skipped — this script reboots the ISO at the end."
+
+  # Omarchy's finished.sh blocks forever on: gum confirm "Reboot Now"
+  # Even with OMARCHY_CHROOT_INSTALL=1 it still waits. PATH hits this first.
+  cat >"$TARGET/usr/local/bin/gum" <<'GUM'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "confirm" ]]; then
+  case "$*" in
+    *"Reboot Now"*) exit 0 ;;
+  esac
+fi
+exec /usr/bin/gum "$@"
+GUM
+  chmod 0755 "$TARGET/usr/local/bin/gum"
 
   local runner="$TARGET/home/${TARGET_USER}/run-omarchy.sh"
   cat >"$runner" <<EOF
@@ -1630,6 +1646,7 @@ export USER="${TARGET_USER}"
 export LOGNAME="${TARGET_USER}"
 export OMARCHY_CHROOT_INSTALL=1
 export OMARCHY_ONLINE_INSTALL=true
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 cd "\$HOME"
 if [[ -f "\$HOME/.omarchy-identity" ]]; then
   # shellcheck disable=SC1091
@@ -1645,7 +1662,7 @@ EOF
   arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- /bin/bash "/home/${TARGET_USER}/run-omarchy.sh"
   status=$?
   set -e
-  rm -f "$runner"
+  rm -f "$runner" "$TARGET/usr/local/bin/gum"
 
   if ((status != 0)); then
     warn "Omarchy installer exited with status $status."
@@ -1661,12 +1678,20 @@ EOF
 
 cleanup() {
   log "Cleaning installer files from the target"
-  rm -f "$TARGET/root/configure-arch.sh"
+  rm -f "$TARGET/root/configure-arch.sh" "$TARGET/usr/local/bin/gum"
   if [[ -f "$TARGET/root/install-vars.sh" ]]; then
     sed -i '/_PASSWORD=/d' "$TARGET/root/install-vars.sh" || true
   fi
   log "Unmounting"
-  umount -R "$TARGET" || true
+  sync || true
+  # Omarchy/chroot can leave processes on /mnt; a blocking umount looks hung.
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -km "$TARGET" 2>/dev/null || true
+    sleep 1
+  fi
+  if ! umount -R "$TARGET" 2>/dev/null; then
+    umount -R -l "$TARGET" 2>/dev/null || true
+  fi
   if ((ENCRYPT)) && [[ -e "/dev/mapper/$CRYPT_NAME" ]]; then
     cryptsetup close "$CRYPT_NAME" || true
   fi
@@ -1732,6 +1757,20 @@ EOF
   esac
 }
 
+offer_reboot() {
+  printf '\n' >/dev/tty
+  printf '%s\n' "Install finished. Remove the live USB/ISO now." >/dev/tty
+  printf '%s\n' "Press Enter to reboot into the new system (Ctrl+C stays on the ISO)." >/dev/tty
+  if have_console; then
+    read_tty "Reboot: " >/dev/null
+  else
+    log "No console; rebooting in 8 seconds"
+    sleep 8
+  fi
+  log "Rebooting"
+  reboot || systemctl reboot || true
+}
+
 main() {
   parse_args "$@"
   attach_console
@@ -1764,6 +1803,7 @@ main() {
   install_omarchy_chroot
   cleanup
   final_message
+  offer_reboot
 }
 
 main "$@"
