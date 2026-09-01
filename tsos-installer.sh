@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.11"
+SCRIPT_VERSION="1.0.12"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -44,6 +44,9 @@ TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
 TABBY_CACHE="${TABBY_CACHE:-}"
 TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
+TABBY_SSH_REMOTE="${TABBY_SSH_REMOTE:-}"
+TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-}"
+TABBY_SSH_KEY="${TABBY_SSH_KEY:-}"
 COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
 DISK="${DISK:-}"
 CONFIRM_WIPE="${CONFIRM_WIPE:-}"
@@ -100,10 +103,9 @@ OPTIONS
   --skip-omarchy           Do not install Omarchy (default)
   --name "FULL NAME"       Git name passed to Omarchy as OMARCHY_USER_NAME
   --email ADDR             Git email passed to Omarchy as OMARCHY_USER_EMAIL
-  --models SET             Passed to install.sh (core or all). Interactive ISO
-                           does not ask this — install.sh does.
-  --tabby-host ADDR        Passed to install.sh. Interactive ISO does not ask.
-  --tabby-port N           Passed to install.sh. Interactive ISO does not ask.
+  --models SET             Model set: core or all (asked in this UI unless --config)
+  --tabby-host ADDR        TabbyAPI listen address (asked in this UI unless --config)
+  --tabby-port N           TabbyAPI listen port (asked in this UI unless --config)
   --tabby-cache PATH       Optional weights cache. Asked here (before wipe)
                            so a USB under /mnt can be bind-mounted aside.
   --tabby-repo URL         Git remote to clone (default: tabby-stack-archlinux)
@@ -132,11 +134,11 @@ unless you set the split password variables.
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
-weights) and must finish before reboot. This script asks for the disk,
-user, Omarchy, and an optional weights cache (cache before wipe).
-install.sh then asks for model set and API URLs. The NVIDIA driver loads
-on the first real boot; linger then starts the API. There is no first-boot
-install.sh retry.
+weights) and must finish before reboot. This script asks every setting
+(disk, user, cache, model set, API URLs) in one UI, then keeps a progress
+bar while Arch and tabby-stack install. install.sh is non-interactive
+from here so it does not open a second dialog. The NVIDIA driver loads
+on the first real boot; linger then starts the API.
 
 The kernel driver is nvidia-open (Arch dropped the nvidia package). That
 covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
@@ -144,9 +146,26 @@ covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
 EOF
 }
 
-log() { printf '==> %s\n' "$*"; }
-warn() { printf 'warning: %s\n' "$*" >&2; }
+TSOS_LOG="${TSOS_LOG:-/tmp/tsos-installer.log}"
+TSOS_GAUGE_PID=""
+TSOS_GAUGE_DIR=""
+TSOS_GAUGE_FIFO=""
+TSOS_SAVED_FD=""
+
+log() {
+  printf '==> %s\n' "$*" >>"$TSOS_LOG"
+  if [[ -z "${TSOS_SAVED_FD:-}" ]]; then
+    printf '==> %s\n' "$*"
+  fi
+}
+warn() {
+  printf 'warning: %s\n' "$*" >>"$TSOS_LOG"
+  printf 'warning: %s\n' "$*" >&2
+}
 die() {
+  if declare -F gauge_stop >/dev/null; then
+    gauge_stop || true
+  fi
   printf 'error: %s\n' "$*" >&2
   if [[ ! -t 2 ]] && have_console; then
     printf 'error: %s\n' "$*" >/dev/tty
@@ -203,6 +222,96 @@ enable_tui_if_possible() {
   if [[ -n "$TUI" ]] && { [[ -t 0 && -t 1 ]] || have_console; }; then
     USE_TUI=1
   fi
+}
+
+restore_tty() {
+  {
+    command -v tput >/dev/null 2>&1 && {
+      tput rmcup || true
+      tput rmkx || true
+      tput cnorm || true
+      tput sgr0 || true
+    }
+    printf '\033[?1049l\033[?25h\033[m'
+    stty sane
+  } >/dev/tty 2>/dev/null || true
+}
+
+# One dialog gauge for the whole work phase so install.sh cannot steal the UI.
+gauge_start() {
+  ((USE_TUI)) || return 1
+  [[ "$TUI" == dialog ]] || return 1
+  { [[ -t 1 ]] || have_console; } || return 1
+  touch "$TSOS_LOG"
+  TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-gauge.XXXXXX")
+  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
+  mkfifo -m 600 "$TSOS_GAUGE_FIFO"
+  dialog --backtitle "$BACKTITLE" --title "Installing" \
+    --gauge "Starting..." 10 74 0 <"$TSOS_GAUGE_FIFO" &
+  TSOS_GAUGE_PID=$!
+  exec 3>"$TSOS_GAUGE_FIFO"
+  exec 4>&1 5>&2
+  TSOS_SAVED_FD=1
+  exec >>"$TSOS_LOG" 2>&1
+  return 0
+}
+
+gauge_update() {
+  local pct="$1" msg="$2"
+  log "$msg"
+  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
+    if ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+      gauge_stop
+      printf '==> %s\n' "$msg"
+      return 0
+    fi
+    printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg" >&3 || true
+  fi
+}
+
+gauge_stop() {
+  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
+    exec 3>&- || true
+    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
+    TSOS_GAUGE_PID=""
+    rm -rf "${TSOS_GAUGE_DIR:-}"
+    TSOS_GAUGE_DIR=""
+    TSOS_GAUGE_FIFO=""
+  fi
+  if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
+    exec 1>&4 2>&5
+    exec 4>&- 5>&-
+    TSOS_SAVED_FD=""
+    restore_tty
+  fi
+}
+
+# install.sh writes "==> [N%] message" to tabby-install.log. Map that onto
+# the outer 45–95% range so this UI never yields to a second dialog.
+watch_tabby_progress() {
+  local log="$1"
+  local stop="$2"
+  local last="" line pct msg scaled
+  [[ -n "${TSOS_GAUGE_PID:-}" ]] || return 0
+  while [[ ! -f "$stop" ]]; do
+    if [[ -f "$log" ]]; then
+      line=$(grep -E '^==> \[[0-9]+%\]' "$log" 2>/dev/null | tail -n1 || true)
+      if [[ -n "$line" && "$line" != "$last" ]]; then
+        last=$line
+        pct=${line#*\[}
+        pct=${pct%%\%*}
+        msg=${line#*\] }
+        if [[ "$pct" =~ ^[0-9]+$ ]]; then
+          scaled=$((45 + pct * 50 / 100))
+          if ((scaled > 95)); then
+            scaled=95
+          fi
+          printf 'XXX\n%s\n%s\nXXX\n' "$scaled" "$msg" >&3 || true
+        fi
+      fi
+    fi
+    sleep 1
+  done
 }
 
 ui_cancel() {
@@ -467,7 +576,7 @@ $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
       args+=("$path" "${size}  ${model}")
     done < <(list_install_disks)
     ((${#args[@]})) || die "No installable disk found."
-    DISK=$(ui_menu "1 / 6  — Target disk" \
+    DISK=$(ui_menu "1 / 10  — Target disk" \
 "This disk will be wiped. The live ISO / USB you booted from is hidden.
 
 Choose the machine disk, not a second installer stick." \
@@ -543,6 +652,21 @@ prompt_settings_text() {
   fi
 
   TABBY_CACHE=$(ask "Weights cache path (optional; asked now so a USB can be saved before wipe)" "$TABBY_CACHE")
+  TABBY_MODELS=$(ask_until "Model set (core / all)" "${TABBY_MODELS:-core}" valid_models)
+  TABBY_NETWORK_HOST=$(ask "TabbyAPI listen address" "${TABBY_NETWORK_HOST:-127.0.0.1}")
+  TABBY_NETWORK_PORT=$(ask_until "TabbyAPI listen port" "${TABBY_NETWORK_PORT:-5000}" valid_port)
+  COMFYUI_URL=$(ask "ComfyUI URL" "${COMFYUI_URL:-http://127.0.0.1:8188}")
+  TABBY_PUBLIC_BASE=$(ask "Public URL (blank = local only)" "${TABBY_PUBLIC_BASE}")
+  TABBY_SSH_REMOTE=$(ask "SSH tunnel target (blank = none)" "${TABBY_SSH_REMOTE}")
+  if [[ -n "$TABBY_SSH_REMOTE" ]]; then
+    TABBY_SSH_FORWARD=$(ask "SSH -R spec" \
+      "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
+    TABBY_SSH_KEY=$(ask "SSH key path" \
+      "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}")
+  else
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+  fi
   printf '\n' >/dev/tty
 }
 
@@ -559,28 +683,28 @@ Needed
   • NVIDIA GPU (Turing / RTX 20-series or newer)
   • Secure Boot off
 
-Next screens ask for the disk, system name, Omarchy, and an
-optional weights cache (needed before the disk is wiped).
-Model set, listen address, and public URL are asked by
-install.sh after Arch is on the disk.
+Next screens ask for the disk, system name, Omarchy, cache,
+model set, and API URLs. After you confirm the wipe, this
+same UI stays up with a progress bar — install.sh does not
+open a second dialog.
 
 Esc cancels."
 
   ask_install_disk
 
-  TARGET_HOSTNAME=$(ui_ask_until "2 / 6  — Hostname" \
+  TARGET_HOSTNAME=$(ui_ask_until "2 / 10  — Hostname" \
 "Name of the installed system (not the live ISO hostname).
 
 Letters, digits, and hyphens. Example: tsos" \
     "$TARGET_HOSTNAME" valid_hostname)
 
-  TARGET_USER=$(ui_ask_until "2 / 6  — Username" \
+  TARGET_USER=$(ui_ask_until "2 / 10  — Username" \
 "Regular wheel user that runs tabby-stack.
 
 Lowercase, not root. Example: tabby" \
     "$TARGET_USER" valid_username)
 
-  TIMEZONE=$(ui_input "3 / 6  — Timezone" \
+  TIMEZONE=$(ui_input "3 / 10  — Timezone" \
 "Timezone from /usr/share/zoneinfo.
 
 Examples: UTC  Australia/Sydney  America/New_York" \
@@ -592,27 +716,27 @@ Examples: UTC  Australia/Sydney  America/New_York" \
 Continuing anyway — fix it after boot if the clock is wrong."
   fi
 
-  LOCALE=$(ui_input "3 / 6  — Locale" \
+  LOCALE=$(ui_input "3 / 10  — Locale" \
 "Locale name without a leading #.
 
 Example: en_US.UTF-8" \
     "$LOCALE")
   LOCALE="${LOCALE:-en_US.UTF-8}"
 
-  KEYMAP=$(ui_input "3 / 6  — Console keymap" \
+  KEYMAP=$(ui_input "3 / 10  — Console keymap" \
 "Keyboard map for the console (and LUKS prompt).
 
 Example: us" \
     "$KEYMAP")
   KEYMAP="${KEYMAP:-us}"
 
-  ESP_SIZE=$(ui_ask_until "3 / 6  — EFI partition size" \
+  ESP_SIZE=$(ui_ask_until "3 / 10  — EFI partition size" \
 "FAT32 /boot size. 2G is enough for the kernel and Limine.
 
 Examples: 2G  512M" \
     "$ESP_SIZE" valid_esp_size)
 
-  if ui_yesno "4 / 6  — Omarchy desktop" \
+  if ui_yesno "4 / 10  — Omarchy desktop" \
 "Install the official Omarchy desktop in the chroot?
 
 Yes requires LUKS on the root disk (encryption will be turned on).
@@ -624,19 +748,19 @@ Default is no." \
     ENCRYPT=1
     ui_msg "Encryption required" \
 "Omarchy is selected, so the disk will be encrypted with LUKS."
-    OMARCHY_USER_NAME=$(ui_input "4 / 6  — Git name" \
+    OMARCHY_USER_NAME=$(ui_input "4 / 10  — Git name" \
 "Optional name passed to Omarchy as OMARCHY_USER_NAME.
 
 Blank is fine." \
       "$OMARCHY_USER_NAME")
-    OMARCHY_USER_EMAIL=$(ui_input "4 / 6  — Git email" \
+    OMARCHY_USER_EMAIL=$(ui_input "4 / 10  — Git email" \
 "Optional email passed to Omarchy as OMARCHY_USER_EMAIL.
 
 Blank is fine." \
       "$OMARCHY_USER_EMAIL")
   else
     OMARCHY_MODE=skip
-    if ui_yesno "5 / 6  — Disk encryption" \
+    if ui_yesno "5 / 10  — Disk encryption" \
 "Encrypt the root disk with LUKS?
 
 Yes = unlock password at boot (recommended).
@@ -651,13 +775,11 @@ Default follows the current setting ($(encrypt_label))." \
   fi
 
   local cache_choice
-  cache_choice=$(ui_menu "6 / 6  — Weights cache" \
+  cache_choice=$(ui_menu "6 / 10  — Weights cache" \
 "If weights already live on a USB copy of tabby-stack or another
 folder, they must be named now — the new root mounts at /mnt next.
 
 Mount the USB first if you want that option (not under /mnt).
-
-Model set and API URLs are asked by install.sh after Arch is installed.
 
 Leave the cache empty to download from Hugging Face." \
     none "Download from Hugging Face (no cache)" \
@@ -679,6 +801,107 @@ Blank = download from Hugging Face." \
       ;;
     *) TABBY_CACHE="$cache_choice" ;;
   esac
+
+  prompt_tabby_settings_tui
+}
+
+prompt_tabby_settings_tui() {
+  local default_set="${TABBY_MODELS:-core}"
+  if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE/tabbyAPI/models" ]]; then
+    default_set="all"
+  fi
+  TABBY_MODELS=$(ui_menu "7 / 10  — Model set" \
+"Which weights to copy or download. Re-run later to add more; existing
+files are skipped.
+
+core  — enough to chat and generate images (smaller download)
+        • qwen 9B  (switch to qwen)  daily coding
+        • Flux Schnell drafts + Qwen-Image (text / posters / UI)
+        • Qwen3-Embedding-0.6B on CPU
+
+all   — every “switch to …” profile (needs more disk and VRAM)
+        • core, plus qwen35, qwen36, gemma, gemma26, glm
+        • Gemma may be gated: huggingface-cli login or HF_TOKEN
+
+Recommended first install: core. Default here: ${default_set}." \
+    core "qwen 9B + Flux + Qwen-Image + embedder" \
+    all "every switch-to profile (incl. 27B / 35B / Gemma)")
+  TABBY_MODELS="${TABBY_MODELS:-$default_set}"
+  if [[ "$TABBY_MODELS" == "all" ]]; then
+    ui_msg "Gemma / Hugging Face" \
+"The “all” set includes Gemma weights that Hugging Face may gate.
+
+If a later download returns 401 or 403:
+  huggingface-cli login
+  or:  export HF_TOKEN=...
+  then re-run this installer (finished files are skipped).
+
+You do not need a token for qwen / Flux / Qwen-Image."
+  fi
+
+  TABBY_NETWORK_HOST=$(ui_input "8 / 10  — API listen address" \
+"Address TabbyAPI binds on. Clients (and Cursor) use this host.
+
+  127.0.0.1  — this machine only (usual)
+  0.0.0.0    — other devices on the LAN can connect
+
+Do not put a public hostname here." \
+    "${TABBY_NETWORK_HOST:-127.0.0.1}")
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+
+  TABBY_NETWORK_PORT=$(ui_ask_until "8 / 10  — API listen port" \
+"TCP port for the API. Default 5000.
+
+Health:  http://${TABBY_NETWORK_HOST}:PORT/health
+Cursor:  http://${TABBY_NETWORK_HOST}:PORT/v1" \
+    "${TABBY_NETWORK_PORT:-5000}" valid_port)
+
+  COMFYUI_URL=$(ui_input "9 / 10  — ComfyUI URL" \
+"HTTP URL for ComfyUI after “switch to comfy”.
+
+Usual value:  http://127.0.0.1:8188
+Change this only if ComfyUI will listen somewhere else." \
+    "${COMFYUI_URL:-http://127.0.0.1:8188}")
+  COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
+
+  TABBY_PUBLIC_BASE=$(ui_input "9 / 10  — Public URL" \
+"Optional URL written into image links and the public gallery.
+
+Examples
+  https://api.example.com/v1
+  https://chat.example.com/api/v1
+
+Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
+Leave blank if you do not have a reverse proxy or tunnel." \
+    "${TABBY_PUBLIC_BASE}")
+
+  TABBY_SSH_REMOTE=$(ui_input "10 / 10  — SSH tunnel" \
+"Optional SSH target that forwards a remote port to TabbyAPI.
+
+Example:  user@host.example
+
+Blank = no tunnel (API stays on this machine).
+If you set a host, the next screens ask for the forward spec and key." \
+    "${TABBY_SSH_REMOTE}")
+  if [[ -n "$TABBY_SSH_REMOTE" ]]; then
+    TABBY_SSH_FORWARD=$(ui_input "10 / 10  — SSH forward" \
+"ssh -R spec: remote listen → local TabbyAPI.
+
+Default matches the listen port you chose (${TABBY_NETWORK_PORT})." \
+      "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
+    TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
+    TABBY_SSH_KEY=$(ui_input "10 / 10  — SSH key" \
+"Key file for ${TABBY_SSH_REMOTE}.
+
+The installer copies that key from a weights cache if present,
+otherwise it creates a new ed25519 key. Install the .pub on the
+tunnel host. Use this path unless your key has another name." \
+      "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}")
+    TABBY_SSH_KEY="${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}"
+  else
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+  fi
 }
 
 encrypt_label() {
@@ -1224,8 +1447,10 @@ $root_line
   firmware:      $(is_uefi && echo UEFI || echo BIOS)
   encryption:    $(encrypt_label)
   omarchy:       $OMARCHY_MODE
-  tabby models:  $([[ "$CONFIG_PROVIDED" -eq 1 ]] && printf '%s' "$TABBY_MODELS" || printf '(asked by install.sh)')
-  tabby listen:  $([[ "$CONFIG_PROVIDED" -eq 1 ]] && printf '%s' "${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}" || printf '(asked by install.sh)')
+  tabby models:  ${TABBY_MODELS:-core}
+  tabby listen:  ${TABBY_NETWORK_HOST:-127.0.0.1}:${TABBY_NETWORK_PORT:-5000}
+  tabby public:  ${TABBY_PUBLIC_BASE:-'(none — local only)'}
+  tabby ssh:     ${TABBY_SSH_REMOTE:-'(none — no tunnel)'}
   tabby cache:   ${TABBY_CACHE:-'(none — Hugging Face)'}
   tabby repo:    $TABBY_REPO
   tabby overlay: ${TABBY_LOCAL_SRC:-'(script dir if it contains install.sh)'}
@@ -1628,6 +1853,9 @@ write_tabby_bootstrap() {
     printf 'TABBY_NETWORK_PORT=%q\n' "$TABBY_NETWORK_PORT"
     printf 'TABBY_CACHE=%q\n' "$TABBY_CACHE"
     printf 'TABBY_PUBLIC_BASE=%q\n' "$TABBY_PUBLIC_BASE"
+    printf 'TABBY_SSH_REMOTE=%q\n' "$TABBY_SSH_REMOTE"
+    printf 'TABBY_SSH_FORWARD=%q\n' "$TABBY_SSH_FORWARD"
+    printf 'TABBY_SSH_KEY=%q\n' "$TABBY_SSH_KEY"
     printf 'COMFYUI_URL=%q\n' "$COMFYUI_URL"
     printf 'TABBY_INSTALL_ROOT=%q\n' "$stack_home"
   } >"$conf_dir/install.conf"
@@ -1927,6 +2155,7 @@ run_tabby_install_chroot() {
 
   log "Installing tabby-stack in the new system (Python, venvs, model files)"
   log "This stays on the live ISO until it finishes. Full log: $stack_home/tabby-install.log"
+  gauge_update 45 "Installing tabby-stack"
 
   local -a run_env=(
     HOME="/home/${TARGET_USER}"
@@ -1936,31 +2165,41 @@ run_tabby_install_chroot() {
     TABBY_SKIP_NVIDIA_REBOOT=1
     TABBY_INSTALL_ROOT="$stack_home"
     TABBY_CACHE="${TABBY_CACHE_CHROOT:-}"
+    TABBY_NONINTERACTIVE=1
+    TABBY_NESTED_UI=1
+    TABBY_ISO_CHROOT=1
+    TABBY_MODELS="${TABBY_MODELS:-core}"
+    TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+    TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+    TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
+    TABBY_SSH_REMOTE="${TABBY_SSH_REMOTE:-}"
+    TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-}"
+    TABBY_SSH_KEY="${TABBY_SSH_KEY:-}"
+    COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
   )
-  if ((CONFIG_PROVIDED)) || [[ "${TABBY_NONINTERACTIVE:-}" == 1 ]]; then
-    run_env+=(
-      TABBY_NONINTERACTIVE=1
-      TABBY_MODELS="${TABBY_MODELS:-core}"
-      TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
-      TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
-      TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
-      COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
-    )
-    log "install.sh will use config/env tabby settings (no menus)"
-  else
-    run_env+=(TABBY_ISO_CHROOT=1)
-    log "install.sh will ask for model set and API URLs (dest and cache already set)"
-  fi
+  log "install.sh will use the settings from this UI (no second dialog)"
   if [[ -n "${HF_TOKEN:-}" ]]; then
     run_env+=(HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN")
   fi
 
-  local status=0
+  local status=0 watcher="" stop=""
+  local tabby_log="$TARGET$stack_home/tabby-install.log"
+  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
+    stop=$(mktemp "${TMPDIR:-/tmp}/tsos-watch.XXXXXX")
+    rm -f "$stop"
+    watch_tabby_progress "$tabby_log" "$stop" &
+    watcher=$!
+  fi
   set +e
   arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
     bash "$stack_home/install.sh"
   status=$?
   set -e
+  if [[ -n "$watcher" ]]; then
+    touch "$stop"
+    wait "$watcher" 2>/dev/null || true
+    rm -f "$stop"
+  fi
 
   if ((status != 0)); then
     die "install.sh failed in the chroot (exit ${status}). Not rebooting.
@@ -1992,7 +2231,7 @@ refresh_tsos_conf_from_tabby_env() {
   local line key
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
-      TABBY_NETWORK_HOST=*|TABBY_NETWORK_PORT=*|TABBY_PUBLIC_BASE=*|COMFYUI_URL=*|TABBY_INSTALL_ROOT=*|TABBY_MODELS=*)
+      TABBY_NETWORK_HOST=*|TABBY_NETWORK_PORT=*|TABBY_PUBLIC_BASE=*|COMFYUI_URL=*|TABBY_INSTALL_ROOT=*|TABBY_MODELS=*|TABBY_SSH_REMOTE=*|TABBY_SSH_FORWARD=*|TABBY_SSH_KEY=*)
         key="${line%%=*}"
         sed -i "/^${key}=/d" "$conf"
         printf '%s\n' "$line" >> "$conf"
@@ -2218,9 +2457,15 @@ resume_tabby_install() {
     die "missing $stack_home/install.sh under $TARGET"
   write_firstboot_sudoers "$TARGET"
   refresh_tabby_stack_in_target
+  gauge_start || true
+  gauge_update 40 "Resuming tabby-stack"
   run_tabby_install_chroot
+  if [[ "$OMARCHY_MODE" == "now" ]]; then
+    gauge_stop
+  fi
   install_omarchy_chroot
   cleanup
+  gauge_stop
   final_message
   offer_reboot
 }
@@ -2261,18 +2506,31 @@ main() {
   confirm_wipe
   collect_passwords
   log "Starting the install..."
+  gauge_start || true
+  gauge_update 2 "Preparing disk"
   disable_live_mkinitcpio_hooks
   timedatectl set-ntp true || true
   preserve_tabby_cache
+  gauge_update 8 "Wiping and partitioning"
   wipe_and_partition
+  gauge_update 15 "Formatting and mounting"
   setup_storage
+  gauge_update 22 "Installing Arch packages"
   install_base
+  gauge_update 38 "Configuring the new system"
   write_chroot_files
   configure_chroot
   write_tabby_bootstrap
   run_tabby_install_chroot
+  if [[ "$OMARCHY_MODE" == "now" ]]; then
+    gauge_stop
+  fi
   install_omarchy_chroot
+  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
+    gauge_update 98 "Cleaning up"
+  fi
   cleanup
+  gauge_stop
   final_message
   offer_reboot
 }

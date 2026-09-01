@@ -31,8 +31,8 @@ Usage: $(basename "$0") [--update]
               Does not pacman -Syu; only installs missing OS packages.
   -h, --help  This text
 
-  ISO chroot (from tsos-installer, or a resume): dest and cache come from
-  tsos; this script asks for model set and API URLs. Resume:
+  ISO chroot (from tsos-installer, or a resume): dest, cache, model set,
+  and API URLs come from tsos (TABBY_NONINTERACTIVE=1). Resume:
     arch-chroot /mnt /usr/bin/runuser -u USER -- env \\
       HOME=/home/USER USER=USER LOGNAME=USER TERM=linux \\
       TABBY_ISO_CHROOT=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
@@ -297,6 +297,10 @@ progress_start() {
   fi
   if [[ "${TABBY_INSTALL_VERBOSE:-}" == 1 ]]; then
     GAUGE_MODE="verbose"
+    return 0
+  fi
+  if [[ "${TABBY_NESTED_UI:-}" == 1 ]]; then
+    GAUGE_MODE="log"
     return 0
   fi
   if [[ -t 1 ]] && need_cmd dialog; then
@@ -919,7 +923,8 @@ if [[ "${TABBY_NVIDIA_REBOOT_DONE:-}" == 1 ]]; then
 fi
 
 # Env-driven install: skip menus when the three knobs are already set.
-if [[ "${TABBY_NONINTERACTIVE:-}" == 1 ]] || [[ ! -t 0 ]]; then
+# TABBY_NESTED_UI: tsos-installer already asked and owns the progress bar.
+if [[ "${TABBY_NONINTERACTIVE:-}" == 1 || "${TABBY_NESTED_UI:-}" == 1 ]] || [[ ! -t 0 ]]; then
   INTERACTIVE=0
 elif [[ -n "${TABBY_INSTALL_ROOT:-}" && -n "${TABBY_MODELS:-}" ]]; then
   INTERACTIVE=0
