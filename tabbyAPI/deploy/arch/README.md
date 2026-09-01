@@ -172,6 +172,7 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Hugging Face 401/403 | Gated repo. `huggingface-cli login` or `export HF_TOKEN=...` then re-run. |
 | SSH key missing | Optional. Only needed if you set up your own public reverse tunnel. |
 | SSH rejects a cache-copied key | Windows CRLF. The installer runs `dos2unix`. Manual: `sudo pacman -S dos2unix && dos2unix ~/.ssh/id_ed25519` |
+| `~/.ssh` empty after ISO install | There was no cache key to copy, and older `install.sh` did not create one. Current `install.sh` generates `id_ed25519`. On an already-installed box: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519` and put the `.pub` on `TABBY_SSH_REMOTE`. |
 | `systemctl --user` fails | Log in graphically or `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | Tabby dies when you log out of the shell | User units need linger. `sudo loginctl enable-linger $USER` then `loginctl show-user $USER -p Linger` should be `yes` |
 | No sudo / not in wheel | Re-run as your user; enter the root password when asked. Or: `su -c 'pacman -S sudo && usermod -aG wheel USER'` |

@@ -1281,8 +1281,9 @@ Default matches the listen port you chose (${TABBY_NETWORK_PORT})." \
       TABBY_SSH_KEY="$(ui_input "$step_key" \
 "Key file for ${TABBY_SSH_REMOTE}.
 
-The installer copies ~/.ssh/id_ed25519 from a cache if present.
-Use that path unless your key has another name." \
+The installer copies that key from a weights cache if present,
+otherwise it creates a new ed25519 key. Install the .pub on the
+tunnel host. Use this path unless your key has another name." \
 "${TABBY_SSH_KEY:-$HOME/.ssh/id_ed25519}")"
       TABBY_SSH_KEY="${TABBY_SSH_KEY:-$HOME/.ssh/id_ed25519}"
     else
@@ -1645,6 +1646,23 @@ if [[ -n "$WIN_ROOT" && -f "$WIN_ROOT/.ssh/$SSH_KEY_NAME" ]]; then
     fi
   fi
 fi
+# Cache copy is optional. A reverse tunnel (or a bare login key) still needs
+# a key on this account — generate one when nothing was copied.
+if [[ ! -f "$HOME/.ssh/$SSH_KEY_NAME" ]]; then
+  if need_cmd ssh-keygen; then
+    comment="${USER}@$(hostname -s 2>/dev/null || echo tsos)-tabby-stack"
+    ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/$SSH_KEY_NAME" -C "$comment"
+    chmod 600 "$HOME/.ssh/$SSH_KEY_NAME"
+    [[ -f "$HOME/.ssh/${SSH_KEY_NAME}.pub" ]] && chmod 644 "$HOME/.ssh/${SSH_KEY_NAME}.pub"
+    echo "Created SSH key $HOME/.ssh/$SSH_KEY_NAME" >> "$INSTALL_LOG"
+    if [[ -n "${TABBY_SSH_REMOTE:-}" ]]; then
+      echo "Install this public key on ${TABBY_SSH_REMOTE}:" >> "$INSTALL_LOG"
+      cat "$HOME/.ssh/${SSH_KEY_NAME}.pub" >> "$INSTALL_LOG"
+    fi
+  else
+    echo "WARNING: ssh-keygen missing; no $HOME/.ssh/$SSH_KEY_NAME" >> "$INSTALL_LOG"
+  fi
+fi
 
 # Wheels + imports. Runtime GPU only when nvidia-smi already works — the ISO
 # chroot has nvidia-open on disk but no loaded driver, so
@@ -1999,6 +2017,8 @@ If something fails
   missing models         re-run install.sh (downloads from Hugging Face; skips what exists)
   HF 401/403 gated       huggingface-cli login  or  export HF_TOKEN=...
   SSH key missing        optional; only for a public reverse tunnel
+  SSH key missing        installer creates ~/.ssh/id_ed25519 when none exists
+                         (needed for TABBY_SSH_REMOTE). Put the .pub on the tunnel host.
   SSH key CRLF / invalid  installer runs dos2unix on a cache-copied ~/.ssh/id_ed25519
   public URL dead        optional tunnel; local API is $API_URL
   systemctl --user fails export XDG_RUNTIME_DIR=/run/user/\$(id -u)
