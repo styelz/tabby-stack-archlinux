@@ -682,6 +682,92 @@ init_pyenv() {
   fi
 }
 
+pyenv_tree_ok() {
+  local root="$1"
+  [[ -x "$root/bin/pyenv" || -x "$root/libexec/pyenv" ]]
+}
+
+copy_tree() {
+  local src="$1" dest="$2"
+  mkdir -p "$dest"
+  if need_cmd rsync; then
+    rsync -a "$src/" "$dest/"
+  else
+    cp -a "$src/." "$dest/"
+  fi
+}
+
+# pyenv.run is a short domain and often fails DNS in the live-ISO chroot
+# even when Arch mirrors and github.com work. Clone pyenv from GitHub.
+install_pyenv() {
+  export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
+  if pyenv_tree_ok "$PYENV_ROOT"; then
+    return 0
+  fi
+  if [[ -e "$PYENV_ROOT" ]]; then
+    rm -rf "$PYENV_ROOT"
+  fi
+
+  local cache_src=""
+  if [[ -n "${WIN_ROOT:-}" ]]; then
+    if pyenv_tree_ok "${WIN_ROOT}/.pyenv"; then
+      cache_src="${WIN_ROOT}/.pyenv"
+    elif pyenv_tree_ok "${WIN_ROOT}/pyenv"; then
+      cache_src="${WIN_ROOT}/pyenv"
+    fi
+  fi
+  if [[ -n "$cache_src" ]]; then
+    echo "    Copying pyenv from $cache_src"
+    copy_tree "$cache_src" "$PYENV_ROOT"
+    if pyenv_tree_ok "$PYENV_ROOT"; then
+      return 0
+    fi
+    rm -rf "$PYENV_ROOT"
+  fi
+
+  echo "    Cloning pyenv from GitHub..."
+  local i
+  for ((i = 1; i <= 3; i++)); do
+    if GIT_TERMINAL_PROMPT=0 git clone --depth 1 \
+         https://github.com/pyenv/pyenv.git "$PYENV_ROOT"; then
+      if pyenv_tree_ok "$PYENV_ROOT"; then
+        return 0
+      fi
+    fi
+    rm -rf "$PYENV_ROOT"
+    echo "    git clone pyenv failed (try $i/3)"
+    sleep 2
+  done
+
+  echo "    git clone failed; fetching the pyenv installer from GitHub..."
+  if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 \
+       https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer | bash; then
+    if pyenv_tree_ok "$PYENV_ROOT"; then
+      return 0
+    fi
+  fi
+  echo "pyenv install failed (GitHub clone). Not using pyenv.run — that host often fails DNS on the live ISO."
+  return 1
+}
+
+maybe_copy_cached_python312() {
+  local dest="${PYENV_ROOT:-$HOME/.pyenv}/versions/$PYENV_VER"
+  [[ -x "$dest/bin/python" ]] && return 0
+  [[ -n "${WIN_ROOT:-}" ]] || return 0
+  local src
+  for src in "$WIN_ROOT/.pyenv/versions/$PYENV_VER" "$WIN_ROOT/pyenv/versions/$PYENV_VER"; do
+    if [[ -x "$src/bin/python" ]]; then
+      echo "    Copying Python $PYENV_VER from $src"
+      copy_tree "$src" "$dest"
+      if [[ -x "$dest/bin/python" ]] && "$dest/bin/python" -c 'import sys' >/dev/null 2>&1; then
+        return 0
+      fi
+      rm -rf "$dest"
+    fi
+  done
+  return 0
+}
+
 ensure_sudo() {
   if [[ "${EUID}" -eq 0 ]]; then
     echo "Do not run as root. Re-run as your user."
@@ -763,12 +849,12 @@ ensure_python312() {
   echo
   echo "==> Arch repos only ship current Python (3.14). python312 is not in pacman."
   echo "    Installing pyenv and Python $PYENV_VER (do not use system 3.13/3.14)."
-  if ! need_cmd pyenv; then
-    curl https://pyenv.run -fsS | bash
+  if ! need_cmd pyenv && ! pyenv_tree_ok "${PYENV_ROOT:-$HOME/.pyenv}"; then
+    install_pyenv || return 1
   fi
   init_pyenv
   if ! need_cmd pyenv; then
-    echo "pyenv install failed (curl https://pyenv.run)."
+    echo "pyenv is not on PATH after install."
     return 1
   fi
   local line_root='export PYENV_ROOT="$HOME/.pyenv"'
@@ -781,6 +867,7 @@ ensure_python312() {
       printf '\n%s\n%s\n%s\n' "$line_root" "$line_path" "$line_init" >> "$rc"
     fi
   done
+  maybe_copy_cached_python312
   if [[ ! -x "$PYENV_ROOT/versions/$PYENV_VER/bin/python" ]]; then
     echo "    Compiling Python $PYENV_VER (several minutes)..."
     pyenv install -s "$PYENV_VER"
@@ -2027,7 +2114,10 @@ If something fails
                          systemctl --user stop tabbyapi ; ss -ltnp | grep $TABBY_NETWORK_PORT
   dies on logout        sudo loginctl enable-linger $USER   (installer does this)
   no sudo               re-run as your user; enter the root password when asked
-  Python 3.13/3.14      re-run install.sh (it installs pyenv 3.12.5)
+  Python 3.13/3.14      re-run install.sh (it clones pyenv from GitHub
+                         and builds 3.12.5). Do not use pyenv.run.
+  pyenv.run DNS fail    expected on some live ISOs. Current install.sh
+                         clones github.com/pyenv/pyenv instead.
   copy interrupted       re-run install.sh (rsync resumes)
   switch 500 creationflags  re-run install.sh (patches Linux spawn) then:
                          systemctl --user restart tabbyapi

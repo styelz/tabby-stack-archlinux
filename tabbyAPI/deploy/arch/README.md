@@ -176,7 +176,8 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | `systemctl --user` fails | Log in graphically or `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | Tabby dies when you log out of the shell | User units need linger. `sudo loginctl enable-linger $USER` then `loginctl show-user $USER -p Linger` should be `yes` |
 | No sudo / not in wheel | Re-run as your user; enter the root password when asked. Or: `su -c 'pacman -S sudo && usermod -aG wheel USER'` |
-| System Python is 3.13/3.14 | Expected. Re-run `install.sh` — it installs pyenv 3.12.5. Do not `pacman -S python312` (not in official repos). |
+| System Python is 3.13/3.14 | Expected. Re-run `install.sh` — it clones pyenv from GitHub and builds 3.12.5. Do not `pacman -S python312` (not in official repos). |
+| `curl: (6) Could not resolve host: pyenv.run` | The short domain often fails DNS in the live-ISO chroot. Current `install.sh` clones `github.com/pyenv/pyenv`. Do not re-run `tsos-installer.sh` (that wipes the disk). Resume: `tsos-installer.sh --resume-tabby`, or copy this `install.sh` into `/mnt/home/USER/tabby-stack/` and re-run `install.sh` in the chroot. |
 | Interrupted download | Re-run `install.sh`; finished files are skipped |
 | Chat `switch to …` returns 500 / `creationflags is only supported on Windows` | Re-run `install.sh` (it patches the spawn), then `systemctl --user restart tabbyapi` |
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |

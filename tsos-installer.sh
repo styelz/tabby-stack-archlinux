@@ -4,7 +4,8 @@
 # Install Arch Linux from the official live ISO, then install tabby-stack in
 # the chroot (venvs, weights) so first boot only starts the API (linger).
 #
-# Run as root from the Arch Linux live ISO. The target disk is wiped.
+# Run as root from the Arch Linux live ISO. The target disk is wiped
+# unless you pass --resume-tabby (finish install.sh on an already-mounted /mnt).
 #
 # Usage:
 #   ./tsos-installer.sh
@@ -21,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.10"
+SCRIPT_VERSION="1.0.11"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -52,6 +53,7 @@ USER_PASSWORD="${USER_PASSWORD:-}"
 ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 DRY_RUN=0
 CONFIG_PROVIDED=0
+RESUME_TABBY=0
 DEFAULT_DISK=/dev/sda
 TUI=""
 USE_TUI=0
@@ -106,6 +108,8 @@ OPTIONS
                            so a USB under /mnt can be bind-mounted aside.
   --tabby-repo URL         Git remote to clone (default: tabby-stack-archlinux)
   --tabby-local-src PATH   Overlay this tabby-stack tree after clone (install.sh, etc.)
+  --resume-tabby           Do not wipe. Finish install.sh in an already-mounted
+                           system at /mnt (after a chroot install.sh failure)
   --confirm-wipe PATH      Non-interactive wipe confirmation; must equal --disk
   --password-env           Read PASSWORD / LUKS_PASSWORD / USER_PASSWORD / ROOT_PASSWORD
                            from the environment instead of prompting
@@ -932,6 +936,10 @@ parse_args() {
       --tabby-local-src)
         TABBY_LOCAL_SRC=${2:?}
         shift 2
+        ;;
+      --resume-tabby)
+        RESUME_TABBY=1
+        shift
         ;;
       --config)
         [[ -f "${2:?}" ]] || die "config file not found: $2"
@@ -1851,6 +1859,26 @@ overlay_local_tabby_sources() {
     "/home/${TARGET_USER}/tabby-stack"
 }
 
+# After a failed chroot install.sh, pull origin/main then overlay a local
+# tree so fixes that are not on the ISO copy get used.
+refresh_tabby_stack_in_target() {
+  local stack_home="/home/${TARGET_USER}/tabby-stack"
+  [[ -d "$TARGET$stack_home" ]] || die "missing $stack_home on the new system"
+  if [[ -d "$TARGET$stack_home/.git" ]]; then
+    log "Updating tabby-stack in the chroot from origin"
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+      git -C "$stack_home" fetch --prune origin || \
+      warn "git fetch failed; using the tree already on disk"
+    if ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+         git -C "$stack_home" merge --ff-only origin/main; then
+      arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+        git -C "$stack_home" pull --ff-only || \
+        warn "git pull failed; using the tree already on disk"
+    fi
+  fi
+  overlay_local_tabby_sources "$TARGET$stack_home"
+}
+
 # If the weights cache is under $TARGET (often /mnt/usb), mounting the new
 # root there would hide it. Bind it aside before wipe/mount.
 preserve_tabby_cache() {
@@ -1878,6 +1906,10 @@ bind_tabby_cache_into_target() {
   if [[ "$cache_abs" == "$TARGET" || "$cache_abs" == "$TARGET"/* ]]; then
     TABBY_CACHE_CHROOT="${cache_abs#"$TARGET"}"
     [[ -n "$TABBY_CACHE_CHROOT" ]] || TABBY_CACHE_CHROOT="/"
+    return 0
+  fi
+  if mountpoint -q "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null; then
+    TABBY_CACHE_CHROOT="$CACHE_CHROOT_PATH"
     return 0
   fi
   log "Binding weights cache into the new system at $CACHE_CHROOT_PATH"
@@ -1933,7 +1965,15 @@ run_tabby_install_chroot() {
   if ((status != 0)); then
     die "install.sh failed in the chroot (exit ${status}). Not rebooting.
 Log: ${TARGET}${stack_home}/tabby-install.log
-Fix that, then re-run this script. tabby-stack is not installed after reboot."
+Do not run this installer again from scratch — that wipes the disk.
+Fix the tree (git pull or --tabby-local-src), then resume:
+  ${SCRIPT_NAME} --resume-tabby
+or:
+  arch-chroot ${TARGET} /usr/bin/runuser -u ${TARGET_USER} -- env \\
+    HOME=/home/${TARGET_USER} USER=${TARGET_USER} LOGNAME=${TARGET_USER} TERM=linux \\
+    TABBY_ISO_CHROOT=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
+    TABBY_INSTALL_ROOT=${stack_home} \\
+    bash ${stack_home}/install.sh"
   fi
 
   refresh_tsos_conf_from_tabby_env
@@ -2152,10 +2192,52 @@ Reboot into the new system?" 1; then
   reboot || systemctl reboot || true
 }
 
+load_existing_tsos_conf() {
+  local conf="$TARGET/etc/tsos/install.conf"
+  [[ -f "$conf" ]] || return 0
+  # shellcheck disable=SC1090
+  source "$conf"
+  if [[ -f "$TARGET/etc/tsos/secrets.env" ]]; then
+    # shellcheck disable=SC1090
+    source "$TARGET/etc/tsos/secrets.env"
+  fi
+}
+
+# Finish install.sh after a chroot failure. /mnt must still be the new system.
+resume_tabby_install() {
+  [[ -f "$TARGET/etc/arch-release" ]] || \
+    die "$TARGET is not an Arch install. Leave the new system mounted at $TARGET (do not reboot off the ISO)."
+  local cli_cache="$TABBY_CACHE"
+  load_existing_tsos_conf
+  if [[ -n "$cli_cache" && -d "$cli_cache" ]]; then
+    TABBY_CACHE="$cli_cache"
+  fi
+  valid_username "$TARGET_USER" || die "invalid user name: $TARGET_USER"
+  local stack_home="/home/${TARGET_USER}/tabby-stack"
+  [[ -f "$TARGET$stack_home/install.sh" ]] || \
+    die "missing $stack_home/install.sh under $TARGET"
+  write_firstboot_sudoers "$TARGET"
+  refresh_tabby_stack_in_target
+  run_tabby_install_chroot
+  install_omarchy_chroot
+  cleanup
+  final_message
+  offer_reboot
+}
+
 main() {
   parse_args "$@"
   attach_console
   early_preflight
+  if ((RESUME_TABBY)); then
+    log "Resuming tabby-stack in the already-mounted system at $TARGET (no disk wipe)"
+    if ((DRY_RUN)); then
+      log "dry-run: would resume install.sh at $TARGET"
+      exit 0
+    fi
+    resume_tabby_install
+    exit 0
+  fi
   if ((CONFIG_PROVIDED == 0)) || [[ -z "$DISK" ]]; then
     ensure_dialog
     enable_tui_if_possible
