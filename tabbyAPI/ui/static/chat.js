@@ -486,6 +486,7 @@ function mountChat(root) {
   let gitLogRows = [];
   let gitCommitMsg = "";
   let gitBusy = false;
+  let gitAction = "";
   let gitReq = 0;
   let projectFindHits = [];
   let projectFindIndex = 0;
@@ -2117,6 +2118,8 @@ function mountChat(root) {
     filesChanged = (chatId && changesByChat[chatId] ? changesByChat[chatId] : []).slice();
     gitStatus = null;
     gitLogRows = [];
+    gitBusy = false;
+    gitAction = "";
     paintFiles();
     paintFilesChanges();
     closeTerm();
@@ -2999,12 +3002,14 @@ function mountChat(root) {
     });
     if (!url) return;
     try {
-      await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/clone`, {
-        method: "POST",
-        body: { url },
+      await withGitBusy("clone", async () => {
+        await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/clone`, {
+          method: "POST",
+          body: { url },
+        });
+        await refreshFiles();
+        await refreshGit();
       });
-      await refreshFiles();
-      refreshGit();
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
     }
@@ -3058,15 +3063,68 @@ function mountChat(root) {
     return "M";
   }
 
+  function gitBusyLabel(act) {
+    switch (act) {
+      case "fetch":
+        return "Fetching…";
+      case "pull":
+        return "Pulling…";
+      case "push":
+        return "Pushing…";
+      case "commit":
+        return "Committing…";
+      case "init":
+        return "Initializing…";
+      case "clone":
+        return "Cloning…";
+      case "checkout":
+        return "Switching branch…";
+      case "clear-creds":
+        return "Forgetting token…";
+      case "refresh":
+        return "Refreshing…";
+      case "toggle":
+        return "Updating…";
+      default:
+        return "Working…";
+    }
+  }
+
+  function gitActionBtn(act, label, extraClass) {
+    const busy = gitBusy && gitAction === act;
+    const cls = `${extraClass || "btn ghost"}${busy ? " is-busy" : ""}`;
+    const text = busy ? gitBusyLabel(act) : label;
+    const bits = [`type="button"`, `class="${cls}"`, `data-git="${TabbyUI.escapeHtml(act)}"`];
+    if (gitBusy) bits.push("disabled");
+    if (busy) bits.push('aria-busy="true"');
+    return `<button ${bits.join(" ")}>${text}</button>`;
+  }
+
+  async function withGitBusy(act, fn) {
+    if (gitBusy) return;
+    gitBusy = true;
+    gitAction = act;
+    paintGitList();
+    try {
+      await fn();
+    } finally {
+      gitBusy = false;
+      gitAction = "";
+      paintGitList();
+    }
+  }
+
   function paintGitList() {
     if (!filesGitList) return;
     paintGitPane();
+    filesGitList.setAttribute("aria-busy", gitBusy ? "true" : "false");
+    filesGitList.classList.toggle("is-busy", gitBusy);
     if (activeMode() !== "code") {
       filesGitList.innerHTML = "";
       return;
     }
     if (gitBusy && !gitStatus) {
-      filesGitList.innerHTML = '<p class="muted chat-files-empty">Loading…</p>';
+      filesGitList.innerHTML = `<p class="muted chat-files-empty">${gitBusyLabel(gitAction)}</p>`;
       return;
     }
     const listingHasGit = filesListing.some((row) => {
@@ -3080,11 +3138,8 @@ function mountChat(root) {
           ? '<p class="muted chat-files-empty">This workspace has a .git folder, but git status did not load.</p>'
           : '<p class="muted chat-files-empty">No git repository in this workspace.</p>';
       const actions = listingHasGit
-        ? '<div class="chat-git-actions"><button type="button" class="btn ghost" data-git="refresh">Retry</button></div>'
-        : '<div class="chat-git-actions">' +
-          '<button type="button" class="btn ghost" data-git="clone">Clone git repo</button>' +
-          '<button type="button" class="btn ghost" data-git="init">Initialize repository</button>' +
-          "</div>";
+        ? `<div class="chat-git-actions">${gitActionBtn("refresh", "Retry")}</div>`
+        : `<div class="chat-git-actions">${gitActionBtn("clone", "Clone git repo")}${gitActionBtn("init", "Initialize repository")}</div>`;
       filesGitList.innerHTML = err + actions;
       return;
     }
@@ -3104,13 +3159,13 @@ function mountChat(root) {
     head.className = "chat-git-head";
     head.innerHTML =
       `<span class="chat-git-branch" title="${TabbyUI.escapeHtml(gitStatus.upstream || branch)}">${TabbyUI.escapeHtml(branch)}${TabbyUI.escapeHtml(track)}</span>` +
-      '<button type="button" class="btn ghost" data-git="branch">Branch</button>';
+      gitActionBtn("branch", "Branch");
     frag.appendChild(head);
     const commitWrap = document.createElement("div");
     commitWrap.className = "chat-git-commit";
     commitWrap.innerHTML =
-      `<textarea id="chat-git-message" rows="2" placeholder="Commit message">${TabbyUI.escapeHtml(gitCommitMsg)}</textarea>` +
-      '<button type="button" class="btn primary" data-git="commit">Commit</button>';
+      `<textarea id="chat-git-message" rows="2" placeholder="Commit message"${gitBusy ? " disabled" : ""}>${TabbyUI.escapeHtml(gitCommitMsg)}</textarea>` +
+      gitActionBtn("commit", "Commit", "btn primary");
     frag.appendChild(commitWrap);
     if (!files.length) {
       const empty = document.createElement("p");
@@ -3126,7 +3181,7 @@ function mountChat(root) {
         item.dataset.path = row.path;
         const staged = Boolean(row.staged);
         item.innerHTML =
-          `<label class="chat-git-stage"><input type="checkbox" data-git="toggle" ${staged ? "checked" : ""} aria-label="Stage ${TabbyUI.escapeHtml(row.path)}" /></label>` +
+          `<label class="chat-git-stage"><input type="checkbox" data-git="toggle" ${staged ? "checked" : ""} ${gitBusy ? "disabled" : ""} aria-label="Stage ${TabbyUI.escapeHtml(row.path)}" /></label>` +
           `<button type="button" class="chat-history-open" data-git="open" title="Diff ${TabbyUI.escapeHtml(row.path)}">${TabbyUI.escapeHtml(row.path)}</button>` +
           `<span class="chat-file-size">${TabbyUI.escapeHtml(gitFileMark(row))}</span>`;
         frag.appendChild(item);
@@ -3134,13 +3189,12 @@ function mountChat(root) {
     }
     const remote = document.createElement("div");
     remote.className = "chat-git-actions";
+    remote.setAttribute("aria-live", "polite");
     remote.innerHTML =
-      '<button type="button" class="btn ghost" data-git="fetch">Fetch</button>' +
-      '<button type="button" class="btn ghost" data-git="pull">Pull</button>' +
-      '<button type="button" class="btn ghost" data-git="push">Push</button>' +
-      (gitStatus.has_creds
-        ? '<button type="button" class="btn ghost" data-git="clear-creds">Forget token</button>'
-        : "");
+      gitActionBtn("fetch", "Fetch") +
+      gitActionBtn("pull", "Pull") +
+      gitActionBtn("push", "Push") +
+      (gitStatus.has_creds ? gitActionBtn("clear-creds", "Forget token") : "");
     frag.appendChild(remote);
     if (gitLogRows.length) {
       const logHead = document.createElement("p");
@@ -3174,8 +3228,12 @@ function mountChat(root) {
       return;
     }
     const req = (gitReq += 1);
-    gitBusy = true;
-    paintGitPane();
+    const nested = gitBusy && gitAction !== "refresh";
+    if (!nested) {
+      gitBusy = true;
+      gitAction = "refresh";
+      paintGitList();
+    }
     try {
       const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`);
       if (req !== gitReq || chatId !== activeWorkspaceId()) return;
@@ -3198,9 +3256,14 @@ function mountChat(root) {
         files: [],
         error: (err && err.message) || "Could not load git status.",
       };
+    } finally {
+      if (req !== gitReq || chatId !== activeWorkspaceId()) return;
+      if (!nested) {
+        gitBusy = false;
+        gitAction = "";
+      }
+      paintGitList();
     }
-    gitBusy = false;
-    paintGitList();
   }
 
   async function gitPromptToken() {
@@ -3238,19 +3301,22 @@ function mountChat(root) {
   }
 
   async function gitHandle(act, path, staged) {
+    if (act === "open" && path) {
+      openGitDiff(path, Boolean(staged));
+      return;
+    }
+    if (gitBusy) return;
     try {
       if (act === "clone") {
         await cloneGitRepo();
         return;
       }
-      if (act === "open" && path) {
-        openGitDiff(path, Boolean(staged));
-        return;
-      }
       if (act === "toggle" && path) {
-        const row = (gitStatus && gitStatus.files || []).find((item) => item.path === path);
-        await runGitAction(row && row.staged ? "unstage" : "stage", { paths: [path] });
-        await refreshGit();
+        await withGitBusy("toggle", async () => {
+          const row = (gitStatus && gitStatus.files || []).find((item) => item.path === path);
+          await runGitAction(row && row.staged ? "unstage" : "stage", { paths: [path] });
+          await refreshGit();
+        });
         return;
       }
       if (act === "init" || act === "fetch" || act === "pull" || act === "push" || act === "clear-creds" || act === "refresh") {
@@ -3258,9 +3324,11 @@ function mountChat(root) {
           await refreshGit();
           return;
         }
-        await runGitAction(act);
-        if (act === "init") await refreshFiles();
-        else await refreshGit();
+        await withGitBusy(act, async () => {
+          await runGitAction(act);
+          if (act === "init") await refreshFiles();
+          else await refreshGit();
+        });
         return;
       }
       if (act === "commit") {
@@ -3269,9 +3337,11 @@ function mountChat(root) {
           addBubble("assistant", "Error: A commit message is required.");
           return;
         }
-        await runGitAction("commit", { message });
-        gitCommitMsg = "";
-        await refreshGit();
+        await withGitBusy("commit", async () => {
+          await runGitAction("commit", { message });
+          gitCommitMsg = "";
+          await refreshGit();
+        });
         return;
       }
       if (act === "branch") {
@@ -3285,12 +3355,14 @@ function mountChat(root) {
         if (!name) return;
         const current = gitStatus && gitStatus.branch;
         if (name === current) return;
-        try {
-          await runGitAction("checkout", { name });
-        } catch (err) {
-          await runGitAction("checkout", { name, create: true });
-        }
-        await refreshGit();
+        await withGitBusy("checkout", async () => {
+          try {
+            await runGitAction("checkout", { name });
+          } catch (err) {
+            await runGitAction("checkout", { name, create: true });
+          }
+          await refreshGit();
+        });
       }
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
