@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.5"
+SCRIPT_VERSION="1.0.6"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -52,6 +52,9 @@ ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 DRY_RUN=0
 CONFIG_PROVIDED=0
 DEFAULT_DISK=/dev/sda
+TUI=""
+USE_TUI=0
+BACKTITLE="tabby-stack OS installer"
 
 TARGET="/mnt"
 CRYPT_NAME="$MAPPER_NAME"
@@ -73,7 +76,8 @@ USAGE
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash -s -- [options]
 
 With no --config file, the script asks for every setting before it runs.
-Press Enter to keep the default.
+It uses the same dialog menus as install.sh when dialog is available
+(installed on the live ISO if needed). Press Enter to keep the default.
 
 curl | bash needs a real terminal so the questions can be answered. Use
 bash, not sh. Pass flags after bash -s -- .
@@ -157,6 +161,159 @@ attach_console() {
 
 need_tty() {
   have_console || die "No controlling terminal. curl | bash must run on the live ISO console or via ssh -t."
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+tui_cmd() {
+  if need_cmd dialog; then
+    TUI=dialog
+  elif need_cmd whiptail; then
+    TUI=whiptail
+  else
+    TUI=""
+  fi
+}
+
+ensure_dialog() {
+  tui_cmd
+  [[ -n "$TUI" ]] && return 0
+  ((DRY_RUN)) && return 0
+  have_console || [[ -t 0 ]] || return 0
+  log "Installing dialog (ncurses menus)"
+  disable_live_mkinitcpio_hooks
+  pacman -Sy --noconfirm --needed dialog || true
+  tui_cmd
+}
+
+enable_tui_if_possible() {
+  if [[ -n "$TUI" ]] && { [[ -t 0 && -t 1 ]] || have_console; }; then
+    USE_TUI=1
+  fi
+}
+
+ui_cancel() {
+  die "Installer cancelled."
+}
+
+ui_msg() {
+  local title="$1"
+  local text="$2"
+  local height="${3:-20}"
+  local width="${4:-74}"
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    dialog --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+  else
+    printf '\n=== %s ===\n%s\n\n' "$title" "$text" >/dev/tty
+  fi
+}
+
+ui_input() {
+  local title="$1"
+  local text="$2"
+  local default="$3"
+  local out=""
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --inputbox "$text" 18 74 "$default")" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 18 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
+  else
+    out=$(ask "$title" "$default")
+  fi
+  printf '%s' "$out"
+}
+
+ui_menu() {
+  local title="$1"
+  local text="$2"
+  shift 2
+  local out=""
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --menu "$text" 20 74 8 "$@")" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 20 74 8 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+  else
+    local i=1 tag
+    local tags=()
+    {
+      printf '\n=== %s ===\n%s\n\n' "$title" "$text"
+      while (($#)); do
+        tag="$1"
+        tags+=("$tag")
+        printf "  %s) %s — %s\n" "$i" "$tag" "$2"
+        shift 2
+        i=$((i + 1))
+      done
+    } >/dev/tty
+    local choice=""
+    choice=$(read_tty "Choice [1]: ")
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#tags[@]})); then
+      out="${tags[$((choice - 1))]}"
+    else
+      out="$choice"
+    fi
+  fi
+  printf '%s' "$out"
+}
+
+ui_yesno() {
+  local title="$1"
+  local text="$2"
+  local default_yes="${3:-1}"
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    local extra=()
+    [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    return $?
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    local extra=()
+    [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    return $?
+  else
+    local yn="Y/n"
+    [[ "$default_yes" -eq 0 ]] && yn="y/N"
+    printf '\n=== %s ===\n%s\n\n' "$title" "$text" >/dev/tty
+    local ans=""
+    ans=$(read_tty "Continue? [$yn]: ")
+    ans="${ans:-$([[ "$default_yes" -eq 1 ]] && echo y || echo n)}"
+    [[ "$ans" =~ ^[Yy] ]]
+  fi
+}
+
+ui_password() {
+  local title="$1"
+  local text="$2"
+  local out=""
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    out="$(dialog --backtitle "$BACKTITLE" --title "$title" --stdout --insecure --passwordbox "$text" 12 74)" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" 12 74 3>&1 1>&2 2>&3)" || ui_cancel
+  else
+    out=$(read_secret "$title: ")
+  fi
+  printf '%s' "$out"
+}
+
+ui_ask_until() {
+  local title=$1
+  local text=$2
+  local default=$3
+  local validator=$4
+  local value
+  while true; do
+    value=$(ui_input "$title" "$text" "$default")
+    if "$validator" "$value"; then
+      printf '%s' "$value"
+      return 0
+    fi
+    ui_msg "Invalid value" "Not accepted: ${value}"
+  done
 }
 
 read_tty() {
@@ -274,7 +431,24 @@ ask_install_disk() {
 $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
   fi
 
+  if ((USE_TUI)); then
+    local args=() path size model
+    while IFS=$'\t' read -r path size model; do
+      [[ -n "$path" ]] || continue
+      args+=("$path" "${size}  ${model}")
+    done < <(list_install_disks)
+    ((${#args[@]})) || die "No installable disk found."
+    DISK=$(ui_menu "1 / 8  — Target disk" \
+"This disk will be wiped. The live ISO / USB you booted from is hidden.
+
+Choose the machine disk, not a second installer stick." \
+      "${args[@]}")
+    return 0
+  fi
+
   local value
+  show_available_disks
+  printf '\n' >/dev/tty
   while true; do
     value=$(ask "Target disk (WILL BE WIPED)" "$default")
     if [[ ! -b "$value" ]]; then
@@ -293,6 +467,14 @@ $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
 # Asked when --config is not passed. Defaults come from the script
 # (or from a flag / env var if you already set one).
 prompt_settings() {
+  if ((USE_TUI)); then
+    prompt_settings_tui
+  else
+    prompt_settings_text
+  fi
+}
+
+prompt_settings_text() {
   log "No config file given. Enter settings, or press Enter to keep the default."
   printf '\n' >/dev/tty
   show_available_disks
@@ -309,7 +491,13 @@ prompt_settings() {
   KEYMAP=$(ask "Console keymap" "$KEYMAP")
   ESP_SIZE=$(ask_until "EFI partition size" "$ESP_SIZE" valid_esp_size)
 
-  OMARCHY_MODE=$(ask_until "Install Omarchy desktop (requires LUKS) (now / skip)" "$OMARCHY_MODE" valid_omarchy_mode)
+  local omarchy_answer
+  omarchy_answer=$(ask_until "Install Omarchy desktop (requires LUKS) (yes / no)" "$(omarchy_yes_no)" valid_yes_no)
+  if [[ "$omarchy_answer" == "yes" ]]; then
+    OMARCHY_MODE=now
+  else
+    OMARCHY_MODE=skip
+  fi
   if [[ "$OMARCHY_MODE" == "now" ]]; then
     ENCRYPT=1
     printf 'Omarchy selected — disk encryption is required and will be enabled.\n' >/dev/tty
@@ -333,8 +521,193 @@ prompt_settings() {
   printf '\n' >/dev/tty
 }
 
+prompt_settings_tui() {
+  ui_msg "What this installer does" \
+"Install Arch Linux from this live ISO, then tabby-stack (Python,
+venvs, model weights) before you reboot.
+
+The target disk is wiped. First boot starts the API (linger).
+Omarchy is optional and requires LUKS.
+
+Needed
+  • Official Arch live ISO, root, internet, x86_64
+  • NVIDIA GPU (Turing / RTX 20-series or newer)
+  • Secure Boot off
+
+Next screens ask for the disk, system name, Omarchy, models,
+and listen addresses.
+
+Esc cancels."
+
+  ask_install_disk
+
+  TARGET_HOSTNAME=$(ui_ask_until "2 / 8  — Hostname" \
+"Name of the installed system (not the live ISO hostname).
+
+Letters, digits, and hyphens. Example: tsos" \
+    "$TARGET_HOSTNAME" valid_hostname)
+
+  TARGET_USER=$(ui_ask_until "2 / 8  — Username" \
+"Regular wheel user that runs tabby-stack.
+
+Lowercase, not root. Example: tabby" \
+    "$TARGET_USER" valid_username)
+
+  TIMEZONE=$(ui_input "3 / 8  — Timezone" \
+"Timezone from /usr/share/zoneinfo.
+
+Examples: UTC  Australia/Sydney  America/New_York" \
+    "$TIMEZONE")
+  TIMEZONE="${TIMEZONE:-UTC}"
+  if [[ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]]; then
+    ui_msg "Timezone not found" \
+"No file at /usr/share/zoneinfo/${TIMEZONE}.
+Continuing anyway — fix it after boot if the clock is wrong."
+  fi
+
+  LOCALE=$(ui_input "3 / 8  — Locale" \
+"Locale name without a leading #.
+
+Example: en_US.UTF-8" \
+    "$LOCALE")
+  LOCALE="${LOCALE:-en_US.UTF-8}"
+
+  KEYMAP=$(ui_input "3 / 8  — Console keymap" \
+"Keyboard map for the console (and LUKS prompt).
+
+Example: us" \
+    "$KEYMAP")
+  KEYMAP="${KEYMAP:-us}"
+
+  ESP_SIZE=$(ui_ask_until "3 / 8  — EFI partition size" \
+"FAT32 /boot size. 2G is enough for the kernel and Limine.
+
+Examples: 2G  512M" \
+    "$ESP_SIZE" valid_esp_size)
+
+  if ui_yesno "4 / 8  — Omarchy desktop" \
+"Install the official Omarchy desktop in the chroot?
+
+Yes requires LUKS on the root disk (encryption will be turned on).
+No skips Omarchy; you can still encrypt on the next screen.
+
+Default is no." \
+    0; then
+    OMARCHY_MODE=now
+    ENCRYPT=1
+    ui_msg "Encryption required" \
+"Omarchy is selected, so the disk will be encrypted with LUKS."
+    OMARCHY_USER_NAME=$(ui_input "4 / 8  — Git name" \
+"Optional name passed to Omarchy as OMARCHY_USER_NAME.
+
+Blank is fine." \
+      "$OMARCHY_USER_NAME")
+    OMARCHY_USER_EMAIL=$(ui_input "4 / 8  — Git email" \
+"Optional email passed to Omarchy as OMARCHY_USER_EMAIL.
+
+Blank is fine." \
+      "$OMARCHY_USER_EMAIL")
+  else
+    OMARCHY_MODE=skip
+    if ui_yesno "5 / 8  — Disk encryption" \
+"Encrypt the root disk with LUKS?
+
+Yes = unlock password at boot (recommended).
+No = unencrypted btrfs.
+
+Default follows the current setting ($(encrypt_label))." \
+      "$([[ "$(encrypt_label)" == yes ]] && echo 1 || echo 0)"; then
+      ENCRYPT=1
+    else
+      ENCRYPT=0
+    fi
+  fi
+
+  TABBY_MODELS=$(ui_menu "6 / 8  — Model set" \
+"Which weights to copy or download. Re-run later to add more; existing
+files are skipped.
+
+core  — enough to chat and generate images (smaller download)
+        • qwen 9B  (switch to qwen)  daily coding
+        • Flux Schnell drafts + Qwen-Image (text / posters / UI)
+        • Qwen3-Embedding-0.6B on CPU
+
+all   — every “switch to …” profile (needs more disk and VRAM)
+        • core, plus qwen35, qwen36, gemma, gemma26, glm
+
+Recommended first install: core." \
+    core "qwen 9B + Flux + Qwen-Image + embedder" \
+    all "every switch-to profile")
+  TABBY_MODELS="${TABBY_MODELS:-core}"
+  valid_models "$TABBY_MODELS" || die "invalid TABBY_MODELS: $TABBY_MODELS"
+
+  TABBY_NETWORK_HOST=$(ui_input "7 / 8  — TabbyAPI listen host" \
+"Address TabbyAPI binds on.
+
+  127.0.0.1  — this machine only (usual)
+  0.0.0.0    — other devices on the LAN can connect
+
+Do not put a public hostname here." \
+    "$TABBY_NETWORK_HOST")
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+
+  TABBY_NETWORK_PORT=$(ui_ask_until "7 / 8  — TabbyAPI listen port" \
+"TCP port for the API. Default 5000.
+
+Health:  http://${TABBY_NETWORK_HOST}:PORT/health
+Editor:  http://${TABBY_NETWORK_HOST}:PORT/v1
+UI:      http://127.0.0.1:PORT/v1/ui" \
+    "$TABBY_NETWORK_PORT" valid_port)
+
+  local cache_choice
+  cache_choice=$(ui_menu "8 / 8  — Weights cache" \
+"If weights already live on a USB copy of tabby-stack or another
+folder, this script copies them instead of re-downloading.
+
+Mount the USB first if you want that option (not under /mnt if
+that is where the new system will be mounted).
+
+Leave the cache empty to download from Hugging Face." \
+    none "Download from Hugging Face (no cache)" \
+    usb "Use /run/media/usb/tabby-stack" \
+    custom "Type another path")
+  case "$cache_choice" in
+    none) TABBY_CACHE="" ;;
+    usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
+    custom)
+      TABBY_CACHE=$(ui_input "Weights cache path" \
+"Folder that contains tabbyAPI/models and ComfyUI/models.
+
+Examples
+  /run/media/usb/tabby-stack
+  /tmp/tabby-weights
+
+Blank = download from Hugging Face." \
+        "$TABBY_CACHE")
+      ;;
+    *) TABBY_CACHE="$cache_choice" ;;
+  esac
+
+  TABBY_PUBLIC_BASE=$(ui_input "8 / 8  — Public API base URL" \
+"Optional URL written into image links and the public gallery.
+
+Examples
+  https://api.example.com/v1
+
+Blank = local / LAN only." \
+    "$TABBY_PUBLIC_BASE")
+}
+
 encrypt_label() {
   if ((ENCRYPT)); then
+    printf 'yes'
+  else
+    printf 'no'
+  fi
+}
+
+omarchy_yes_no() {
+  if [[ "$OMARCHY_MODE" == "now" ]]; then
     printf 'yes'
   else
     printf 'no'
@@ -642,6 +1015,20 @@ pick_disk_if_needed() {
     DISK=${disks[0]%%$'\t'*}
     return 0
   fi
+  if ((USE_TUI)); then
+    local args=() path size model
+    for line in "${disks[@]}"; do
+      path=${line%%$'\t'*}
+      size=${line#*$'\t'}
+      model=${size#*$'\t'}
+      size=${size%%$'\t'*}
+      args+=("$path" "${size}  ${model}")
+    done
+    DISK=$(ui_menu "Target disk" \
+"This disk will be wiped. The live ISO device is hidden." \
+      "${args[@]}")
+    return 0
+  fi
   printf 'Available disks (the live ISO device is hidden):\n' >/dev/tty
   local i=1
   for line in "${disks[@]}"; do
@@ -678,12 +1065,29 @@ confirm_wipe() {
     [[ "$CONFIRM_WIPE" == "$DISK" ]] || die "--confirm-wipe must match --disk exactly (got $CONFIRM_WIPE)"
     return 0
   fi
-  printf '\n' >/dev/tty
-  printf '%s\n' "Settings are done. The installer is waiting for a wipe confirmation." >/dev/tty
-  printf '%s\n' "Type the disk path exactly, then press Enter:" >/dev/tty
-  printf '    %s\n' "$DISK" >/dev/tty
   local answer
-  answer=$(read_tty "Confirm wipe: ")
+  if ((USE_TUI)); then
+    ui_msg "Install plan" \
+"$(print_plan)
+
+$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" 2>/dev/null || true)
+
+THIS ERASES EVERYTHING ON ${DISK}." \
+      22 74
+    answer=$(ui_input "Confirm wipe" \
+"Type the disk path exactly to erase it:
+
+    ${DISK}
+
+Anything else aborts." \
+      "")
+  else
+    printf '\n' >/dev/tty
+    printf '%s\n' "Settings are done. The installer is waiting for a wipe confirmation." >/dev/tty
+    printf '%s\n' "Type the disk path exactly, then press Enter:" >/dev/tty
+    printf '    %s\n' "$DISK" >/dev/tty
+    answer=$(read_tty "Confirm wipe: ")
+  fi
   [[ "$answer" == "$DISK" ]] || die "aborted (typed '$answer', needed '$DISK')"
 }
 
@@ -701,16 +1105,34 @@ collect_passwords() {
     need=1
   fi
   if ((need)); then
+    local pw_text
     if ((ENCRYPT)); then
-      log "One password is used for LUKS, your user, and root unless you set the split variables."
+      pw_text="One password is used for LUKS, your user, and root unless you set the split variables."
     else
-      log "One password is used for your user and root unless you set the split variables."
+      pw_text="One password is used for your user and root unless you set the split variables."
     fi
+    log "$pw_text"
     local first second
-    first=$(read_secret "Password: ")
-    second=$(read_secret "Confirm password: ")
-    [[ -n "$first" ]] || die "password cannot be empty"
-    [[ "$first" == "$second" ]] || die "passwords did not match"
+    if ((USE_TUI)); then
+      while true; do
+        first=$(ui_password "Password" "$pw_text")
+        second=$(ui_password "Confirm password" "Type the same password again.")
+        if [[ -z "$first" ]]; then
+          ui_msg "Password required" "The password cannot be empty."
+          continue
+        fi
+        if [[ "$first" != "$second" ]]; then
+          ui_msg "Passwords did not match" "Try again."
+          continue
+        fi
+        break
+      done
+    else
+      first=$(read_secret "Password: ")
+      second=$(read_secret "Confirm password: ")
+      [[ -n "$first" ]] || die "password cannot be empty"
+      [[ "$first" == "$second" ]] || die "passwords did not match"
+    fi
     PASSWORD=$first
     USER_PASSWORD=${USER_PASSWORD:-$PASSWORD}
     ROOT_PASSWORD=${ROOT_PASSWORD:-$PASSWORD}
@@ -1867,6 +2289,18 @@ EOF
 }
 
 offer_reboot() {
+  if ((USE_TUI)); then
+    if ui_yesno "Reboot" \
+"Install finished. Remove the live USB/ISO now.
+
+Reboot into the new system?" 1; then
+      log "Rebooting"
+      reboot || systemctl reboot || true
+    else
+      log "Staying on the live ISO"
+    fi
+    return 0
+  fi
   printf '\n' >/dev/tty
   printf '%s\n' "Install finished. Remove the live USB/ISO now." >/dev/tty
   printf '%s\n' "Press Enter to reboot into the new system (Ctrl+C stays on the ISO)." >/dev/tty
@@ -1884,6 +2318,10 @@ main() {
   parse_args "$@"
   attach_console
   early_preflight
+  if ((CONFIG_PROVIDED == 0)) || [[ -z "$DISK" ]]; then
+    ensure_dialog
+    enable_tui_if_possible
+  fi
   if ((CONFIG_PROVIDED)); then
     pick_disk_if_needed
   else
@@ -1892,7 +2330,9 @@ main() {
   validate_names
   require_disk
   assign_partition_numbers
-  print_plan
+  if ((USE_TUI == 0)) || ((DRY_RUN)); then
+    print_plan
+  fi
   if ((DRY_RUN)); then
     log "dry-run: no changes made"
     exit 0
