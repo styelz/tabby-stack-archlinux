@@ -85,7 +85,7 @@ It uses **Python 3.12 only**. Official Arch `python` is 3.14, and `python312` is
 
 Fresh Arch often has **no sudo**. Run as your user (not root). The script asks for the root password once, installs `sudo`, and adds your user.
 
-On a 4070 Ti it uses `nvidia-open` only if `nvidia-smi` is missing; it will not install both `nvidia` and `nvidia-open`.
+If `nvidia-smi` is missing it installs `nvidia-open` (Arch dropped the proprietary `nvidia` package). It will not request `nvidia` unless that name still exists in the repos.
 
 If you mounted a USB cache you can unmount it after a successful install.
 

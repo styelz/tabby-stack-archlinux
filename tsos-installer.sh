@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -119,6 +119,10 @@ The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 tabby-stack cannot finish inside the live ISO (the NVIDIA driver needs a
 real boot). This script clones the repo and enables a first-boot service.
 After you remove the ISO and reboot, linger runs install.sh and starts the API.
+
+The kernel driver is nvidia-open (Arch dropped the nvidia package). That
+covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
+580xx driver, which this installer does not install.
 EOF
 }
 
@@ -416,11 +420,28 @@ cpu_ucode_pkg() {
   fi
 }
 
+# Arch removed the proprietary `nvidia` package when the 590 driver dropped
+# Pascal. Official repos now ship nvidia-open (Turing / RTX 20-series+).
+# nvidia-open Provides: NVIDIA-MODULE and Conflicts: nvidia — it does not
+# provide the name `nvidia`, so pacman -S nvidia is "target not found".
+# An outdated live ISO database may not list nvidia-open until after -Sy.
+pacman_pkg_available() {
+  pacman -Si "$1" >/dev/null 2>&1
+}
+
+sync_live_pacman() {
+  disable_live_mkinitcpio_hooks
+  log "Refreshing package databases"
+  pacman -Sy --noconfirm
+}
+
 nvidia_pkg() {
-  if pacman -Si nvidia-open >/dev/null 2>&1; then
+  if pacman_pkg_available nvidia-open; then
     printf '%s\n' nvidia-open
-  else
+  elif pacman_pkg_available nvidia; then
     printf '%s\n' nvidia
+  else
+    return 1
   fi
 }
 
@@ -785,6 +806,7 @@ $root_line
   tabby listen:  ${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}
   tabby cache:   ${TABBY_CACHE:-'(none — Hugging Face)'}
   tabby repo:    $TABBY_REPO
+  nvidia:        nvidia-open (Turing / RTX 20-series+; Arch no longer ships nvidia)
 
 Layout
 EOF
@@ -905,9 +927,13 @@ setup_storage() {
 }
 
 install_base() {
+  sync_live_pacman
+
   local ucode nvidia
   ucode=$(cpu_ucode_pkg || true)
-  nvidia=$(nvidia_pkg || true)
+  nvidia=$(nvidia_pkg) || die "NVIDIA kernel package not in the repos (tried nvidia-open, then nvidia). Enable the extra repository and check that pacman -Sy succeeded."
+  log "NVIDIA kernel package: $nvidia"
+
   local packages=(
     base base-devel linux linux-firmware linux-headers
     btrfs-progs cryptsetup
@@ -920,7 +946,7 @@ install_base() {
     docker
   )
   [[ -n "$ucode" ]] && packages+=("$ucode")
-  [[ -n "$nvidia" ]] && packages+=("$nvidia")
+  packages+=("$nvidia")
   if is_uefi; then
     packages+=(efibootmgr)
   fi

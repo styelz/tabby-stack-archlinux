@@ -632,6 +632,19 @@ pkg_exists() {
   pacman -Si "$1" >/dev/null 2>&1
 }
 
+# Arch removed the proprietary `nvidia` package (590+ / Dec 2025). Official
+# repos ship nvidia-open. nvidia-open does not Provide the name `nvidia`, so
+# falling back to pacman -S nvidia fails with "target not found: nvidia".
+nvidia_kernel_pkg() {
+  if pkg_exists nvidia-open; then
+    printf '%s\n' nvidia-open
+  elif pkg_exists nvidia; then
+    printf '%s\n' nvidia
+  else
+    return 1
+  fi
+}
+
 init_pyenv() {
   export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
   if [[ -d "$PYENV_ROOT/bin" ]]; then
@@ -1326,14 +1339,20 @@ progress_start
 trap 'rc=$?; if [[ "$INSTALL_FAILED" -eq 0 && "$rc" -ne 0 ]]; then progress_fail "$rc"; else progress_stop; fi' EXIT
 
 NVIDIA_DRIVER_INSTALLED_NOW=0
+if [[ "$UPDATE_MODE" -eq 0 ]]; then
+  progress 4 "Syncing packages"
+  run_quiet sudo -n pacman -Sy --noconfirm
+fi
+
 if nvidia_smi_ok; then
   :
 else
-  if pkg_exists nvidia-open; then
-    PACKAGES+=(nvidia-open)
-  else
-    PACKAGES+=(nvidia)
-  fi
+  nvidia_kmod=$(nvidia_kernel_pkg) || {
+    echo "NVIDIA kernel package not in the repos (tried nvidia-open, then nvidia)." >> "$INSTALL_LOG"
+    progress_fail 1
+  }
+  PACKAGES+=("$nvidia_kmod")
+  echo "NVIDIA kernel package: $nvidia_kmod" >> "$INSTALL_LOG"
   NVIDIA_DRIVER_INSTALLED_NOW=1
   if pacman -Q linux >/dev/null 2>&1; then
     PACKAGES+=(linux-headers)
@@ -1356,8 +1375,6 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
     run_quiet sudo -n pacman -S --needed --noconfirm "${missing[@]}"
   fi
 else
-  progress 4 "Syncing packages"
-  run_quiet sudo -n pacman -Sy --noconfirm
   progress 10 "Installing packages"
   run_quiet sudo -n pacman -S --needed --noconfirm "${PACKAGES[@]}"
 fi
