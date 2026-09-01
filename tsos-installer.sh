@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.6"
+SCRIPT_VERSION="1.0.7"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -124,8 +124,9 @@ unless you set the split password variables.
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
-weights). The NVIDIA driver loads on the first real boot; linger then
-starts the API. If install.sh fails on the ISO, first boot retries it.
+weights) and must finish before reboot. The NVIDIA driver loads on the
+first real boot; linger then starts the API. There is no first-boot
+install.sh retry.
 
 The kernel driver is nvidia-open (Arch dropped the nvidia package). That
 covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
@@ -1450,11 +1451,11 @@ fi
 echo "${TARGET_USER}:${USER_PASSWORD}" | chpasswd
 
 install -d -m 0750 /etc/sudoers.d
-# Named 10-wheel so it sorts before the first-boot NOPASSWD drop-in.
+# Named 10-wheel so it sorts before the chroot NOPASSWD drop-in.
 # A file named "wheel" sorts last and cancels NOPASSWD (sudo last-match wins).
 printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
 chmod 0440 /etc/sudoers.d/10-wheel
-# Passwordless sudo only while the first-boot tabby-stack installer runs.
+# Passwordless sudo only while tabby-stack install.sh runs in the ISO chroot.
 printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
 chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
 if [[ "$OMARCHY_MODE" != "skip" ]]; then
@@ -1708,7 +1709,7 @@ install_status() {
     tr -d '\n' <"$STATUS_FILE"
     return 0
   fi
-  printf 'pending (first boot)'
+  printf 'not finished on the live ISO'
 }
 
 enc_label() {
@@ -1775,7 +1776,6 @@ cat <<EOF
   API health: $(health_line)
   Unit:       systemctl --user status tabbyapi
   Logs:       journalctl --user -u tabbyapi -f
-  First boot: journalctl -u tsos-tabby-firstboot -f
   Update:     bash ${TABBY_INSTALL_ROOT}/update.sh
   How-to:     ${TABBY_INSTALL_ROOT}/tabbyAPI/HOW-TO-ARCH.txt
   MOTD:       tsos-motd
@@ -1791,11 +1791,9 @@ fi
 
 if [[ ! -f "$DONE_FILE" ]]; then
   cat <<EOF
-  tabby-stack did not finish on the live ISO (Python, venvs, model files).
-  First boot is retrying install.sh. That can take a long time.
-  Retry:  sudo systemctl start tsos-tabby-firstboot
-  Log:    ${FIRSTBOOT_LOG}
-          ${LOG_FILE}
+  tabby-stack did not finish on the live ISO. Re-run tsos-installer.sh
+  from the Arch ISO — install.sh is not run after reboot.
+  Log:    ${LOG_FILE}
 
 EOF
 fi
@@ -1813,239 +1811,11 @@ fi
 PROFILE
   chmod 0644 "$TARGET/etc/profile.d/tsos-motd.sh"
 
-  cat >"$TARGET/usr/local/bin/tsos-firstboot" <<'FIRSTBOOT'
-#!/usr/bin/env bash
-set -euo pipefail
-
-CONF=/etc/tsos/install.conf
-[[ -f "$CONF" ]] || {
-  echo "missing $CONF" >&2
-  exit 1
-}
-# shellcheck disable=SC1090
-source "$CONF"
-if [[ -f /etc/tsos/secrets.env ]]; then
-  # shellcheck disable=SC1091
-  source /etc/tsos/secrets.env
-fi
-
-STACK="${TABBY_INSTALL_ROOT:-/home/${TARGET_USER}/tabby-stack}"
-STATUS_DIR="/home/${TARGET_USER}/.config/tabby-stack"
-STATUS_FILE="${STATUS_DIR}/tsos-firstboot.status"
-DONE_FILE=/var/lib/tsos/tabby-firstboot.done
-RESUME_FILE="${STATUS_DIR}/install-resume.env"
-LOG=/var/log/tsos-firstboot.log
-REPO="${TABBY_REPO:-https://github.com/styelz/tabby-stack-archlinux.git}"
-
-install -d -m 0755 /var/lib/tsos /var/log
-install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 0755 "$STATUS_DIR" "$(dirname "$STACK")"
-
-write_status() {
-  printf '%s\n' "$1" >"$STATUS_FILE"
-  chown "${TARGET_USER}:${TARGET_USER}" "$STATUS_FILE" || true
-}
-
-log() { printf '%s %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG"; }
-
-user_runtime() {
-  local uid runtime i
-  loginctl enable-linger "$TARGET_USER" || true
-  uid=$(id -u "$TARGET_USER")
-  runtime="/run/user/${uid}"
-  for i in $(seq 1 30); do
-    if [[ -d "$runtime" ]]; then
-      printf '%s' "$runtime"
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-start_tabbyapi_when_gpu_ready() {
-  local runtime i
-  if ! runtime=$(user_runtime); then
-    log "user runtime dir is missing; linger may not be ready"
-    return 1
-  fi
-  for i in $(seq 1 45); do
-    if runuser -u "$TARGET_USER" -- nvidia-smi >/dev/null 2>&1; then
-      break
-    fi
-    sleep 2
-  done
-  if ! runuser -u "$TARGET_USER" -- nvidia-smi >/dev/null 2>&1; then
-    log "nvidia-smi did not become ready; starting tabbyapi anyway"
-  fi
-  runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="$runtime" \
-    systemctl --user start tabbyapi
-}
-
-if [[ -f "$DONE_FILE" ]]; then
-  log "tabby-stack already installed; waiting for NVIDIA then starting tabbyapi"
-  write_status "starting-api"
-  if start_tabbyapi_when_gpu_ready; then
-    write_status "finished"
-    systemctl disable tsos-tabby-firstboot.service >/dev/null 2>&1 || true
-    log "tabbyapi started"
-    exit 0
-  fi
-  write_status "api-start-failed"
-  log "systemctl --user start tabbyapi failed. Retry: systemctl start tsos-tabby-firstboot"
-  exit 1
-fi
-
-write_status "running"
-log "Starting tabby-stack first-boot (install.sh did not finish on the ISO)"
-
-wait_network() {
-  local i
-  for i in $(seq 1 90); do
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null https://github.com/ && return 0
-      curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null https://archlinux.org/ && return 0
-    fi
-    sleep 2
-  done
-  return 1
-}
-
-if ! wait_network; then
-  write_status "failed"
-  log "No network after waiting. Retry: systemctl start tsos-tabby-firstboot"
-  exit 1
-fi
-
-runtime=$(user_runtime || true)
-
-# systemd has no TTY, so install.sh cannot prompt. Recreate NOPASSWD here:
-# Omarchy deletes 99-omarchy-installer, and a drop-in named "wheel" sorts
-# after 99-tsos-firstboot and cancels it (sudo last-match wins).
-ensure_firstboot_sudo() {
-  if ! command -v sudo >/dev/null 2>&1; then
-    log "Installing sudo"
-    pacman -Sy --noconfirm --needed sudo
-  fi
-  install -d -m 0750 /etc/sudoers.d
-  if [[ -f /etc/sudoers.d/wheel ]]; then
-    mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel
-  fi
-  if [[ -f /etc/sudoers ]] && ! grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers.d' /etc/sudoers; then
-    printf '\n@includedir /etc/sudoers.d\n' >>/etc/sudoers
-  fi
-  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
-  chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
-  if ! runuser -u "$TARGET_USER" -- sudo -n true >/dev/null 2>&1; then
-    log "passwordless sudo for ${TARGET_USER} is not working"
-    return 1
-  fi
-}
-if ! ensure_firstboot_sudo; then
-  write_status "failed"
-  log "install.sh needs passwordless sudo (no TTY in this service). As root: install -m 0440 /dev/stdin /etc/sudoers.d/zz-tsos-firstboot <<< '${TARGET_USER} ALL=(ALL) NOPASSWD: ALL'"
-  exit 1
-fi
-
-if [[ ! -f "$STACK/install.sh" ]]; then
-  log "Cloning $REPO into $STACK"
-  rm -rf "$STACK"
-  if ! runuser -u "$TARGET_USER" -- git clone "$REPO" "$STACK"; then
-    write_status "failed"
-    log "git clone failed"
-    exit 1
-  fi
-fi
-
-# install.sh may have scheduled an NVIDIA reboot and enabled its own
-# resume unit. Only this service should continue, so sudoers cleanup runs.
-if [[ -d "$runtime" ]]; then
-  runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="$runtime" \
-    systemctl --user disable --now tabby-install-resume.service >/dev/null 2>&1 || true
-fi
-
-export HOME="/home/${TARGET_USER}"
-export USER="$TARGET_USER"
-export LOGNAME="$TARGET_USER"
-export XDG_RUNTIME_DIR="$runtime"
-export TABBY_NONINTERACTIVE=1
-export TABBY_SKIP_NVIDIA_REBOOT=1
-export TABBY_INSTALL_ROOT="$STACK"
-export TABBY_MODELS="${TABBY_MODELS:-core}"
-export TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
-export TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
-export TABBY_CACHE="${TABBY_CACHE:-}"
-export TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
-export COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
-if [[ -n "${HF_TOKEN:-}" ]]; then
-  export HF_TOKEN
-  export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-fi
-
-set +e
-runuser -u "$TARGET_USER" -- env \
-  HOME="$HOME" \
-  USER="$USER" \
-  LOGNAME="$LOGNAME" \
-  XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-  TABBY_NONINTERACTIVE=1 \
-  TABBY_SKIP_NVIDIA_REBOOT=1 \
-  TABBY_INSTALL_ROOT="$TABBY_INSTALL_ROOT" \
-  TABBY_MODELS="$TABBY_MODELS" \
-  TABBY_NETWORK_HOST="$TABBY_NETWORK_HOST" \
-  TABBY_NETWORK_PORT="$TABBY_NETWORK_PORT" \
-  TABBY_CACHE="$TABBY_CACHE" \
-  TABBY_PUBLIC_BASE="$TABBY_PUBLIC_BASE" \
-  COMFYUI_URL="$COMFYUI_URL" \
-  ${HF_TOKEN:+HF_TOKEN="$HF_TOKEN"} \
-  ${HF_TOKEN:+HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"} \
-  bash "$STACK/install.sh" >>"$LOG" 2>&1
-status=$?
-set -e
-
-if [[ -f "$RESUME_FILE" ]]; then
-  write_status "nvidia-reboot"
-  log "NVIDIA driver needs a reboot. This service will continue after reboot."
-  exit 0
-fi
-
-if ((status != 0)); then
-  write_status "failed"
-  log "install.sh exited $status. See $LOG and $STACK/tabby-install.log"
-  exit "$status"
-fi
-
-write_status "finished"
-touch "$DONE_FILE"
-rm -f /etc/sudoers.d/zz-tsos-firstboot /etc/sudoers.d/99-tsos-firstboot || true
-systemctl disable tsos-tabby-firstboot.service >/dev/null 2>&1 || true
-log "tabby-stack first-boot finished"
-FIRSTBOOT
-  chmod 0755 "$TARGET/usr/local/bin/tsos-firstboot"
-
-  cat >"$TARGET/etc/systemd/system/tsos-tabby-firstboot.service" <<EOF
-[Unit]
-Description=Finish tabby-stack on first boot (install fallback or start API)
-After=network-online.target NetworkManager-wait-online.service systemd-user-sessions.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/tsos-firstboot
-TimeoutStartSec=infinity
-RemainAfterExit=yes
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
   log "Cloning tabby-stack for the chroot install"
   if ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
     git clone "$TABBY_REPO" "$stack_home"; then
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
-  arch-chroot "$TARGET" /usr/bin/systemctl enable tsos-tabby-firstboot.service
 }
 
 # If the weights cache is under $TARGET (often /mnt/usb), mounting the new
@@ -2115,9 +1885,9 @@ run_tabby_install_chroot() {
   set -e
 
   if ((status != 0)); then
-    warn "install.sh exited $status. First boot will retry."
-    warn "Log on the new system: $stack_home/tabby-install.log"
-    return 0
+    die "install.sh failed in the chroot (exit ${status}). Not rebooting.
+Log: ${TARGET}${stack_home}/tabby-install.log
+Fix that, then re-run this script. tabby-stack is not installed after reboot."
   fi
 
   install -d -m 0755 "$TARGET/var/lib/tsos"
@@ -2203,7 +1973,7 @@ EOF
     log "Omarchy installer finished"
   fi
   # Omarchy removes 99-omarchy-installer when it finishes. Restore NOPASSWD
-  # only if tabby-stack still needs the first-boot fallback.
+  # only if the chroot install.sh has not finished yet.
   if [[ ! -f "$TARGET/var/lib/tsos/tabby-firstboot.done" ]]; then
     write_firstboot_sudoers "$TARGET"
   fi
@@ -2258,12 +2028,11 @@ EOF
 
 tabby-stack
   Installed in the chroot at /home/${TARGET_USER}/tabby-stack
-  First boot starts the API (linger). If install.sh failed on the ISO,
-  tsos-tabby-firstboot retries it.
+  After reboot, linger starts the API. install.sh is not run again.
   Model set: ${TABBY_MODELS}
   API:       http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}
   UI:        http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui
-  Watch:     journalctl -u tsos-tabby-firstboot -f
+  Watch:     journalctl --user -u tabbyapi -f
   Banner:    tsos-motd   (also printed on login)
 
 EOF

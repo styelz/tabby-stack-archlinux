@@ -668,12 +668,11 @@ ensure_sudo() {
   # "a terminal is required" / "Authentication token manipulation error".
   if [[ "${TABBY_NONINTERACTIVE:-}" == 1 || ! -t 0 ]]; then
     echo "sudo cannot prompt for a password in this non-interactive session."
-    echo "tsos-firstboot should have written /etc/sudoers.d/zz-tsos-firstboot."
+    echo "The ISO installer should have written /etc/sudoers.d/zz-tsos-firstboot."
     echo "As root: printf '%s ALL=(ALL) NOPASSWD: ALL\\n' \"$USER\" > /etc/sudoers.d/zz-tsos-firstboot"
     echo "         chmod 0440 /etc/sudoers.d/zz-tsos-firstboot"
     echo "         mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel 2>/dev/null || true"
-    echo "Then:    systemctl start tsos-tabby-firstboot"
-    echo "Or run this script from a terminal and enter your sudo password."
+    echo "Then re-run this script from a terminal."
     exit 1
   fi
   if need_cmd sudo && sudo -v; then
@@ -700,13 +699,21 @@ ensure_sudo() {
 
 ensure_python312() {
   init_pyenv
-  if need_cmd python3.12; then
-    PY=python3.12
+  # Prefer the real interpreter. After `pyenv init`, `python3.12` is a shim
+  # that fails with "command not found" unless a version is selected
+  # (`The python3.12 command exists in these Python versions: 3.12.5`).
+  local pyenv_python="${PYENV_ROOT:-$HOME/.pyenv}/versions/$PYENV_VER/bin/python"
+  if [[ -x "$pyenv_python" ]]; then
+    PY="$pyenv_python"
     return 0
   fi
-  if [[ -x "${PYENV_ROOT:-$HOME/.pyenv}/versions/$PYENV_VER/bin/python" ]]; then
-    PY="${PYENV_ROOT:-$HOME/.pyenv}/versions/$PYENV_VER/bin/python"
-    return 0
+  if need_cmd python3.12; then
+    local resolved
+    resolved=$(command -v python3.12)
+    if [[ "$resolved" != *"/shims/python3.12" ]]; then
+      PY=python3.12
+      return 0
+    fi
   fi
 
   if need_cmd yay; then
@@ -718,8 +725,12 @@ ensure_python312() {
   fi
   hash -r 2>/dev/null || true
   if need_cmd python3.12; then
-    PY=python3.12
-    return 0
+    local resolved
+    resolved=$(command -v python3.12)
+    if [[ "$resolved" != *"/shims/python3.12" ]]; then
+      PY=python3.12
+      return 0
+    fi
   fi
 
   echo
