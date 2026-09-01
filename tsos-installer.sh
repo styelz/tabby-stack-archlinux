@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tsos-installer.sh
 #
-# Install Arch Linux from the official live ISO, then set up tabby-stack so
-# the API is installed and started on first boot (linger, no login needed).
+# Install Arch Linux from the official live ISO, then install tabby-stack in
+# the chroot (venvs, weights) so first boot only starts the API (linger).
 #
 # Run as root from the Arch Linux live ISO. The target disk is wiped.
 #
@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.3"
+SCRIPT_VERSION="1.0.4"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -33,7 +33,7 @@ KEYMAP="${KEYMAP:-us}"
 ESP_SIZE="${ESP_SIZE:-2G}"
 MAPPER_NAME="${MAPPER_NAME:-root}"
 ENCRYPT="${ENCRYPT:-1}"
-OMARCHY_MODE="${OMARCHY_MODE:-skip}" # now | later | skip
+OMARCHY_MODE="${OMARCHY_MODE:-skip}" # now | skip
 OMARCHY_USER_NAME="${OMARCHY_USER_NAME:-}"
 OMARCHY_USER_EMAIL="${OMARCHY_USER_EMAIL:-}"
 TABBY_REPO="${TABBY_REPO:-https://github.com/styelz/tabby-stack-archlinux.git}"
@@ -55,13 +55,17 @@ DEFAULT_DISK=/dev/sda
 
 TARGET="/mnt"
 CRYPT_NAME="$MAPPER_NAME"
+CACHE_STAGING=/run/tsos-weight-cache
+CACHE_CHROOT_PATH=/mnt/tsos-cache
+TABBY_CACHE_CHROOT=""
 
 usage() {
   cat <<EOF
 ${SCRIPT_NAME} v${SCRIPT_VERSION}
 
 Install Arch Linux (btrfs + Limine, optional LUKS) from the live ISO, then
-install tabby-stack on first boot. Omarchy is optional.
+install tabby-stack in the chroot before reboot. Omarchy is optional (now
+or skip). Omarchy now requires LUKS.
 
 USAGE
   ${SCRIPT_NAME} [options]
@@ -85,9 +89,8 @@ OPTIONS
   --esp-size SIZE          EFI partition size (default: 2G)
   --encrypt                LUKS on the root partition (default)
   --no-encrypt             Unencrypted btrfs root
-  --with-omarchy           Run the official Omarchy installer in the chroot
+  --with-omarchy           Run the official Omarchy installer in the chroot (requires LUKS)
   --skip-omarchy           Do not install Omarchy (default)
-  --defer-omarchy          Install Arch only; leave install-omarchy for first login
   --name "FULL NAME"       Git name passed to Omarchy as OMARCHY_USER_NAME
   --email ADDR             Git email passed to Omarchy as OMARCHY_USER_EMAIL
   --models SET             tabby-stack model set: core or all (default: core)
@@ -107,7 +110,7 @@ ENVIRONMENT
   ENCRYPT                  1 (LUKS) or 0 (plain btrfs)
   PASSWORD                 Used for LUKS + user + root if the split passwords are unset
   LUKS_PASSWORD, USER_PASSWORD, ROOT_PASSWORD
-  OMARCHY_USER_NAME, OMARCHY_USER_EMAIL, OMARCHY_MODE (now|later|skip)
+  OMARCHY_USER_NAME, OMARCHY_USER_EMAIL, OMARCHY_MODE (now|skip)
   TABBY_REPO, TABBY_MODELS, TABBY_NETWORK_HOST, TABBY_NETWORK_PORT
   TABBY_CACHE, TABBY_PUBLIC_BASE, COMFYUI_URL, HF_TOKEN
 
@@ -116,9 +119,9 @@ unless you set the split password variables.
 
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
-tabby-stack cannot finish inside the live ISO (the NVIDIA driver needs a
-real boot). This script clones the repo and enables a first-boot service.
-After you remove the ISO and reboot, linger runs install.sh and starts the API.
+tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
+weights). The NVIDIA driver loads on the first real boot; linger then
+starts the API. If install.sh fails on the ISO, first boot retries it.
 
 The kernel driver is nvidia-open (Arch dropped the nvidia package). That
 covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
@@ -201,7 +204,7 @@ valid_username() {
 }
 
 valid_omarchy_mode() {
-  [[ "$1" == "now" || "$1" == "later" || "$1" == "skip" ]]
+  [[ "$1" == "now" || "$1" == "skip" ]]
 }
 
 valid_esp_size() {
@@ -314,10 +317,15 @@ prompt_settings() {
     ENCRYPT=0
   fi
 
-  OMARCHY_MODE=$(ask_until "Install Omarchy desktop (now / later / skip)" "$OMARCHY_MODE" valid_omarchy_mode)
-  if [[ "$OMARCHY_MODE" != "skip" ]]; then
+  OMARCHY_MODE=$(ask_until "Install Omarchy desktop (now / skip)" "$OMARCHY_MODE" valid_omarchy_mode)
+  if [[ "$OMARCHY_MODE" == "now" ]]; then
     if ((ENCRYPT == 0)); then
-      warn "Omarchy expects LUKS + Limine + btrfs. It may refuse without encryption."
+      printf 'Omarchy requires disk encryption.\n' >/dev/tty
+      encrypt_answer=$(ask_until "Encrypt the disk with LUKS (yes required for Omarchy)" "yes" valid_yes_no)
+      if [[ "$encrypt_answer" != "yes" ]]; then
+        die "Omarchy was selected but encryption was declined. Choose skip, or encrypt."
+      fi
+      ENCRYPT=1
     fi
     OMARCHY_USER_NAME=$(ask "Git name (optional, used by Omarchy)" "$OMARCHY_USER_NAME")
     OMARCHY_USER_EMAIL=$(ask "Git email (optional, used by Omarchy)" "$OMARCHY_USER_EMAIL")
@@ -487,6 +495,13 @@ self_test() {
   ENCRYPT=0
   check "$(encrypt_label)" no "encrypt label no"
 
+  if valid_omarchy_mode now && valid_omarchy_mode skip && ! valid_omarchy_mode later; then
+    printf 'ok   omarchy now/skip\n'
+  else
+    printf 'FAIL omarchy mode: now/skip only\n' >&2
+    failed=1
+  fi
+
   if ((failed)); then
     die "self-test failed"
   fi
@@ -538,10 +553,6 @@ parse_args() {
         ;;
       --skip-omarchy)
         OMARCHY_MODE=skip
-        shift
-        ;;
-      --defer-omarchy)
-        OMARCHY_MODE=later
         shift
         ;;
       --name)
@@ -616,13 +627,13 @@ normalize_encrypt() {
 validate_names() {
   valid_username "$TARGET_USER" || die "invalid user name: $TARGET_USER"
   valid_hostname "$TARGET_HOSTNAME" || die "invalid hostname: $TARGET_HOSTNAME"
-  valid_omarchy_mode "$OMARCHY_MODE" || die "invalid OMARCHY_MODE: $OMARCHY_MODE (now, later, or skip)"
+  valid_omarchy_mode "$OMARCHY_MODE" || die "invalid OMARCHY_MODE: $OMARCHY_MODE (now or skip)"
   valid_esp_size "$ESP_SIZE" || die "invalid EFI size: $ESP_SIZE"
   valid_models "$TABBY_MODELS" || die "invalid TABBY_MODELS: $TABBY_MODELS (core or all)"
   valid_port "$TABBY_NETWORK_PORT" || die "invalid TabbyAPI port: $TABBY_NETWORK_PORT"
   normalize_encrypt
-  if [[ "$OMARCHY_MODE" != "skip" && "$ENCRYPT" -eq 0 ]]; then
-    warn "Omarchy expects LUKS. Continuing without encryption."
+  if [[ "$OMARCHY_MODE" == "now" && "$ENCRYPT" -eq 0 ]]; then
+    die "Omarchy requires LUKS. Re-run with encryption, or skip Omarchy."
   fi
 }
 
@@ -1295,7 +1306,6 @@ enc_label() {
 omarchy_label() {
   case "$OMARCHY_MODE" in
     now) printf 'installed during setup (or run: install-omarchy)' ;;
-    later) printf 'deferred — after login run: install-omarchy' ;;
     *) printf 'not selected — optional later: install-omarchy' ;;
   esac
 }
@@ -1365,20 +1375,11 @@ fi
 
 if [[ ! -f "$DONE_FILE" ]]; then
   cat <<EOF
-  First boot is still installing tabby-stack (Python, venvs, model files).
-  That can take a long time. Do not reboot unless the NVIDIA driver asks.
+  tabby-stack did not finish on the live ISO (Python, venvs, model files).
+  First boot is retrying install.sh. That can take a long time.
   Retry:  sudo systemctl start tsos-tabby-firstboot
   Log:    ${FIRSTBOOT_LOG}
           ${LOG_FILE}
-
-EOF
-fi
-
-if [[ "$OMARCHY_MODE" == "later" ]]; then
-  cat <<EOF
-  Omarchy was not installed yet. After this account's first login:
-
-    install-omarchy
 
 EOF
 fi
@@ -1430,13 +1431,56 @@ write_status() {
 
 log() { printf '%s %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG"; }
 
+user_runtime() {
+  local uid runtime i
+  loginctl enable-linger "$TARGET_USER" || true
+  uid=$(id -u "$TARGET_USER")
+  runtime="/run/user/${uid}"
+  for i in $(seq 1 30); do
+    if [[ -d "$runtime" ]]; then
+      printf '%s' "$runtime"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+start_tabbyapi_when_gpu_ready() {
+  local runtime i
+  if ! runtime=$(user_runtime); then
+    log "user runtime dir is missing; linger may not be ready"
+    return 1
+  fi
+  for i in $(seq 1 45); do
+    if runuser -u "$TARGET_USER" -- nvidia-smi >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+  if ! runuser -u "$TARGET_USER" -- nvidia-smi >/dev/null 2>&1; then
+    log "nvidia-smi did not become ready; starting tabbyapi anyway"
+  fi
+  runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="$runtime" \
+    systemctl --user start tabbyapi
+}
+
 if [[ -f "$DONE_FILE" ]]; then
-  log "tabby-stack first-boot already finished"
-  exit 0
+  log "tabby-stack already installed; waiting for NVIDIA then starting tabbyapi"
+  write_status "starting-api"
+  if start_tabbyapi_when_gpu_ready; then
+    write_status "finished"
+    systemctl disable tsos-tabby-firstboot.service >/dev/null 2>&1 || true
+    log "tabbyapi started"
+    exit 0
+  fi
+  write_status "api-start-failed"
+  log "systemctl --user start tabbyapi failed. Retry: systemctl start tsos-tabby-firstboot"
+  exit 1
 fi
 
 write_status "running"
-log "Starting tabby-stack first-boot"
+log "Starting tabby-stack first-boot (install.sh did not finish on the ISO)"
 
 wait_network() {
   local i
@@ -1456,13 +1500,7 @@ if ! wait_network; then
   exit 1
 fi
 
-loginctl enable-linger "$TARGET_USER" || true
-uid=$(id -u "$TARGET_USER")
-runtime="/run/user/${uid}"
-for _ in $(seq 1 30); do
-  [[ -d "$runtime" ]] && break
-  sleep 1
-done
+runtime=$(user_runtime || true)
 
 # systemd has no TTY, so install.sh cannot prompt. Recreate NOPASSWD here:
 # Omarchy deletes 99-omarchy-installer, and a drop-in named "wheel" sorts
@@ -1570,10 +1608,9 @@ FIRSTBOOT
 
   cat >"$TARGET/etc/systemd/system/tsos-tabby-firstboot.service" <<EOF
 [Unit]
-Description=Install tabby-stack on first boot
+Description=Finish tabby-stack on first boot (install fallback or start API)
 After=network-online.target NetworkManager-wait-online.service systemd-user-sessions.service
 Wants=network-online.target
-ConditionPathExists=!/var/lib/tsos/tabby-firstboot.done
 
 [Service]
 Type=oneshot
@@ -1587,12 +1624,90 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-  log "Cloning tabby-stack for first boot"
+  log "Cloning tabby-stack for the chroot install"
   if ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
     git clone "$TABBY_REPO" "$stack_home"; then
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
   arch-chroot "$TARGET" /usr/bin/systemctl enable tsos-tabby-firstboot.service
+}
+
+# If the weights cache is under $TARGET (often /mnt/usb), mounting the new
+# root there would hide it. Bind it aside before wipe/mount.
+preserve_tabby_cache() {
+  [[ -n "$TABBY_CACHE" ]] || return 0
+  if [[ ! -d "$TABBY_CACHE" ]]; then
+    warn "TABBY_CACHE is not a directory: $TABBY_CACHE — ignoring"
+    TABBY_CACHE=""
+    return 0
+  fi
+  local cache_abs
+  cache_abs=$(cd "$TABBY_CACHE" && pwd)
+  if [[ "$cache_abs" == "$TARGET" || "$cache_abs" == "$TARGET"/* ]]; then
+    log "Moving weights cache off $TARGET so the new root can mount there"
+    mkdir -p "$CACHE_STAGING"
+    mount --bind "$cache_abs" "$CACHE_STAGING"
+    TABBY_CACHE="$CACHE_STAGING"
+  fi
+}
+
+bind_tabby_cache_into_target() {
+  TABBY_CACHE_CHROOT=""
+  [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE" ]] || return 0
+  local cache_abs
+  cache_abs=$(cd "$TABBY_CACHE" && pwd)
+  if [[ "$cache_abs" == "$TARGET" || "$cache_abs" == "$TARGET"/* ]]; then
+    TABBY_CACHE_CHROOT="${cache_abs#"$TARGET"}"
+    [[ -n "$TABBY_CACHE_CHROOT" ]] || TABBY_CACHE_CHROOT="/"
+    return 0
+  fi
+  log "Binding weights cache into the new system at $CACHE_CHROOT_PATH"
+  mkdir -p "$TARGET$CACHE_CHROOT_PATH"
+  mount --bind "$cache_abs" "$TARGET$CACHE_CHROOT_PATH"
+  TABBY_CACHE_CHROOT="$CACHE_CHROOT_PATH"
+}
+
+run_tabby_install_chroot() {
+  local stack_home="/home/${TARGET_USER}/tabby-stack"
+  [[ -f "$TARGET$stack_home/install.sh" ]] || die "missing $stack_home/install.sh on the new system"
+
+  bind_tabby_cache_into_target
+  write_firstboot_sudoers "$TARGET"
+
+  log "Installing tabby-stack in the new system (Python, venvs, model files)"
+  log "This stays on the live ISO until it finishes. Full log: $stack_home/tabby-install.log"
+
+  local status=0
+  set +e
+  arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env \
+    HOME="/home/${TARGET_USER}" \
+    USER="$TARGET_USER" \
+    LOGNAME="$TARGET_USER" \
+    TABBY_NONINTERACTIVE=1 \
+    TABBY_SKIP_NVIDIA_REBOOT=1 \
+    TABBY_INSTALL_ROOT="$stack_home" \
+    TABBY_MODELS="${TABBY_MODELS:-core}" \
+    TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}" \
+    TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}" \
+    TABBY_CACHE="${TABBY_CACHE_CHROOT:-}" \
+    TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}" \
+    COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}" \
+    ${HF_TOKEN:+HF_TOKEN="$HF_TOKEN"} \
+    ${HF_TOKEN:+HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"} \
+    bash "$stack_home/install.sh"
+  status=$?
+  set -e
+
+  if ((status != 0)); then
+    warn "install.sh exited $status. First boot will retry."
+    warn "Log on the new system: $stack_home/tabby-install.log"
+    return 0
+  fi
+
+  install -d -m 0755 "$TARGET/var/lib/tsos"
+  touch "$TARGET/var/lib/tsos/tabby-firstboot.done"
+  rm -f "$TARGET/etc/sudoers.d/zz-tsos-firstboot" "$TARGET/etc/sudoers.d/99-tsos-firstboot" || true
+  log "tabby-stack installed. After reboot, linger starts the API."
 }
 
 # sudoers.d is included in lexical order; last matching rule wins.
@@ -1672,8 +1787,10 @@ EOF
     log "Omarchy installer finished"
   fi
   # Omarchy removes 99-omarchy-installer when it finishes. Restore NOPASSWD
-  # for the headless first-boot tabby-stack service.
-  write_firstboot_sudoers "$TARGET"
+  # only if tabby-stack still needs the first-boot fallback.
+  if [[ ! -f "$TARGET/var/lib/tsos/tabby-firstboot.done" ]]; then
+    write_firstboot_sudoers "$TARGET"
+  fi
 }
 
 cleanup() {
@@ -1684,6 +1801,9 @@ cleanup() {
   fi
   log "Unmounting"
   sync || true
+  if mountpoint -q "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null; then
+    umount "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || umount -l "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || true
+  fi
   # Omarchy/chroot can leave processes on /mnt; a blocking umount looks hung.
   if command -v fuser >/dev/null 2>&1; then
     fuser -km "$TARGET" 2>/dev/null || true
@@ -1694,6 +1814,9 @@ cleanup() {
   fi
   if ((ENCRYPT)) && [[ -e "/dev/mapper/$CRYPT_NAME" ]]; then
     cryptsetup close "$CRYPT_NAME" || true
+  fi
+  if mountpoint -q "$CACHE_STAGING" 2>/dev/null; then
+    umount "$CACHE_STAGING" 2>/dev/null || umount -l "$CACHE_STAGING" 2>/dev/null || true
   fi
 }
 
@@ -1718,9 +1841,9 @@ EOF
   cat <<EOF
 
 tabby-stack
-  The repo is already at /home/${TARGET_USER}/tabby-stack
-  A first-boot service (tsos-tabby-firstboot) runs install.sh after reboot.
-  Linger is on, so that happens without a graphical login.
+  Installed in the chroot at /home/${TARGET_USER}/tabby-stack
+  First boot starts the API (linger). If install.sh failed on the ISO,
+  tsos-tabby-firstboot retries it.
   Model set: ${TABBY_MODELS}
   API:       http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}
   UI:        http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui
@@ -1733,14 +1856,6 @@ EOF
       cat <<EOF
 Omarchy was requested in the chroot. If it finished, you should get that
 desktop after boot. If it did not, log in and run:
-
-  install-omarchy
-
-EOF
-      ;;
-    later)
-      cat <<EOF
-Omarchy was not installed yet. After login run:
 
   install-omarchy
 
@@ -1794,12 +1909,14 @@ main() {
   log "Starting the install..."
   disable_live_mkinitcpio_hooks
   timedatectl set-ntp true || true
+  preserve_tabby_cache
   wipe_and_partition
   setup_storage
   install_base
   write_chroot_files
   configure_chroot
   write_tabby_bootstrap
+  run_tabby_install_chroot
   install_omarchy_chroot
   cleanup
   final_message

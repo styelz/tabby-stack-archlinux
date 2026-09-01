@@ -1740,9 +1740,15 @@ fi
 if ! sudo -n loginctl enable-linger "$USER" >>"$INSTALL_LOG" 2>&1; then
   echo "WARNING: linger failed. Run: sudo loginctl enable-linger $USER" >> "$INSTALL_LOG"
 fi
+# systemctl --user is missing in an ISO chroot. The wants symlink is what
+# linger uses on the first real boot.
+WANTS_DIR="$UNIT_DIR/default.target.wants"
+mkdir -p "$WANTS_DIR"
+ln -sfn ../tabbyapi.service "$WANTS_DIR/tabbyapi.service"
+echo "Enabled tabbyapi via $WANTS_DIR/tabbyapi.service" >> "$INSTALL_LOG"
 START_NOTE=""
-if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl; then
-  systemctl --user daemon-reload >>"$INSTALL_LOG" 2>&1 || true
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl && \
+   systemctl --user daemon-reload >>"$INSTALL_LOG" 2>&1; then
   systemctl --user enable tabbyapi >>"$INSTALL_LOG" 2>&1 || true
   if systemctl --user is-active --quiet tabbyapi; then
     # The unit file was just rewritten for this dest; restart so it takes effect
@@ -1756,6 +1762,12 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl; then
     echo "WARNING: $START_NOTE" >> "$INSTALL_LOG"
   else
     systemctl --user start tabbyapi >>"$INSTALL_LOG" 2>&1 || true
+  fi
+else
+  echo "systemctl --user unavailable; linger will pick up the wants symlink." >> "$INSTALL_LOG"
+  if [[ "${NVIDIA_SMI_OK:-0}" -eq 0 ]]; then
+    START_NOTE="NVIDIA is not loaded yet, so tabbyapi was enabled but not started. After nvidia-smi works: systemctl --user start tabbyapi"
+    echo "WARNING: $START_NOTE" >> "$INSTALL_LOG"
   fi
 fi
 if [[ "$UPDATE_MODE" -eq 1 ]]; then
@@ -1864,7 +1876,7 @@ Embeddings (CPU, no GPU switch)
 
 If something fails
   nvidia-smi fails       standalone install reboots once if it just installed the
-                         driver; tsos first-boot skips that reboot and continues.
+                         driver; tsos ISO chroot skips that reboot and continues.
                          if it still fails: nvidia-smi ; journalctl -k | grep -i nvidia
   USB NTFS dirty/read-only  sudo ntfsfix /dev/sdXN then remount
   missing models         re-run install.sh (downloads from Hugging Face; skips what exists)

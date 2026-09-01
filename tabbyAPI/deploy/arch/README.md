@@ -8,7 +8,13 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-Needs Arch Linux, an NVIDIA GPU, and internet. Run as **your user**, not root.
+From the official Arch live ISO, `tsos-installer.sh` installs Arch, then runs `install.sh` in the chroot (Python, venvs, weights) before you reboot. First boot starts the API via linger. Omarchy is optional: `now` (LUKS required) or `skip`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
+```
+
+On an already-installed Arch machine, run as **your user**, not root. Needs an NVIDIA GPU and internet.
 
 ```bash
 sudo pacman -S --needed git
@@ -74,7 +80,7 @@ It will:
 - Patch Linux spawn / chat-switch so `switch to …` does not 500 or look like Comfy
 - Set the startup model to **qwen 9B** and `embedding_model_name` to **Qwen3-Embedding-0.6B**
 - Enable **linger** + `tabbyapi` so it **starts at boot with no login**
-- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. After tsos-installer (packages already on disk), first boot skips that reboot and finishes venvs and weights without the GPU.
+- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. `tsos-installer.sh` runs `install.sh` in the live-ISO chroot (venvs and weights, no GPU). First boot starts the API after `nvidia-smi` works. Omarchy is optional (`now` with LUKS, or `skip`).
 - Write `$DEST/start.sh` at the install root
 - Write `$DEST/AGENTS.md` (IDE / agent notes for any editor)
 - Write `HOW-TO-ARCH.txt`
@@ -158,7 +164,7 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 
 | Problem | What to do |
 |---|---|
-| `nvidia-smi` fails after a new driver | The installer reboots once and resumes with your saved answers. If it still fails after that: `nvidia-smi` and `journalctl -k \| grep -i nvidia` |
+| `nvidia-smi` fails after a new driver | Standalone `install.sh` reboots once and resumes. `tsos-installer.sh` installs in the ISO chroot without that reboot; first boot starts the API after `nvidia-smi` works. If it still fails: `nvidia-smi` and `journalctl -k \| grep -i nvidia` |
 | USB NTFS read-only / dirty | `sudo ntfsfix /dev/sdXN` then remount |
 | Missing model folder | Re-run `install.sh`. It downloads from Hugging Face and skips files that already exist. |
 | Hugging Face 401/403 | Gated repo. `huggingface-cli login` or `export HF_TOKEN=...` then re-run. |
