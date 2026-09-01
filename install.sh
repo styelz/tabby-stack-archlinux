@@ -664,6 +664,18 @@ ensure_sudo() {
   if need_cmd sudo && sudo -n true 2>/dev/null; then
     return 0
   fi
+  # First-boot / systemd has no TTY. sudo -v and su both fail with
+  # "a terminal is required" / "Authentication token manipulation error".
+  if [[ "${TABBY_NONINTERACTIVE:-}" == 1 || ! -t 0 ]]; then
+    echo "sudo cannot prompt for a password in this non-interactive session."
+    echo "tsos-firstboot should have written /etc/sudoers.d/zz-tsos-firstboot."
+    echo "As root: printf '%s ALL=(ALL) NOPASSWD: ALL\\n' \"$USER\" > /etc/sudoers.d/zz-tsos-firstboot"
+    echo "         chmod 0440 /etc/sudoers.d/zz-tsos-firstboot"
+    echo "         mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel 2>/dev/null || true"
+    echo "Then:    systemctl start tsos-tabby-firstboot"
+    echo "Or run this script from a terminal and enter your sudo password."
+    exit 1
+  fi
   if need_cmd sudo && sudo -v; then
     return 0
   fi

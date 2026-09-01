@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -1023,11 +1023,13 @@ fi
 echo "${TARGET_USER}:${USER_PASSWORD}" | chpasswd
 
 install -d -m 0750 /etc/sudoers.d
-printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/wheel
-chmod 0440 /etc/sudoers.d/wheel
+# Named 10-wheel so it sorts before the first-boot NOPASSWD drop-in.
+# A file named "wheel" sorts last and cancels NOPASSWD (sudo last-match wins).
+printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
+chmod 0440 /etc/sudoers.d/10-wheel
 # Passwordless sudo only while the first-boot tabby-stack installer runs.
-printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/99-tsos-firstboot
-chmod 0440 /etc/sudoers.d/99-tsos-firstboot
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
+chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
 if [[ "$OMARCHY_MODE" != "skip" ]]; then
   printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/99-omarchy-installer
   chmod 0440 /etc/sudoers.d/99-omarchy-installer
@@ -1462,6 +1464,34 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+# systemd has no TTY, so install.sh cannot prompt. Recreate NOPASSWD here:
+# Omarchy deletes 99-omarchy-installer, and a drop-in named "wheel" sorts
+# after 99-tsos-firstboot and cancels it (sudo last-match wins).
+ensure_firstboot_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    log "Installing sudo"
+    pacman -Sy --noconfirm --needed sudo
+  fi
+  install -d -m 0750 /etc/sudoers.d
+  if [[ -f /etc/sudoers.d/wheel ]]; then
+    mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel
+  fi
+  if [[ -f /etc/sudoers ]] && ! grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers.d' /etc/sudoers; then
+    printf '\n@includedir /etc/sudoers.d\n' >>/etc/sudoers
+  fi
+  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
+  chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
+  if ! runuser -u "$TARGET_USER" -- sudo -n true >/dev/null 2>&1; then
+    log "passwordless sudo for ${TARGET_USER} is not working"
+    return 1
+  fi
+}
+if ! ensure_firstboot_sudo; then
+  write_status "failed"
+  log "install.sh needs passwordless sudo (no TTY in this service). As root: install -m 0440 /dev/stdin /etc/sudoers.d/zz-tsos-firstboot <<< '${TARGET_USER} ALL=(ALL) NOPASSWD: ALL'"
+  exit 1
+fi
+
 if [[ ! -f "$STACK/install.sh" ]]; then
   log "Cloning $REPO into $STACK"
   rm -rf "$STACK"
@@ -1530,7 +1560,7 @@ fi
 
 write_status "finished"
 touch "$DONE_FILE"
-rm -f /etc/sudoers.d/99-tsos-firstboot || true
+rm -f /etc/sudoers.d/zz-tsos-firstboot /etc/sudoers.d/99-tsos-firstboot || true
 systemctl disable tsos-tabby-firstboot.service >/dev/null 2>&1 || true
 log "tabby-stack first-boot finished"
 FIRSTBOOT
@@ -1561,6 +1591,21 @@ EOF
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
   arch-chroot "$TARGET" /usr/bin/systemctl enable tsos-tabby-firstboot.service
+}
+
+# sudoers.d is included in lexical order; last matching rule wins.
+# A drop-in named "wheel" sorts after 99-* and cancels NOPASSWD.
+write_firstboot_sudoers() {
+  local root=$1
+  install -d -m 0750 "$root/etc/sudoers.d"
+  if [[ -f "$root/etc/sudoers.d/wheel" ]]; then
+    mv "$root/etc/sudoers.d/wheel" "$root/etc/sudoers.d/10-wheel"
+  fi
+  if [[ -f "$root/etc/sudoers" ]] && ! grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers.d' "$root/etc/sudoers"; then
+    printf '\n@includedir /etc/sudoers.d\n' >>"$root/etc/sudoers"
+  fi
+  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >"$root/etc/sudoers.d/zz-tsos-firstboot"
+  chmod 0440 "$root/etc/sudoers.d/zz-tsos-firstboot"
 }
 
 configure_chroot() {
@@ -1606,9 +1651,12 @@ EOF
     warn "Omarchy installer exited with status $status."
     warn "The Arch base is installed and should boot."
     warn "After you unlock the disk (if encrypted) and log in as ${TARGET_USER}, run: install-omarchy"
-    return 0
+  else
+    log "Omarchy installer finished"
   fi
-  log "Omarchy installer finished"
+  # Omarchy removes 99-omarchy-installer when it finishes. Restore NOPASSWD
+  # for the headless first-boot tabby-stack service.
+  write_firstboot_sudoers "$TARGET"
 }
 
 cleanup() {
