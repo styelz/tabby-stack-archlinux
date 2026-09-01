@@ -21,7 +21,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.4"
+SCRIPT_VERSION="1.0.5"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -309,26 +309,20 @@ prompt_settings() {
   KEYMAP=$(ask "Console keymap" "$KEYMAP")
   ESP_SIZE=$(ask_until "EFI partition size" "$ESP_SIZE" valid_esp_size)
 
-  local encrypt_answer
-  encrypt_answer=$(ask_until "Encrypt the disk with LUKS (yes / no)" "$(encrypt_label)" valid_yes_no)
-  if [[ "$encrypt_answer" == "yes" ]]; then
-    ENCRYPT=1
-  else
-    ENCRYPT=0
-  fi
-
-  OMARCHY_MODE=$(ask_until "Install Omarchy desktop (now / skip)" "$OMARCHY_MODE" valid_omarchy_mode)
+  OMARCHY_MODE=$(ask_until "Install Omarchy desktop (requires LUKS) (now / skip)" "$OMARCHY_MODE" valid_omarchy_mode)
   if [[ "$OMARCHY_MODE" == "now" ]]; then
-    if ((ENCRYPT == 0)); then
-      printf 'Omarchy requires disk encryption.\n' >/dev/tty
-      encrypt_answer=$(ask_until "Encrypt the disk with LUKS (yes required for Omarchy)" "yes" valid_yes_no)
-      if [[ "$encrypt_answer" != "yes" ]]; then
-        die "Omarchy was selected but encryption was declined. Choose skip, or encrypt."
-      fi
-      ENCRYPT=1
-    fi
+    ENCRYPT=1
+    printf 'Omarchy selected — disk encryption is required and will be enabled.\n' >/dev/tty
     OMARCHY_USER_NAME=$(ask "Git name (optional, used by Omarchy)" "$OMARCHY_USER_NAME")
     OMARCHY_USER_EMAIL=$(ask "Git email (optional, used by Omarchy)" "$OMARCHY_USER_EMAIL")
+  else
+    local encrypt_answer
+    encrypt_answer=$(ask_until "Encrypt the disk with LUKS (yes / no)" "$(encrypt_label)" valid_yes_no)
+    if [[ "$encrypt_answer" == "yes" ]]; then
+      ENCRYPT=1
+    else
+      ENCRYPT=0
+    fi
   fi
 
   TABBY_MODELS=$(ask_until "tabby-stack model set (core / all)" "$TABBY_MODELS" valid_models)
