@@ -92,6 +92,28 @@ def find_cache(item: dict, cache_root: Path | None) -> Path | None:
     return None
 
 
+def fmt_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024.0 or unit == "TiB":
+            if unit == "B":
+                return f"{int(size)} B"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{int(n)} B"
+
+
+def note(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def copy_file_logged(src: str, dst: str, *, follow_symlinks: bool = True) -> str:
+    src_path = Path(src)
+    size = src_path.stat().st_size if src_path.is_file() else 0
+    note(f"      {src_path.name} ({fmt_bytes(size)})")
+    return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+
+
 def verify_tree(src: Path, dest: Path) -> None:
     """Fail loudly when a folder copy dropped or truncated a file."""
     for path in src.rglob("*"):
@@ -106,6 +128,7 @@ def verify_tree(src: Path, dest: Path) -> None:
 def copy_from_cache(src: Path, dest: Path, kind: str) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if kind == "file":
+        note(f"      {src.name} ({fmt_bytes(src.stat().st_size)}) -> {dest}")
         # Land the bytes on a temp name and rename, so an interrupted copy
         # cannot leave a truncated file that is_ready() accepts forever.
         tmp = dest.with_name(f".{dest.name}.part")
@@ -124,6 +147,7 @@ def copy_from_cache(src: Path, dest: Path, kind: str) -> None:
         dest,
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(".cache", "__pycache__"),
+        copy_function=copy_file_logged,
     )
     verify_tree(src, dest)
 
@@ -140,6 +164,13 @@ def download_item(item: dict, dest: Path) -> None:
     repo = item["repo"]
     revision = item.get("revision") or None
     dest.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
+    try:
+        from huggingface_hub.utils import enable_progress_bars
+
+        enable_progress_bars()
+    except Exception:
+        pass
     try:
         if item.get("kind") == "file":
             tmp = dest.parent / f".hf-{dest.name}"
@@ -175,16 +206,17 @@ def download_item(item: dict, dest: Path) -> None:
 def ensure_item(name: str, item: dict, tabby: Path, comfy: Path, cache_root: Path | None) -> str:
     dest = dest_path(item, tabby, comfy)
     if is_ready(dest, item):
-        print(f"    have {name} ({dest.name})")
+        note(f"    have {name} ({dest})")
         return "have"
     cached = find_cache(item, cache_root)
     if cached is not None:
-        print(f"    copy {name} from {cached}")
+        note(f"    copy {name} from {cached}")
         copy_from_cache(cached, dest, item.get("kind") or "snapshot")
         if is_ready(dest, item):
             return "copy"
-        print(f"    copy of {name} was incomplete; downloading")
-    print(f"    download {name} ({item['repo']})")
+        note(f"    copy of {name} was incomplete; downloading")
+    note(f"    download {name} from {item['repo']}")
+    note(f"      dest {dest}")
     download_item(item, dest)
     if not is_ready(dest, item):
         raise SystemExit(f"{name} finished but marker files are missing in {dest}")
@@ -204,11 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     items = catalog.get("items") or {}
     cache = args.cache if args.cache and args.cache.is_dir() else None
     selected = select_ids(catalog, args.model_set)
-    print(f"==> Weights ({args.model_set}): {', '.join(selected)}")
+    print(f"==> Weights ({args.model_set}): {', '.join(selected)}", flush=True)
     if cache:
-        print(f"    cache: {cache}")
+        print(f"    cache: {cache}", flush=True)
     else:
-        print("    cache: none (Hugging Face)")
+        print("    cache: none (Hugging Face)", flush=True)
 
     for name in selected:
         item = items.get(name)

@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.14"
+SCRIPT_VERSION="1.0.15"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -2207,6 +2207,8 @@ run_tabby_install_chroot() {
     TABBY_CACHE="${TABBY_CACHE_CHROOT:-}"
     TABBY_NONINTERACTIVE=1
     TABBY_NESTED_UI=1
+    TABBY_INSTALL_VERBOSE=1
+    PYTHONUNBUFFERED=1
     TABBY_ISO_CHROOT=1
     TABBY_MODELS="${TABBY_MODELS:-core}"
     TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
@@ -2222,29 +2224,27 @@ run_tabby_install_chroot() {
     run_env+=(HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN")
   fi
 
-  local status=0 watcher="" stop=""
+  local status=0
   local tabby_log="$TARGET$stack_home/tabby-install.log"
   chown_target_user_tree "$stack_home"
   ensure_target_user_file "$tabby_log"
   {
     echo "launching install.sh $(date -Iseconds)"
-    echo "nested=1 stdin=/dev/null (no dialog, no sudo password prompt)"
+    echo "nested=1 verbose=1 (command output on this console)"
   } >>"$tabby_log"
   chown_target_user_tree "$stack_home/tabby-install.log"
-  stop=$(mktemp "${TMPDIR:-/tmp}/tsos-watch.XXXXXX")
-  rm -f "$stop"
-  watch_tabby_progress "$tabby_log" "$stop" &
-  watcher=$!
+
+  # Drop the one-line gauge so pacman/pyenv/pip scroll on the console.
+  gauge_stop
+  printf '\n==> Installing tabby-stack (live output)\n' >/dev/tty
+  printf '    Log: %s\n\n' "$stack_home/tabby-install.log" >/dev/tty
+
   set +e
-  # Close the parent gauge fifo (fd 3) so install.sh cannot block on it.
-  # stdin is /dev/null so pacman/sudo/dialog cannot wait for a key.
   arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
-    bash "$stack_home/install.sh" </dev/null >>"$tabby_log" 2>&1 3>&-
+    bash "$stack_home/install.sh" </dev/null 3>&- >/dev/tty 2>&1
   status=$?
   set -e
-  touch "$stop"
-  wait "$watcher" 2>/dev/null || true
-  rm -f "$stop"
+  chown_target_user_tree "$stack_home/tabby-install.log"
 
   if ((status != 0)); then
     die "install.sh failed in the chroot (exit ${status}). Not rebooting.

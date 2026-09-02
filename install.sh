@@ -368,7 +368,7 @@ progress() {
         "$pct" "$msg"
       ;;
     verbose)
-      echo "==> $msg"
+      echo "==> [$pct%] $msg"
       ;;
   esac
 }
@@ -427,8 +427,14 @@ progress_fail() {
 
 run_quiet() {
   if [[ "${GAUGE_MODE:-}" == "verbose" ]]; then
-    "$@"
-    return
+    printf '+ %s\n' "$*"
+    if ! "$@"; then
+      local rc=$?
+      echo "Command failed ($rc): $*" >> "${INSTALL_LOG:-/dev/null}"
+      append_update_log "Command failed ($rc): $*"
+      progress_fail "$rc"
+    fi
+    return 0
   fi
   if ! "$@" >>"$INSTALL_LOG" 2>&1; then
     local rc=$?
@@ -1680,9 +1686,7 @@ build_codebox_image() {
 enable_docker
 
 progress 16 "Checking Python 3.12"
-if ! ensure_python312 >>"$INSTALL_LOG" 2>&1; then
-  progress_fail 1
-fi
+run_quiet ensure_python312
 PY_VER="$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 if [[ "$PY_VER" != "3.12" ]]; then
   echo "Need Python 3.12 (got $PY_VER)." >> "$INSTALL_LOG"
@@ -1949,7 +1953,7 @@ FETCH_ARGS=(
 if [[ -n "$WIN_ROOT" && -d "$WIN_ROOT" ]]; then
   FETCH_ARGS+=(--cache "$WIN_ROOT")
 fi
-run_quiet "$DEST_TABBY/venv/bin/python" "$DEST_FETCH" "${FETCH_ARGS[@]}"
+run_quiet "$DEST_TABBY/venv/bin/python" -u "$DEST_FETCH" "${FETCH_ARGS[@]}"
 
 progress 94 "Writing config and enabling service"
 install_unless_same() {
