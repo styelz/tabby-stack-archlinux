@@ -276,9 +276,28 @@ GAUGE_MODE=""
 SUDO_KEEPALIVE_PID=""
 INSTALL_FAILED=0
 
+# tsos-installer used to create this log as root. Reclaim it so later
+# appends (and progress_start's truncate) do not die with Permission denied.
+adopt_install_log() {
+  local dest="$1"
+  if [[ -e "$dest" && ! -w "$dest" ]]; then
+    sudo -n chown "$USER:$USER" "$dest" 2>/dev/null || true
+    sudo -n chmod u+rw "$dest" 2>/dev/null || true
+  fi
+  if [[ -e "$dest" && ! -w "$dest" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+  touch "$dest" 2>/dev/null
+}
+
 progress_start() {
   mkdir -p "$DEST"
   INSTALL_LOG="$DEST/tabby-install.log"
+  if ! adopt_install_log "$INSTALL_LOG"; then
+    INSTALL_LOG="/tmp/tabby-install-${USER}.log"
+    adopt_install_log "$INSTALL_LOG" || INSTALL_LOG="/dev/null"
+  fi
   if [[ "${TABBY_NVIDIA_REBOOT_DONE:-}" == 1 && -f "$INSTALL_LOG" ]]; then
     {
       echo
@@ -937,7 +956,13 @@ elif [[ -n "${TABBY_INSTALL_ROOT:-}" && -n "${TABBY_MODELS:-}" ]]; then
   INTERACTIVE=0
 fi
 if [[ "${TABBY_NESTED_UI:-}" == 1 ]]; then
-  echo "install.sh nested start $(date -Iseconds)" >> "${TABBY_INSTALL_ROOT:-$STACK_ROOT}/tabby-install.log"
+  _early_log="${TABBY_INSTALL_ROOT:-$STACK_ROOT}/tabby-install.log"
+  if ! adopt_install_log "$_early_log"; then
+    _early_log="/tmp/tabby-install-${USER}.log"
+    adopt_install_log "$_early_log" || _early_log="/dev/null"
+  fi
+  echo "install.sh nested start $(date -Iseconds)" >> "$_early_log"
+  unset _early_log
 fi
 ensure_sudo
 if [[ "$INTERACTIVE" -eq 1 ]]; then

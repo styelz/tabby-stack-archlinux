@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.13"
+SCRIPT_VERSION="1.0.14"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -1832,7 +1832,7 @@ HELPER
 chmod 0755 /usr/local/bin/install-omarchy
 
 if [[ -n "$OMARCHY_USER_NAME" || -n "$OMARCHY_USER_EMAIL" ]]; then
-  install -d "/home/${TARGET_USER}"
+  install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 0755 "/home/${TARGET_USER}"
   {
     if [[ -n "$OMARCHY_USER_NAME" ]]; then
       printf 'export OMARCHY_USER_NAME=%q\n' "$OMARCHY_USER_NAME"
@@ -2103,8 +2103,28 @@ overlay_local_tabby_sources() {
     cp -a "$src/tabbyAPI/." "$dest/tabbyAPI/"
     rm -rf "$dest/tabbyAPI/venv" "$dest/tabbyAPI/models"
   fi
-  arch-chroot "$TARGET" /usr/bin/chown -R "${TARGET_USER}:${TARGET_USER}" \
-    "/home/${TARGET_USER}/tabby-stack"
+  chown_target_user_tree "/home/${TARGET_USER}/tabby-stack"
+}
+
+# Root writing into /home/USER leaves root-owned files. install.sh runs as
+# TARGET_USER and dies on the first append (tabby-install.log).
+chown_target_user_tree() {
+  local rel="$1"
+  arch-chroot "$TARGET" /usr/bin/chown -R "${TARGET_USER}:${TARGET_USER}" "$rel" || true
+}
+
+ensure_target_user_file() {
+  local host_path="$1"
+  local rel="${host_path#"$TARGET"}"
+  [[ "$rel" == /* ]] || rel="/$rel"
+  local rel_dir
+  rel_dir=$(dirname "$rel")
+  arch-chroot "$TARGET" /usr/bin/install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 0755 "$rel_dir"
+  if [[ ! -e "$host_path" ]]; then
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- touch "$rel"
+  fi
+  arch-chroot "$TARGET" /usr/bin/chown "${TARGET_USER}:${TARGET_USER}" "$rel"
+  chmod 0644 "$host_path" || true
 }
 
 # After a failed chroot install.sh, pull origin/main then overlay a local
@@ -2204,11 +2224,13 @@ run_tabby_install_chroot() {
 
   local status=0 watcher="" stop=""
   local tabby_log="$TARGET$stack_home/tabby-install.log"
-  mkdir -p "$(dirname "$tabby_log")"
+  chown_target_user_tree "$stack_home"
+  ensure_target_user_file "$tabby_log"
   {
     echo "launching install.sh $(date -Iseconds)"
     echo "nested=1 stdin=/dev/null (no dialog, no sudo password prompt)"
   } >>"$tabby_log"
+  chown_target_user_tree "$stack_home/tabby-install.log"
   stop=$(mktemp "${TMPDIR:-/tmp}/tsos-watch.XXXXXX")
   rm -f "$stop"
   watch_tabby_progress "$tabby_log" "$stop" &
