@@ -164,13 +164,18 @@ def download_item(item: dict, dest: Path) -> None:
     repo = item["repo"]
     revision = item.get("revision") or None
     dest.parent.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
-    try:
-        from huggingface_hub.utils import enable_progress_bars
+    # Carriage-return tqdm bars look like noise inside dialog --progressbox.
+    # Keep one line per file (note()) and only enable bars on a real tty.
+    if sys.stdout.isatty() and os.environ.get("TABBY_NESTED_UI") != "1":
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
+        try:
+            from huggingface_hub.utils import enable_progress_bars
 
-        enable_progress_bars()
-    except Exception:
-        pass
+            enable_progress_bars()
+        except Exception:
+            pass
+    else:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     try:
         if item.get("kind") == "file":
             tmp = dest.parent / f".hf-{dest.name}"

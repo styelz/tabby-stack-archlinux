@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.15"
+SCRIPT_VERSION="1.0.16"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -135,10 +135,11 @@ The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
 weights) and must finish before reboot. This script asks every setting
-(disk, user, cache, model set, API URLs) in one UI, then keeps a progress
-bar while Arch and tabby-stack install. install.sh is non-interactive
-from here so it does not open a second dialog. The NVIDIA driver loads
-on the first real boot; linger then starts the API.
+(disk, user, cache, model set, API URLs) in one UI, then keeps that same
+dialog up with a scrolling log while Arch and tabby-stack install.
+install.sh is non-interactive from here so it does not open a second
+dialog. The NVIDIA driver loads on the first real boot; linger then
+starts the API.
 
 The kernel driver is nvidia-open (Arch dropped the nvidia package). That
 covers Turing / RTX 20-series and newer. GTX 10xx and older need the AUR
@@ -148,6 +149,7 @@ EOF
 
 TSOS_LOG="${TSOS_LOG:-/tmp/tsos-installer.log}"
 TSOS_GAUGE_PID=""
+TSOS_TAIL_PID=""
 TSOS_GAUGE_DIR=""
 TSOS_GAUGE_FIFO=""
 TSOS_SAVED_FD=""
@@ -237,20 +239,25 @@ restore_tty() {
   } >/dev/tty 2>/dev/null || true
 }
 
-# One dialog gauge for the whole work phase so install.sh cannot steal the UI.
+# Same dialog chrome as the questions: a scrolling log box (not a one-line
+# gauge, and not a raw console dump). Command output is appended to TSOS_LOG
+# and tailed into --progressbox.
 gauge_start() {
   ((USE_TUI)) || return 1
   [[ "$TUI" == dialog ]] || return 1
   { [[ -t 1 ]] || have_console; } || return 1
   touch "$TSOS_LOG"
-  TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-gauge.XXXXXX")
-  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
+  TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
+  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/out"
   mkfifo -m 600 "$TSOS_GAUGE_FIFO"
-  dialog --backtitle "$BACKTITLE" --title "Installing" \
-    --gauge "Starting..." 10 74 0 <"$TSOS_GAUGE_FIFO" &
-  TSOS_GAUGE_PID=$!
-  # O_RDWR does not block if dialog has not opened the read end yet.
+  # O_RDWR so tail/dialog open order cannot deadlock.
   exec 3<>"$TSOS_GAUGE_FIFO"
+  dialog --backtitle "$BACKTITLE" --title "Installing" \
+    --progressbox "Same installer UI as the questions. Full log: $TSOS_LOG" 20 74 \
+    <"$TSOS_GAUGE_FIFO" &
+  TSOS_GAUGE_PID=$!
+  tail -n 0 -F "$TSOS_LOG" >&3 2>/dev/null &
+  TSOS_TAIL_PID=$!
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
@@ -259,20 +266,25 @@ gauge_start() {
 
 gauge_update() {
   local pct="$1" msg="$2"
-  log "$msg"
-  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
-    if ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
-      gauge_stop
-      printf '==> %s\n' "$msg"
-      return 0
-    fi
-    printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg" >&3 || true
-  fi
+  log "[${pct}%] $msg"
 }
 
 gauge_stop() {
+  if [[ -n "${TSOS_TAIL_PID:-}" ]]; then
+    kill "$TSOS_TAIL_PID" 2>/dev/null || true
+    wait "$TSOS_TAIL_PID" 2>/dev/null || true
+    TSOS_TAIL_PID=""
+  fi
+  exec 3>&- || true
   if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
-    exec 3>&- || true
+    local _i
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$TSOS_GAUGE_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+      kill "$TSOS_GAUGE_PID" 2>/dev/null || true
+    fi
     wait "$TSOS_GAUGE_PID" 2>/dev/null || true
     TSOS_GAUGE_PID=""
     rm -rf "${TSOS_GAUGE_DIR:-}"
@@ -284,52 +296,6 @@ gauge_stop() {
     exec 4>&- 5>&-
     TSOS_SAVED_FD=""
     restore_tty
-  fi
-}
-
-# install.sh writes "==> [N%] message" to tabby-install.log. Map that onto
-# the outer 45–95% range. Heartbeat so a long pacman/pyenv step does not
-# look frozen. Always run this — not only when the dialog gauge is up.
-watch_tabby_progress() {
-  local log="$1"
-  local stop="$2"
-  local last="" line pct msg scaled elapsed=0 show
-  while [[ ! -f "$stop" ]]; do
-    elapsed=$((elapsed + 1))
-    line=""
-    if [[ -f "$log" ]]; then
-      line=$(grep -E '^==> \[[0-9]+%\]' "$log" 2>/dev/null | tail -n1 || true)
-      if [[ -z "$line" ]]; then
-        line=$(tail -n1 "$log" 2>/dev/null || true)
-      fi
-    fi
-    msg="${line:-starting install.sh}"
-    pct=4
-    if [[ "$msg" == "==> ["* ]]; then
-      pct=${msg#*\[}
-      pct=${pct%%\%*}
-      msg=${msg#*\] }
-    fi
-    [[ "$pct" =~ ^[0-9]+$ ]] || pct=4
-    scaled=$((45 + pct * 50 / 100))
-    if ((scaled > 95)); then
-      scaled=95
-    fi
-    if [[ "$line" == "$last" ]]; then
-      show="${msg}  (${elapsed}s)"
-    else
-      last=$line
-      show=$msg
-    fi
-    if [[ -n "${TSOS_GAUGE_PID:-}" ]] && kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
-      printf 'XXX\n%s\n%s\nXXX\n' "$scaled" "$show" >&3 || true
-    else
-      printf '\r\033[K==> [%s%%] %s' "$scaled" "$show" >/dev/tty 2>/dev/null || true
-    fi
-    sleep 1
-  done
-  if [[ -z "${TSOS_GAUGE_PID:-}" ]]; then
-    printf '\n' >/dev/tty 2>/dev/null || true
   fi
 }
 
@@ -704,8 +670,9 @@ Needed
 
 Next screens ask for the disk, system name, Omarchy, cache,
 model set, and API URLs. After you confirm the wipe, this
-same UI stays up with a progress bar — install.sh does not
-open a second dialog.
+same dialog stays up and scrolls the install log (pacman,
+Python, weight files). install.sh does not open a second
+dialog.
 
 Esc cancels."
 
@@ -2230,19 +2197,19 @@ run_tabby_install_chroot() {
   ensure_target_user_file "$tabby_log"
   {
     echo "launching install.sh $(date -Iseconds)"
-    echo "nested=1 verbose=1 (command output on this console)"
+    echo "nested=1 verbose=1 (output stays in the installer dialog)"
   } >>"$tabby_log"
   chown_target_user_tree "$stack_home/tabby-install.log"
 
-  # Drop the one-line gauge so pacman/pyenv/pip scroll on the console.
-  gauge_stop
-  printf '\n==> Installing tabby-stack (live output)\n' >/dev/tty
-  printf '    Log: %s\n\n' "$stack_home/tabby-install.log" >/dev/tty
-
   set +e
-  arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
-    bash "$stack_home/install.sh" </dev/null 3>&- >/dev/tty 2>&1
-  status=$?
+  if command -v stdbuf >/dev/null 2>&1; then
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
+      bash "$stack_home/install.sh" </dev/null 3>&- 2>&1 | stdbuf -oL tee -a "$tabby_log"
+  else
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
+      bash "$stack_home/install.sh" </dev/null 3>&- 2>&1 | tee -a "$tabby_log"
+  fi
+  status=${PIPESTATUS[0]}
   set -e
   chown_target_user_tree "$stack_home/tabby-install.log"
 
