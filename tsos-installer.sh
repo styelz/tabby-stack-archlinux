@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.19"
+SCRIPT_VERSION="1.0.20"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -265,10 +265,10 @@ paint_work_ui() {
   [[ "$TUI" == dialog ]] || return 0
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
     dialog --backtitle "$BACKTITLE" --title "Installing  tsos ${SCRIPT_VERSION}" \
-      --infobox "$body" 14 74 >/dev/tty || true
+      --infobox "$body" 12 70 >/dev/tty || true
   else
     dialog --backtitle "$BACKTITLE" --title "Installing  tsos ${SCRIPT_VERSION}" \
-      --infobox "$body" 14 74 || true
+      --infobox "$body" 12 70 || true
   fi
 }
 
@@ -281,24 +281,6 @@ work_ui_body() {
   [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
   snippet=$(tsos_log_snippet)
   printf '[%s%%] %s\n\n%s\n' "$pct" "$heading" "$snippet"
-}
-
-watch_installer_ui() {
-  set +e
-  local stop="$1" last="" elapsed=0 body
-  while [[ ! -f "$stop" ]]; do
-    body=$(work_ui_body)
-    if [[ "$body" == "$last" ]]; then
-      elapsed=$((elapsed + 1))
-      body="$body
-(${elapsed}s)"
-    else
-      last=$body
-      elapsed=0
-    fi
-    paint_work_ui "$body"
-    sleep 0.5
-  done
 }
 
 gauge_start() {
@@ -314,8 +296,6 @@ gauge_start() {
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
-  watch_installer_ui "$TSOS_GAUGE_DIR/stop" &
-  TSOS_WATCH_PID=$!
   return 0
 }
 
@@ -373,7 +353,7 @@ dialog_read() {
 ui_msg() {
   local title="$1"
   local text="$2"
-  local height="${3:-20}"
+  local height="${3:-16}"
   local width="${4:-74}"
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     dialog --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
@@ -390,9 +370,9 @@ ui_input() {
   local default="$3"
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --inputbox "$text" 18 74 "$default")" || ui_cancel
+    out="$(dialog_read --title "$title" --inputbox "$text" 12 74 "$default")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 18 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 12 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     out=$(ask "$title" "$default")
   fi
@@ -405,9 +385,9 @@ ui_menu() {
   shift 2
   local out=""
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --menu "$text" 20 74 8 "$@")" || ui_cancel
+    out="$(dialog_read --title "$title" --menu "$text" 16 74 6 "$@")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 20 74 8 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 16 74 6 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     local i=1 tag
     local tags=()
@@ -440,12 +420,12 @@ ui_yesno() {
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 12 74
     return $?
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 12 74
     return $?
   else
     local yn="Y/n"
@@ -610,7 +590,7 @@ $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
       args+=("$path" "${size}  ${model}")
     done < <(list_install_disks)
     ((${#args[@]})) || die "No installable disk found."
-    DISK=$(ui_menu "1 / 10  — Target disk" \
+    DISK=$(ui_menu "1 / 10  -  Target disk" \
 "This disk will be wiped. The live ISO / USB you booted from is hidden.
 
 Choose the machine disk, not a second installer stick." \
@@ -727,19 +707,19 @@ Esc cancels."
 
   ask_install_disk
 
-  TARGET_HOSTNAME=$(ui_ask_until "2 / 10  — Hostname" \
+  TARGET_HOSTNAME=$(ui_ask_until "2 / 10  -  Hostname" \
 "Name of the installed system (not the live ISO hostname).
 
 Letters, digits, and hyphens. Example: tsos" \
     "$TARGET_HOSTNAME" valid_hostname)
 
-  TARGET_USER=$(ui_ask_until "2 / 10  — Username" \
+  TARGET_USER=$(ui_ask_until "2 / 10  -  Username" \
 "Regular wheel user that runs tabby-stack.
 
 Lowercase, not root. Example: tabby" \
     "$TARGET_USER" valid_username)
 
-  TIMEZONE=$(ui_input "3 / 10  — Timezone" \
+  TIMEZONE=$(ui_input "3 / 10  -  Timezone" \
 "Timezone from /usr/share/zoneinfo.
 
 Examples: UTC  Australia/Sydney  America/New_York" \
@@ -751,27 +731,27 @@ Examples: UTC  Australia/Sydney  America/New_York" \
 Continuing anyway — fix it after boot if the clock is wrong."
   fi
 
-  LOCALE=$(ui_input "3 / 10  — Locale" \
+  LOCALE=$(ui_input "3 / 10  -  Locale" \
 "Locale name without a leading #.
 
 Example: en_US.UTF-8" \
     "$LOCALE")
   LOCALE="${LOCALE:-en_US.UTF-8}"
 
-  KEYMAP=$(ui_input "3 / 10  — Console keymap" \
+  KEYMAP=$(ui_input "3 / 10  -  Console keymap" \
 "Keyboard map for the console (and LUKS prompt).
 
 Example: us" \
     "$KEYMAP")
   KEYMAP="${KEYMAP:-us}"
 
-  ESP_SIZE=$(ui_ask_until "3 / 10  — EFI partition size" \
+  ESP_SIZE=$(ui_ask_until "3 / 10  -  EFI partition size" \
 "FAT32 /boot size. 2G is enough for the kernel and Limine.
 
 Examples: 2G  512M" \
     "$ESP_SIZE" valid_esp_size)
 
-  if ui_yesno "4 / 10  — Omarchy desktop" \
+  if ui_yesno "4 / 10  -  Omarchy desktop" \
 "Install the official Omarchy desktop in the chroot?
 
 Yes requires LUKS on the root disk (encryption will be turned on).
@@ -783,19 +763,19 @@ Default is no." \
     ENCRYPT=1
     ui_msg "Encryption required" \
 "Omarchy is selected, so the disk will be encrypted with LUKS."
-    OMARCHY_USER_NAME=$(ui_input "4 / 10  — Git name" \
+    OMARCHY_USER_NAME=$(ui_input "4 / 10  -  Git name" \
 "Optional name passed to Omarchy as OMARCHY_USER_NAME.
 
 Blank is fine." \
       "$OMARCHY_USER_NAME")
-    OMARCHY_USER_EMAIL=$(ui_input "4 / 10  — Git email" \
+    OMARCHY_USER_EMAIL=$(ui_input "4 / 10  -  Git email" \
 "Optional email passed to Omarchy as OMARCHY_USER_EMAIL.
 
 Blank is fine." \
       "$OMARCHY_USER_EMAIL")
   else
     OMARCHY_MODE=skip
-    if ui_yesno "5 / 10  — Disk encryption" \
+    if ui_yesno "5 / 10  -  Disk encryption" \
 "Encrypt the root disk with LUKS?
 
 Yes = unlock password at boot (recommended).
@@ -810,7 +790,7 @@ Default follows the current setting ($(encrypt_label))." \
   fi
 
   local cache_choice
-  cache_choice=$(ui_menu "6 / 10  — Weights cache" \
+  cache_choice=$(ui_menu "6 / 10  -  Weights cache" \
 "If weights already live on a USB copy of tabby-stack or another
 folder, they must be named now — the new root mounts at /mnt next.
 
@@ -845,7 +825,7 @@ prompt_tabby_settings_tui() {
   if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE/tabbyAPI/models" ]]; then
     default_set="all"
   fi
-  TABBY_MODELS=$(ui_menu "7 / 10  — Model set" \
+  TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
 "Which weights to copy or download. Re-run later to add more; existing
 files are skipped.
 
@@ -874,7 +854,7 @@ If a later download returns 401 or 403:
 You do not need a token for qwen / Flux / Qwen-Image."
   fi
 
-  TABBY_NETWORK_HOST=$(ui_input "8 / 10  — API listen address" \
+  TABBY_NETWORK_HOST=$(ui_input "8 / 10  -  API listen address" \
 "Address TabbyAPI binds on. Clients (and Cursor) use this host.
 
   127.0.0.1  — this machine only (usual)
@@ -884,14 +864,14 @@ Do not put a public hostname here." \
     "${TABBY_NETWORK_HOST:-127.0.0.1}")
   TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 
-  TABBY_NETWORK_PORT=$(ui_ask_until "8 / 10  — API listen port" \
+  TABBY_NETWORK_PORT=$(ui_ask_until "8 / 10  -  API listen port" \
 "TCP port for the API. Default 5000.
 
 Health:  http://${TABBY_NETWORK_HOST}:PORT/health
 Cursor:  http://${TABBY_NETWORK_HOST}:PORT/v1" \
     "${TABBY_NETWORK_PORT:-5000}" valid_port)
 
-  COMFYUI_URL=$(ui_input "9 / 10  — ComfyUI URL" \
+  COMFYUI_URL=$(ui_input "9 / 10  -  ComfyUI URL" \
 "HTTP URL for ComfyUI after “switch to comfy”.
 
 Usual value:  http://127.0.0.1:8188
@@ -899,7 +879,7 @@ Change this only if ComfyUI will listen somewhere else." \
     "${COMFYUI_URL:-http://127.0.0.1:8188}")
   COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
 
-  TABBY_PUBLIC_BASE=$(ui_input "9 / 10  — Public URL" \
+  TABBY_PUBLIC_BASE=$(ui_input "9 / 10  -  Public URL" \
 "Optional URL written into image links and the public gallery.
 
 Examples
@@ -910,7 +890,7 @@ Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
 Leave blank if you do not have a reverse proxy or tunnel." \
     "${TABBY_PUBLIC_BASE}")
 
-  TABBY_SSH_REMOTE=$(ui_input "10 / 10  — SSH tunnel" \
+  TABBY_SSH_REMOTE=$(ui_input "10 / 10  -  SSH tunnel" \
 "Optional SSH target that forwards a remote port to TabbyAPI.
 
 Example:  user@host.example
@@ -919,13 +899,13 @@ Blank = no tunnel (API stays on this machine).
 If you set a host, the next screens ask for the forward spec and key." \
     "${TABBY_SSH_REMOTE}")
   if [[ -n "$TABBY_SSH_REMOTE" ]]; then
-    TABBY_SSH_FORWARD=$(ui_input "10 / 10  — SSH forward" \
+    TABBY_SSH_FORWARD=$(ui_input "10 / 10  -  SSH forward" \
 "ssh -R spec: remote listen → local TabbyAPI.
 
 Default matches the listen port you chose (${TABBY_NETWORK_PORT})." \
       "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
     TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
-    TABBY_SSH_KEY=$(ui_input "10 / 10  — SSH key" \
+    TABBY_SSH_KEY=$(ui_input "10 / 10  -  SSH key" \
 "Key file for ${TABBY_SSH_REMOTE}.
 
 The installer copies that key from a weights cache if present,
@@ -2540,6 +2520,9 @@ resume_tabby_install() {
 main() {
   parse_args "$@"
   attach_console
+  # A leftover dialog from a killed run owns tty1 and swallows the first OK.
+  pkill -x dialog 2>/dev/null || true
+  restore_tty
   early_preflight
   if ((RESUME_TABBY)); then
     log "Resuming tabby-stack in the already-mounted system at $TARGET (no disk wipe)"
