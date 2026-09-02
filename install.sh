@@ -91,14 +91,20 @@ ensure_dialog() {
   tui_cmd
 }
 
-# dialog --stdout sends the UI to /dev/tty. That node exists in arch-chroot
-# after su/runuser but cannot be opened ("cannot open tty output"). Default
-# dialog: UI on stdout (this console), typed value on stderr.
+# dialog draws the widget on stdout and returns the typed value on stderr.
+# Callers use $(dialog_read ...), so stdout here is a capture pipe: the widget
+# has to go to /dev/tty or nothing is drawn and the console just sits there
+# waiting for a keypress. --stdout is not an option: that node exists in
+# arch-chroot after su/runuser but cannot be opened ("cannot open tty output").
 dialog_read() {
   local tmp rc
   tmp=$(mktemp "${TMPDIR:-/tmp}/tabby-dialog.XXXXXX") || return 1
   set +e
-  dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp" >/dev/tty
+  else
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  fi
   rc=$?
   set -e
   if [[ "$rc" -ne 0 ]]; then
@@ -110,13 +116,23 @@ dialog_read() {
   return 0
 }
 
+# Same reason as dialog_read: ui_msg and ui_yesno also run inside $( ) via
+# ui_ask_until, so the widget must go to the terminal, not to stdout.
+dialog_tty() {
+  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    dialog "$@" >/dev/tty
+  else
+    dialog "$@"
+  fi
+}
+
 ui_msg() {
   local title="$1"
   local text="$2"
   local height="${3:-20}"
   local width="${4:-74}"
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
   else
@@ -195,7 +211,7 @@ ui_yesno() {
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
     return $?
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
@@ -664,7 +680,7 @@ If resume does not start, run the command above. After a successful
 install the resume hooks are removed."
   if [[ "$INTERACTIVE" -eq 1 ]]; then
     if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-      dialog --backtitle "$BACKTITLE" --title "NVIDIA driver — reboot required" \
+      dialog_tty --backtitle "$BACKTITLE" --title "NVIDIA driver — reboot required" \
         --timeout "$delay" --msgbox "$msg" 24 74 || true
     else
       echo

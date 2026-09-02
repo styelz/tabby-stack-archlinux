@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.21"
+SCRIPT_VERSION="1.0.22"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -225,6 +225,8 @@ ensure_dialog() {
 enable_tui_if_possible() {
   if [[ -n "$TUI" ]] && { [[ -t 0 && -t 1 ]] || have_console; }; then
     USE_TUI=1
+    # Every box is sized against the console, so read it before the questions.
+    ensure_work_term
   fi
 }
 
@@ -275,6 +277,41 @@ gauge_width() {
   ((w > 96)) && w=96
   ((w < 50)) && w=50
   printf '%s' "$w"
+}
+
+# dialog refuses to draw a box whose content does not fit ("Window too small
+# for menu") and exits without painting anything, so every widget is sized from
+# its own text and clamped to the console. The ISO console is 24x80.
+box_width() {
+  local w=$((TSOS_UI_COLS - 4))
+  ((w > 74)) && w=74
+  ((w < 46)) && w=46
+  printf '%s' "$w"
+}
+
+# Rows the text needs after dialog wraps it to the inside of the box.
+text_rows() {
+  local text=$1 width=$2
+  printf '%s\n' "$text" | awk -v w="$((width - 4))" '
+    { n = length($0); total += (n == 0 ? 1 : int((n + w - 1) / w)) }
+    END { print (total ? total : 1) }'
+}
+
+box_rows_max() {
+  local m=$((TSOS_UI_ROWS - 2))
+  ((m < 9)) && m=9
+  printf '%s' "$m"
+}
+
+# Drop trailing lines until the text fits, so a long prompt degrades into a
+# shorter one instead of killing the installer.
+fit_text() {
+  local text=$1 width=$2 avail=$3
+  ((avail < 1)) && avail=1
+  while (($(text_rows "$text" "$width") > avail)) && [[ "$text" == *$'\n'* ]]; do
+    text=${text%$'\n'*}
+  done
+  printf '%s' "$text"
 }
 
 # Last few log lines, stripped of escape codes and cut to the box width.
@@ -414,16 +451,29 @@ ui_cancel() {
   die "Installer cancelled."
 }
 
-# dialog --stdout needs /dev/tty. That fails in some chroots. UI stays on
-# stdout; the typed value is read from stderr via a temp file.
+# dialog draws the widget on stdout and returns the typed value on stderr.
+# Callers use $(dialog_read ...), so stdout here is a capture pipe: the widget
+# has to go to /dev/tty or nothing is drawn and the console just sits there
+# waiting for a keypress. --stdout is not an option: it needs /dev/tty too and
+# fails in some chroots.
 dialog_read() {
   local tmp rc
   tmp=$(mktemp "${TMPDIR:-/tmp}/tsos-dialog.XXXXXX") || return 1
   set +e
-  dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp" >/dev/tty
+  else
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  fi
   rc=$?
   set -e
   if [[ "$rc" -ne 0 ]]; then
+    # dialog reports its own failures ("Window too small for menu") on stderr,
+    # which is this temp file. Without logging it, a box that cannot be drawn
+    # is indistinguishable from the user pressing Cancel.
+    if [[ -s "$tmp" ]] && grep -qi 'error' "$tmp"; then
+      warn "dialog failed (rc=$rc): $(tr '\n' ' ' <"$tmp")"
+    fi
     rm -f "$tmp"
     return "$rc"
   fi
@@ -432,13 +482,31 @@ dialog_read() {
   return 0
 }
 
+# Same reason as dialog_read: ui_msg and ui_yesno also run inside $( ) via
+# ui_ask_until, so the widget must go to the terminal, not to stdout.
+dialog_tty() {
+  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    dialog "$@" >/dev/tty
+  else
+    dialog "$@"
+  fi
+}
+
 ui_msg() {
   local title="$1"
   local text="$2"
-  local height="${3:-16}"
-  local width="${4:-74}"
+  local height="${3:-}"
+  local width="${4:-}"
+  [[ -n "$width" ]] || width=$(box_width)
+  # msgbox chrome: two borders, separator, button row, padding.
+  local max=$(($(box_rows_max) - 6))
+  text=$(fit_text "$text" "$width" "$max")
+  local need=$(($(text_rows "$text" "$width") + 6))
+  if [[ -z "$height" ]] || ((height > need)); then
+    height=$need
+  fi
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
   else
@@ -451,10 +519,15 @@ ui_input() {
   local text="$2"
   local default="$3"
   local out=""
+  local width height
+  width=$(box_width)
+  # inputbox chrome: borders, separator, button row, the entry field, padding.
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
+  height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --inputbox "$text" 12 74 "$default")" || ui_cancel
+    out="$(dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" 12 74 "$default" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     out=$(ask "$title" "$default")
   fi
@@ -466,10 +539,25 @@ ui_menu() {
   local text="$2"
   shift 2
   local out=""
+  local width height list max
+  width=$(box_width)
+  max=$(box_rows_max)
+  list=$(($# / 2))
+  ((list > 6)) && list=6
+  # menu chrome: borders, separator, button row, list frame, padding.
+  local avail=$((max - list - 7))
+  if ((avail < 2)); then
+    list=$((max - 9))
+    ((list < 2)) && list=2
+    avail=$((max - list - 7))
+  fi
+  text=$(fit_text "$text" "$width" "$avail")
+  height=$(($(text_rows "$text" "$width") + list + 7))
+  ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --menu "$text" 16 74 6 "$@")" || ui_cancel
+    out="$(dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 16 74 6 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     local i=1 tag
     local tags=()
@@ -499,15 +587,19 @@ ui_yesno() {
   local title="$1"
   local text="$2"
   local default_yes="${3:-1}"
+  local width height
+  width=$(box_width)
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 6))")
+  height=$(($(text_rows "$text" "$width") + 6))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    dialog --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 12 74
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
     return $?
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 12 74
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
     return $?
   else
     local yn="Y/n"
@@ -524,10 +616,14 @@ ui_password() {
   local title="$1"
   local text="$2"
   local out=""
+  local width height
+  width=$(box_width)
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
+  height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --insecure --passwordbox "$text" 12 74)" || ui_cancel
+    out="$(dialog_read --title "$title" --insecure --passwordbox "$text" "$height" "$width")" || ui_cancel
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" 12 74 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" "$height" "$width" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     out=$(read_secret "$title: ")
   fi
@@ -908,17 +1004,11 @@ prompt_tabby_settings_tui() {
     default_set="all"
   fi
   TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
-"Which weights to copy or download. Re-run later to add more; existing
-files are skipped.
+"Which weights to copy or download. Re-run later to add more.
 
-core  — enough to chat and generate images (smaller download)
-        • qwen 9B  (switch to qwen)  daily coding
-        • Flux Schnell drafts + Qwen-Image (text / posters / UI)
-        • Qwen3-Embedding-0.6B on CPU
-
-all   — every “switch to …” profile (needs more disk and VRAM)
-        • core, plus qwen35, qwen36, gemma, gemma26, glm
-        • Gemma may be gated: huggingface-cli login or HF_TOKEN
+core - qwen 9B, Flux Schnell, Qwen-Image, CPU embedder.
+all  - core plus qwen35, qwen36, gemma, gemma26, glm. Needs more
+       disk and VRAM, and Gemma may need a Hugging Face token.
 
 Recommended first install: core. Default here: ${default_set}." \
     core "qwen 9B + Flux + Qwen-Image + embedder" \
