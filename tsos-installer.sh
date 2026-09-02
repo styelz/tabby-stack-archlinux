@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.22"
+SCRIPT_VERSION="1.0.23"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -155,6 +155,7 @@ TSOS_GAUGE_FIFO=""
 TSOS_SAVED_FD=""
 TSOS_UI_ROWS=24
 TSOS_UI_COLS=80
+TSOS_PRINTK=""
 
 log() {
   printf '==> %s\n' "$*" >>"$TSOS_LOG"
@@ -279,6 +280,23 @@ gauge_width() {
   printf '%s' "$w"
 }
 
+# Redirecting a command cannot stop the kernel: printk writes to the console
+# device, so mount probes, btrfs and NVIDIA messages land on top of the box.
+# Keep only emergencies on screen while the gauge owns it; everything is still
+# in dmesg afterwards. First field of /proc/sys/kernel/printk is the console
+# level, and writing one number sets just that field.
+quiet_kernel_console() {
+  [[ -w /proc/sys/kernel/printk ]] || return 0
+  TSOS_PRINTK=$(awk '{print $1}' /proc/sys/kernel/printk 2>/dev/null || true)
+  printf '%s\n' 1 >/proc/sys/kernel/printk 2>/dev/null || true
+}
+
+restore_kernel_console() {
+  [[ -n "${TSOS_PRINTK:-}" ]] || return 0
+  printf '%s\n' "$TSOS_PRINTK" >/proc/sys/kernel/printk 2>/dev/null || true
+  TSOS_PRINTK=""
+}
+
 # dialog refuses to draw a box whose content does not fit ("Window too small
 # for menu") and exits without painting anything, so every widget is sized from
 # its own text and clamped to the console. The ISO console is 24x80.
@@ -371,6 +389,7 @@ gauge_start() {
   [[ "$TUI" == dialog ]] || return 1
   have_console || [[ -t 1 ]] || return 1
   ensure_work_term
+  quiet_kernel_console
   touch "$TSOS_LOG"
   local h w
   h=$(gauge_height)
@@ -395,6 +414,7 @@ gauge_start() {
     TSOS_GAUGE_PID=""
     TSOS_GAUGE_DIR=""
     TSOS_GAUGE_FIFO=""
+    restore_kernel_console
     return 1
   fi
   exec 4>&1 5>&2
@@ -445,6 +465,7 @@ gauge_stop() {
     TSOS_SAVED_FD=""
     restore_tty
   fi
+  restore_kernel_console
 }
 
 ui_cancel() {
@@ -1741,7 +1762,9 @@ setup_storage() {
 
   log "Creating btrfs on $mapper"
   mkfs.btrfs -f -L tsos "$mapper"
-  mount "$mapper" "$TARGET"
+  # -t matters: without it the kernel probes ext4 first and prints
+  # "VFS: Can't find ext4 filesystem" straight to the console, over the gauge.
+  mount -t btrfs "$mapper" "$TARGET"
   btrfs subvolume create "$TARGET/@"
   btrfs subvolume create "$TARGET/@home"
   btrfs subvolume create "$TARGET/@log"
@@ -1752,13 +1775,13 @@ setup_storage() {
   local opts
   opts=$(btrfs_opts)
   log "Mounting subvolumes ($opts)"
-  mount -o "${opts},subvol=@" "$mapper" "$TARGET"
+  mount -t btrfs -o "${opts},subvol=@" "$mapper" "$TARGET"
   mkdir -p "$TARGET"/{boot,home,var/log,var/cache/pacman/pkg,.snapshots}
-  mount -o "${opts},subvol=@home" "$mapper" "$TARGET/home"
-  mount -o "${opts},subvol=@log" "$mapper" "$TARGET/var/log"
-  mount -o "${opts},subvol=@pkg" "$mapper" "$TARGET/var/cache/pacman/pkg"
-  mount -o "${opts},subvol=@snapshots" "$mapper" "$TARGET/.snapshots"
-  mount "$BOOT_PART" "$TARGET/boot"
+  mount -t btrfs -o "${opts},subvol=@home" "$mapper" "$TARGET/home"
+  mount -t btrfs -o "${opts},subvol=@log" "$mapper" "$TARGET/var/log"
+  mount -t btrfs -o "${opts},subvol=@pkg" "$mapper" "$TARGET/var/cache/pacman/pkg"
+  mount -t btrfs -o "${opts},subvol=@snapshots" "$mapper" "$TARGET/.snapshots"
+  mount -t vfat "$BOOT_PART" "$TARGET/boot"
 }
 
 install_base() {
