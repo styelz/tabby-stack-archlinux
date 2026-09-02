@@ -374,6 +374,9 @@ progress() {
 }
 
 restore_tty() {
+  # Nested under tsos-installer: the outer dialog owns /dev/tty. rmcup / stty
+  # sane here drops that UI onto the raw console.
+  [[ "${TABBY_NESTED_UI:-}" == 1 ]] && return 0
   [[ -t 1 || -c /dev/tty ]] || return 0
   {
     command -v tput >/dev/null 2>&1 && {

@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.16"
+SCRIPT_VERSION="1.0.17"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -136,7 +136,7 @@ The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
 weights) and must finish before reboot. This script asks every setting
 (disk, user, cache, model set, API URLs) in one UI, then keeps that same
-dialog up with a scrolling log while Arch and tabby-stack install.
+dialog up with the live log while Arch and tabby-stack install.
 install.sh is non-interactive from here so it does not open a second
 dialog. The NVIDIA driver loads on the first real boot; linger then
 starts the API.
@@ -149,7 +149,7 @@ EOF
 
 TSOS_LOG="${TSOS_LOG:-/tmp/tsos-installer.log}"
 TSOS_GAUGE_PID=""
-TSOS_TAIL_PID=""
+TSOS_WATCH_PID=""
 TSOS_GAUGE_DIR=""
 TSOS_GAUGE_FIFO=""
 TSOS_SAVED_FD=""
@@ -239,41 +239,99 @@ restore_tty() {
   } >/dev/tty 2>/dev/null || true
 }
 
-# Same dialog chrome as the questions: a scrolling log box (not a one-line
-# gauge, and not a raw console dump). Command output is appended to TSOS_LOG
-# and tailed into --progressbox.
+# Same dialog as the questions (backtitle, 20x74 box). A tall --gauge stays
+# on the tty; a watcher copies the last log lines into it. Do not use
+# --progressbox (it exits and drops to the console) or write to /dev/tty.
+tsos_log_snippet() {
+  [[ -f "$TSOS_LOG" ]] || return 0
+  tail -n 50 "$TSOS_LOG" 2>/dev/null \
+    | tr '\r' '\n' \
+    | sed -e 's/XXX/***/g' -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' \
+    | grep -v '^[[:space:]]*$' \
+    | tail -n 12 \
+    | cut -c1-70 || true
+}
+
+watch_installer_ui() {
+  set +e
+  local stop="$1"
+  local elapsed=0 last="" pct heading snippet body ipct
+  while [[ ! -f "$stop" ]]; do
+    if [[ -n "${TSOS_GAUGE_PID:-}" ]] && ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+      break
+    fi
+    pct=0
+    heading="Working..."
+    [[ -f "${TSOS_GAUGE_DIR:-}/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null)
+    [[ -f "${TSOS_GAUGE_DIR:-}/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null)
+    [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    if ((pct > 100)); then
+      pct=100
+    fi
+    snippet=$(tsos_log_snippet)
+    if [[ -f "${TSOS_GAUGE_DIR:-}/nested" ]]; then
+      ipct=$(grep -E '^==> \[[0-9]+%\]' "$TSOS_LOG" 2>/dev/null | tail -n1 | sed -n 's/^==> \[\([0-9][0-9]*\)%\].*/\1/p')
+      if [[ "$ipct" =~ ^[0-9]+$ ]]; then
+        pct=$((45 + ipct * 50 / 100))
+        ((pct > 95)) && pct=95
+      fi
+    fi
+    body="$heading"
+    [[ -n "$snippet" ]] && body="$heading
+
+$snippet"
+    if [[ "$body" == "$last" ]]; then
+      elapsed=$((elapsed + 1))
+      body="$body
+(${elapsed}s)"
+    else
+      last=$body
+      elapsed=0
+    fi
+    printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$body" >&3 || true
+    sleep 0.4
+  done
+}
+
 gauge_start() {
   ((USE_TUI)) || return 1
   [[ "$TUI" == dialog ]] || return 1
   { [[ -t 1 ]] || have_console; } || return 1
   touch "$TSOS_LOG"
   TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
-  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/out"
+  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
   mkfifo -m 600 "$TSOS_GAUGE_FIFO"
-  # O_RDWR so tail/dialog open order cannot deadlock.
+  printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
+  printf '%s\n' "Starting..." >"$TSOS_GAUGE_DIR/heading"
   exec 3<>"$TSOS_GAUGE_FIFO"
   dialog --backtitle "$BACKTITLE" --title "Installing" \
-    --progressbox "Same installer UI as the questions. Full log: $TSOS_LOG" 20 74 \
-    <"$TSOS_GAUGE_FIFO" &
+    --gauge "Starting..." 20 74 0 <"$TSOS_GAUGE_FIFO" &
   TSOS_GAUGE_PID=$!
-  tail -n 0 -F "$TSOS_LOG" >&3 2>/dev/null &
-  TSOS_TAIL_PID=$!
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
+  watch_installer_ui "$TSOS_GAUGE_DIR/stop" &
+  TSOS_WATCH_PID=$!
   return 0
 }
 
 gauge_update() {
   local pct="$1" msg="$2"
+  if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
+    printf '%s\n' "$pct" >"$TSOS_GAUGE_DIR/pct"
+    printf '%s\n' "$msg" >"$TSOS_GAUGE_DIR/heading"
+  fi
   log "[${pct}%] $msg"
 }
 
 gauge_stop() {
-  if [[ -n "${TSOS_TAIL_PID:-}" ]]; then
-    kill "$TSOS_TAIL_PID" 2>/dev/null || true
-    wait "$TSOS_TAIL_PID" 2>/dev/null || true
-    TSOS_TAIL_PID=""
+  if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
+    touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true
+  fi
+  if [[ -n "${TSOS_WATCH_PID:-}" ]]; then
+    kill "$TSOS_WATCH_PID" 2>/dev/null || true
+    wait "$TSOS_WATCH_PID" 2>/dev/null || true
+    TSOS_WATCH_PID=""
   fi
   exec 3>&- || true
   if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
@@ -670,8 +728,8 @@ Needed
 
 Next screens ask for the disk, system name, Omarchy, cache,
 model set, and API URLs. After you confirm the wipe, this
-same dialog stays up and scrolls the install log (pacman,
-Python, weight files). install.sh does not open a second
+same dialog stays up and shows the install log (pacman, Python,
+weight files) inside the box. install.sh does not open a second
 dialog.
 
 Esc cancels."
@@ -2187,6 +2245,9 @@ run_tabby_install_chroot() {
     COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
   )
   log "install.sh will use the settings from this UI (no second dialog)"
+  if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
+    touch "$TSOS_GAUGE_DIR/nested"
+  fi
   if [[ -n "${HF_TOKEN:-}" ]]; then
     run_env+=(HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN")
   fi
