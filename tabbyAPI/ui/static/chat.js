@@ -488,6 +488,10 @@ function mountChat(root) {
   let gitBusy = false;
   let gitAction = "";
   let gitReq = 0;
+  let gitPaintSig = "";
+  let gitRefreshing = false;
+  let gitRefreshAgain = false;
+  let gitRefreshTimer = 0;
   let projectFindHits = [];
   let projectFindIndex = 0;
   let termSlots = [{ id: "1", label: "1" }];
@@ -2120,6 +2124,12 @@ function mountChat(root) {
     gitLogRows = [];
     gitBusy = false;
     gitAction = "";
+    gitPaintSig = "";
+    gitRefreshAgain = false;
+    if (gitRefreshTimer) {
+      clearTimeout(gitRefreshTimer);
+      gitRefreshTimer = 0;
+    }
     paintFiles();
     paintFilesChanges();
     closeTerm();
@@ -3110,21 +3120,44 @@ function mountChat(root) {
     if (gitBusy) return;
     gitBusy = true;
     gitAction = act;
-    paintGitList();
+    paintGitList(true);
     try {
       await fn();
     } finally {
       gitBusy = false;
       gitAction = "";
-      paintGitList();
+      paintGitList(true);
     }
   }
 
-  function paintGitList() {
+  function listingHasGitDir() {
+    return filesListing.some((row) => {
+      const first = String(row.path || "").replace(/\\/g, "/").split("/")[0];
+      return first === ".git";
+    });
+  }
+
+  function gitListSignature() {
+    return JSON.stringify({
+      mode: activeMode(),
+      busy: gitBusy,
+      action: gitAction,
+      status: gitStatus,
+      log: gitLogRows,
+      selected: selectedPathFromTab(activeTab),
+      gitTab: isGitTab(activeTabRow()),
+      listingHasGit: listingHasGitDir(),
+    });
+  }
+
+  function paintGitList(force) {
     if (!filesGitList) return;
     paintGitPane();
     filesGitList.setAttribute("aria-busy", gitBusy ? "true" : "false");
     filesGitList.classList.toggle("is-busy", gitBusy);
+    const sig = gitListSignature();
+    if (!force && sig === gitPaintSig && filesGitList.childElementCount) return;
+    gitPaintSig = sig;
     if (activeMode() !== "code") {
       filesGitList.innerHTML = "";
       return;
@@ -3133,10 +3166,7 @@ function mountChat(root) {
       filesGitList.innerHTML = `<p class="muted chat-files-empty">${gitBusyLabel(gitAction)}</p>`;
       return;
     }
-    const listingHasGit = filesListing.some((row) => {
-      const first = String(row.path || "").replace(/\\/g, "/").split("/")[0];
-      return first === ".git";
-    });
+    const listingHasGit = listingHasGitDir();
     if (!gitStatus || !gitStatus.repo) {
       const err = gitStatus && gitStatus.error
         ? `<p class="muted chat-files-empty">${TabbyUI.escapeHtml(gitStatus.error)}</p>`
@@ -3149,6 +3179,10 @@ function mountChat(root) {
       filesGitList.innerHTML = err + actions;
       return;
     }
+    const oldMsg = filesGitList.querySelector("#chat-git-message");
+    const keepMsg = oldMsg && document.activeElement === oldMsg
+      ? { start: oldMsg.selectionStart, end: oldMsg.selectionEnd }
+      : null;
     const branch = gitStatus.branch || "HEAD";
     let track = "";
     if (gitStatus.ahead) track += ` ↑${gitStatus.ahead}`;
@@ -3222,7 +3256,19 @@ function mountChat(root) {
       msg.addEventListener("input", () => {
         gitCommitMsg = msg.value;
       });
+      if (keepMsg) {
+        msg.focus();
+        msg.setSelectionRange(keepMsg.start, keepMsg.end);
+      }
     }
+  }
+
+  function refreshGitSoon() {
+    if (gitRefreshTimer) return;
+    gitRefreshTimer = setTimeout(() => {
+      gitRefreshTimer = 0;
+      refreshGit();
+    }, inFlight ? 1500 : 400);
   }
 
   async function refreshGit() {
@@ -3230,21 +3276,21 @@ function mountChat(root) {
     if (!filesGitList || activeMode() !== "code" || !chatId) {
       gitStatus = null;
       gitLogRows = [];
-      paintGitList();
+      gitPaintSig = "";
+      paintGitList(true);
       return;
     }
-    const req = (gitReq += 1);
-    const nested = gitBusy && gitAction !== "refresh";
-    if (!nested) {
-      gitBusy = true;
-      gitAction = "refresh";
-      paintGitList();
+    if (gitRefreshing) {
+      gitRefreshAgain = true;
+      return;
     }
+    gitRefreshing = true;
+    const req = (gitReq += 1);
     try {
       const data = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git`);
       if (req !== gitReq || chatId !== activeWorkspaceId()) return;
       gitStatus = data && data.repo ? data : { repo: false, files: [], has_creds: Boolean(data && data.has_creds), error: data && data.error };
-      if (gitStatus.repo) {
+      if (gitStatus.repo && (!inFlight || !gitLogRows.length)) {
         try {
           const log = await TabbyUI.api(`workspace/${encodeURIComponent(chatId)}/git/log`);
           if (req !== gitReq || chatId !== activeWorkspaceId()) return;
@@ -3252,7 +3298,7 @@ function mountChat(root) {
         } catch {
           gitLogRows = [];
         }
-      } else {
+      } else if (!gitStatus.repo) {
         gitLogRows = [];
       }
     } catch (err) {
@@ -3263,12 +3309,14 @@ function mountChat(root) {
         error: (err && err.message) || "Could not load git status.",
       };
     } finally {
-      if (req !== gitReq || chatId !== activeWorkspaceId()) return;
-      if (!nested) {
-        gitBusy = false;
-        gitAction = "";
+      gitRefreshing = false;
+      if (req === gitReq && chatId === activeWorkspaceId()) {
+        paintGitList();
       }
-      paintGitList();
+      if (gitRefreshAgain) {
+        gitRefreshAgain = false;
+        refreshGit();
+      }
     }
   }
 
@@ -3327,7 +3375,9 @@ function mountChat(root) {
       }
       if (act === "init" || act === "fetch" || act === "pull" || act === "push" || act === "clear-creds" || act === "refresh") {
         if (act === "refresh") {
-          await refreshGit();
+          await withGitBusy("refresh", async () => {
+            await refreshGit();
+          });
           return;
         }
         await withGitBusy(act, async () => {
@@ -4578,7 +4628,7 @@ function mountChat(root) {
     syncTabs();
     paintTabsAndFiles();
     refreshHistory();
-    if (!gitBusy) refreshGit();
+    refreshGitSoon();
   }
 
   let cropDrag = null;
@@ -12268,6 +12318,9 @@ function mountChat(root) {
       paintCompose();
       renderSidebar();
       refreshPlanBuild();
+      if (endedChatId && chatsShareWorkspace(endedChatId) && activeMode() === "code") {
+        refreshGit();
+      }
       if (endedChatId && store.activeId === endedChatId && activeMode() === "chat") {
         const last = [...messages].reverse().find((item) => item && item.role === "assistant");
         paintFollowups(last && last.content);
