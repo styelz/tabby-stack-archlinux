@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.17"
+SCRIPT_VERSION="1.0.18"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -239,17 +239,29 @@ restore_tty() {
   } >/dev/tty 2>/dev/null || true
 }
 
-# Same dialog as the questions (backtitle, 20x74 box). A tall --gauge stays
-# on the tty; a watcher copies the last log lines into it. Do not use
-# --progressbox (it exits and drops to the console) or write to /dev/tty.
+# Work-phase UI: the same dialog(1) as the questions, drawn on /dev/tty.
+# Height 20 made dialog exit on the live ISO ("window too large"); then
+# stdout was already redirected to the log, so the console froze on
+# "Starting the install...". Keep the box small, confirm it is alive,
+# and only then redirect the shell.
+ensure_work_term() {
+  case "${TERM:-}" in
+    "" | dumb | unknown) export TERM=linux ;;
+  esac
+  stty sane </dev/tty >/dev/tty 2>/dev/null || true
+}
+
 tsos_log_snippet() {
+  local n=4
+  [[ -f "${TSOS_GAUGE_DIR:-}/snip" ]] && n=$(cat "$TSOS_GAUGE_DIR/snip" 2>/dev/null || echo 4)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=4
   [[ -f "$TSOS_LOG" ]] || return 0
-  tail -n 50 "$TSOS_LOG" 2>/dev/null \
+  tail -n 40 "$TSOS_LOG" 2>/dev/null \
     | tr '\r' '\n' \
     | sed -e 's/XXX/***/g' -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' \
     | grep -v '^[[:space:]]*$' \
-    | tail -n 12 \
-    | cut -c1-70 || true
+    | tail -n "$n" \
+    | cut -c1-66 || true
 }
 
 watch_installer_ui() {
@@ -257,7 +269,7 @@ watch_installer_ui() {
   local stop="$1"
   local elapsed=0 last="" pct heading snippet body ipct
   while [[ ! -f "$stop" ]]; do
-    if [[ -n "${TSOS_GAUGE_PID:-}" ]] && ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+    if ! gauge_dialog_alive; then
       break
     fi
     pct=0
@@ -265,9 +277,7 @@ watch_installer_ui() {
     [[ -f "${TSOS_GAUGE_DIR:-}/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null)
     [[ -f "${TSOS_GAUGE_DIR:-}/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null)
     [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
-    if ((pct > 100)); then
-      pct=100
-    fi
+    ((pct > 100)) && pct=100
     snippet=$(tsos_log_snippet)
     if [[ -f "${TSOS_GAUGE_DIR:-}/nested" ]]; then
       ipct=$(grep -E '^==> \[[0-9]+%\]' "$TSOS_LOG" 2>/dev/null | tail -n1 | sed -n 's/^==> \[\([0-9][0-9]*\)%\].*/\1/p')
@@ -293,20 +303,50 @@ $snippet"
   done
 }
 
+gauge_dialog_alive() {
+  local pid="${TSOS_GAUGE_PID:-}" st
+  [[ -n "$pid" && -d "/proc/$pid" ]] || return 1
+  st=$(awk '/^State:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+  # Z = already exited (zombie); dialog never stayed on screen.
+  [[ -n "$st" && "$st" != "Z" ]]
+}
+
+launch_gauge_dialog() {
+  local h="$1" w="$2"
+  dialog --backtitle "$BACKTITLE" --title "Installing" \
+    --gauge "Starting..." "$h" "$w" 0 \
+    <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty &
+  TSOS_GAUGE_PID=$!
+  sleep 0.3
+  gauge_dialog_alive
+}
+
 gauge_start() {
   ((USE_TUI)) || return 1
   [[ "$TUI" == dialog ]] || return 1
-  { [[ -t 1 ]] || have_console; } || return 1
+  have_console || [[ -t 1 ]] || return 1
+  ensure_work_term
   touch "$TSOS_LOG"
   TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
   TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
   mkfifo -m 600 "$TSOS_GAUGE_FIFO"
   printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
   printf '%s\n' "Starting..." >"$TSOS_GAUGE_DIR/heading"
+  printf '%s\n' 4 >"$TSOS_GAUGE_DIR/snip"
   exec 3<>"$TSOS_GAUGE_FIFO"
-  dialog --backtitle "$BACKTITLE" --title "Installing" \
-    --gauge "Starting..." 20 74 0 <"$TSOS_GAUGE_FIFO" &
-  TSOS_GAUGE_PID=$!
+  if ! launch_gauge_dialog 10 70; then
+    wait "${TSOS_GAUGE_PID:-}" 2>/dev/null || true
+    TSOS_GAUGE_PID=""
+    launch_gauge_dialog 8 60 || true
+  fi
+  if ! gauge_dialog_alive; then
+    exec 3>&- || true
+    rm -rf "$TSOS_GAUGE_DIR"
+    TSOS_GAUGE_PID=""
+    TSOS_GAUGE_DIR=""
+    TSOS_GAUGE_FIFO=""
+    return 1
+  fi
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
@@ -337,10 +377,10 @@ gauge_stop() {
   if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
     local _i
     for _i in 1 2 3 4 5 6 7 8 9 10; do
-      kill -0 "$TSOS_GAUGE_PID" 2>/dev/null || break
+      gauge_dialog_alive || break
       sleep 0.1
     done
-    if kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+    if gauge_dialog_alive; then
       kill "$TSOS_GAUGE_PID" 2>/dev/null || true
     fi
     wait "$TSOS_GAUGE_PID" 2>/dev/null || true
@@ -2581,8 +2621,8 @@ main() {
   preflight
   confirm_wipe
   collect_passwords
-  log "Starting the install..."
   gauge_start || true
+  log "Starting the install..."
   gauge_update 2 "Preparing disk"
   disable_live_mkinitcpio_hooks
   timedatectl set-ntp true || true
