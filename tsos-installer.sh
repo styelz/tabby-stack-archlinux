@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.20"
+SCRIPT_VERSION="1.0.21"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -148,9 +148,13 @@ EOF
 }
 
 TSOS_LOG="${TSOS_LOG:-/tmp/tsos-installer.log}"
+TSOS_GAUGE_PID=""
 TSOS_WATCH_PID=""
 TSOS_GAUGE_DIR=""
+TSOS_GAUGE_FIFO=""
 TSOS_SAVED_FD=""
+TSOS_UI_ROWS=24
+TSOS_UI_COLS=80
 
 log() {
   printf '==> %s\n' "$*" >>"$TSOS_LOG"
@@ -237,50 +241,92 @@ restore_tty() {
   } >/dev/tty 2>/dev/null || true
 }
 
-# Work-phase UI uses the same foreground dialog as the questions.
-# A background --gauge is put in state T (SIGTTOU / "suspended (tty output)")
-# on this ISO, so it never paints and the shell is left showing stdout.
+# Work phase: one dialog --gauge in the background for the whole run, fed
+# through a FIFO on fd 3. Two rules keep it on screen:
+#   * the dialog child must not inherit fd 3 (3>&-), or the FIFO never
+#     reaches EOF and gauge_stop hangs forever
+#   * every child must write to the log, never to /dev/tty, or it paints
+#     over the box
 ensure_work_term() {
-  set +m 2>/dev/null || true
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
   esac
-  stty sane -tostop </dev/tty >/dev/null 2>&1 || true
-}
-
-tsos_log_snippet() {
-  local n=8
-  [[ -f "$TSOS_LOG" ]] || return 0
-  tail -n 40 "$TSOS_LOG" 2>/dev/null \
-    | tr '\r' '\n' \
-    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' \
-    | grep -v '^[[:space:]]*$' \
-    | tail -n "$n" \
-    | cut -c1-70 || true
-}
-
-paint_work_ui() {
-  local body="$1"
-  ((USE_TUI)) || return 0
-  [[ "$TUI" == dialog ]] || return 0
-  if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
-    dialog --backtitle "$BACKTITLE" --title "Installing  tsos ${SCRIPT_VERSION}" \
-      --infobox "$body" 12 70 >/dev/tty || true
-  else
-    dialog --backtitle "$BACKTITLE" --title "Installing  tsos ${SCRIPT_VERSION}" \
-      --infobox "$body" 12 70 || true
+  # Insurance for a tty with tostop set: a background write would get SIGTTOU.
+  stty -tostop </dev/tty >/dev/null 2>&1 || true
+  local size
+  size=$(stty size </dev/tty 2>/dev/null || true)
+  if [[ "$size" =~ ^[0-9]+[[:space:]]+[0-9]+$ ]]; then
+    TSOS_UI_ROWS=${size%%[[:space:]]*}
+    TSOS_UI_COLS=${size##*[[:space:]]}
   fi
+  ((TSOS_UI_ROWS >= 14)) || TSOS_UI_ROWS=24
+  ((TSOS_UI_COLS >= 50)) || TSOS_UI_COLS=80
 }
 
-work_ui_body() {
-  local pct heading snippet
-  pct=0
-  heading="Working..."
-  [[ -f "${TSOS_GAUGE_DIR:-}/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null || true)
-  [[ -f "${TSOS_GAUGE_DIR:-}/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null || true)
-  [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
-  snippet=$(tsos_log_snippet)
-  printf '[%s%%] %s\n\n%s\n' "$pct" "$heading" "$snippet"
+gauge_height() {
+  local h=$((TSOS_UI_ROWS - 2))
+  ((h > 22)) && h=22
+  ((h < 12)) && h=12
+  printf '%s' "$h"
+}
+
+gauge_width() {
+  local w=$((TSOS_UI_COLS - 4))
+  ((w > 96)) && w=96
+  ((w < 50)) && w=50
+  printf '%s' "$w"
+}
+
+# Last few log lines, stripped of escape codes and cut to the box width.
+tsos_log_snippet() {
+  local lines=$1 width=$2
+  [[ -f "$TSOS_LOG" ]] || return 0
+  tail -n 60 "$TSOS_LOG" 2>/dev/null \
+    | tr '\r' '\n' \
+    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' \
+    | grep -v '^[[:space:]]*$' \
+    | tail -n "$lines" \
+    | cut -c1-"$width" || true
+}
+
+# install.sh reports "==> [N%] step" in its own log. Map that onto 45-95.
+nested_percent() {
+  local marker="${TSOS_GAUGE_DIR:-}/nested" log pct
+  [[ -s "$marker" ]] || return 1
+  log=$(cat "$marker" 2>/dev/null) || return 1
+  [[ -f "$log" ]] || return 1
+  pct=$(grep -aoE '^==> \[[0-9]+%\]' "$log" 2>/dev/null | tail -n1 | tr -dc '0-9')
+  [[ "$pct" =~ ^[0-9]+$ ]] || return 1
+  pct=$((45 + pct * 50 / 100))
+  ((pct > 95)) && pct=95
+  printf '%s' "$pct"
+}
+
+# Repaints once a second so a long pacstrap / pip / download is visibly alive.
+watch_installer_ui() {
+  local stop="$1" width="$2" lines="$3"
+  local pct heading body last="" elapsed=0 nested
+  while [[ ! -f "$stop" ]]; do
+    pct=0
+    heading="Working..."
+    [[ -f "$TSOS_GAUGE_DIR/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null)
+    [[ -f "$TSOS_GAUGE_DIR/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null)
+    [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    if nested=$(nested_percent); then
+      pct=$nested
+    fi
+    body="$heading"
+    if [[ "$body" == "$last" ]]; then
+      elapsed=$((elapsed + 1))
+      body="$heading  (${elapsed}s)"
+    else
+      last=$heading
+      elapsed=0
+    fi
+    printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
+      "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
+    sleep 1
+  done
 }
 
 gauge_start() {
@@ -289,13 +335,36 @@ gauge_start() {
   have_console || [[ -t 1 ]] || return 1
   ensure_work_term
   touch "$TSOS_LOG"
+  local h w
+  h=$(gauge_height)
+  w=$(gauge_width)
   TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
+  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
+  mkfifo -m 600 "$TSOS_GAUGE_FIFO"
   printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
   printf '%s\n' "Starting the install..." >"$TSOS_GAUGE_DIR/heading"
-  paint_work_ui "[0%] Starting the install (tsos ${SCRIPT_VERSION})"
+  # O_RDWR: opening the FIFO does not block before dialog is reading it.
+  exec 3<>"$TSOS_GAUGE_FIFO"
+  # 3>&- is load bearing. Without it dialog holds the write end open.
+  dialog --backtitle "$BACKTITLE" --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
+    --gauge "Starting the install..." "$h" "$w" 0 \
+    <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
+  TSOS_GAUGE_PID=$!
+  sleep 0.4
+  if ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+    exec 3>&- || true
+    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
+    rm -rf "$TSOS_GAUGE_DIR"
+    TSOS_GAUGE_PID=""
+    TSOS_GAUGE_DIR=""
+    TSOS_GAUGE_FIFO=""
+    return 1
+  fi
   exec 4>&1 5>&2
   TSOS_SAVED_FD=1
   exec >>"$TSOS_LOG" 2>&1
+  watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$((h - 9))" &
+  TSOS_WATCH_PID=$!
   return 0
 }
 
@@ -306,9 +375,10 @@ gauge_update() {
     printf '%s\n' "$msg" >"$TSOS_GAUGE_DIR/heading"
   fi
   log "[${pct}%] $msg"
-  paint_work_ui "$(work_ui_body)"
 }
 
+# Order matters: stop the watcher first, then close fd 3. Any process still
+# holding the write end keeps dialog waiting for EOF.
 gauge_stop() {
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true
@@ -318,8 +388,20 @@ gauge_stop() {
     wait "$TSOS_WATCH_PID" 2>/dev/null || true
     TSOS_WATCH_PID=""
   fi
+  exec 3>&- || true
+  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
+    local i=0
+    while kill -0 "$TSOS_GAUGE_PID" 2>/dev/null && ((i < 30)); do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    kill "$TSOS_GAUGE_PID" 2>/dev/null || true
+    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
+    TSOS_GAUGE_PID=""
+  fi
   rm -rf "${TSOS_GAUGE_DIR:-}"
   TSOS_GAUGE_DIR=""
+  TSOS_GAUGE_FIFO=""
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
     exec 1>&4 2>&5
     exec 4>&- 5>&-
@@ -2216,9 +2298,6 @@ run_tabby_install_chroot() {
     COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
   )
   log "install.sh will use the settings from this UI (no second dialog)"
-  if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
-    touch "$TSOS_GAUGE_DIR/nested"
-  fi
   if [[ -n "${HF_TOKEN:-}" ]]; then
     run_env+=(HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN")
   fi
@@ -2232,17 +2311,27 @@ run_tabby_install_chroot() {
     echo "nested=1 verbose=1 (output stays in the installer dialog)"
   } >>"$tabby_log"
   chown_target_user_tree "$stack_home/tabby-install.log"
-
-  set +e
-  if command -v stdbuf >/dev/null 2>&1; then
-    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
-      bash "$stack_home/install.sh" </dev/null 3>&- 2>&1 | stdbuf -oL tee -a "$tabby_log"
-  else
-    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
-      bash "$stack_home/install.sh" </dev/null 3>&- 2>&1 | tee -a "$tabby_log"
+  # Tells the UI watcher to take the percentage from install.sh's own log.
+  if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
+    printf '%s\n' "$tabby_log" >"$TSOS_GAUGE_DIR/nested"
   fi
-  status=${PIPESTATUS[0]}
+
+  # 3>&- everywhere: nothing in this pipeline may hold the gauge FIFO open.
+  # Output goes to install.sh's log and (via this shell's stdout) to the
+  # tsos log the dialog box is reading. Never to /dev/tty.
+  set +e
+  {
+    if command -v stdbuf >/dev/null 2>&1; then
+      arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
+        bash "$stack_home/install.sh" </dev/null 2>&1 | stdbuf -oL tee -a "$tabby_log"
+    else
+      arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- env "${run_env[@]}" \
+        bash "$stack_home/install.sh" </dev/null 2>&1 | tee -a "$tabby_log"
+    fi
+    status=${PIPESTATUS[0]}
+  } 3>&-
   set -e
+  rm -f "${TSOS_GAUGE_DIR:-/nonexistent}/nested"
   chown_target_user_tree "$stack_home/tabby-install.log"
 
   if ((status != 0)); then
