@@ -2,6 +2,10 @@
 # and revoked per user. Changes to this file are picked up by a running
 # server automatically. Use tools/add_api_key.py to generate and add a key.
 #
+# Login passwords are also accepted as keys without listing them here:
+# the Linux stack account password is the admin key, and each Tabby-only
+# user's login password is an API key.
+#
 # api_key:
 #   - first key
 #   - second key

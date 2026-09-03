@@ -94,6 +94,7 @@ Configure an OpenAI-compatible provider in your editor:
 |---|---|
 | Base URL | `http://<gpu-host>:5000/v1` on a trusted LAN/Tailscale network, or your configured HTTPS `/v1` URL |
 | Model name | `gpt-4o` |
+| API key | Your UI login password (Linux account password for the stack admin, or the password set on the Users page for extra Tabby accounts) |
 
 Leave the model name as **`gpt-4o`**. It is only a compatibility label that keeps editor tool support enabled; inference still runs on the local profile shown by `list models` or the Status page. Do not send Tabby workspace tools from an editor — the editor already has its own.
 

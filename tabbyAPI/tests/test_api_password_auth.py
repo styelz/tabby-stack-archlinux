@@ -1,0 +1,82 @@
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fastapi import HTTPException
+
+from common import auth as api_auth
+from ui import auth, users
+
+
+class ApiPasswordAuthTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        users.set_users_path(Path(self.tmp.name) / "ui_users.json")
+        auth.clear_sessions()
+        auth.set_authenticator(None)
+        api_auth.clear_password_cache()
+        self._prev_keys = api_auth.AUTH_KEYS
+        self._prev_disable = api_auth.DISABLE_AUTH
+        api_auth.AUTH_KEYS = api_auth.AuthKeys(api_key="yaml-api", admin_key="yaml-admin")
+        api_auth.DISABLE_AUTH = False
+        self._stack_patch = mock.patch.object(auth, "stack_username", return_value="tabby")
+        self._stack_patch.start()
+        self._pam_patch = mock.patch.object(auth, "_pam_authenticate", return_value=False)
+        self._pam_patch.start()
+
+    def tearDown(self):
+        self._pam_patch.stop()
+        self._stack_patch.stop()
+        api_auth.AUTH_KEYS = self._prev_keys
+        api_auth.DISABLE_AUTH = self._prev_disable
+        api_auth.clear_password_cache()
+        auth.set_authenticator(None)
+        auth.clear_sessions()
+        users.set_users_path(None)
+        self.tmp.cleanup()
+
+    def test_yaml_keys_still_work(self):
+        self.assertEqual(api_auth.permission_for_token("yaml-admin"), "admin")
+        self.assertEqual(api_auth.permission_for_token("yaml-api"), "api")
+        self.assertIsNone(api_auth.permission_for_token("nope"))
+
+    def test_extra_user_password_is_api_key(self):
+        with mock.patch.object(auth, "stack_username", return_value="tabby"):
+            users.create_user("alice", "secret123")
+            with mock.patch.object(auth, "_pam_authenticate", return_value=False) as pam:
+                self.assertEqual(api_auth.permission_for_token("secret123"), "api")
+                pam.assert_not_called()
+                self.assertIsNone(api_auth.permission_for_token("wrongpass"))
+                pam.assert_called()
+
+    def test_linux_password_is_admin_key(self):
+        auth.set_authenticator(lambda user, password: user == "tabby" and password == "pbp")
+        with mock.patch.object(auth, "stack_username", return_value="tabby"):
+            self.assertEqual(api_auth.permission_for_token("pbp"), "admin")
+            self.assertIsNone(api_auth.permission_for_token("other"))
+
+    def test_extra_user_password_is_not_admin(self):
+        with mock.patch.object(auth, "stack_username", return_value="tabby"):
+            users.create_user("alice", "secret123")
+            self.assertEqual(api_auth.permission_for_token("secret123"), "api")
+
+        async def _check():
+            with self.assertRaises(HTTPException) as raised:
+                await api_auth.check_admin_key(authorization="Bearer secret123")
+            self.assertEqual(raised.exception.status_code, 401)
+            self.assertEqual(
+                await api_auth.check_api_key(authorization="Bearer secret123"),
+                "Bearer secret123",
+            )
+
+        asyncio.run(_check())
+
+    def test_password_reset_invalidates_cache(self):
+        with mock.patch.object(auth, "stack_username", return_value="tabby"):
+            users.create_user("alice", "secret123")
+            self.assertEqual(api_auth.permission_for_token("secret123"), "api")
+            users.set_password("alice", "newsecret")
+            self.assertIsNone(api_auth.permission_for_token("secret123"))
+            self.assertEqual(api_auth.permission_for_token("newsecret"), "api")

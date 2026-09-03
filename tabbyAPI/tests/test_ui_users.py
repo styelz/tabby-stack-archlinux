@@ -26,6 +26,8 @@ class UiUsersTests(unittest.TestCase):
         self.assertEqual(created["username"], "alice")
         self.assertTrue(users.verify_extra_user("alice", "secret123"))
         self.assertFalse(users.verify_extra_user("alice", "wrong"))
+        self.assertEqual(users.match_password("secret123"), "alice")
+        self.assertIsNone(users.match_password("wrong"))
         self.assertEqual(users.list_users()[0]["username"], "alice")
 
     def test_duplicate_and_admin_name_rejected(self):

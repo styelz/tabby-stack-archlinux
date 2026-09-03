@@ -50,7 +50,8 @@ class NetworkConfig(BaseConfigModel):
         description=(
             "Disable HTTP token authentication with requests.\n"
             "WARNING: This will make your instance vulnerable!\n"
-            "Turn on this option if you are ONLY connecting from localhost."
+            "Turn on this option if you are ONLY connecting from localhost.\n"
+            "When false, login passwords are accepted as API keys."
         ),
     )
     disable_fetch_requests: Optional[bool] = Field(

@@ -13,6 +13,7 @@ Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; t
 
 - Base URL: the `/v1` URL you configured (LAN HTTP, Tailscale, or HTTPS via the reverse SSH tunnel)
 - Model name: **`gpt-4o`** (leave it)
+- API key: your UI login password — the Linux account password for the stack admin, or the password the administrator set for a Tabby-only user. Optional extra keys can still live in `tabbyAPI/api_tokens.yml`.
 - Health: `GET /health` on the same origin
 - Browser UI: `/v1/ui` on that same origin. Sign in with the Linux account that runs the stack (admin), or a Tabby-only account that admin created.
   - **Chat** — same Chat Completions pipeline as an editor, without file tools (searchable history, follow-up queue)

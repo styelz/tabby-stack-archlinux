@@ -18,6 +18,9 @@ network:
   # Disable HTTP token authentication with requests.
   # WARNING: This will make your instance vulnerable!
   # Turn on this option if you are ONLY connecting from localhost.
+  # When false, each user's login password is their API key (Linux password
+  # for the stack admin; the Users-page password for extra Tabby accounts).
+  # Optional extra keys can still be listed in api_tokens.yml.
   disable_auth: false
 
   # Disable fetching external content in response to requests,such as images from URLs.

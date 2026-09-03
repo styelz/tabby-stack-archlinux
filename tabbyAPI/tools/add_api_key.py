@@ -1,7 +1,9 @@
 """
 Generate a random 128-bit API key, add it to api_tokens.yml and print it.
 
-The running server picks the new key up automatically; no restart needed.
+Login passwords are already accepted as API keys. This tool only adds an
+optional extra yaml key. The running server picks the new key up
+automatically; no restart needed.
 Run from the TabbyAPI directory: python tools/add_api_key.py
 """
 

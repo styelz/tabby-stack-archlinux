@@ -593,6 +593,10 @@ def help_text(api_base: Optional[str] = None, request=None) -> str:
         f"- Browser UI: `{ui_url}`",
         f"- CPU embeddings: `POST {embed}`",
         "",
+        "The editor **API key** is your UI login password: the Linux account "
+        "password for the stack admin, or the password set on the Users page "
+        "for a Tabby-only account.",
+        "",
         "The NVIDIA GPU runs either a language model or ComfyUI, never both at once. "
         "CPU embeddings remain available in either mode. Browser and editor requests "
         "share one GPU slot.",

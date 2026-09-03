@@ -4,9 +4,12 @@ application, it should be fine.
 """
 
 import asyncio
+import hashlib
 import io
 import os
 import secrets
+import threading
+import time
 from typing import List, Optional, Union
 
 import aiofiles
@@ -16,7 +19,6 @@ from pydantic import BaseModel, PrivateAttr
 from ruamel.yaml import YAML
 
 from common.logger import xlogger
-from common.utils import coalesce
 
 AUTH_FILE = "api_tokens.yml"
 
@@ -60,6 +62,14 @@ class AuthKeys(BaseModel):
 # Global auth constants
 AUTH_KEYS: Optional[AuthKeys] = None
 DISABLE_AUTH: bool = False
+
+# Login passwords are accepted as API keys (Linux admin password = admin key;
+# each Tabby-only user's password = an API key). Cache successes so PAM and
+# PBKDF2 are not run on every Chat Completions request.
+PASSWORD_CACHE_TTL_S = 300.0
+PASSWORD_FAIL_TTL_S = 2.0
+_password_cache_lock = threading.Lock()
+_password_cache: dict[str, tuple[Optional[str], float, str]] = {}
 
 # Serializes reloads of the auth file. Reads don't need the lock: the working
 # set of keys is swapped in as one immutable object, and every check function
@@ -161,11 +171,87 @@ async def load_auth_keys(disable_from_config: bool):
         _watch_task = asyncio.create_task(_watch_auth_file())
 
     logger.info(
-        f"Your API key is: {_format_api_keys(AUTH_KEYS)}\n"
-        f"Your admin key is: {AUTH_KEYS.admin_key}\n"
-        "If these keys get compromised, make sure to delete api_tokens.yml "
-        "and restart the server. Have fun!"
+        f"Login passwords are also API keys: the Linux account password for "
+        f"admin endpoints, and each Tabby-only user's password for API calls.\n"
+        f"Optional extra keys from {AUTH_FILE}: {_format_api_keys(AUTH_KEYS)}\n"
+        f"Optional extra admin key from {AUTH_FILE}: {AUTH_KEYS.admin_key}\n"
+        "If yaml keys get compromised, delete api_tokens.yml and restart. "
+        "Have fun!"
     )
+
+
+def clear_password_cache() -> None:
+    with _password_cache_lock:
+        _password_cache.clear()
+
+
+def _token_digest(test_key: str) -> str:
+    return hashlib.sha256(test_key.encode("utf-8")).hexdigest()
+
+
+def _extra_users_stamp() -> str:
+    from ui.users import password_hashes_stamp
+
+    return password_hashes_stamp()
+
+
+def _presented_token(*candidates: Optional[str]) -> Optional[str]:
+    for raw in candidates:
+        if not isinstance(raw, str) or not raw:
+            continue
+        if raw.lower().startswith("bearer"):
+            parts = raw.split(" ", 1)
+            if len(parts) < 2 or not parts[1].strip():
+                continue
+            return parts[1]
+        return raw
+    return None
+
+
+def _yaml_permission(test_key: str) -> Optional[str]:
+    auth_keys = AUTH_KEYS
+    if auth_keys is None:
+        return None
+    if auth_keys.verify_key(test_key, "admin_key"):
+        return "admin"
+    if auth_keys.verify_key(test_key, "api_key"):
+        return "api"
+    return None
+
+
+def _login_permission(test_key: str) -> Optional[str]:
+    from ui.auth import authenticate_user, stack_username
+    from ui.users import match_password
+
+    if match_password(test_key):
+        return "api"
+    admin = stack_username()
+    if admin and authenticate_user(admin, test_key):
+        return "admin"
+    return None
+
+
+def permission_for_token(test_key: str) -> Optional[str]:
+    """Return 'admin', 'api', or None for a presented API/admin token."""
+    if not test_key:
+        return None
+    yaml_perm = _yaml_permission(test_key)
+    if yaml_perm:
+        return yaml_perm
+    digest = _token_digest(test_key)
+    stamp = _extra_users_stamp()
+    now = time.time()
+    with _password_cache_lock:
+        hit = _password_cache.get(digest)
+        if hit is not None:
+            perm, expires, cached_stamp = hit
+            if now < expires and cached_stamp == stamp:
+                return perm
+    perm = _login_permission(test_key)
+    ttl = PASSWORD_CACHE_TTL_S if perm else PASSWORD_FAIL_TTL_S
+    with _password_cache_lock:
+        _password_cache[digest] = (perm, now + ttl, stamp)
+    return perm
 
 
 def get_key_permission(request: Request):
@@ -179,10 +265,7 @@ def get_key_permission(request: Request):
     if DISABLE_AUTH:
         return "admin"
 
-    auth_keys = AUTH_KEYS
-
-    # Hyphens are okay here
-    test_key = coalesce(
+    test_key = _presented_token(
         request.headers.get("x-admin-key"),
         request.headers.get("x-api-key"),
         request.headers.get("authorization"),
@@ -191,15 +274,10 @@ def get_key_permission(request: Request):
     if test_key is None:
         raise ValueError("The provided authentication key is missing.")
 
-    if test_key.lower().startswith("bearer"):
-        test_key = test_key.split(" ")[1]
-
-    if auth_keys.verify_key(test_key, "admin_key"):
-        return "admin"
-    elif auth_keys.verify_key(test_key, "api_key"):
-        return "api"
-    else:
-        raise ValueError("The provided authentication key is invalid.")
+    perm = permission_for_token(test_key)
+    if perm:
+        return perm
+    raise ValueError("The provided authentication key is invalid.")
 
 
 async def check_api_key(x_api_key: str = Header(None), authorization: str = Header(None)):
@@ -209,23 +287,13 @@ async def check_api_key(x_api_key: str = Header(None), authorization: str = Head
     if DISABLE_AUTH:
         return
 
-    auth_keys = AUTH_KEYS
-
-    if x_api_key:
-        if not auth_keys.verify_key(x_api_key, "api_key"):
-            raise HTTPException(401, "Invalid API key")
-        return x_api_key
-
-    if authorization:
-        split_key = authorization.split(" ")
-        if len(split_key) < 2:
-            raise HTTPException(401, "Invalid API key")
-        if split_key[0].lower() != "bearer" or not auth_keys.verify_key(split_key[1], "api_key"):
-            raise HTTPException(401, "Invalid API key")
-
-        return authorization
-
-    raise HTTPException(401, "Please provide an API key")
+    token = _presented_token(x_api_key, authorization)
+    if not token:
+        raise HTTPException(401, "Please provide an API key")
+    perm = await asyncio.to_thread(permission_for_token, token)
+    if perm not in ("admin", "api"):
+        raise HTTPException(401, "Invalid API key")
+    return x_api_key if isinstance(x_api_key, str) else authorization
 
 
 async def check_admin_key(x_admin_key: str = Header(None), authorization: str = Header(None)):
@@ -235,19 +303,10 @@ async def check_admin_key(x_admin_key: str = Header(None), authorization: str = 
     if DISABLE_AUTH:
         return
 
-    auth_keys = AUTH_KEYS
-
-    if x_admin_key:
-        if not auth_keys.verify_key(x_admin_key, "admin_key"):
-            raise HTTPException(401, "Invalid admin key")
-        return x_admin_key
-
-    if authorization:
-        split_key = authorization.split(" ")
-        if len(split_key) < 2:
-            raise HTTPException(401, "Invalid admin key")
-        if split_key[0].lower() != "bearer" or not auth_keys.verify_key(split_key[1], "admin_key"):
-            raise HTTPException(401, "Invalid admin key")
-        return authorization
-
-    raise HTTPException(401, "Please provide an admin key")
+    token = _presented_token(x_admin_key, authorization)
+    if not token:
+        raise HTTPException(401, "Please provide an admin key")
+    perm = await asyncio.to_thread(permission_for_token, token)
+    if perm != "admin":
+        raise HTTPException(401, "Invalid admin key")
+    return x_admin_key if isinstance(x_admin_key, str) else authorization

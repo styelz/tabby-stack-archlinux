@@ -332,3 +332,28 @@ def verify_extra_user(username: str, password: str) -> bool:
     if not user:
         return False
     return verify_password(password, str(user.get("password_hash") or ""))
+
+
+def password_hashes_stamp() -> str:
+    """Fingerprint of extra-user password hashes, for API-key cache invalidation."""
+    with _LOCK:
+        parts = []
+        for user in _load().get("users") or []:
+            if not isinstance(user, dict):
+                continue
+            parts.append(str(user.get("password_hash") or ""))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def match_password(password: str) -> Optional[str]:
+    """Return the extra Tabby username whose login password matches, if any."""
+    if not password:
+        return None
+    with _LOCK:
+        rows = [u for u in (_load().get("users") or []) if isinstance(u, dict)]
+    for user in rows:
+        name = str(user.get("username") or "").strip()
+        stored = str(user.get("password_hash") or "")
+        if name and verify_password(password, stored):
+            return name
+    return None
