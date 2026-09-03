@@ -236,6 +236,18 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# ffmpeg depends on virtual "jack". Desktop Arch often has pipewire-jack instead.
+package_missing() {
+  local p="$1"
+  if pacman -Q "$p" >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ "$p" == jack2 ]] && pacman -Q pipewire-jack >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
 # Free GiB on the filesystem that will hold a path that may not exist yet.
 free_gib() {
   local p="$1"
@@ -1617,7 +1629,7 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
   progress 10 "Checking packages"
   missing=()
   for p in "${PACKAGES[@]}"; do
-    pacman -Q "$p" >/dev/null 2>&1 || missing+=("$p")
+    package_missing "$p" && missing+=("$p")
   done
   if ((${#missing[@]})); then
     echo "Installing missing packages: ${missing[*]}" >> "$INSTALL_LOG"
@@ -1625,7 +1637,14 @@ if [[ "$UPDATE_MODE" -eq 1 ]]; then
   fi
 else
   progress 10 "Installing packages"
-  run_quiet sudo -n pacman -S --needed --noconfirm "${PACKAGES[@]}"
+  install_packages=()
+  for p in "${PACKAGES[@]}"; do
+    if [[ "$p" == jack2 ]] && pacman -Q pipewire-jack >/dev/null 2>&1; then
+      continue
+    fi
+    install_packages+=("$p")
+  done
+  run_quiet sudo -n pacman -S --needed --noconfirm "${install_packages[@]}"
 fi
 
 if ! need_cmd nvidia-smi; then
