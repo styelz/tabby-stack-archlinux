@@ -10,7 +10,7 @@ model:
   vision: false
   template_vars_default: {}
   template_vars_force:
-    enable_thinking: false
+    enable_thinking: true
   reasoning: true
   reasoning_start_token: "<|channel>thought"
   reasoning_end_token: "<channel|>"

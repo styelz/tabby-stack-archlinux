@@ -10,11 +10,11 @@ model:
   vision: false
   template_vars_default: {}
   template_vars_force:
-    enable_thinking: false
-  reasoning: false
+    enable_thinking: true
+  reasoning: true
   reasoning_start_token: "<think>"
   reasoning_end_token: "</think>"
-  start_in_reasoning: auto
+  start_in_reasoning: always
   tool_format: qwen3_5
   harmony: false
   muse_glimmer: false

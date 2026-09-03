@@ -191,11 +191,13 @@ model:
   # Like template_vars_default, but these override any values sent by the client.
   # Replaces the deprecated force_enable_thinking option, which is still accepted
   # as an alias for {enable_thinking: true}.
-  template_vars_force: {}
+  # Stack default: thinking on for coding LLMs (profiles force this too).
+  template_vars_force:
+    enable_thinking: true
 
   # Enable reasoning parser (default: False).
   # Do NOT enable this if the model is not a reasoning model (e.g. deepseek-r1 series)
-  reasoning: false
+  reasoning: true
 
   # The start token for reasoning content (default: "<think>")
   reasoning_start_token: "<think>"
@@ -206,7 +208,7 @@ model:
   # Whether generation starts inside a reasoning block (default: auto).
   # Options: auto, always, never
   # auto guesses by scanning the end of the templated prompt for an unclosed reasoning start token.
-  start_in_reasoning: auto
+  start_in_reasoning: always
 
   # Parse tool calls that occur inside reasoning content (default: True).
   # If False, tool call tags inside a reasoning block are treated as plain reasoning text.
