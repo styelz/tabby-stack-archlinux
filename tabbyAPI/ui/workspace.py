@@ -6,6 +6,7 @@ import contextvars
 import difflib
 import fnmatch
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -13,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import threading
 import time
 import zipfile
@@ -142,21 +144,69 @@ def workspace_root(
     return root
 
 
-def resolve_rel(root: Path, rel: str) -> Path:
+def rel_parts(rel: str) -> tuple[str, ...]:
     text = str(rel or "").strip().replace("\\", "/")
     if not text or text.startswith("/") or text.startswith("~"):
         raise ValueError("Invalid path")
     path = Path(text)
     if path.is_absolute() or any(part == ".." for part in path.parts):
         raise ValueError("Invalid path")
-    parts = [part for part in path.parts if part not in ("", ".")]
+    parts = tuple(part for part in path.parts if part not in ("", "."))
     if not parts:
         raise ValueError("Invalid path")
+    return parts
+
+
+def resolve_rel(root: Path, rel: str) -> Path:
+    parts = rel_parts(rel)
     base = root.resolve()
     dest = (base.joinpath(*parts)).resolve()
     if dest != base and base not in dest.parents:
         raise ValueError("Invalid path")
     return dest
+
+
+def _write_bytes_nofollow(root: Path, rel: str, data: bytes) -> None:
+    """Write under root without following symlinks in any path component."""
+    parts = rel_parts(rel)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    fds: list[int] = []
+    try:
+        fds.append(os.open(str(root.resolve()), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC))
+        for part in parts[:-1]:
+            parent = fds[-1]
+            try:
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | nofollow,
+                    dir_fd=parent,
+                )
+            except FileNotFoundError:
+                os.mkdir(part, 0o700, dir_fd=parent)
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | nofollow,
+                    dir_fd=parent,
+                )
+            except OSError as exc:
+                raise ValueError("Invalid path") from exc
+            fds.append(child)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | nofollow
+        try:
+            fd = os.open(parts[-1], flags, 0o600, dir_fd=fds[-1])
+        except OSError as exc:
+            raise ValueError("Invalid path") from exc
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    finally:
+        for handle in reversed(fds):
+            os.close(handle)
 
 
 def _is_inside(root: Path, path: Path) -> bool:
@@ -1330,6 +1380,28 @@ def workspace_instructions(username: str, chat_id: str) -> str:
     return ""
 
 
+def _assert_public_clone_host(host: str) -> None:
+    text = str(host or "").strip().lower().rstrip(".")
+    if not text or text in {"localhost", "localhost.localdomain"}:
+        raise ValueError("Clone URL host is not allowed.")
+    try:
+        parsed_ip = ipaddress.ip_address(text)
+    except ValueError:
+        parsed_ip = None
+    if parsed_ip is not None and not parsed_ip.is_global:
+        raise ValueError("Clone URL host is not allowed.")
+    try:
+        infos = socket.getaddrinfo(text, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("Clone URL host could not be resolved.") from exc
+    if not infos:
+        raise ValueError("Clone URL host could not be resolved.")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise ValueError("Clone URL host is not allowed.")
+
+
 def _https_clone_url(raw: str) -> tuple[str, str]:
     parsed = urlparse(str(raw or "").strip())
     if parsed.scheme != "https" or not parsed.netloc:
@@ -1339,6 +1411,7 @@ def _https_clone_url(raw: str) -> tuple[str, str]:
     host = str(parsed.hostname or "").strip().lower()
     if not host or host in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("Clone URL host is not allowed.")
+    _assert_public_clone_host(host)
     path = parsed.path or ""
     clean = urlunparse(("https", parsed.netloc, path, "", "", ""))
     name = Path(path.rstrip("/")).name or "repo"
@@ -1442,9 +1515,7 @@ def write_text(
             previous = None
         if previous is not None and previous != data:
             _record_history(username, chat_id, rel, previous)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    os.chmod(path, 0o600)
+    _write_bytes_nofollow(root, rel, data)
     written = path.relative_to(root.resolve()).as_posix()
     if sync_images and Path(written).suffix.lower() in _PAGE_SUFFIXES:
         _resync_existing_image_refs(username, chat_id)
@@ -1715,9 +1786,7 @@ def copy_bytes(username: str, chat_id: str, rel: str, data: bytes) -> str:
     extra_files = 0 if path.is_file() else 1
     extra_bytes = len(raw) - (path.stat().st_size if path.is_file() else 0)
     _check_caps(root, extra_bytes=max(0, extra_bytes), extra_files=extra_files)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(raw)
-    os.chmod(path, 0o600)
+    _write_bytes_nofollow(root, rel, raw)
     return path.relative_to(root.resolve()).as_posix()
 
 

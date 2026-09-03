@@ -272,10 +272,18 @@ async def _run_console_job(
 
 async def run_console_chat(request: Request, body: dict[str, Any], username: str = ""):
     if body.get("cancel"):
-        abort_flight(username)
+        abort_flight(
+            username,
+            str(body.get("conversation_id") or body.get("chat_id") or ""),
+        )
         return {"ok": True}
     if body.get("resume"):
-        return stream_response(get_flight(username))
+        return stream_response(
+            get_flight(
+                username,
+                str(body.get("conversation_id") or body.get("chat_id") or ""),
+            )
+        )
 
     code = is_code_request(body)
     try:

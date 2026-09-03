@@ -69,6 +69,37 @@ class FlightRegisterTests(unittest.TestCase):
         register_flight(second)
         self.assertTrue(first.abort_event.is_set())
 
+    def test_abort_is_scoped_to_chat_id(self):
+        from ui.flight import abort_flight
+
+        first = ConsoleFlight("u", "chat-a", "chat", "one")
+        second = ConsoleFlight("u", "chat-b", "chat", "two")
+        register_flight(first)
+        register_flight(second)
+        self.assertTrue(abort_flight("u", "chat-a"))
+        self.assertTrue(first.abort_event.is_set())
+        self.assertFalse(second.abort_event.is_set())
+        self.assertTrue(abort_flight("u", "chat-b"))
+        self.assertTrue(second.abort_event.is_set())
+
+    def test_abort_other_chat_does_not_stop_current(self):
+        from ui.flight import abort_flight
+
+        flight = ConsoleFlight("u", "chat-b", "chat", "hello")
+        register_flight(flight)
+        self.assertFalse(abort_flight("u", "chat-a"))
+        self.assertFalse(flight.abort_event.is_set())
+
+    def test_get_flight_by_chat_id_after_replacement(self):
+        first = ConsoleFlight("u", "chat-a", "chat", "one")
+        second = ConsoleFlight("u", "chat-b", "chat", "two")
+        register_flight(first)
+        register_flight(second)
+        self.assertIs(get_flight("u"), second)
+        self.assertIs(get_flight("u", "chat-a"), first)
+        self.assertIs(get_flight("u", "chat-b"), second)
+        self.assertIsNone(get_flight("u", "missing"))
+
 
 if __name__ == "__main__":
     unittest.main()

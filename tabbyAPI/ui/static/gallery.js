@@ -50,15 +50,15 @@ async function uploadGalleryFiles(fileList) {
 }
 
 function galleryFigureHtml(item, index) {
-  const url = TabbyUI.resolveUiUrl(item.url);
-  const thumb = TabbyUI.resolveUiUrl(item.thumb);
+  const url = TabbyUI.escapeHtml(TabbyUI.resolveUiUrl(item.url));
+  const thumb = TabbyUI.escapeHtml(TabbyUI.resolveUiUrl(item.thumb));
   const name = TabbyUI.escapeHtml(item.name);
   const owner = item.owner ? " · " + TabbyUI.escapeHtml(item.owner) : "";
   const meta = item.mtime
     ? `${TabbyUI.escapeHtml(item.mtime)} · ${TabbyUI.formatBytes(item.size)}`
     : "";
   return `
-        <figure class="shot" data-name="${name}" data-index="${index}" data-url="${TabbyUI.escapeHtml(url)}" data-thumb="${TabbyUI.escapeHtml(thumb)}">
+        <figure class="shot" data-name="${name}" data-index="${index}" data-url="${url}" data-thumb="${thumb}">
           <label class="pick" title="Select">
             <input type="checkbox" aria-label="Select ${name}" />
           </label>

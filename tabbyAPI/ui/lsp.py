@@ -16,6 +16,17 @@ from typing import Any, Optional
 from ui import codebox
 from ui.workspace import is_text_path, resolve_rel, workspace_root
 
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 IDLE_S = 10 * 60
 MAX_SERVERS = 16
 WORK_ROOT = "/work"
@@ -339,7 +350,7 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
                 "textDocument": {
                     "uri": uri,
                     "languageId": language,
-                    "version": int(message.get("version") or 1),
+                    "version": _as_int(message.get("version"), 1),
                     "text": text,
                 }
             },
@@ -349,7 +360,7 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
         await server.notify(
             "textDocument/didChange",
             {
-                "textDocument": {"uri": uri, "version": int(message.get("version") or 1)},
+                "textDocument": {"uri": uri, "version": _as_int(message.get("version"), 1)},
                 "contentChanges": [{"text": text}],
             },
         )
@@ -363,8 +374,8 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
             {"textDocument": {"uri": uri}, "text": text},
         )
         return None
-    line = max(0, int(message.get("line") or 0))
-    character = max(0, int(message.get("character") or 0))
+    line = max(0, _as_int(message.get("line"), 0))
+    character = max(0, _as_int(message.get("character"), 0))
     pos = {"line": line, "character": character}
     if kind == "completion":
         result = await server.request(
@@ -428,7 +439,7 @@ async def handle_client(username: str, chat_id: str, message: dict[str, Any]) ->
             "locations": _lsp_locations(result),
         }
     if kind == "format":
-        tab_size = max(1, int(message.get("tabSize") or 2))
+        tab_size = max(1, _as_int(message.get("tabSize"), 2))
         result = await server.request(
             "textDocument/formatting",
             {

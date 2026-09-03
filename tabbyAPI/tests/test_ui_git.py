@@ -116,6 +116,65 @@ class FindRepoTests(unittest.TestCase):
 
             self.assertEqual(find_repo_on_disk(root), "")
 
+
+class CloneUrlTests(unittest.TestCase):
+    def test_blocks_loopback_and_private_ips(self):
+        for url in (
+            "https://127.0.0.1/repo.git",
+            "https://10.0.0.5/repo.git",
+            "https://192.168.1.14/repo.git",
+            "https://169.254.169.254/latest.git",
+            "http://github.com/org/repo.git",
+        ):
+            with self.assertRaises(ValueError):
+                workspace._https_clone_url(url)
+
+    def test_blocks_hostname_that_resolves_private(self):
+        from unittest import mock
+
+        fake = [(0, 0, 0, "", ("10.1.2.3", 443))]
+        with mock.patch("ui.workspace.socket.getaddrinfo", return_value=fake):
+            with self.assertRaises(ValueError):
+                workspace._https_clone_url("https://git.internal/repo.git")
+
+    def test_allows_public_https_host(self):
+        from unittest import mock
+
+        fake = [(0, 0, 0, "", ("1.1.1.1", 443))]
+        with mock.patch("ui.workspace.socket.getaddrinfo", return_value=fake):
+            url, dest = workspace._https_clone_url("https://github.com/org/repo.git")
+        self.assertEqual(url, "https://github.com/org/repo.git")
+        self.assertEqual(dest, "repo")
+
+
+class WriteNofollowTests(unittest.TestCase):
+    def test_write_text_rejects_symlink_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace.set_workspaces_dir(Path(raw))
+            try:
+                root = workspace.workspace_root("u", "c", create=True, box=False)
+                outside = Path(raw) / "outside.txt"
+                outside.write_text("secret", encoding="utf-8")
+                (root / "note.txt").symlink_to(outside)
+                with self.assertRaises(ValueError):
+                    workspace.write_text("u", "c", "note.txt", "hacked")
+                self.assertEqual(outside.read_text(encoding="utf-8"), "secret")
+            finally:
+                workspace.set_workspaces_dir(None)
+
+    def test_write_text_creates_nested_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace.set_workspaces_dir(Path(raw))
+            try:
+                workspace.workspace_root("u", "c", create=True, box=False)
+                written = workspace.write_text("u", "c", "css/app.css", "body{}")
+                self.assertEqual(written, "css/app.css")
+                self.assertEqual(workspace.read_text("u", "c", "css/app.css"), "body{}")
+            finally:
+                workspace.set_workspaces_dir(None)
+
+
+class FindRepoLayoutTests(unittest.TestCase):
     def test_finds_single_child_repo(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

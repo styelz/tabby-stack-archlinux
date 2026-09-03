@@ -24,7 +24,7 @@ class GalleryShiftRangeTests(unittest.TestCase):
 
     def test_shift_click_captures_state_before_prevent_default(self):
         click = re.search(
-            r"if \(event\.shiftKey\) \{(?P<body>.*?)\n    lastIndex = i;",
+            r"const from = lastIndex;\n(?P<body>.*?)\n    lastIndex = i;",
             self.src,
             re.S,
         )
@@ -35,6 +35,18 @@ class GalleryShiftRangeTests(unittest.TestCase):
         self.assertGreater(checked_at, -1)
         self.assertGreater(prevent_at, -1)
         self.assertLess(checked_at, prevent_at)
+
+    def test_figure_html_escapes_urls(self):
+        self.assertIn(
+            'const url = TabbyUI.escapeHtml(TabbyUI.resolveUiUrl(item.url));',
+            self.src,
+        )
+        self.assertIn(
+            'const thumb = TabbyUI.escapeHtml(TabbyUI.resolveUiUrl(item.thumb));',
+            self.src,
+        )
+        self.assertIn('href="${url}" data-full="${url}"', self.src)
+        self.assertNotRegex(self.src, r'href="\$\{TabbyUI\.resolveUiUrl')
 
 
 if __name__ == "__main__":

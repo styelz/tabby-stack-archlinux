@@ -46,6 +46,12 @@ class LspMapTests(unittest.TestCase):
         self.assertEqual(reply["language"], "python")
         self.assertEqual(reply["command"], "pylsp")
 
+    def test_as_int_ignores_bad_values(self):
+        self.assertEqual(lsp._as_int(None, 1), 1)
+        self.assertEqual(lsp._as_int("3", 0), 3)
+        self.assertEqual(lsp._as_int({}, 2), 2)
+        self.assertEqual(lsp._as_int(["x"], 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

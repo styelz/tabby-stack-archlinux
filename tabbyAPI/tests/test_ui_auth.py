@@ -49,6 +49,38 @@ class UiAuthTests(unittest.TestCase):
         auth.destroy_session(token)
         self.assertIsNone(auth.validate_session(token))
 
+    def test_csrf_origin_matches_host(self):
+        req = mock.Mock()
+        req.method = "POST"
+        req.headers = {"origin": "http://192.168.1.14:5000", "host": "192.168.1.14:5000"}
+        req.client = mock.Mock(host="192.168.1.20")
+        self.assertTrue(auth.csrf_origin_ok(req))
+
+    def test_csrf_origin_rejects_cross_site(self):
+        req = mock.Mock()
+        req.method = "POST"
+        req.headers = {"origin": "https://evil.example", "host": "192.168.1.14:5000"}
+        req.client = mock.Mock(host="192.168.1.20")
+        self.assertFalse(auth.csrf_origin_ok(req))
+
+    def test_csrf_get_skips_origin(self):
+        req = mock.Mock()
+        req.method = "GET"
+        req.headers = {"origin": "https://evil.example", "host": "192.168.1.14:5000"}
+        req.client = mock.Mock(host="192.168.1.20")
+        self.assertTrue(auth.csrf_origin_ok(req))
+
+    def test_csrf_trusts_forwarded_host_from_localhost(self):
+        req = mock.Mock()
+        req.method = "POST"
+        req.headers = {
+            "origin": "https://gpu.example",
+            "host": "127.0.0.1:5000",
+            "x-forwarded-host": "gpu.example",
+        }
+        req.client = mock.Mock(host="127.0.0.1")
+        self.assertTrue(auth.csrf_origin_ok(req))
+
     def test_expired_session(self):
         token = auth.create_session("tabby")
         self.assertIsNone(auth.validate_session(token, max_age=-1))

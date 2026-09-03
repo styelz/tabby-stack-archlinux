@@ -21,6 +21,7 @@ from ui.auth import (
     clear_session_cookie,
     client_ip,
     create_session,
+    csrf_origin_ok,
     destroy_session,
     login_allowed,
     record_login_attempt,
@@ -30,6 +31,7 @@ from ui.auth import (
     set_session_cookie,
     stack_username,
     validate_session,
+    websocket_origin_ok,
 )
 from ui.manager import (
     gallery_listing,
@@ -48,6 +50,17 @@ from ui.manager import (
 UI_PREFIX = "/v1/ui"
 router = APIRouter(prefix=UI_PREFIX, tags=["ui"])
 legacy_router = APIRouter(tags=["ui-legacy"])
+
+
+def _decode_upload_b64(raw_b64: Any, *, max_chars: int = 12 * 1024 * 1024) -> bytes:
+    if not isinstance(raw_b64, str) or not raw_b64.strip():
+        raise HTTPException(400, "bytes_b64 is required")
+    if len(raw_b64) > max_chars:
+        raise HTTPException(413, "Upload is too large.")
+    try:
+        return base64.b64decode(raw_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(400, "bytes_b64 must be base64") from exc
 
 
 def _session_token(request: Request) -> str:
@@ -111,6 +124,8 @@ async def ui_login(request: Request):
         body = {}
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
+    if not csrf_origin_ok(request):
+        raise HTTPException(403, "Invalid origin")
     if not authenticate_user(username, password):
         record_login_attempt(ip)
         raise HTTPException(401, "Invalid username or password.")
@@ -606,13 +621,7 @@ async def ui_workspace_upload_file(
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
     path = str(body.get("path") or "")
-    raw_b64 = body.get("bytes_b64")
-    if not isinstance(raw_b64, str):
-        raise HTTPException(400, "bytes_b64 is required")
-    try:
-        data = base64.b64decode(raw_b64, validate=True)
-    except Exception as exc:
-        raise HTTPException(400, "bytes_b64 must be base64") from exc
+    data = _decode_upload_b64(body.get("bytes_b64"))
     cid = _workspace_chat_id(chat_id, _user)
     try:
         written = add_upload(_user, cid, path, data, filename=path)
@@ -1110,6 +1119,9 @@ async def ui_workspace_shell(websocket: WebSocket, chat_id: str):
     if not user:
         await websocket.close(code=4401)
         return
+    if not websocket_origin_ok(websocket):
+        await websocket.close(code=4403)
+        return
     try:
         cid = _workspace_chat_id(chat_id, user)
     except HTTPException:
@@ -1222,6 +1234,9 @@ async def ui_workspace_lsp(websocket: WebSocket, chat_id: str):
     if not user:
         await websocket.close(code=4401)
         return
+    if not websocket_origin_ok(websocket):
+        await websocket.close(code=4403)
+        return
     try:
         cid = _workspace_chat_id(chat_id, user)
     except HTTPException:
@@ -1331,11 +1346,14 @@ async def ui_code_preview_storage(
     request: Request, username: str, chat_id: str, token: str
 ):
     """Accept localStorage dumps from the sandboxed preview shim."""
-    from ui.preview import STORAGE_CORS, save_storage
+    from ui.preview import STORAGE_CORS, STORAGE_MAX_BYTES, save_storage
 
     user, cid = _preview_owner(username, chat_id, token)
+    raw = await request.body()
+    if len(raw) > STORAGE_MAX_BYTES * 4:
+        raise HTTPException(413, "Preview storage is too large.")
     try:
-        body = json.loads((await request.body()).decode("utf-8") or "{}")
+        body = json.loads(raw.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, "Invalid storage payload.") from exc
     try:
@@ -1415,13 +1433,7 @@ async def ui_gallery_upload(request: Request, _user: str = Depends(require_ui_us
         body = await request.json()
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
-    raw_b64 = body.get("bytes_b64")
-    if not isinstance(raw_b64, str) or not raw_b64.strip():
-        raise HTTPException(400, "bytes_b64 is required")
-    try:
-        data = base64.b64decode(raw_b64, validate=True)
-    except Exception as exc:
-        raise HTTPException(400, "bytes_b64 must be base64") from exc
+    data = _decode_upload_b64(body.get("bytes_b64"))
     try:
         return gallery_upload(data, _user)
     except ValueError as exc:

@@ -17,20 +17,30 @@ from fastapi.responses import StreamingResponse
 from sse_starlette import ServerSentEvent
 
 _FLIGHTS: dict[str, "ConsoleFlight"] = {}
+_FLIGHTS_BY_CHAT: dict[tuple[str, str], "ConsoleFlight"] = {}
 _DROP_AFTER_S = 30
 
 
 def reset_for_tests() -> None:
     _FLIGHTS.clear()
+    _FLIGHTS_BY_CHAT.clear()
 
 
-def get_flight(username: str) -> Optional["ConsoleFlight"]:
-    return _FLIGHTS.get(str(username or "").strip())
+def get_flight(username: str, chat_id: str = "") -> Optional["ConsoleFlight"]:
+    user = str(username or "").strip()
+    wanted = str(chat_id or "").strip()
+    if wanted:
+        return _FLIGHTS_BY_CHAT.get((user, wanted))
+    return _FLIGHTS.get(user)
 
 
-def abort_flight(username: str) -> bool:
-    flight = get_flight(username)
+def abort_flight(username: str, chat_id: str = "") -> bool:
+    flight = get_flight(username, chat_id)
     if flight is None:
+        return False
+    wanted = str(chat_id or "").strip()
+    current = str(getattr(flight, "chat_id", "") or "")
+    if wanted and current and current != wanted:
         return False
     flight.abort_event.set()
     return True
@@ -226,6 +236,12 @@ class ConsoleFlight:
 def register_flight(flight: ConsoleFlight) -> ConsoleFlight:
     previous = _FLIGHTS.get(flight.username)
     _FLIGHTS[flight.username] = flight
+    key = (flight.username, flight.chat_id) if flight.chat_id else None
+    same = _FLIGHTS_BY_CHAT.get(key) if key else None
+    if key:
+        _FLIGHTS_BY_CHAT[key] = flight
+    if same is not None and same is not flight and not same.done:
+        same.abort_event.set()
     if previous is not None and previous is not flight and not previous.done:
         prev_id = str(getattr(previous, "chat_id", "") or "")
         next_id = str(getattr(flight, "chat_id", "") or "")
@@ -238,6 +254,9 @@ async def _drop_later(flight: ConsoleFlight) -> None:
     await asyncio.sleep(_DROP_AFTER_S)
     if _FLIGHTS.get(flight.username) is flight:
         _FLIGHTS.pop(flight.username, None)
+    key = (flight.username, flight.chat_id)
+    if flight.chat_id and _FLIGHTS_BY_CHAT.get(key) is flight:
+        _FLIGHTS_BY_CHAT.pop(key, None)
 
 
 async def close_flight(flight: ConsoleFlight) -> None:

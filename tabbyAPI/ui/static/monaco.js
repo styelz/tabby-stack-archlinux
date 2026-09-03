@@ -1,6 +1,5 @@
 (() => {
   const VERSION = "0.52.2";
-  const CDN = `https://cdn.jsdelivr.net/npm/monaco-editor@${VERSION}/min/vs`;
 
   let loadPromise = null;
   let onChange = null;
@@ -171,9 +170,8 @@
         let vs = localVs();
         try {
           await loadScript(`${vs}/loader.js`);
-        } catch {
-          vs = CDN;
-          await loadScript(`${vs}/loader.js`);
+        } catch (err) {
+          throw new Error("Code editor failed to load from this host.");
         }
         loadCss(`${vs}/editor/editor.main.css`);
         installWorkers(vs);
@@ -345,10 +343,12 @@
 
   window.addEventListener("tabby-zoom-change", applyEditorZoom);
 
-  function bindSave(ed) {
+  function bindSave(ed, hostName) {
     if (!ed || !window.monaco) return;
     ed.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => {
-      if (typeof onSave === "function") onSave();
+      if (typeof onSave !== "function") return;
+      const name = hostName || focusedHost();
+      onSave(name, hostOf(name).path);
     });
   }
 
@@ -399,7 +399,7 @@
     host.editor.onDidFocusEditorText(() => {
       currentPath = host.path;
     });
-    bindSave(host.editor);
+    bindSave(host.editor, name);
     if (Array.isArray(opts && opts.caret) && model) {
       const pos = model.getPositionAt(Math.max(0, opts.caret[0] || 0));
       host.editor.setPosition(pos);
@@ -449,7 +449,7 @@
       if (ignoreChange || typeof onChange !== "function") return;
       onChange(modified.getValue(), name, host.path);
     });
-    bindSave(modified);
+    bindSave(modified, name);
     modified.focus();
     if (window.TabbyLsp) window.TabbyLsp.attachMonaco(path, modified);
   }
@@ -461,8 +461,8 @@
     languageFor,
     showFile,
     showDiff,
-    getValue() {
-      const ed = getEditEditor();
+    getValue(name) {
+      const ed = getEditEditor(name);
       return ed ? ed.getValue() : "";
     },
     setValue(text, name) {
@@ -472,8 +472,8 @@
       ed.setValue(String(text || ""));
       ignoreChange = false;
     },
-    getCaret() {
-      const ed = getEditEditor();
+    getCaret(name) {
+      const ed = getEditEditor(name);
       const model = ed && ed.getModel();
       const sel = ed && ed.getSelection();
       if (!model || !sel) return null;

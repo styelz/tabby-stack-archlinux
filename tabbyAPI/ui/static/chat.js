@@ -2290,12 +2290,14 @@ function mountChat(root) {
     return live.concat(deleted);
   }
 
-  function applyListing(data) {
+  function applyListing(data, chatId) {
+    if (chatId && chatId !== activeWorkspaceId()) return false;
     const prev = filesListing;
     filesListing = listingFromData(data, filesListing);
     filesEntry = typeof data.entry === "string" ? data.entry : filesEntry;
     noteNewListingFiles(prev, filesListing);
     paintFiles();
+    return true;
   }
 
   function selectedRow() {
@@ -3723,13 +3725,23 @@ function mountChat(root) {
     });
   }
 
+  function editorTabForHost(hostHint, pathHint) {
+    let tab = activeTabRow();
+    const focused = hostHint || (window.TabbyMonaco && window.TabbyMonaco.focusedHost
+      ? window.TabbyMonaco.focusedHost()
+      : "");
+    if (focused === "split" && splitPath) tab = findTab(splitPath) || tab;
+    if (pathHint) tab = findTab(pathHint) || tab;
+    return { tab, focused };
+  }
+
   /** Keep the live editor buffer in the tab so a re-render or tab switch restores it. */
-  function stashEditor() {
-    const tab = activeTabRow();
+  function stashEditor(hostHint, pathHint) {
+    const { tab, focused } = editorTabForHost(hostHint, pathHint);
     if (!tab || isPreviewTab(tab)) return;
-    if (window.TabbyMonaco && window.TabbyMonaco.getEditor()) {
-      tab.text = window.TabbyMonaco.getValue();
-      tab.caret = window.TabbyMonaco.getCaret();
+    if (window.TabbyMonaco && window.TabbyMonaco.getEditor(focused)) {
+      tab.text = window.TabbyMonaco.getValue(focused);
+      tab.caret = window.TabbyMonaco.getCaret(focused);
       return;
     }
     const box = editorBox();
@@ -3988,7 +4000,7 @@ function mountChat(root) {
     if (!host) return;
     if (!window.TabbyMonaco) return;
     window.TabbyMonaco.onChange(onMonacoChange);
-    window.TabbyMonaco.onSave(() => saveTab());
+    window.TabbyMonaco.onSave((host, path) => saveTab(host, path));
     const path = isHistoryTab(tab) ? tab.filePath || tab.path : tab.path;
     const pending =
       view === "diff"
@@ -5656,9 +5668,9 @@ function mountChat(root) {
     }
   }
 
-  async function saveTab() {
-    const tab = activeTabRow();
-    stashEditor();
+  async function saveTab(hostHint, pathHint) {
+    stashEditor(hostHint, pathHint);
+    const { tab } = editorTabForHost(hostHint, pathHint);
     if (!tab || !tab.dirty || tab.busy) return;
     const path = isHistoryTab(tab) ? tab.filePath : tab.path;
     if (!path) return;
@@ -5766,6 +5778,11 @@ function mountChat(root) {
     // about:blank is the fallback when the token is not minted yet.
     const known = wanted ? hrefFromPreviewPath(wanted) : "";
     const tab = window.open(known || "about:blank", "_blank");
+    if (tab) {
+      try { tab.opener = null; } catch {
+        /* ignore */
+      }
+    }
     try {
       const minted = known
         ? { href: known, path: wanted }
@@ -8421,7 +8438,8 @@ function mountChat(root) {
         `workspace/${encodeURIComponent(chatId)}/file`,
         { method: "POST", body: { path, bytes_b64: await blobToBase64(blob) } }
       );
-      applyListing(data);
+      applyListing(data, chatId);
+      if (chatId !== activeWorkspaceId()) continue;
       const writtenPath = data.path || path;
       written += 1;
       lastPath = writtenPath;
@@ -8546,11 +8564,12 @@ function mountChat(root) {
       return;
     }
     try {
+      const chatId = activeWorkspaceId();
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(activeWorkspaceId())}/file?path=${encodeURIComponent(path)}`,
+        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(path)}`,
         { method: "PUT", body: { contents: "" } }
       );
-      applyListing(data);
+      if (!applyListing(data, chatId)) return;
       const written = data.path || path;
       filesFocusDir = fileDir(written);
       openFileTab(written);
@@ -8579,11 +8598,12 @@ function mountChat(root) {
     }
     filesOpenFolders.add(path);
     try {
+      const chatId = activeWorkspaceId();
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(activeWorkspaceId())}/folder?path=${encodeURIComponent(path)}`,
+        `workspace/${encodeURIComponent(chatId)}/folder?path=${encodeURIComponent(path)}`,
         { method: "PUT" }
       );
-      applyListing(data);
+      if (!applyListing(data, chatId)) return;
       const written = data.path || path;
       filesFocusDir = written;
       filesOpenFolders.add(written);
@@ -8647,12 +8667,14 @@ function mountChat(root) {
       return;
     }
     try {
+      const chatId = activeWorkspaceId();
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(activeWorkspaceId())}/rename`,
+        `workspace/${encodeURIComponent(chatId)}/rename`,
         { method: "POST", body: { path, to: dest } }
       );
+      if (chatId !== activeWorkspaceId()) return;
       retargetPath(path, data.path || dest);
-      applyListing(data);
+      applyListing(data, chatId);
       paintAttach();
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
@@ -8661,15 +8683,16 @@ function mountChat(root) {
 
   async function duplicateProjectFile(path) {
     const dest = nextCopyPath(path);
+    const chatId = activeWorkspaceId();
     try {
-      const response = await fetch(fileUrl(activeWorkspaceId(), path), { credentials: "same-origin" });
+      const response = await fetch(fileUrl(chatId, path), { credentials: "same-origin" });
       if (!response.ok) throw new Error("Could not read that file.");
       const bytesB64 = await blobToBase64(await response.blob());
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(activeWorkspaceId())}/file`,
+        `workspace/${encodeURIComponent(chatId)}/file`,
         { method: "POST", body: { path: dest, bytes_b64: bytesB64 } }
       );
-      applyListing(data);
+      if (!applyListing(data, chatId)) return;
       const written = data.path || dest;
       if (TEXT_SUFFIXES.has(fileSuffix(written))) openFileTab(written);
     } catch (err) {
@@ -8898,11 +8921,12 @@ function mountChat(root) {
       return;
     }
     try {
+      const chatId = activeWorkspaceId();
       const data = await TabbyUI.api(
-        `workspace/${encodeURIComponent(activeWorkspaceId())}/file?path=${encodeURIComponent(path)}`,
+        `workspace/${encodeURIComponent(chatId)}/file?path=${encodeURIComponent(path)}`,
         { method: "PUT", body: { contents: String(code || "") } }
       );
-      applyListing(data);
+      if (!applyListing(data, chatId)) return;
       openFileTab(data.path || path);
     } catch (err) {
       addBubble("assistant", `Error: ${err.message}`);
@@ -9200,7 +9224,8 @@ function mountChat(root) {
         `workspace/${encodeURIComponent(chatId)}/file`,
         { method: "POST", body: { path: name, bytes_b64: bytesB64 } }
       );
-      applyListing(data);
+      applyListing(data, chatId);
+      if (chatId !== activeWorkspaceId()) continue;
       const path = data.path || name;
       written += 1;
       if (attach) await attachProjectFile(path, { toggle: false });
@@ -11478,7 +11503,10 @@ function mountChat(root) {
   function abortSession(kind) {
     stopKind = kind || "stop";
     stopSpeak();
-    TabbyUI.api("chat", { method: "POST", body: { cancel: true } }).catch(() => {});
+    TabbyUI.api("chat", {
+      method: "POST",
+      body: { cancel: true, conversation_id: flightChatId || store.activeId },
+    }).catch(() => {});
     if (abortController) abortController.abort();
   }
 
@@ -11639,15 +11667,16 @@ function mountChat(root) {
 
   async function refreshChatFromServer(chatId) {
     try {
+      const viewing = store.activeId;
       const incoming = await TabbyUI.api("chats");
       store = normalizeStore(incoming);
-      const chat = store.chats.find((item) => item.id === chatId) || activeChat();
-      if (chat && !isWorkspaceRoot(chat)) {
-        store.activeId = chat.id;
+      store.activeId = viewing;
+      const chat = store.chats.find((item) => item.id === chatId);
+      if (chat && !isWorkspaceRoot(chat) && viewing === chatId) {
         messages = cloneMessages(chat.messages);
+        renderLog();
+        paintToolbar();
       }
-      renderLog();
-      paintToolbar();
       renderSidebar();
     } catch {
       /* ignore */

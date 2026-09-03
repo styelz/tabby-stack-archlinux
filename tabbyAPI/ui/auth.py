@@ -17,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import Cookie, HTTPException, Request, Response
 
@@ -26,6 +27,7 @@ LOGIN_WINDOW_S = 60
 LOGIN_MAX_ATTEMPTS = 5
 PAM_CHECK_TIMEOUT_S = 15
 SESSION_SAVE_INTERVAL_S = 5 * 60
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
@@ -261,14 +263,48 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, path="/")
 
 
+def csrf_origin_ok(request: Request) -> bool:
+    """Reject cross-site mutating calls that still send the session cookie."""
+    method = str(getattr(request, "method", "") or "").upper()
+    if method in _SAFE_METHODS:
+        return True
+    return _origin_matches_host(request)
+
+
+def websocket_origin_ok(websocket) -> bool:
+    return _origin_matches_host(websocket)
+
+
+def _origin_matches_host(source) -> bool:
+    headers = getattr(source, "headers", None)
+    if headers is None:
+        return True
+    origin = str(headers.get("origin") or "").strip()
+    if not origin:
+        return True
+    origin_host = (urlparse(origin).netloc or "").strip().lower()
+    if not origin_host:
+        return False
+    host = str(headers.get("host") or "").split(",")[0].strip().lower()
+    forwarded = ""
+    client = getattr(source, "client", None)
+    peer = getattr(client, "host", "") if client is not None else ""
+    if peer in ("127.0.0.1", "::1", "localhost"):
+        forwarded = str(headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
+    allowed = {item for item in (host, forwarded) if item}
+    return origin_host in allowed
+
+
 async def require_ui_user(
     request: Request,
     tabby_ui: Optional[str] = Cookie(None, alias=COOKIE_NAME),
 ) -> str:
     username = validate_session(tabby_ui or "")
-    if username:
-        return username
-    raise HTTPException(401, "Not authenticated")
+    if not username:
+        raise HTTPException(401, "Not authenticated")
+    if not csrf_origin_ok(request):
+        raise HTTPException(403, "Invalid origin")
+    return username
 
 
 async def require_ui_admin(

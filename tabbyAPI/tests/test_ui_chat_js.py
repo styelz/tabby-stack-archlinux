@@ -72,6 +72,15 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
     def test_empty_stop_does_not_keep_working_bubble(self):
         self.assertIn("working.discard()", self.src)
         self.assertIn("function abortSession(kind)", self.src)
+        self.assertIn("conversation_id: flightChatId || store.activeId", self.src)
+
+    def test_split_save_and_preview_opener(self):
+        self.assertIn("function editorTabForHost(hostHint, pathHint)", self.src)
+        self.assertIn("function stashEditor(hostHint, pathHint)", self.src)
+        self.assertIn("saveTab(host, path)", self.src)
+        self.assertIn("tab.opener = null", self.src)
+        self.assertIn("function applyListing(data, chatId)", self.src)
+        self.assertIn("store.activeId = viewing", self.src)
 
     def test_finished_reply_keeps_elapsed_time(self):
         self.assertIn("item.elapsed_s = elapsedSec", self.src)
@@ -106,7 +115,9 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("anyDirtyTabs()", self.src)
 
     def test_optimizing_status_refreshes_files(self):
-        self.assertIn("Writing|Editing|Deleting|Optimizing|Renaming", self.src)
+        self.assertIn("function refreshFilesSoon(", self.src)
+        self.assertIn("if (chatsShareWorkspace(chatId)) refreshFilesSoon()", self.src)
+        self.assertIn("working.addStep(event.step, \"stream\")", self.src)
 
     def test_files_overflow_and_history_collapse(self):
         self.assertIn('id="chat-files-more"', self.src)
