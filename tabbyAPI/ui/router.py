@@ -541,7 +541,11 @@ async def ui_workspace_list(chat_id: str, _user: str = Depends(require_ui_user))
     from ui.workspace import listing, site_entry
 
     cid = _workspace_chat_id(chat_id, _user)
-    return {**listing(_user, cid), "entry": site_entry(_user, cid)}
+    data, entry = await asyncio.gather(
+        asyncio.to_thread(listing, _user, cid),
+        asyncio.to_thread(site_entry, _user, cid),
+    )
+    return {**data, "entry": entry}
 
 
 @router.get("/workspace/{chat_id}/file", include_in_schema=False)
@@ -865,7 +869,7 @@ async def ui_workspace_history(
         raise HTTPException(400, "path is required")
     cid = _workspace_chat_id(chat_id, _user)
     try:
-        versions = list_history(_user, cid, path)
+        versions = await asyncio.to_thread(list_history, _user, cid, path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"path": path, "versions": versions}
@@ -1012,7 +1016,7 @@ async def ui_workspace_git_status(chat_id: str, _user: str = Depends(require_ui_
 
     cid = _workspace_chat_id(chat_id, _user)
     try:
-        return git_status(_user, cid)
+        return await asyncio.to_thread(git_status, _user, cid)
     except GitError as exc:
         if exc.needs_auth:
             return {"ok": False, "needs_auth": True, "error": str(exc)}
@@ -1046,7 +1050,7 @@ async def ui_workspace_git_log(chat_id: str, _user: str = Depends(require_ui_use
 
     cid = _workspace_chat_id(chat_id, _user)
     try:
-        return git_log(_user, cid)
+        return await asyncio.to_thread(git_log, _user, cid)
     except GitError as exc:
         raise HTTPException(400, str(exc)) from exc
 

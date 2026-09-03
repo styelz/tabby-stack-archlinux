@@ -225,60 +225,63 @@ def _git_dir(path: Path) -> bool:
         return False
 
 
-def find_repo_on_disk(root: Path) -> Optional[str]:
+_SKIP_REPO_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+}
+
+
+def find_repo_on_disk(root: Path, *, max_depth: int = 3) -> Optional[str]:
     """Relative path to a repo under root ('' for root). None if none."""
     if not root.is_dir():
         return None
     if _git_dir(root):
         return ""
-    kids: list[str] = []
-    try:
-        entries = list(os.scandir(root))
-    except OSError:
-        return None
-    for entry in entries:
-        name = str(entry.name or "")
-        if not name or name.startswith("."):
-            continue
+    found: list[str] = []
+
+    def walk(path: Path, rel: str, depth: int) -> None:
+        if depth > max_depth or len(found) > 1:
+            return
         try:
-            if entry.is_symlink() or not entry.is_dir():
-                continue
-            if _git_dir(Path(entry.path)):
-                kids.append(name)
+            entries = list(os.scandir(path))
         except OSError:
-            continue
-    if len(kids) == 1:
-        return kids[0]
+            return
+        for entry in entries:
+            name = str(entry.name or "")
+            if not name or name.startswith(".") or name in _SKIP_REPO_DIRS:
+                continue
+            try:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            child_rel = f"{rel}/{name}" if rel else name
+            if _git_dir(Path(entry.path)):
+                found.append(child_rel)
+                if len(found) > 1:
+                    return
+                continue
+            walk(Path(entry.path), child_rel, depth + 1)
+
+    walk(root, "", 1)
+    if len(found) == 1:
+        return found[0]
     return None
 
 
 def find_repo_rel(username: str, chat_id: str) -> Optional[str]:
-    """Relative workspace path to the git repo ('' for /work). None if none."""
+    """Relative workspace path to the git repo ('' for /work). None if none.
+
+    Disk only. A docker `git rev-parse` fallback used to run on every Code
+    poll, including empty workspaces, and blocked the API event loop (~2s)
+    so streamed tokens paused.
+    """
     root = workspace_root(username, chat_id, create=False)
-    found = find_repo_on_disk(root)
-    if found is not None:
-        return found
-    try:
-        code, output = _run_git(
-            username, chat_id, ".", ["rev-parse", "--show-toplevel"]
-        )
-    except GitError:
-        return None
-    if code:
-        return None
-    top = (output or "").strip().splitlines()
-    top = top[-1].strip() if top else ""
-    if not top:
-        return None
-    work = "/work"
-    if top == work or top.rstrip("/") == work:
-        return ""
-    prefix = work + "/"
-    if top.startswith(prefix):
-        rel = top[len(prefix) :].strip("/")
-        if rel and ".." not in Path(rel).parts:
-            return rel
-    return None
+    return find_repo_on_disk(root)
 
 
 def _workspace_file_text(root: Path, rel: str) -> str:

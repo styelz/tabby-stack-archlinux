@@ -291,7 +291,8 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('await withGitBusy("refresh"', self.src)
         refresh_fn = self.src.split("async function refreshGit(")[1].split("async function gitPromptToken")[0]
         self.assertNotIn("gitBusy = true", refresh_fn)
-        self.assertIn("refreshGitSoon();", self.src.split("function paintFiles(")[1].split("function isImageTab")[0])
+        self.assertIn("if (!inFlight) refreshGitSoon();", self.src.split("function paintFiles(")[1].split("function isImageTab")[0])
+        self.assertIn('activeMode() === "code" && codeAgent === "agent"', self.src)
         self.assertIn("function openGitDiff(", self.src)
         self.assertIn("__git__/", self.src)
         self.assertIn("Initialize repository", self.src)

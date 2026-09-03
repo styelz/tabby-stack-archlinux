@@ -126,6 +126,31 @@ class FindRepoTests(unittest.TestCase):
 
             self.assertEqual(find_repo_on_disk(root), "tabby-stack")
 
+    def test_finds_nested_single_repo_without_docker(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            dest = root / "src" / "app"
+            dest.mkdir(parents=True)
+            (dest / ".git").mkdir()
+            from ui.git import find_repo_on_disk
+
+            self.assertEqual(find_repo_on_disk(root), "src/app")
+
+    def test_empty_workspace_status_skips_docker(self):
+        from unittest import mock
+        from ui.git import git_status
+
+        with tempfile.TemporaryDirectory() as raw:
+            workspace.set_workspaces_dir(Path(raw))
+            try:
+                workspace.workspace_root("alice", "c1", create=True, box=False)
+                with mock.patch("ui.git._run_git") as run_git:
+                    data = git_status("alice", "c1")
+                run_git.assert_not_called()
+                self.assertFalse(data["repo"])
+            finally:
+                workspace.set_workspaces_dir(None)
+
     def test_status_stays_a_repo_when_git_command_fails(self):
         from unittest import mock
         from ui.git import GitError, git_status

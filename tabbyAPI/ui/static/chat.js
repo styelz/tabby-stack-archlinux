@@ -4628,7 +4628,7 @@ function mountChat(root) {
     syncTabs();
     paintTabsAndFiles();
     refreshHistory();
-    refreshGitSoon();
+    if (!inFlight) refreshGitSoon();
   }
 
   let cropDrag = null;
@@ -12262,7 +12262,7 @@ function mountChat(root) {
     paintCompose();
     renderSidebar();
     let filesTicker = 0;
-    if (activeMode() === "code") {
+    if (activeMode() === "code" && codeAgent === "agent") {
       refreshFilesSoon();
       filesTicker = setInterval(() => {
         if (chatsShareWorkspace(flightChatId)) refreshFilesSoon();
