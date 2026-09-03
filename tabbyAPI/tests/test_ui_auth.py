@@ -85,6 +85,40 @@ class UiAuthTests(unittest.TestCase):
         token = auth.create_session("tabby")
         self.assertIsNone(auth.validate_session(token, max_age=-1))
 
+    def test_logout_rejects_cross_site_origin(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from ui.router import ui_logout
+
+        token = auth.create_session("tabby")
+        req = mock.Mock()
+        req.method = "POST"
+        req.headers = {"origin": "https://evil.example", "host": "192.168.1.14:5000"}
+        req.client = mock.Mock(host="192.168.1.20")
+        req.cookies = {auth.COOKIE_NAME: token}
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(ui_logout(req))
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(auth.validate_session(token), "tabby")
+
+    def test_logout_same_origin_clears_session(self):
+        import asyncio
+
+        from ui.router import ui_logout
+
+        token = auth.create_session("tabby")
+        req = mock.Mock()
+        req.method = "POST"
+        req.headers = {"origin": "http://192.168.1.14:5000", "host": "192.168.1.14:5000"}
+        req.client = mock.Mock(host="192.168.1.20")
+        req.cookies = {auth.COOKIE_NAME: token}
+
+        asyncio.run(ui_logout(req))
+        self.assertIsNone(auth.validate_session(token))
+
     def test_login_rate_limit(self):
         ip = "203.0.113.9"
         for _ in range(auth.LOGIN_MAX_ATTEMPTS):

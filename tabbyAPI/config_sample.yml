@@ -302,8 +302,11 @@ sampling:
   override_preset: safe_defaults
 
 # Options for Loras
+# NOTE: ExLlamaV3 LoRA load/unload is not hooked up in this stack.
+# /v1/lora/load accepts the request and reports every LoRA as a failure.
+# Comfy image LoRAs (for example Qwen-Image Lightning) are separate and still work.
 lora:
-  # Directory to look for LoRAs (default: loras).
+  # Directory to look for LoRAs (default: loras). Unused until LLM LoRAs are wired.
   lora_dir: loras
 
   # List of LoRAs to load and associated scaling factors (default scale: 1.0).

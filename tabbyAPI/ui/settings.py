@@ -557,8 +557,13 @@ def save_settings(body: dict[str, Any]) -> dict[str, Any]:
                 updates[name] = str(raw)
         if updates:
             _write_env(updates)
+    reload_warning = ""
     try:
         _reload_live()
-    except Exception:
-        pass
-    return load_settings()
+    except Exception as exc:
+        reload_warning = f"Saved, but live reload failed: {exc}"
+    data = load_settings()
+    if reload_warning:
+        data = dict(data)
+        data["reload_warning"] = reload_warning
+    return data

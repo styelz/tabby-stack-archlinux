@@ -538,17 +538,26 @@ class LoraInstanceModel(BaseConfigModel):
 
 
 class LoraConfig(BaseConfigModel):
-    """Options for Loras"""
+    """Options for Loras.
+
+    ExLlamaV3 load/unload is not hooked up; these fields are accepted for
+    config compatibility only.
+    """
 
     # TODO: convert this to a pathlib.path?
     lora_dir: Optional[str] = Field(
-        "loras", description="Directory to look for LoRAs (default: loras)."
+        "loras",
+        description=(
+            "Directory to look for LoRAs (default: loras). "
+            "Unused until ExLlamaV3 LoRA load is wired up."
+        ),
     )
     loras: Optional[List[LoraInstanceModel]] = Field(
         None,
         description=(
             "List of LoRAs to load and associated scaling factors "
             "(default scale: 1.0).\n"
+            "Not applied on this stack: ExLlamaV3 LoRA load is a stub.\n"
             "For the YAML file, add each entry as a YAML list:\n"
             "- name: lora1\n"
             "  scaling: 1.0"

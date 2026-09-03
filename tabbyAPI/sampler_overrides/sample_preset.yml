@@ -1,19 +1,22 @@
 # Sample YAML file for override presets.
-# Each block corresponds to a sampler fallback override. Remove ones that you don't need.
-# "force" always overrides the sampler to the specified value.
-# For example, a top-p override of 1.5 with force = true will make every API request have a top_p value of 1.5
-
-# You can use https://www.yamllint.com/ if you want to check your YAML formatting.
-
-# TODO: Improve documentation for each field
+# Each block is a sampler fallback. Remove ones you do not need.
+# override: value used when the request omits the field
+# force: true always overwrites the request value
+# additive: true appends this list to the request instead of replacing it
+#
+# ExLlamaV3 ignores these even if forced (API compatibility only):
+# ban_eos_token, allowed_tokens, smoothing_factor, top_a, tfs, typical,
+# skew, dry_multiplier, mirostat_mode, temp_exponent
 
 # MARK: Misc generation parameters
+# max_tokens / min_tokens: completion length bounds (0 max = model default)
 max_tokens:
   override: 150
   force: false
 min_tokens:
   override: 0
   force: false
+# stop / banned_strings: halt or ban these strings (additive merges lists)
 stop:
   override: []
   force: false
@@ -22,6 +25,7 @@ banned_strings:
   override: []
   force: false
   additive: false
+# token_healing: bias the first token toward the prompt's last piece
 token_healing:
   override: false
   force: false
@@ -31,6 +35,9 @@ token_healing:
   #force: false
 
 # MARK: Temperature
+# temperature: 0 is greedy. temperature_last applies temp after other samplers.
+# min_temp / max_temp / temp_exponent: dynamic temperature (exponent ignored by exl3)
+# smoothing_factor: quadratic smoothing (ignored by exl3)
 temperature:
   override: 1.0
   force: false
@@ -51,6 +58,9 @@ smoothing_factor:
   force: false
 
 # MARK: Alphabet soup
+# top_k 0 = disabled. top_p / min_p truncate the nucleus.
+# top_a / tfs / typical / skew: accepted then ignored by exl3
+# xtc_*: exclude-top-choices sampler (probability 0 disables)
 top_k:
   override: 0
   force: false
@@ -80,6 +90,9 @@ xtc_threshold:
   force: false
 
 # MARK: Penalty settings
+# frequency / presence / repetition: 0 or 1.0 leave the sampler inactive
+# repetition_decay: tokens over which the repetition penalty fades
+# penalty_range -1 = whole context (exl3 does not auto-scale this)
 frequency_penalty:
   override: 0.0
   force: false
@@ -97,6 +110,7 @@ penalty_range:
   force: false
 
 # MARK: DRY
+# Don't Repeat Yourself. dry_multiplier 0 disables (ignored by exl3)
 dry_multiplier:
   override: 0.0
   force: false
@@ -115,6 +129,7 @@ dry_sequence_breakers:
   additive: false
 
 # MARK: Mirostat
+# mirostat_mode 0 disables (ignored by exl3)
 mirostat_mode:
   override: 0
   force: false
@@ -126,6 +141,9 @@ mirostat_eta:
   force: false
 
 # MARK: Token options
+# add_bos_token: null uses the tokenizer default
+# ban_eos_token / allowed_tokens: ignored by exl3
+# logit_bias / banned_tokens: applied when non-empty
 add_bos_token:
   override:
   force: false
@@ -146,6 +164,7 @@ allowed_tokens:
   additive: false
 
 # MARK: Adaptive-P
+# adaptive_target 1.0 disables. decay is the EMA rate when enabled.
 adaptive_target:
   override: 1.0
   force: false
@@ -154,6 +173,7 @@ adaptive_decay:
   force: false
 
 # MARK: Loop detection
+# Tokens of recent output scanned for repeats. 0 disables.
 loop_detect_window:
   override: 800
   force: false

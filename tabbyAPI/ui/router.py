@@ -23,6 +23,7 @@ from ui.auth import (
     create_session,
     csrf_origin_ok,
     destroy_session,
+    destroy_sessions_for_user,
     login_allowed,
     record_login_attempt,
     is_admin_username,
@@ -146,6 +147,8 @@ async def ui_login(request: Request):
 
 @router.post("/auth/logout", include_in_schema=False)
 async def ui_logout(request: Request):
+    if not csrf_origin_ok(request):
+        raise HTTPException(403, "Invalid origin")
     destroy_session(_session_token(request))
     response = Response(content=json.dumps({"ok": True}), media_type="application/json")
     clear_session_cookie(response)
@@ -364,6 +367,7 @@ async def ui_users_password(name: str, request: Request, _admin: str = Depends(r
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    destroy_sessions_for_user(name)
     return {"ok": True}
 
 

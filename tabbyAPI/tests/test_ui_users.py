@@ -48,6 +48,25 @@ class UiUsersTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             users.delete_user("bob")
 
+    def test_password_reset_route_clears_sessions(self):
+        import asyncio
+
+        from ui.router import ui_users_password
+
+        with mock.patch.object(auth, "stack_username", return_value="tabby"):
+            users.create_user("bob", "secret123")
+            token = auth.create_session("bob")
+            self.assertEqual(auth.validate_session(token), "bob")
+
+            async def reset():
+                req = mock.Mock()
+                req.json = mock.AsyncMock(return_value={"password": "newsecret1"})
+                return await ui_users_password("bob", req, _admin="tabby")
+
+            self.assertEqual(asyncio.run(reset()), {"ok": True})
+            self.assertTrue(users.verify_extra_user("bob", "newsecret1"))
+            self.assertIsNone(auth.validate_session(token))
+
 
 class UiAuthExtraUserTests(unittest.TestCase):
     def setUp(self):

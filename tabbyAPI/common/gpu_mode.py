@@ -802,11 +802,9 @@ def generate_image(
     source_image: Optional[Path] = None,
     denoise: Optional[float] = None,
 ) -> bytes:
-    from common.image_prompts import rewrite_comfy_prompt, wants_transparent
-    from common.png_alpha import apply_requested_alpha
+    from common.image_prompts import rewrite_comfy_prompt
 
     prompt = rewrite_comfy_prompt(prompt)
-    wanted = wants_transparent(prompt)
     if not comfy_up():
         raise RuntimeError(f"ComfyUI is not running at {COMFY_HOST}:{COMFY_PORT}")
     width, height = parse_size(size)
@@ -855,8 +853,7 @@ def generate_image(
             if status.get("status_str") == "error":
                 raise RuntimeError(f"ComfyUI job failed: {status}")
             if item.get("outputs") or status.get("completed"):
-                raw = strip_png_text(fetch_comfy_image(_first_image_ref(item)))
-                return apply_requested_alpha(raw, wanted=wanted)
+                return strip_png_text(fetch_comfy_image(_first_image_ref(item)))
         time.sleep(0.5)
     interrupt_comfy()
     raise TimeoutError(f"ComfyUI job {prompt_id} timed out after {timeout:.0f}s")

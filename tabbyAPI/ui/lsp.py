@@ -22,10 +22,6 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 IDLE_S = 10 * 60
 MAX_SERVERS = 16

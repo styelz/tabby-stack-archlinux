@@ -296,6 +296,10 @@ function mountSettings(root) {
     const bodyPayload = collect();
     const data = await TabbyUI.api("settings", { method: "PUT", body: bodyPayload });
     paint(data);
+    if (data.reload_warning) {
+      showError(data.reload_warning);
+      return;
+    }
     showOk("Saved. Restart the API if network, model, or system values changed.");
   }
 

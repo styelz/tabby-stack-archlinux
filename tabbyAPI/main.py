@@ -129,8 +129,10 @@ async def entrypoint_async():
         embedding_model_path = embedding_model_path / embedding_model_name
 
         try:
-            # TODO: remove model_dump()
-            await model.load_embedding_model(embedding_model_path, **config.embeddings.model_dump())
+            await model.load_embedding_model(
+                embedding_model_path,
+                embeddings_device=config.embeddings.embeddings_device,
+            )
         except ImportError as ex:
             logger.error(ex.msg)
 
