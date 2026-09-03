@@ -938,14 +938,30 @@ async def ui_workspace_history_restore_run(
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
     run_id = str((body or {}).get("run") or (body or {}).get("id") or "")
+    raw_runs = (body or {}).get("runs") if isinstance(body, dict) else None
+    if isinstance(raw_runs, str):
+        raw_runs = [raw_runs]
+    if not isinstance(raw_runs, list):
+        raw_runs = []
     created = (body or {}).get("created") if isinstance(body, dict) else None
     if isinstance(created, str):
         created = [created]
     if not isinstance(created, list):
         created = []
+    try:
+        since_ts = int((body or {}).get("since") or 0)
+    except (TypeError, ValueError):
+        since_ts = 0
     cid = _workspace_chat_id(chat_id, _user)
     try:
-        result = restore_run(_user, cid, run_id, created=[str(item or "") for item in created])
+        result = restore_run(
+            _user,
+            cid,
+            run_id,
+            created=[str(item or "") for item in created],
+            run_ids=[str(item or "") for item in raw_runs],
+            since_ts=since_ts,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {

@@ -901,6 +901,10 @@ function mountChat(root) {
       }
       if (item.hidden) out.hidden = true;
       if (item.createdAt) out.createdAt = Number(item.createdAt) || 0;
+      if (item.historyRun) {
+        const run = String(item.historyRun).replace(/\s+/g, "").trim();
+        if (run) out.historyRun = run.slice(0, 64);
+      }
       if (item.imageData && String(item.imageData).startsWith("data:image")) {
         out.imageData = String(item.imageData);
       }
@@ -2633,23 +2637,114 @@ function mountChat(root) {
     paintFilesChanges();
   }
 
+  function chatOriginTs(chat) {
+    let earliest = 0;
+    ((chat && chat.messages) || []).forEach((item) => {
+      const ts = Number(item && item.createdAt) || 0;
+      if (ts && (!earliest || ts < earliest)) earliest = ts;
+    });
+    return earliest;
+  }
+
+  function historySpecFromMessages(list) {
+    const runs = [];
+    const created = [];
+    let since = 0;
+    (list || []).forEach((item) => {
+      if (!item) return;
+      const run = String(item.historyRun || "").trim();
+      if (run && !runs.includes(run)) runs.push(run);
+      const ts = Number(item.createdAt) || 0;
+      if (ts && (!since || ts < since)) since = ts;
+      (item.steps || []).forEach((step) => {
+        const change = step && step.change;
+        if (!change) return;
+        const path = String(change.path || "").replace(/^\/+/, "");
+        if (change.created && path && !created.includes(path)) created.push(path);
+        const stepRun = String(change.run || "").trim();
+        if (stepRun && !runs.includes(stepRun)) runs.push(stepRun);
+      });
+    });
+    filesChanged.forEach((row) => {
+      if (!row) return;
+      if (row.run && runs.includes(row.run) && row.created && row.path && !created.includes(row.path)) {
+        created.push(row.path);
+      }
+    });
+    return { runs, created, since };
+  }
+
+  function laterWorkspaceChats(chat) {
+    const rootId = workspaceId(chat);
+    const since = chatOriginTs(chat);
+    if (!rootId || !since) return [];
+    return store.chats.filter((item) => {
+      if (!item || item.id === chat.id) return false;
+      if (isWorkspaceRoot(item) || workspaceId(item) !== rootId) return false;
+      const start = chatOriginTs(item);
+      return start && start >= since;
+    });
+  }
+
+  function dropLaterMessagesSince(since, keepChatId, rootId) {
+    if (!since) return;
+    const workspace = rootId || activeWorkspaceId();
+    store.chats.forEach((item) => {
+      if (!item || workspaceId(item) !== workspace) return;
+      if (item.id === keepChatId) return;
+      const rows = Array.isArray(item.messages) ? item.messages : [];
+      item.messages = rows.filter((msg) => {
+        if (!msg || msg.role === "system") return true;
+        const ts = Number(msg.createdAt) || 0;
+        return !ts || ts < since;
+      });
+    });
+  }
+
+  async function revertCodeHistory(spec, workspaceHint) {
+    const runs = ((spec && spec.runs) || []).map((item) => String(item || "").trim()).filter(Boolean);
+    const created = ((spec && spec.created) || []).map((item) => String(item || "").replace(/^\/+/, "")).filter(Boolean);
+    const since = Number(spec && spec.since) || 0;
+    if (!runs.length && !since && !created.length) return true;
+    const workspace = workspaceHint || activeWorkspaceId();
+    if (!workspace) return true;
+    try {
+      const data = await TabbyUI.api(`workspace/${encodeURIComponent(workspace)}/history/restore-run`, {
+        method: "POST",
+        body: { run: runs[0] || "", runs, created, since },
+      });
+      if (workspace === activeWorkspaceId()) {
+        filesChanged = filesChanged.filter((row) => {
+          if (!row) return false;
+          if (row.run && runs.includes(row.run)) return false;
+          if (since && Number(row.ts) >= since) return false;
+          return true;
+        });
+        if (runs.includes(lastHistoryRun) || (since && lastHistoryRun && !filesChanged.some((row) => row.run === lastHistoryRun))) {
+          lastHistoryRun = "";
+        }
+        const restored = new Set([].concat(data && data.restored ? data.restored : [], data && data.deleted ? data.deleted : []));
+        openTabs.forEach((tab) => {
+          if (!tab || !restored.has(tab.path) || tab.dirty) return;
+          tab.size = -1;
+          tab.state = "loading";
+          tab.sniffed = "";
+        });
+        await refreshFiles();
+        paintFilesChanges();
+      }
+      return true;
+    } catch (err) {
+      addBubble("assistant", `Error: ${err.message}`);
+      return false;
+    }
+  }
+
   async function discardAgentRun() {
     const run = lastHistoryRun;
     if (!run) return;
     const created = filesChanged.filter((row) => row.run === run && row.created).map((row) => row.path);
-    try {
-      await TabbyUI.api(`workspace/${encodeURIComponent(activeWorkspaceId())}/history/restore-run`, {
-        method: "POST",
-        body: { run, created },
-      });
-    } catch (err) {
-      addBubble("assistant", `Error: ${err.message}`);
-      return;
-    }
-    filesChanged = filesChanged.filter((row) => row.run !== run);
-    lastHistoryRun = "";
-    await refreshFiles();
-    paintFilesChanges();
+    await revertCodeHistory({ runs: [run], created });
   }
 
   function contextBrief() {
@@ -8071,13 +8166,42 @@ function mountChat(root) {
     input.focus();
   }
 
-  function deleteTurn(idx) {
+  async function deleteTurn(idx) {
     if (inFlight || modelLoading) return;
     const item = messages[idx];
     if (!item || item.role !== "user") return;
-    const next = messages[idx + 1];
-    const drop = next && next.role === "assistant" ? 2 : 1;
-    messages.splice(idx, drop);
+    const later = messages.slice(idx);
+    const code = activeMode() === "code";
+    if (code) {
+      const laterCount = later.filter((msg) => msg && msg.role !== "system").length - 1;
+      const yes = await TabbyUI.confirmModal({
+        title: "Delete this turn?",
+        text: laterCount > 0
+          ? "Remove this prompt and every reply after it? Workspace files will revert to before this turn."
+          : "Remove this prompt? Workspace files will revert to before this turn.",
+        yes: "Delete",
+        no: "Cancel",
+      });
+      if (!yes) return;
+      const spec = historySpecFromMessages(later);
+      if (!(await revertCodeHistory(spec))) return;
+      if (spec.since) {
+        dropLaterMessagesSince(spec.since, store.activeId, activeWorkspaceId());
+        const rootId = activeWorkspaceId();
+        store.chats = store.chats.filter((chat) => {
+          if (!chat || chat.id === store.activeId || isWorkspaceRoot(chat)) return true;
+          if (workspaceId(chat) !== rootId) return true;
+          const start = chatOriginTs(chat);
+          return !start || start < spec.since;
+        });
+      }
+      messages.splice(idx);
+      if (!messages.some((msg) => msg.role === "system")) messages.unshift({ ...SYSTEM });
+    } else {
+      const next = messages[idx + 1];
+      const drop = next && next.role === "assistant" ? 2 : 1;
+      messages.splice(idx, drop);
+    }
     persist();
     renderLog();
   }
@@ -10361,25 +10485,37 @@ function mountChat(root) {
     if (!chat) return;
     const root = isWorkspaceRoot(chat);
     const children = root ? store.chats.filter((item) => chatParentId(item) === id) : [];
-    const doomed = [chat, ...children];
+    const later = root ? [] : laterWorkspaceChats(chat);
+    const doomed = root ? [chat, ...children] : [chat, ...later];
     const hasContent = doomed.some((item) => (
       hasUserTurn(item) || (item.id === store.activeId && hasUserTurn({ messages }))
     ));
     if (hasContent) {
       const named = String(chat.title || "").replace(/\s+/g, " ").trim()
         || (root ? "this workspace" : "this chat");
-      const extra = children.length
+      const extra = root && children.length
         ? ` and ${children.length} nested chat${children.length === 1 ? "" : "s"}`
-        : "";
+        : !root && later.length
+          ? ` and ${later.length} later chat${later.length === 1 ? "" : "s"}`
+          : "";
       const yes = await TabbyUI.confirmModal({
         title: root ? "Delete workspace" : "Delete chat",
         text: root
           ? `Delete workspace “${named}”${extra}? This cannot be undone.`
-          : `Delete “${named}”? This cannot be undone.`,
+          : `Delete “${named}”${extra}? Workspace files will revert to before this chat.`,
         yes: "Delete",
         no: "Cancel",
       });
       if (!yes) return;
+    }
+    if (!root && chatMode(chat) === "code") {
+      const spec = historySpecFromMessages(
+        doomed.flatMap((item) => (
+          item.id === store.activeId ? messages : (item.messages || [])
+        ))
+      );
+      if (!(await revertCodeHistory(spec, workspaceId(chat)))) return;
+      if (spec.since) dropLaterMessagesSince(spec.since, "", workspaceId(chat));
     }
     const ids = new Set(doomed.map((item) => item.id));
     if (ids.has(store.activeId) || ids.has(flightChatId)) abortSession("stop");
@@ -11805,6 +11941,10 @@ function mountChat(root) {
     const sendAgent = chatMode(targetChat) === "code"
       ? normalizeAgent((opts && opts.agent) || codeAgent)
       : "";
+    const historyRun = sendAgent
+      ? (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now().toString(36)}`)
+      : "";
+    if (historyRun) lastHistoryRun = historyRun;
     if (sendAgent === "plan") beginLivePlanChecklist(chatId);
     const viewing = store.activeId === chatId;
     abortController = new AbortController();
@@ -11826,11 +11966,18 @@ function mountChat(root) {
         const idx = pendingEditIndex;
         pendingEditIndex = -1;
         if (editBar) editBar.hidden = true;
+        const later = messages.slice(idx);
+        if (sendAgent && later.length) {
+          const spec = historySpecFromMessages(later);
+          if (!(await revertCodeHistory(spec))) return;
+          if (spec.since) dropLaterMessagesSince(spec.since, chatId);
+        }
         // Truncate in place. slice() would orphan `list` and drop the new prompt.
         messages.splice(idx);
         if (!messages.some((item) => item.role === "system")) messages.unshift({ ...SYSTEM });
       }
       const userItem = { role: "user", content: outboundText, createdAt: Date.now() };
+      if (historyRun) userItem.historyRun = historyRun;
       if ((opts && opts.hidden) || isBuildPromptText(outboundText)) userItem.hidden = true;
       if (viewing && pendingImage) {
         userItem.imageData = pendingImage.dataUrl;
@@ -11869,10 +12016,6 @@ function mountChat(root) {
     const working = addWorkingReply(activity);
     flightWorking = working;
     const poll = startStatusPoll(working, activity.kind);
-    const historyRun = sendAgent
-      ? (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now().toString(36)}`)
-      : "";
-    if (historyRun) lastHistoryRun = historyRun;
     let assembled = "";
     let reasoning = "";
     let elapsedSec = null;
@@ -12084,6 +12227,7 @@ function mountChat(root) {
     if (calls.length) {
       const list = liveMessages(chatId);
       const assistantItem = { role: "assistant", content: assembled, createdAt: Date.now() };
+      if (historyRun) assistantItem.historyRun = historyRun;
       if (reasoning) assistantItem.reasoning = reasoning;
       assistantItem.tool_calls = toolCalls;
       list.push(assistantItem);
@@ -12110,13 +12254,15 @@ function mountChat(root) {
         };
         working.addStep(toolStep);
         advanceChecklistFromTool(toolStep, chatId);
-        list.push({
+        const toolItem = {
           role: "tool",
           content: ran.result,
           tool_call_id: call.id,
           name: call.name,
           createdAt: Date.now(),
-        });
+        };
+        if (historyRun) toolItem.historyRun = historyRun;
+        list.push(toolItem);
         if (ran.change && chatsShareWorkspace(chatId)) {
           const written = ran.change.path;
           if (isChangePath(written)) {
@@ -12227,6 +12373,7 @@ function mountChat(root) {
         content: assembled || (persistEmpty ? EMPTY_REPLY_NOTE : ""),
         createdAt: Date.now(),
       };
+      if (historyRun) item.historyRun = historyRun;
       if (reasoning) item.reasoning = reasoning;
       if (elapsedSec) item.elapsed_s = elapsedSec;
       if (userStopped) item.status_label = "Stopped";

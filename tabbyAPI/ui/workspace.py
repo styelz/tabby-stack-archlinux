@@ -1084,7 +1084,14 @@ def missing_history_rows(username: str, chat_id: str) -> list[dict[str, Any]]:
         rel = str(key or "").strip().replace("\\", "/")
         if not rel or rel in existing or not versions:
             continue
-        latest = versions[0] if isinstance(versions[0], dict) else {}
+        content = [
+            row
+            for row in versions
+            if isinstance(row, dict) and not row.get("created")
+        ]
+        if not content:
+            continue
+        latest = content[0]
         suffix = Path(rel).suffix.lower()
         rows.append(
             {
@@ -1168,6 +1175,8 @@ def _load_history_index(folder: Path) -> dict[str, list[dict[str, Any]]]:
             run_id = _clean_history_run(row.get("run"))
             if run_id:
                 item["run"] = run_id
+            if row.get("created"):
+                item["created"] = True
             clean.append(item)
         if clean:
             out[key] = clean
@@ -1184,11 +1193,19 @@ def _save_history_index(folder: Path, index: dict[str, list[dict[str, Any]]]) ->
     os.chmod(dest, 0o600)
 
 
-def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
+def _record_history(
+    username: str,
+    chat_id: str,
+    rel: str,
+    data: bytes,
+    *,
+    created: bool = False,
+) -> None:
     if is_image_path(rel):
         return
     try:
-        data.decode("utf-8")
+        if not created:
+            data.decode("utf-8")
         key = _file_key(username, chat_id, rel)
     except (UnicodeDecodeError, ValueError):
         return
@@ -1198,21 +1215,29 @@ def _record_history(username: str, chat_id: str, rel: str, data: bytes) -> None:
         index = _load_history_index(folder)
         rows = list(index.get(key) or [])
         if rows:
-            last = _history_blob(folder, str(rows[0].get("id") or ""))
-            try:
-                if last.is_file() and last.read_bytes() == data:
-                    return
-            except OSError:
-                pass
+            if not created:
+                last = _history_blob(folder, str(rows[0].get("id") or ""))
+                try:
+                    if last.is_file() and last.read_bytes() == data:
+                        return
+                except OSError:
+                    pass
             # One snapshot per file for a prompt run: keep the pre-run bytes.
             if run_id and str(rows[0].get("run") or "") == run_id:
                 return
         rev_id = secrets.token_hex(8)
-        blob = _history_blob(folder, rev_id)
-        blob.parent.mkdir(parents=True, exist_ok=True)
-        blob.write_bytes(data)
-        os.chmod(blob, 0o600)
-        row = {"id": rev_id, "ts": int(time.time() * 1000), "bytes": len(data)}
+        row = {
+            "id": rev_id,
+            "ts": int(time.time() * 1000),
+            "bytes": 0 if created else len(data),
+        }
+        if created:
+            row["created"] = True
+        else:
+            blob = _history_blob(folder, rev_id)
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            blob.write_bytes(data)
+            os.chmod(blob, 0o600)
         if run_id:
             row["run"] = run_id
         rows.insert(0, row)
@@ -1249,7 +1274,8 @@ def list_history(username: str, chat_id: str, rel: str) -> list[dict[str, Any]]:
     key = _file_key(username, chat_id, rel)
     folder = history_dir(username, chat_id)
     with _HISTORY_LOCK:
-        return list(_load_history_index(folder).get(key) or [])
+        rows = list(_load_history_index(folder).get(key) or [])
+    return [row for row in rows if not row.get("created")]
 
 
 def _line_diff(latest: str, revision: str) -> list[dict[str, str]]:
@@ -1306,54 +1332,102 @@ def history_revision(
     }
 
 
-def restore_revision(username: str, chat_id: str, rel: str, rev_id: str) -> str:
+def restore_revision(
+    username: str,
+    chat_id: str,
+    rel: str,
+    rev_id: str,
+    *,
+    record_history: bool = True,
+) -> str:
     if is_image_path(rel):
         raise ValueError("Only text files can be restored.")
     data = history_revision(username, chat_id, rel, rev_id)
-    return write_text(username, chat_id, rel, data["contents"])
+    return write_text(
+        username, chat_id, rel, data["contents"], record_history=record_history
+    )
+
+
+def _history_row_ts(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _history_row_matches(
+    row: dict[str, Any], wanted: set[str], since_ts: int
+) -> bool:
+    run_id = str(row.get("run") or "")
+    if wanted and run_id in wanted:
+        return True
+    return bool(since_ts and _history_row_ts(row) >= since_ts)
 
 
 def restore_run(
     username: str,
     chat_id: str,
-    run_id: str,
+    run_id: str = "",
     created: Optional[list[str]] = None,
+    run_ids: Optional[list[str]] = None,
+    since_ts: int = 0,
 ) -> dict[str, list[str]]:
-    """Undo one Code-mode prompt run: restore pre-run snapshots, delete created files."""
-    wanted = _clean_history_run(run_id)
-    if not wanted:
+    """Undo Code-mode prompt runs: restore the oldest matching snapshot, delete created files."""
+    wanted: set[str] = set()
+    for raw in list(run_ids or []) + [run_id]:
+        clean = _clean_history_run(raw)
+        if clean:
+            wanted.add(clean)
+    try:
+        since = int(since_ts or 0)
+    except (TypeError, ValueError):
+        since = 0
+    if since < 0:
+        since = 0
+    if not wanted and not since:
         raise ValueError("Invalid run")
     folder = history_dir(username, chat_id)
-    targets: list[tuple[str, str]] = []
+    targets: list[tuple[str, dict[str, Any]]] = []
     with _HISTORY_LOCK:
         index = _load_history_index(folder)
         for key, rows in index.items():
             if not isinstance(rows, list):
                 continue
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("run") or "") != wanted:
-                    continue
-                rev_id = str(row.get("id") or "").strip()
-                if rev_id:
-                    targets.append((key, rev_id))
-                break
-    restored: list[str] = []
-    for rel, rev_id in targets:
-        try:
-            restore_revision(username, chat_id, rel, rev_id)
-            restored.append(rel)
-        except (ValueError, FileNotFoundError, OSError):
-            continue
-    deleted: list[str] = []
-    restored_set = set(restored)
+            matched = [
+                row
+                for row in rows
+                if isinstance(row, dict) and _history_row_matches(row, wanted, since)
+            ]
+            if not matched:
+                continue
+            oldest = min(matched, key=_history_row_ts)
+            targets.append((key, oldest))
+    created_set: set[str] = set()
     for raw in created or []:
         rel = str(raw or "").strip().replace("\\", "/")
-        if not rel or rel in restored_set:
+        if rel:
+            created_set.add(rel)
+    restored: list[str] = []
+    deleted: list[str] = []
+    for rel, row in targets:
+        drop = bool(row.get("created")) or rel in created_set
+        try:
+            if drop:
+                delete_file(username, chat_id, rel, record_history=False)
+                deleted.append(rel)
+            else:
+                written = restore_revision(
+                    username, chat_id, rel, str(row.get("id") or ""), record_history=False
+                )
+                restored.append(written or rel)
+        except (ValueError, FileNotFoundError, OSError):
+            continue
+    handled = set(restored) | set(deleted)
+    for rel in created_set:
+        if rel in handled:
             continue
         try:
-            delete_file(username, chat_id, rel)
+            delete_file(username, chat_id, rel, record_history=False)
             deleted.append(rel)
         except (ValueError, FileNotFoundError, OSError):
             continue
@@ -1498,6 +1572,7 @@ def write_text(
     contents: str,
     *,
     sync_images: bool = True,
+    record_history: bool = True,
 ) -> str:
     text = contents if isinstance(contents, str) else str(contents or "")
     data = text.encode("utf-8")
@@ -1508,13 +1583,16 @@ def write_text(
     extra_files = 0 if path.is_file() else 1
     extra_bytes = len(data) - (path.stat().st_size if path.is_file() else 0)
     _check_caps(root, extra_bytes=max(0, extra_bytes), extra_files=extra_files)
-    if path.is_file():
-        try:
-            previous = path.read_bytes()
-        except OSError:
-            previous = None
-        if previous is not None and previous != data:
-            _record_history(username, chat_id, rel, previous)
+    if record_history:
+        if path.is_file():
+            try:
+                previous = path.read_bytes()
+            except OSError:
+                previous = None
+            if previous is not None and previous != data:
+                _record_history(username, chat_id, rel, previous)
+        else:
+            _record_history(username, chat_id, rel, b"", created=True)
     _write_bytes_nofollow(root, rel, data)
     written = path.relative_to(root.resolve()).as_posix()
     if sync_images and Path(written).suffix.lower() in _PAGE_SUFFIXES:
@@ -1659,12 +1737,14 @@ def str_replace(username: str, chat_id: str, rel: str, old: str, new: str) -> st
     return rel
 
 
-def delete_file(username: str, chat_id: str, rel: str) -> None:
+def delete_file(
+    username: str, chat_id: str, rel: str, *, record_history: bool = True
+) -> None:
     root = workspace_root(username, chat_id, create=False)
     path = resolve_rel(root, rel)
     if not path.is_file():
         raise FileNotFoundError(rel)
-    if not is_image_path(rel):
+    if record_history and not is_image_path(rel):
         try:
             _record_history(username, chat_id, rel, path.read_bytes())
         except OSError:
