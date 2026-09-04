@@ -23,12 +23,242 @@ def load_catalog(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def select_ids(catalog: dict, model_set: str) -> list[str]:
+def unique_keep(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def catalog_picks(catalog: dict) -> list[dict]:
+    picks = catalog.get("picks")
+    if isinstance(picks, list) and picks:
+        return [p for p in picks if isinstance(p, dict) and p.get("id")]
+    # Older catalogs with no picks: one row per item.
+    return [
+        {"id": name, "items": [name], "label": name, "min_vram_mib": 0, "disk_gib": 5}
+        for name in (catalog.get("items") or {})
+    ]
+
+
+def pick_map(catalog: dict) -> dict[str, dict]:
+    return {str(p["id"]): p for p in catalog_picks(catalog)}
+
+
+def expand_pick_ids(catalog: dict, raw: str) -> list[str]:
+    """Turn a set name, pick ids, or item ids into catalog item ids."""
+    text = (raw or "").strip()
     sets = catalog.get("sets") or {}
-    if model_set not in sets:
-        known = ", ".join(sorted(sets)) or "(none)"
-        raise SystemExit(f"Unknown model set {model_set!r}. Use one of: {known}")
-    return list(sets[model_set])
+    if text in sets:
+        return unique_keep(list(sets[text]))
+    tokens = [part.strip() for part in text.replace(" ", ",").split(",") if part.strip()]
+    if not tokens:
+        raise SystemExit("No models selected.")
+    items = catalog.get("items") or {}
+    picks = pick_map(catalog)
+    out: list[str] = []
+    unknown: list[str] = []
+    for token in tokens:
+        if token in picks:
+            out.extend(str(x) for x in picks[token].get("items") or [])
+        elif token in items or token.startswith("local-"):
+            out.append(token)
+        else:
+            unknown.append(token)
+    if unknown:
+        known = ", ".join(sorted(list(sets) + list(picks) + list(items))) or "(none)"
+        raise SystemExit(f"Unknown model id {unknown[0]!r}. Use one of: {known}")
+    return unique_keep(out)
+
+
+def select_ids(catalog: dict, model_set: str) -> list[str]:
+    return expand_pick_ids(catalog, model_set)
+
+
+def vram_label(mib: int) -> str:
+    if mib <= 0:
+        return "CPU"
+    gb = max(1, int(round(mib / 1024.0)))
+    return f"{gb} GB"
+
+
+def extra_item_id(folder_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", folder_name).strip("-")
+    return f"local-{safe or 'model'}"
+
+
+def extra_snapshot_item(folder: Path) -> dict:
+    dest_name = folder.name
+    return {
+        "kind": "snapshot",
+        "repo": "",
+        "dest": f"tabby/models/{dest_name}",
+        "cache": [f"tabbyAPI/models/{dest_name}", dest_name, f"models/{dest_name}"],
+        "ready": ["model.safetensors", "quantization_config.json"],
+    }
+
+
+def known_dest_names(catalog: dict) -> set[str]:
+    names: set[str] = set()
+    for item in (catalog.get("items") or {}).values():
+        dest = (item or {}).get("dest") or ""
+        if dest:
+            names.add(Path(dest).name)
+        for rel in item.get("cache") or []:
+            names.add(Path(rel).name)
+    return names
+
+
+def extra_model_dirs(cache_root: Path, catalog: dict) -> list[Path]:
+    """Snapshot folders under the cache that are not already in the catalog."""
+    known = known_dest_names(catalog)
+    roots = [
+        cache_root,
+        cache_root / "models",
+        cache_root / "tabbyAPI" / "models",
+        cache_root / "tabby-stack" / "tabbyAPI" / "models",
+    ]
+    found: list[Path] = []
+    seen: set[Path] = set()
+    probe = {"kind": "snapshot", "ready": ["model.safetensors", "quantization_config.json"]}
+    for base in roots:
+        if not base.is_dir():
+            continue
+        try:
+            children = list(base.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir() or child.name in SKIP_DIR_NAMES or child.name.startswith("."):
+                continue
+            if child.name in known:
+                continue
+            try:
+                resolved = child.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            if is_ready(child, probe) or any(child.glob("model*.safetensors")):
+                seen.add(resolved)
+                found.append(child)
+    return found
+
+
+def pick_is_found(catalog: dict, pick: dict, cache_root: Path | None) -> bool:
+    if cache_root is None:
+        return False
+    items = catalog.get("items") or {}
+    for item_id in pick.get("items") or []:
+        item = items.get(item_id)
+        if item and find_cache(item, cache_root) is not None:
+            return True
+    return False
+
+
+def list_pick_rows(
+    catalog: dict,
+    *,
+    cache_root: Path | None = None,
+    vram_mib: int = 0,
+    source: str = "hf",
+) -> list[dict]:
+    """Rows for the installer checklist: id, on, label."""
+    core_ids = set((catalog.get("sets") or {}).get("core") or [])
+    rows: list[dict] = []
+    if source == "cache":
+        for pick in catalog_picks(catalog):
+            if not pick_is_found(catalog, pick, cache_root):
+                continue
+            rows.append(
+                {
+                    "id": str(pick["id"]),
+                    "on": True,
+                    "label": str(pick.get("label") or pick["id"]),
+                    "min_vram_mib": int(pick.get("min_vram_mib") or 0),
+                    "disk_gib": int(pick.get("disk_gib") or 0),
+                }
+            )
+        if cache_root is not None:
+            for folder in extra_model_dirs(cache_root, catalog):
+                rows.append(
+                    {
+                        "id": extra_item_id(folder.name),
+                        "on": True,
+                        "label": f"{folder.name} (local)",
+                        "min_vram_mib": 0,
+                        "disk_gib": 0,
+                        "extra_path": str(folder),
+                    }
+                )
+        return rows
+
+    for pick in catalog_picks(catalog):
+        need = int(pick.get("min_vram_mib") or 0)
+        if vram_mib > 0 and need > vram_mib:
+            continue
+        item_ids = [str(x) for x in pick.get("items") or []]
+        default_on = bool(item_ids) and all(i in core_ids for i in item_ids)
+        rows.append(
+            {
+                "id": str(pick["id"]),
+                "on": default_on,
+                "label": str(pick.get("label") or pick["id"]),
+                "min_vram_mib": need,
+                "disk_gib": int(pick.get("disk_gib") or 0),
+            }
+        )
+    return rows
+
+
+def format_pick_label(row: dict, vram_mib: int = 0) -> str:
+    label = str(row.get("label") or row.get("id") or "")
+    need = int(row.get("min_vram_mib") or 0)
+    if vram_mib > 0 and need > vram_mib:
+        label = f"{label} (needs {vram_label(need)})"
+    elif vram_mib <= 0 and need > 0:
+        label = f"{label} ({vram_label(need)})"
+    return label[:70]
+
+
+def disk_gib_for_ids(catalog: dict, raw: str) -> int:
+    picks = pick_map(catalog)
+    item_ids = expand_pick_ids(catalog, raw)
+    total = 0
+    covered: set[str] = set()
+    for pick in catalog_picks(catalog):
+        members = [str(x) for x in pick.get("items") or []]
+        if members and all(m in item_ids for m in members):
+            total += int(pick.get("disk_gib") or 0)
+            covered.update(members)
+    for item_id in item_ids:
+        if item_id not in covered:
+            if item_id in picks:
+                total += int(picks[item_id].get("disk_gib") or 0)
+            else:
+                total += 5
+    return total
+
+
+def extra_items_from_cache(catalog: dict, cache_root: Path | None, selected: list[str]) -> dict[str, dict]:
+    extras: dict[str, dict] = {}
+    if cache_root is None:
+        return extras
+    for folder in extra_model_dirs(cache_root, catalog):
+        item_id = extra_item_id(folder.name)
+        if item_id in selected:
+            extras[item_id] = extra_snapshot_item(folder)
+    return extras
+
+
+def write_selected_catalog(path: Path, catalog: dict, selected: list[str], extras: dict[str, dict]) -> None:
+    items = catalog.setdefault("items", {})
+    items.update(extras)
+    catalog.setdefault("sets", {})["selected"] = selected
+    path.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
 
 
 def dest_path(item: dict, tabby: Path, comfy: Path) -> Path:
@@ -391,7 +621,10 @@ def ensure_item(name: str, item: dict, tabby: Path, comfy: Path, cache_root: Pat
         if is_ready(dest, item):
             return "copy"
         note(f"    copy of {name} was incomplete; downloading")
-    note(f"    download {name} from {item['repo']}")
+    repo = item.get("repo") or ""
+    if not repo:
+        raise SystemExit(f"{name} is local-only and was not found in the cache")
+    note(f"    download {name} from {repo}")
     note(f"      dest {dest}")
     download_item(item, dest)
     if not is_ready(dest, item):
@@ -399,20 +632,58 @@ def ensure_item(name: str, item: dict, tabby: Path, comfy: Path, cache_root: Pat
     return "download"
 
 
+def print_pick_rows(rows: list[dict], vram_mib: int = 0) -> None:
+    for row in rows:
+        state = "on" if row.get("on") else "off"
+        label = format_pick_label(row, vram_mib).replace("\t", " ").replace('"', "'")
+        print(f"{row['id']}\t{state}\t{label}", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, required=True)
-    parser.add_argument("--tabby", type=Path, required=True)
-    parser.add_argument("--comfy", type=Path, required=True)
+    parser.add_argument("--tabby", type=Path, default=None)
+    parser.add_argument("--comfy", type=Path, default=None)
     parser.add_argument("--cache", type=Path, default=None)
     parser.add_argument("--set", dest="model_set", default="core")
+    parser.add_argument("--ids", default="", help="Comma-separated pick or item ids")
+    parser.add_argument("--list-picks", action="store_true")
+    parser.add_argument("--source", choices=("hf", "cache"), default=None)
+    parser.add_argument("--vram-mib", type=int, default=0)
+    parser.add_argument("--disk-gib", action="store_true")
+    parser.add_argument("--update-catalog", action="store_true")
     args = parser.parse_args(argv)
 
     catalog = load_catalog(args.catalog)
     items = catalog.get("items") or {}
     cache = args.cache if args.cache and args.cache.is_dir() else None
-    selected = select_ids(catalog, args.model_set)
-    print(f"==> Weights ({args.model_set}): {', '.join(selected)}", flush=True)
+    source = args.source or ("cache" if cache else "hf")
+    selection = (args.ids or args.model_set or "core").strip()
+
+    if args.list_picks:
+        rows = list_pick_rows(catalog, cache_root=cache, vram_mib=args.vram_mib, source=source)
+        print_pick_rows(rows, args.vram_mib)
+        return 0
+
+    if args.disk_gib:
+        print(disk_gib_for_ids(catalog, selection), flush=True)
+        return 0
+
+    selected = expand_pick_ids(catalog, selection)
+    extras = extra_items_from_cache(catalog, cache, selected)
+    if extras:
+        items.update(extras)
+        catalog.setdefault("items", {}).update(extras)
+    if args.update_catalog:
+        write_selected_catalog(args.catalog, catalog, selected, extras)
+        note(f"    catalog selected: {', '.join(selected)}")
+
+    if args.tabby is None or args.comfy is None:
+        if args.update_catalog:
+            return 0
+        raise SystemExit("--tabby and --comfy are required unless --list-picks / --disk-gib / --update-catalog")
+
+    print(f"==> Weights ({selection}): {', '.join(selected)}", flush=True)
     if cache:
         print(f"    cache: {cache}", flush=True)
     else:

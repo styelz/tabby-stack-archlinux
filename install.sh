@@ -204,6 +204,51 @@ ui_menu() {
   printf '%s' "$out"
 }
 
+ui_checklist() {
+  local title="$1"
+  local text="$2"
+  shift 2
+  local out=""
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    out="$(dialog_read --title "$title" --checklist "$text" 22 74 10 "$@")" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" 22 74 10 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+  else
+    {
+      echo
+      echo "=== $title ==="
+      echo "$text"
+      echo
+    } >&2
+    local i=1 tag state
+    local tags=()
+    local defaults=()
+    while (($#)); do
+      tag="$1"
+      tags+=("$tag")
+      state="$3"
+      printf "  %s) [%s] %s — %s\n" "$i" "$([[ "$state" == on ]] && echo x || echo ' ')" "$tag" "$2" >&2
+      [[ "$state" == on ]] && defaults+=("$tag")
+      shift 3
+      i=$((i + 1))
+    done
+    local choice=""
+    local joined="${defaults[*]}"
+    joined="${joined// /,}"
+    read -r -p "Comma-separated ids [${joined}]: " choice || true
+    if [[ -z "$choice" ]]; then
+      out="${defaults[*]}"
+    else
+      out="${choice//,/ }"
+    fi
+  fi
+  local -a chosen=()
+  # dialog prints quoted tags; ids are [A-Za-z0-9._-]+ so eval is safe.
+  eval "chosen=(${out})"
+  local IFS=,
+  printf '%s' "${chosen[*]}"
+}
+
 ui_yesno() {
   local title="$1"
   local text="$2"
@@ -1156,6 +1201,95 @@ cache_has_any_weights() {
   [[ -n "$hit" ]]
 }
 
+valid_model_set() {
+  local s="${1:-}"
+  [[ -n "$s" ]] || return 1
+  [[ "$s" == "core" || "$s" == "all" || "$s" == "selected" ]] && return 0
+  [[ "$s" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]
+}
+
+gpu_vram_mib() {
+  local mem name lower
+  if need_cmd nvidia-smi; then
+    mem="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '[:space:]')"
+    if [[ "$mem" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      printf '%s\n' "${mem%%.*}"
+      return 0
+    fi
+  fi
+  name="$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i nvidia | head -1 || true)"
+  lower="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *4090*) printf '%s\n' 24576 ;;
+    *4080*) printf '%s\n' 16384 ;;
+    *4070*ti*super*) printf '%s\n' 16384 ;;
+    *4070*ti*) printf '%s\n' 12288 ;;
+    *4070*) printf '%s\n' 12288 ;;
+    *4060*ti*16*) printf '%s\n' 16384 ;;
+    *4060*ti*) printf '%s\n' 8192 ;;
+    *4060*) printf '%s\n' 8192 ;;
+    *3090*) printf '%s\n' 24576 ;;
+    *3080*ti*) printf '%s\n' 12288 ;;
+    *3080*) printf '%s\n' 10240 ;;
+    *3070*) printf '%s\n' 8192 ;;
+    *3060*ti*) printf '%s\n' 8192 ;;
+    *3060*) printf '%s\n' 12288 ;;
+    *a6000*) printf '%s\n' 49152 ;;
+    *a5000*) printf '%s\n' 24576 ;;
+    *a4000*) printf '%s\n' 16384 ;;
+    *) printf '%s\n' 0 ;;
+  esac
+}
+
+gpu_short_name() {
+  local name=""
+  if need_cmd nvidia-smi; then
+    name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | sed 's/^NVIDIA GeForce //; s/^NVIDIA //')"
+  fi
+  if [[ -z "$name" ]]; then
+    name="$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i nvidia | head -1 | sed 's/.*NVIDIA Corporation //; s/ (rev.*//' || true)"
+  fi
+  printf '%s\n' "${name:-NVIDIA GPU}"
+}
+
+gpu_prompt_label() {
+  local vram="$1"
+  local name gb
+  name="$(gpu_short_name)"
+  if [[ "$vram" =~ ^[1-9][0-9]*$ ]]; then
+    gb=$(( (vram + 512) / 1024 ))
+    printf '%s, %s GB' "$name" "$gb"
+  else
+    printf '%s (VRAM unknown)' "$name"
+  fi
+}
+
+# Prints comma-separated pick ids. Returns 1 if none were listed.
+pick_models_ui() {
+  local title="$1"
+  local text="$2"
+  local source="$3"
+  local cache="${4:-}"
+  local vram rows id state label
+  local args=()
+  if ! need_cmd python3 || [[ ! -f "$FETCH_MODELS" ]]; then
+    return 1
+  fi
+  vram="$(gpu_vram_mib)"
+  local py=(python3 -u "$FETCH_MODELS" --catalog "$CATALOG" --list-picks --source "$source" --vram-mib "$vram")
+  if [[ -n "$cache" && -d "$cache" ]]; then
+    py+=(--cache "$cache")
+  fi
+  rows="$("${py[@]}" 2>/dev/null || true)"
+  [[ -n "$rows" ]] || return 1
+  while IFS=$'\t' read -r id state label; do
+    [[ -n "${id:-}" ]] || continue
+    args+=("$id" "$label" "$state")
+  done <<< "$rows"
+  ((${#args[@]} >= 3)) || return 1
+  ui_checklist "$title" "$text" "${args[@]}"
+}
+
 DEFAULT_DEST="$HOME/tabby-stack"
 
 if [[ "$INTERACTIVE" -eq 0 ]]; then
@@ -1177,8 +1311,8 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
   MODEL_SET="${TABBY_MODELS:-core}"
   apply_choices
   apply_network_defaults
-  if [[ "$MODEL_SET" != "core" && "$MODEL_SET" != "all" ]]; then
-    echo "Model set must be core or all (got $MODEL_SET)."
+  if ! valid_model_set "$MODEL_SET"; then
+    echo "Model set must be core, all, or comma-separated ids (got $MODEL_SET)."
     exit 1
   fi
   if ! valid_port "$TABBY_NETWORK_PORT"; then
@@ -1242,8 +1376,9 @@ so later you can run update.sh there instead of a second clone.
 Source: ${TABBY_SRC}
 More detail: ${SCRIPT_DIR}/README.md
 
-Next screens ask where to install, whether you have a cache,
-which model set to fetch, and the API / tunnel URLs."
+Next screens ask where to install, where weights come from
+(Hugging Face or a local folder), which models to fetch, and the
+API / tunnel URLs."
   fi
 
   while true; do
@@ -1251,7 +1386,7 @@ which model set to fetch, and the API / tunnel URLs."
       DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
       DEST="${DEST:-$DEFAULT_DEST}"
       WIN_ROOT="${TABBY_CACHE:-}"
-      step_models="1 / 4  — Model set"
+      step_models="1 / 4  — Models"
       step_host="2 / 4  — TabbyAPI listen host"
       step_port="2 / 4  — TabbyAPI listen port"
       step_comfy="2 / 4  — ComfyUI URL"
@@ -1275,26 +1410,24 @@ Default is \$HOME/tabby-stack." \
 "${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}")"
     DEST="${DEST:-$DEFAULT_DEST}"
 
-    cache_choice="$(ui_menu "2 / 6  — Weights cache" \
-"If weights already live on a USB, an old tabby-stack, or a folder of
-model directories, this script searches that path and copies what it
-finds instead of re-downloading. Missing items still come from Hugging Face.
+    cache_choice="$(ui_menu "2 / 6  — Weights source" \
+"Where should the installer get model weights?
 
-Mount the USB first if you want that option:
+Hugging Face — download models that fit this NVIDIA GPU.
+A local path — search that folder for weights you already have
+(USB copy, old tabby-stack, or a folder of model dirs). Missing
+pieces still download.
+
+Mount a USB first if you want that option:
   sudo pacman -S --needed ntfs-3g
   sudo mkdir -p /mnt/usb
-  sudo mount /dev/sdXN /mnt/usb
-
-Point at the folder that holds the weights (a tabby-stack copy, a
-tabbyAPI/models dir, ComfyUI/models, or the files themselves).
-
-Leave the cache empty to download from Hugging Face." \
-      none "Download from Hugging Face (no cache)" \
+  sudo mount /dev/sdXN /mnt/usb" \
+      hf "Hugging Face (models that fit this GPU)" \
       usb "Use /mnt/usb/tabby-stack (USB copy)" \
       custom "Type another path")"
 
     case "$cache_choice" in
-      none) WIN_ROOT="" ;;
+      hf|none) WIN_ROOT="" ;;
       usb) WIN_ROOT="/mnt/usb/tabby-stack" ;;
       custom)
         WIN_ROOT="$(ui_input "Weights cache path" \
@@ -1304,14 +1437,13 @@ Leave the cache empty to download from Hugging Face." \
   /mnt/usb/tabby-stack/tabbyAPI/models
   /data/weights                 (model dirs / .safetensors / .gguf)
 
-The installer looks up the catalog names under that path; it does not
-need a fixed layout. Blank = download from Hugging Face." \
+The installer lists what it finds next. Blank = Hugging Face." \
 "${TABBY_CACHE:-$DEFAULT_CACHE}")"
         ;;
       *) WIN_ROOT="$cache_choice" ;;
     esac
 
-      step_models="3 / 6  — Model set"
+      step_models="3 / 6  — Models"
       step_host="4 / 6  — TabbyAPI listen host"
       step_port="4 / 6  — TabbyAPI listen port"
       step_comfy="4 / 6  — ComfyUI URL"
@@ -1329,50 +1461,88 @@ need a fixed layout. Blank = download from Hugging Face." \
 
 Typical cause: the USB is not mounted, or the path is wrong.
 
-Yes = continue and download missing files from Hugging Face.
+Yes = continue with Hugging Face for anything missing.
 No = go back and pick another cache." 0; then
         continue
       fi
+      WIN_ROOT=""
     elif [[ -n "$WIN_ROOT" ]] && ! cache_has_any_weights "$WIN_ROOT"; then
       if ! ui_yesno "No weights seen in cache" \
 "Opened:
   ${WIN_ROOT}
 
 Did not find tabbyAPI/, ComfyUI/, models/, or weight files there.
-The installer will still search that tree; anything it cannot copy
-is downloaded from Hugging Face.
-
-Yes = continue.
+Yes = pick Hugging Face models that fit this GPU instead.
 No = go back and pick another cache." 0; then
         continue
       fi
+      WIN_ROOT=""
     fi
 
-    default_set="core"
-    if cache_has_any_weights "${WIN_ROOT:-}"; then
-      default_set="all"
+    GPU_VRAM_MIB="$(gpu_vram_mib)"
+    GPU_LABEL="$(gpu_prompt_label "$GPU_VRAM_MIB")"
+    MODEL_SET=""
+    if [[ -n "$WIN_ROOT" ]]; then
+      if MODEL_SET="$(pick_models_ui "$step_models" \
+"Weights found under:
+  ${WIN_ROOT}
+
+Space toggles a row. Enter confirms. Selected models are copied
+into the install; anything incomplete still downloads.
+
+GPU: ${GPU_LABEL}" \
+        cache "$WIN_ROOT")"; then
+        if [[ -z "$MODEL_SET" ]]; then
+          ui_msg "Select at least one model" \
+"Nothing was checked. Go back and select the weights to copy, or
+choose Hugging Face."
+          continue
+        fi
+      else
+        if ! ui_yesno "No catalog models in that folder" \
+"Nothing matching the installer catalog was found in:
+  ${WIN_ROOT}
+
+Yes = show Hugging Face models that fit this GPU instead.
+No = go back." 1; then
+          continue
+        fi
+        WIN_ROOT=""
+        MODEL_SET=""
+      fi
     fi
-    MODEL_SET="$(ui_menu "$step_models" \
-"Which weights to copy or download. Re-run later to add more; existing
-files are skipped.
+    if [[ -z "$MODEL_SET" ]]; then
+      if MODEL_SET="$(pick_models_ui "$step_models" \
+"Hugging Face models that fit this GPU:
+  ${GPU_LABEL}
 
-core  — enough to chat and generate images (smaller download)
-        • qwen 9B  (switch to qwen)  daily coding
-        • Flux Schnell drafts + Qwen-Image (text / posters / UI)
-        • Qwen3-Embedding-0.6B on CPU
+Space toggles a row. Enter confirms. Checked rows are the usual
+first-install set. Re-run later to add more; finished files are skipped.
 
-all   — every “switch to …” profile (needs more disk and VRAM)
-        • core, plus qwen35, qwen36, gemma, gemma26, glm
-        • Gemma may be gated: huggingface-cli login or HF_TOKEN
+If VRAM could not be read, every catalog model is listed." \
+        hf "")"; then
+        if [[ -z "$MODEL_SET" ]]; then
+          ui_msg "Select at least one model" "Check at least one row, then press Enter."
+          continue
+        fi
+      else
+        MODEL_SET=""
+      fi
+    fi
+    if [[ -z "$MODEL_SET" ]]; then
+      MODEL_SET="$(ui_menu "$step_models" \
+"Could not list individual models. Pick a preset.
 
-Recommended first install: core. Default here: ${default_set}." \
-      core "qwen 9B + Flux + Qwen-Image + embedder" \
-      all "every switch-to profile (incl. 27B / 35B / Gemma)")"
-    MODEL_SET="${MODEL_SET:-$default_set}"
+core  — qwen 9B, Flux, Qwen-Image, CPU embedder
+all   — every switch-to profile (needs more disk and VRAM)" \
+        core "qwen 9B + Flux + Qwen-Image + embedder" \
+        all "every switch-to profile")"
+      MODEL_SET="${MODEL_SET:-core}"
+    fi
 
-    if [[ "$MODEL_SET" == "all" ]]; then
+    if [[ "$MODEL_SET" == *gemma* ]]; then
       ui_msg "Gemma / Hugging Face" \
-"The “all” set includes Gemma weights that Hugging Face may gate.
+"Gemma weights may be gated on Hugging Face.
 
 If a later download returns 401 or 403:
   huggingface-cli login
@@ -1384,8 +1554,8 @@ You do not need a token for qwen / Flux / Qwen-Image."
 
     apply_choices
     apply_network_defaults
-    if [[ "$MODEL_SET" != "core" && "$MODEL_SET" != "all" ]]; then
-      ui_msg "Invalid model set" "Model set must be core or all (got ${MODEL_SET})."
+    if ! valid_model_set "$MODEL_SET"; then
+      ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
       continue
     fi
     if ! dest_is_sane; then
@@ -1501,8 +1671,8 @@ tunnel host. Use this path unless your key has another name." \
   Arch dest:     ${DEST}
   TabbyAPI:      ${DEST_TABBY}
   ComfyUI:       ${DEST_COMFY}
-  Weights cache: ${WIN_ROOT:- (none — Hugging Face)}
-  Model set:     ${MODEL_SET}
+  Weights cache: ${WIN_ROOT:- (Hugging Face)}
+  Models:        ${MODEL_SET}
   API:           ${API_URL}
   ComfyUI URL:   ${COMFYUI_URL}
   Public base:   ${TABBY_PUBLIC_BASE:- (none — local only)}
@@ -1529,14 +1699,20 @@ API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
 
 # Rough floor: venvs and CUDA wheels are ~15 GiB, weights are the rest.
 NEED_GIB=45
-[[ "$MODEL_SET" == "all" ]] && NEED_GIB=90
+if need_cmd python3 && [[ -f "$FETCH_MODELS" ]]; then
+  WEIGHT_GIB="$(python3 -u "$FETCH_MODELS" --catalog "$CATALOG" --ids "$MODEL_SET" --disk-gib 2>/dev/null || true)"
+  if [[ "$WEIGHT_GIB" =~ ^[0-9]+$ ]]; then
+    NEED_GIB=$((WEIGHT_GIB + 15))
+  fi
+fi
+[[ "$MODEL_SET" == "all" && "$NEED_GIB" -lt 90 ]] && NEED_GIB=90
 HAVE_GIB="$(free_gib "$DEST")"
 if [[ -n "$HAVE_GIB" ]] && ((HAVE_GIB < NEED_GIB)); then
   SPACE_MSG="Only ${HAVE_GIB} GiB free on the filesystem holding ${DEST}.
-The \"${MODEL_SET}\" set plus the two Python environments needs about
+The selected models plus the two Python environments need about
 ${NEED_GIB} GiB. The install will fail part-way through a download.
 
-Free some space, or pick the \"core\" set / a different disk."
+Free some space, or pick fewer models / a different disk."
   if [[ "$INTERACTIVE" -eq 1 ]]; then
     if ! ui_yesno "Low disk space" "$SPACE_MSG
 
@@ -2019,7 +2195,8 @@ FETCH_ARGS=(
   --catalog "$DEST_CATALOG"
   --tabby "$DEST_TABBY"
   --comfy "$DEST_COMFY"
-  --set "$MODEL_SET"
+  --ids "$MODEL_SET"
+  --update-catalog
 )
 if [[ -n "$WIN_ROOT" && -d "$WIN_ROOT" ]]; then
   FETCH_ARGS+=(--cache "$WIN_ROOT")

@@ -9,12 +9,17 @@ sys.path.insert(0, str(ARCH))
 from fetch_models import (  # noqa: E402
     copy_from_cache,
     dest_path,
+    disk_gib_for_ids,
+    expand_pick_ids,
+    extra_item_id,
     find_cache,
     is_ready,
+    list_pick_rows,
     load_catalog,
     select_ids,
     shards_complete,
     verify_tree,
+    write_selected_catalog,
 )
 
 
@@ -195,6 +200,70 @@ class FetchModelsTests(unittest.TestCase):
             snap.mkdir(parents=True)
             (snap / "model.safetensors").write_bytes(b"weights")
             self.assertEqual(find_cache(item, cache), snap.resolve())
+
+    def test_picks_reference_known_items(self):
+        catalog = load_catalog(CATALOG)
+        items = catalog["items"]
+        for pick in catalog["picks"]:
+            for item_id in pick["items"]:
+                self.assertIn(item_id, items, msg=f"pick {pick['id']} missing {item_id}")
+
+    def test_expand_picks_and_comma_ids(self):
+        catalog = load_catalog(CATALOG)
+        self.assertEqual(select_ids(catalog, "core"), catalog["sets"]["core"])
+        ids = expand_pick_ids(catalog, "qwen,qwen-image")
+        self.assertIn("qwen", ids)
+        self.assertIn("qwen-image-unet", ids)
+        self.assertIn("qwen-image-lora", ids)
+        with self.assertRaises(SystemExit):
+            expand_pick_ids(catalog, "nope")
+
+    def test_list_picks_hf_filters_vram(self):
+        catalog = load_catalog(CATALOG)
+        rows_8g = list_pick_rows(catalog, vram_mib=8192, source="hf")
+        ids_8g = {row["id"] for row in rows_8g}
+        self.assertIn("qwen", ids_8g)
+        self.assertIn("embed", ids_8g)
+        self.assertIn("flux", ids_8g)
+        self.assertNotIn("qwen35", ids_8g)
+        self.assertNotIn("qwen-image", ids_8g)
+        on_ids = {row["id"] for row in rows_8g if row["on"]}
+        self.assertEqual(on_ids, {"qwen", "embed", "flux"})
+
+        rows_12g = list_pick_rows(catalog, vram_mib=12288, source="hf")
+        ids_12g = {row["id"] for row in rows_12g}
+        self.assertIn("qwen35", ids_12g)
+        self.assertIn("qwen-image", ids_12g)
+        on_12g = {row["id"] for row in rows_12g if row["on"]}
+        self.assertEqual(on_12g, {"qwen", "embed", "flux", "qwen-image"})
+
+    def test_list_picks_cache_found_and_extra(self):
+        catalog = load_catalog(CATALOG)
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            qwen = cache / "tabbyAPI" / "models" / "Qwen3.5-9B-exl3-4.00bpw"
+            qwen.mkdir(parents=True)
+            (qwen / "model.safetensors").write_bytes(b"weights")
+            extra = cache / "tabbyAPI" / "models" / "MyLocal-7B"
+            extra.mkdir()
+            (extra / "model.safetensors").write_bytes(b"weights")
+            rows = list_pick_rows(catalog, cache_root=cache, source="cache")
+            ids = {row["id"] for row in rows}
+            self.assertIn("qwen", ids)
+            self.assertNotIn("flux", ids)
+            self.assertIn(extra_item_id("MyLocal-7B"), ids)
+
+    def test_write_selected_catalog_and_disk(self):
+        catalog = load_catalog(CATALOG)
+        self.assertGreater(disk_gib_for_ids(catalog, "core"), 30)
+        self.assertGreater(disk_gib_for_ids(catalog, "all"), disk_gib_for_ids(catalog, "core"))
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "models.json"
+            selected = expand_pick_ids(catalog, "qwen,embed")
+            write_selected_catalog(path, catalog, selected, {})
+            saved = load_catalog(path)
+            self.assertEqual(saved["sets"]["selected"], selected)
+            self.assertEqual(select_ids(saved, "selected"), selected)
 
 
 if __name__ == "__main__":

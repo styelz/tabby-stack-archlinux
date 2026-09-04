@@ -103,7 +103,7 @@ OPTIONS
   --skip-omarchy           Do not install Omarchy (default)
   --name "FULL NAME"       Git name passed to Omarchy as OMARCHY_USER_NAME
   --email ADDR             Git email passed to Omarchy as OMARCHY_USER_EMAIL
-  --models SET             Model set: core or all (asked in this UI unless --config)
+  --models SET             Models: core, all, or comma-separated ids (asked unless --config)
   --tabby-host ADDR        TabbyAPI listen address (asked in this UI unless --config)
   --tabby-port N           TabbyAPI listen port (asked in this UI unless --config)
   --tabby-cache PATH       Optional weights cache. Asked here (before wipe)
@@ -604,6 +604,59 @@ ui_menu() {
   printf '%s' "$out"
 }
 
+ui_checklist() {
+  local title="$1"
+  local text="$2"
+  shift 2
+  local out=""
+  local width height list max
+  width=$(box_width)
+  max=$(box_rows_max)
+  list=$(($# / 3))
+  ((list > 10)) && list=10
+  local avail=$((max - list - 7))
+  if ((avail < 2)); then
+    list=$((max - 9))
+    ((list < 2)) && list=2
+    avail=$((max - list - 7))
+  fi
+  text=$(fit_text "$text" "$width" "$avail")
+  height=$(($(text_rows "$text" "$width") + list + 7))
+  ((height > max)) && height=$max
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    out="$(dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@")" || ui_cancel
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+  else
+    local i=1 tag state
+    local defaults=()
+    {
+      printf '\n=== %s ===\n%s\n\n' "$title" "$text"
+      while (($#)); do
+        tag="$1"
+        state="$3"
+        printf "  %s) [%s] %s — %s\n" "$i" "$([[ "$state" == on ]] && echo x || echo ' ')" "$tag" "$2"
+        [[ "$state" == on ]] && defaults+=("$tag")
+        shift 3
+        i=$((i + 1))
+      done
+    } >/dev/tty
+    local joined="${defaults[*]}"
+    joined="${joined// /,}"
+    local choice=""
+    choice=$(read_tty "Comma-separated ids [${joined}]: ")
+    if [[ -z "$choice" ]]; then
+      out="${defaults[*]}"
+    else
+      out="${choice//,/ }"
+    fi
+  fi
+  local -a chosen=()
+  eval "chosen=(${out})"
+  local IFS=,
+  printf '%s' "${chosen[*]}"
+}
+
 ui_yesno() {
   local title="$1"
   local text="$2"
@@ -724,7 +777,10 @@ valid_yes_no() {
 }
 
 valid_models() {
-  [[ "$1" == "core" || "$1" == "all" ]]
+  local s="${1:-}"
+  [[ -n "$s" ]] || return 1
+  [[ "$s" == "core" || "$s" == "all" || "$s" == "selected" ]] && return 0
+  [[ "$s" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]
 }
 
 valid_port() {
@@ -864,8 +920,8 @@ prompt_settings_text() {
     fi
   fi
 
-  TABBY_CACHE=$(ask "Weights cache path (optional; asked now so a USB can be saved before wipe)" "$TABBY_CACHE")
-  TABBY_MODELS=$(ask_until "Model set (core / all)" "${TABBY_MODELS:-core}" valid_models)
+  TABBY_CACHE=$(ask "Weights cache path (optional; Hugging Face if blank)" "$TABBY_CACHE")
+  TABBY_MODELS=$(ask_until "Models (core / all / comma-separated ids)" "${TABBY_MODELS:-core}" valid_models)
   TABBY_NETWORK_HOST=$(ask "TabbyAPI listen address" "${TABBY_NETWORK_HOST:-127.0.0.1}")
   TABBY_NETWORK_PORT=$(ask_until "TabbyAPI listen port" "${TABBY_NETWORK_PORT:-5000}" valid_port)
   COMFYUI_URL=$(ask "ComfyUI URL" "${COMFYUI_URL:-http://127.0.0.1:8188}")
@@ -989,22 +1045,19 @@ Default follows the current setting ($(encrypt_label))." \
   fi
 
   local cache_choice
-  cache_choice=$(ui_menu "6 / 10  -  Weights cache" \
-"If weights already live on a USB, an old tabby-stack, or a folder of
-model directories, name that path now — the new root mounts at /mnt next.
+  cache_choice=$(ui_menu "6 / 10  -  Weights source" \
+"Where should the installer get model weights?
 
-The installer searches that folder for catalog names (a tabby-stack
-tree, tabbyAPI/models, ComfyUI/models, or the files themselves).
-Missing items still download from Hugging Face.
+Hugging Face — download models that fit this NVIDIA GPU.
+A local path — search that folder (USB copy, old tabby-stack,
+or model dirs). Name it now; the new root mounts at /mnt next.
 
-Mount the USB first if you want that option (not under /mnt).
-
-Leave the cache empty to download from Hugging Face." \
-    none "Download from Hugging Face (no cache)" \
+Mount the USB first if you want that option (not under /mnt)." \
+    hf "Hugging Face (models that fit this GPU)" \
     usb "Use /run/media/usb/tabby-stack" \
     custom "Type another path")
   case "$cache_choice" in
-    none) TABBY_CACHE="" ;;
+    hf|none) TABBY_CACHE="" ;;
     usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
     custom)
       TABBY_CACHE=$(ui_input "Weights cache path" \
@@ -1014,7 +1067,7 @@ Leave the cache empty to download from Hugging Face." \
   /run/media/usb/tabby-stack/tabbyAPI/models
   /tmp/tabby-weights
 
-Blank = download from Hugging Face." \
+The installer lists what it finds next. Blank = Hugging Face." \
         "$TABBY_CACHE")
       ;;
     *) TABBY_CACHE="$cache_choice" ;;
@@ -1024,24 +1077,77 @@ Blank = download from Hugging Face." \
 }
 
 prompt_tabby_settings_tui() {
-  local default_set="${TABBY_MODELS:-core}"
-  if cache_has_any_weights "${TABBY_CACHE:-}"; then
-    default_set="all"
+  local gpu_label vram
+  vram=$(gpu_vram_mib)
+  gpu_label=$(gpu_prompt_label "$vram")
+
+  if [[ -n "$TABBY_CACHE" && ! -d "$TABBY_CACHE" ]]; then
+    if ui_yesno "Cache not found" \
+"That path is not a directory:
+  ${TABBY_CACHE}
+
+Yes = Hugging Face models that fit this GPU.
+No = leave the path (install will download anything missing)." 1; then
+      TABBY_CACHE=""
+    fi
   fi
-  TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
-"Which weights to copy or download. Re-run later to add more.
 
-core - qwen 9B, Flux Schnell, Qwen-Image, CPU embedder.
-all  - core plus qwen35, qwen36, gemma, gemma26, glm. Needs more
-       disk and VRAM, and Gemma may need a Hugging Face token.
+  TABBY_MODELS=""
+  if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE" ]]; then
+    if TABBY_MODELS=$(pick_models_ui "7 / 10  -  Models found" \
+"Weights found under:
+  ${TABBY_CACHE}
 
-Recommended first install: core. Default here: ${default_set}." \
-    core "qwen 9B + Flux + Qwen-Image + embedder" \
-    all "every switch-to profile (incl. 27B / 35B / Gemma)")
-  TABBY_MODELS="${TABBY_MODELS:-$default_set}"
-  if [[ "$TABBY_MODELS" == "all" ]]; then
+Space toggles a row. Enter confirms. Selected models are copied
+into the install; anything incomplete still downloads.
+
+GPU: ${gpu_label}" \
+      cache "$TABBY_CACHE"); then
+      if [[ -z "$TABBY_MODELS" ]]; then
+        ui_msg "Select at least one model" "Check at least one row, then press Enter."
+        TABBY_MODELS=""
+      fi
+    else
+      if ui_yesno "No catalog models in that folder" \
+"Nothing matching the installer catalog was found in:
+  ${TABBY_CACHE}
+
+Yes = show Hugging Face models that fit this GPU instead.
+No = keep the path and use the core preset." 1; then
+        TABBY_CACHE=""
+      else
+        TABBY_MODELS=core
+      fi
+    fi
+  fi
+  if [[ -z "$TABBY_MODELS" ]]; then
+    if TABBY_MODELS=$(pick_models_ui "7 / 10  -  Hugging Face models" \
+"Hugging Face models that fit this GPU:
+  ${gpu_label}
+
+Space toggles a row. Enter confirms. Checked rows are the usual
+first-install set.
+
+If VRAM could not be read, every catalog model is listed." \
+      hf ""); then
+      if [[ -z "$TABBY_MODELS" ]]; then
+        TABBY_MODELS=core
+      fi
+    else
+      TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
+"Could not list individual models. Pick a preset.
+
+core - qwen 9B, Flux, Qwen-Image, CPU embedder
+all  - every switch-to profile" \
+        core "qwen 9B + Flux + Qwen-Image + embedder" \
+        all "every switch-to profile")
+      TABBY_MODELS="${TABBY_MODELS:-core}"
+    fi
+  fi
+
+  if [[ "$TABBY_MODELS" == *gemma* ]]; then
     ui_msg "Gemma / Hugging Face" \
-"The “all” set includes Gemma weights that Hugging Face may gate.
+"Gemma weights may be gated on Hugging Face.
 
 If a later download returns 401 or 403:
   huggingface-cli login
@@ -1252,6 +1358,135 @@ cache_has_any_weights() {
   [[ -n "$hit" ]]
 }
 
+gpu_vram_mib() {
+  local mem name lower
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    mem="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '[:space:]')"
+    if [[ "$mem" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      printf '%s\n' "${mem%%.*}"
+      return 0
+    fi
+  fi
+  name="$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i nvidia | head -1 || true)"
+  lower="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *4090*) printf '%s\n' 24576 ;;
+    *4080*) printf '%s\n' 16384 ;;
+    *4070*ti*super*) printf '%s\n' 16384 ;;
+    *4070*ti*) printf '%s\n' 12288 ;;
+    *4070*) printf '%s\n' 12288 ;;
+    *4060*ti*16*) printf '%s\n' 16384 ;;
+    *4060*ti*) printf '%s\n' 8192 ;;
+    *4060*) printf '%s\n' 8192 ;;
+    *3090*) printf '%s\n' 24576 ;;
+    *3080*ti*) printf '%s\n' 12288 ;;
+    *3080*) printf '%s\n' 10240 ;;
+    *3070*) printf '%s\n' 8192 ;;
+    *3060*ti*) printf '%s\n' 8192 ;;
+    *3060*) printf '%s\n' 12288 ;;
+    *a6000*) printf '%s\n' 49152 ;;
+    *a5000*) printf '%s\n' 24576 ;;
+    *a4000*) printf '%s\n' 16384 ;;
+    *) printf '%s\n' 0 ;;
+  esac
+}
+
+gpu_short_name() {
+  local name=""
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | sed 's/^NVIDIA GeForce //; s/^NVIDIA //')"
+  fi
+  if [[ -z "$name" ]]; then
+    name="$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i nvidia | head -1 | sed 's/.*NVIDIA Corporation //; s/ (rev.*//' || true)"
+  fi
+  printf '%s\n' "${name:-NVIDIA GPU}"
+}
+
+gpu_prompt_label() {
+  local vram="$1"
+  local name gb
+  name="$(gpu_short_name)"
+  if [[ "$vram" =~ ^[1-9][0-9]*$ ]]; then
+    gb=$(( (vram + 512) / 1024 ))
+    printf '%s, %s GB' "$name" "$gb"
+  else
+    printf '%s (VRAM unknown)' "$name"
+  fi
+}
+
+repo_raw_base() {
+  local url="${TABBY_REPO:-https://github.com/styelz/tabby-stack-archlinux.git}"
+  url="${url%.git}"
+  url="${url%/}"
+  case "$url" in
+    https://github.com/*)
+      printf 'https://raw.githubusercontent.com/%s/main' "${url#https://github.com/}"
+      ;;
+    *)
+      printf 'https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main'
+      ;;
+  esac
+}
+
+ensure_fetch_tools() {
+  local script src base
+  TSOS_CATALOG="${TSOS_CATALOG:-}"
+  TSOS_FETCH="${TSOS_FETCH:-}"
+  if [[ -n "$TSOS_FETCH" && -f "$TSOS_FETCH" && -n "$TSOS_CATALOG" && -f "$TSOS_CATALOG" ]]; then
+    return 0
+  fi
+  if [[ -n "$TABBY_LOCAL_SRC" && -f "$TABBY_LOCAL_SRC/tabbyAPI/deploy/arch/fetch_models.py" ]]; then
+    TSOS_FETCH="$TABBY_LOCAL_SRC/tabbyAPI/deploy/arch/fetch_models.py"
+    TSOS_CATALOG="$TABBY_LOCAL_SRC/tabbyAPI/deploy/arch/models.json"
+    return 0
+  fi
+  script="${BASH_SOURCE[0]:-}"
+  case "$script" in
+    "" | /dev/fd/* | /proc/self/fd/* | -) script="" ;;
+  esac
+  if [[ -n "$script" ]]; then
+    [[ "$script" == /* ]] || script="$PWD/$script"
+    src="$(cd "$(dirname "$script")" && pwd)"
+    if [[ -f "$src/tabbyAPI/deploy/arch/fetch_models.py" ]]; then
+      TSOS_FETCH="$src/tabbyAPI/deploy/arch/fetch_models.py"
+      TSOS_CATALOG="$src/tabbyAPI/deploy/arch/models.json"
+      return 0
+    fi
+  fi
+  base="$(repo_raw_base)"
+  TSOS_CATALOG="${TMPDIR:-/tmp}/tsos-models.json"
+  TSOS_FETCH="${TMPDIR:-/tmp}/tsos-fetch_models.py"
+  curl -fsSL "$base/tabbyAPI/deploy/arch/models.json" -o "$TSOS_CATALOG" || return 1
+  curl -fsSL "$base/tabbyAPI/deploy/arch/fetch_models.py" -o "$TSOS_FETCH" || return 1
+  [[ -s "$TSOS_CATALOG" && -s "$TSOS_FETCH" ]]
+}
+
+pick_models_ui() {
+  local title="$1"
+  local text="$2"
+  local source="$3"
+  local cache="${4:-}"
+  local vram rows id state label
+  local args=()
+  ensure_fetch_tools || return 1
+  if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$TSOS_FETCH" ]]; then
+    return 1
+  fi
+  vram="$(gpu_vram_mib)"
+  local py=(python3 -u "$TSOS_FETCH" --catalog "$TSOS_CATALOG" --list-picks --source "$source" --vram-mib "$vram")
+  if [[ -n "$cache" && -d "$cache" ]]; then
+    py+=(--cache "$cache")
+  fi
+  rows="$("${py[@]}" 2>/dev/null || true)"
+  [[ -n "$rows" ]] || return 1
+  while IFS=$'\t' read -r id state label; do
+    [[ -n "${id:-}" ]] || continue
+    args+=("$id" "$label" "$state")
+  done <<< "$rows"
+  ((${#args[@]} >= 3)) || return 1
+  ui_checklist "$title" "$text" "${args[@]}"
+}
+
 self_test() {
   local failed=0
   check() {
@@ -1436,7 +1671,7 @@ validate_names() {
   valid_hostname "$TARGET_HOSTNAME" || die "invalid hostname: $TARGET_HOSTNAME"
   valid_omarchy_mode "$OMARCHY_MODE" || die "invalid OMARCHY_MODE: $OMARCHY_MODE (now or skip)"
   valid_esp_size "$ESP_SIZE" || die "invalid EFI size: $ESP_SIZE"
-  valid_models "$TABBY_MODELS" || die "invalid TABBY_MODELS: $TABBY_MODELS (core or all)"
+  valid_models "$TABBY_MODELS" || die "invalid TABBY_MODELS: $TABBY_MODELS (core, all, or comma-separated ids)"
   valid_port "$TABBY_NETWORK_PORT" || die "invalid TabbyAPI port: $TABBY_NETWORK_PORT"
   normalize_encrypt
   if [[ "$OMARCHY_MODE" == "now" && "$ENCRYPT" -eq 0 ]]; then
@@ -2646,7 +2881,7 @@ EOF
 tabby-stack
   Installed in the chroot at /home/${TARGET_USER}/tabby-stack
   After reboot, linger starts the API. install.sh is not run again.
-  Model set: ${TABBY_MODELS}
+  Models: ${TABBY_MODELS}
   API:       http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}
   UI:        http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui
   Watch:     journalctl --user -u tabbyapi -f

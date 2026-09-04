@@ -3,6 +3,71 @@
     "core": ["qwen", "embed", "flux", "qwen-image-unet", "qwen-image-clip", "qwen-image-vae", "qwen-image-lora"],
     "all": ["qwen", "qwen35", "qwen36", "gemma", "gemma26", "glm", "embed", "flux", "qwen-image-unet", "qwen-image-clip", "qwen-image-vae", "qwen-image-lora"]
   },
+  "picks": [
+    {
+      "id": "qwen",
+      "items": ["qwen"],
+      "label": "Qwen 9B — daily coding",
+      "min_vram_mib": 8192,
+      "disk_gib": 7
+    },
+    {
+      "id": "qwen35",
+      "items": ["qwen35"],
+      "label": "Qwen 35B-A3B — long agent work",
+      "min_vram_mib": 12288,
+      "disk_gib": 14
+    },
+    {
+      "id": "qwen36",
+      "items": ["qwen36"],
+      "label": "Qwen 27B — long agent work",
+      "min_vram_mib": 10240,
+      "disk_gib": 9
+    },
+    {
+      "id": "gemma",
+      "items": ["gemma"],
+      "label": "Gemma 12B — general (HF may gate)",
+      "min_vram_mib": 10240,
+      "disk_gib": 8
+    },
+    {
+      "id": "gemma26",
+      "items": ["gemma26"],
+      "label": "Gemma 26B-A4B — general (HF may gate)",
+      "min_vram_mib": 11264,
+      "disk_gib": 9
+    },
+    {
+      "id": "glm",
+      "items": ["glm"],
+      "label": "GLM 9B — thinking chat",
+      "min_vram_mib": 8192,
+      "disk_gib": 7
+    },
+    {
+      "id": "embed",
+      "items": ["embed"],
+      "label": "Qwen3-Embedding 0.6B (CPU)",
+      "min_vram_mib": 0,
+      "disk_gib": 2
+    },
+    {
+      "id": "flux",
+      "items": ["flux"],
+      "label": "Flux Schnell — image drafts",
+      "min_vram_mib": 8192,
+      "disk_gib": 17
+    },
+    {
+      "id": "qwen-image",
+      "items": ["qwen-image-unet", "qwen-image-clip", "qwen-image-vae", "qwen-image-lora"],
+      "label": "Qwen-Image — text / posters / UI",
+      "min_vram_mib": 10240,
+      "disk_gib": 20
+    }
+  ],
   "items": {
     "qwen": {
       "kind": "snapshot",
