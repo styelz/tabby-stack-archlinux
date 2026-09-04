@@ -1,16 +1,17 @@
 [Unit]
 Description=Tabby-stack LLM activity screensaver (KMS kiosk)
 Documentation=file://__TABBY_DIR__/deploy/arch/README.md
-After=network-online.target systemd-user-sessions.service
+After=network-online.target systemd-user-sessions.service getty@__USER_TTY__.service
 Wants=network-online.target
-# Opt-in. Do not enable if Omarchy or a graphical session owns this GPU/TTY.
-Conflicts=getty@__SAVER_TTY__.service autovt@__SAVER_TTY__.service
+# Runs on a spare VT. tty1 stays getty: a key/mouse drops the field and
+# chvt back; idle or logout brings the field back. Do not enable if Omarchy
+# or a graphical session already owns this GPU.
 ConditionPathExistsGlob=/dev/dri/card*
 
 [Service]
 Type=simple
 User=__SAVER_USER__
-SupplementaryGroups=video
+SupplementaryGroups=video input tty
 PAMName=login
 TTYPath=/dev/__SAVER_TTY__
 TTYReset=yes
@@ -19,6 +20,8 @@ StandardInput=tty
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tabby-saver
+AmbientCapabilities=CAP_SYS_TTY_CONFIG
+CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
 Environment=HOME=__SAVER_HOME__
 Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_RENDER_DRIVER=software
@@ -26,6 +29,9 @@ Environment=LIBGL_ALWAYS_SOFTWARE=1
 Environment=SDL_AUDIODRIVER=dummy
 Environment=PYGAME_HIDE_SUPPORT_PROMPT=1
 Environment=TABBY_SAVER_URL=__SAVER_URL__
+Environment=TABBY_SAVER_TTY=__SAVER_TTY__
+Environment=TABBY_SAVER_USER_TTY=__USER_TTY__
+Environment=TABBY_SAVER_IDLE_S=120
 UnsetEnvironment=DISPLAY WAYLAND_DISPLAY
 WorkingDirectory=__TABBY_DIR__/deploy/arch
 ExecStart=/usr/bin/python -u __TABBY_DIR__/deploy/arch/tabby-saver.py

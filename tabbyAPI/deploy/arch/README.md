@@ -149,7 +149,7 @@ sudo systemctl status tabby-saver
 journalctl -u tabby-saver -f
 ```
 
-- Takes over **tty1** by default (`Conflicts=getty@tty1`). Pick another with `TABBY_SAVER_TTY=tty7` before re-running `install.sh`, or edit `TTYPath=` / `Conflicts=` in the unit and `systemctl daemon-reload`.
+- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse movement drops the field and switches back; **2 minutes** with no input, or a logout from that TTY, starts it again. Override with `TABBY_SAVER_TTY` / `TABBY_SAVER_USER_TTY` before re-running `install.sh`, or edit the unit and `systemctl daemon-reload`.
 - Needs `nvidia-drm.modeset=1` (Arch `nvidia-open` usually sets this) and a connector on `/dev/dri/card*`.
 - Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
 - Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.

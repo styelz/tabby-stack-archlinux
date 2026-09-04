@@ -8,9 +8,14 @@ Software SDL only — do not point this at a GL renderer on the LLM GPU.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import glob
 import json
 import math
 import os
+import select
+import struct
+import subprocess
 import sys
 import threading
 import time
@@ -28,6 +33,23 @@ OK = (61, 214, 140)
 NAVY = (18, 24, 38)
 AMBER_DIM = (48, 34, 12)
 GREEN_DIM = (12, 42, 32)
+
+VT_ACTIVATE = 0x5606
+VT_WAITACTIVE = 0x5607
+EV_KEY = 0x01
+EV_REL = 0x02
+EV_ABS = 0x03
+_GETTY_COMMS = frozenset({"agetty", "getty", "mingetty", "login", "(sd-pam)", "systemd"})
+_DISMISS_EVENT_NAMES = (
+    "KEYDOWN",
+    "KEYUP",
+    "MOUSEMOTION",
+    "MOUSEBUTTONDOWN",
+    "MOUSEBUTTONUP",
+    "JOYBUTTONDOWN",
+    "JOYAXISMOTION",
+    "JOYHATMOTION",
+)
 
 SIN_BITS = 12
 SIN_SIZE = 1 << SIN_BITS
@@ -68,7 +90,9 @@ def _palette(stops: list[tuple[float, tuple[int, int, int]]]) -> list[tuple[int,
 
 PALETTES = {
     "idle": _palette([(0.0, BG), (0.5, NAVY), (1.0, (38, 52, 88))]),
-    "chat": _palette([(0.0, BG), (0.32, (28, 40, 82)), (0.68, ACCENT), (1.0, ACCENT2)]),
+    "chat": _palette(
+        [(0.0, BG), (0.18, (40, 48, 110)), (0.42, ACCENT), (0.68, ACCENT2), (1.0, (255, 96, 140))]
+    ),
     "image": _palette([(0.0, BG), (0.38, AMBER_DIM), (1.0, WARN)]),
     "switch": _palette([(0.0, BG), (0.4, GREEN_DIM), (1.0, OK)]),
 }
@@ -137,9 +161,10 @@ class SceneFollow:
         dt = 0.0 if dt < 0.0 else 0.08 if dt > 0.08 else dt
         want_live = bool(target.get("live"))
         self.live = self._hold_live(want_live, now)
-        self.intensity = _exp_approach(self.intensity, float(target["intensity"]), dt, self._TAU_S)
-        self.speed = _exp_approach(self.speed, float(target["speed"]), dt, self._TAU_S)
-        self.heat = _exp_approach(self.heat, float(target["heat"]), dt, self._TAU_S)
+        tau = 0.5 if (want_live or self.live) else 2.2
+        self.intensity = _exp_approach(self.intensity, float(target["intensity"]), dt, tau)
+        self.speed = _exp_approach(self.speed, float(target["speed"]), dt, tau)
+        self.heat = _exp_approach(self.heat, float(target["heat"]), dt, tau)
         self.util = _exp_approach(self.util, float(target["util"]), dt, 1.6)
         self.vram = _exp_approach(self.vram, float(target["vram"]), dt, 1.6)
         self.temp = _exp_approach(self.temp, float(target["temp"]), dt, 2.0)
@@ -147,9 +172,10 @@ class SceneFollow:
         dest = str(target.get("palette") or "idle")
         if dest not in self.weights:
             dest = "idle"
+        blend_tau = 0.4 if (want_live or self.live) else 1.8
         for name in self.weights:
             goal = 1.0 if name == dest else 0.0
-            self.weights[name] = _exp_approach(self.weights[name], goal, dt, 1.8)
+            self.weights[name] = _exp_approach(self.weights[name], goal, dt, blend_tau)
         self.palette = max(self.weights, key=lambda name: self.weights[name])
         self.mode = str(target.get("mode") or self.mode)
         self.profile = str(target.get("profile") or self.profile)
@@ -204,7 +230,7 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     elif working and kind == "code":
         phase, palette = "writing code", "chat"
     elif working and kind == "chat":
-        phase, palette = "generating", "chat"
+        phase, palette = "thinking", "chat"
     elif working:
         phase, palette = "in use", "chat"
     else:
@@ -213,11 +239,15 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     if not connected:
         phase = "waiting for api"
 
-    intensity = 0.24 + 0.52 * (util / 100.0) + 0.16 * (vram / 100.0)
     if not live:
-        intensity = min(intensity, 0.42)
-    speed = 0.09 if not live else 0.26 + 0.5 * (util / 100.0)
-    heat = max(0.0, min(1.0, (temp - 38.0) / 42.0))
+        intensity = min(0.24 + 0.18 * (vram / 100.0), 0.38)
+        speed = 0.08
+        heat = max(0.0, min(0.25, (temp - 38.0) / 80.0))
+    else:
+        # Job running: ignore nvidia-smi (often near 0 during decode).
+        intensity = 0.78 + 0.20 * (util / 100.0)
+        speed = 0.55 + 0.35 * (util / 100.0)
+        heat = max(0.35, min(1.0, 0.45 + (temp - 38.0) / 42.0))
     return {
         "phase": phase,
         "palette": palette,
@@ -306,7 +336,7 @@ def draw_field(
     cx = (width - 1) * 0.5
     cy = (height - 1) * 0.5
     inv_diag = 1.0 / (math.hypot(cx, cy) + 1.0)
-    pulse = (0.22 if live else 0.08) * (0.45 + 0.55 * breath)
+    pulse = (0.28 if live else 0.08) * (0.45 + 0.55 * breath)
     buf = bytearray(width * height * 3)
     i = 0
     for y in range(height):
@@ -314,14 +344,23 @@ def draw_field(
             dx = x - cx
             dy = y - cy
             dist = math.sqrt(dx * dx + dy * dy)
-            v = (
+            wave = (
                 lsin(x * 0.041 + st)
                 + lsin(y * 0.036 - st * 0.81)
                 + lsin((x + y) * 0.021 + st * 1.13)
                 + lsin(dist * 0.048 - st * 0.47)
             )
-            v = v * 0.25 + 0.5
-            v = v * gain + pulse * math.exp(-dist * inv_diag * 3.2)
+            wave = wave * 0.25 + 0.5
+            if wave < 0.0:
+                wave = 0.0
+            elif wave > 1.0:
+                wave = 1.0
+            glow = pulse * math.exp(-dist * inv_diag * 3.2)
+            if live:
+                # Sit in the hot half of the palette so chat reaches purple/pink.
+                v = 0.40 + wave * 0.52 * gain + glow
+            else:
+                v = wave * 0.55 * gain + glow * 0.35
             if v < 0.0:
                 v = 0.0
             elif v > 0.999:
@@ -362,6 +401,185 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     blit(stats, (w - small.size(stats)[0] - 28, h - 50), MUTED, use_small=True)
 
 
+def tty_nr(name: str) -> int:
+    text = (name or "").strip().lower().removeprefix("/dev/")
+    if text.startswith("tty"):
+        return int(text[3:])
+    raise ValueError(f"not a virtual console: {name}")
+
+
+def evdev_is_activity(ev_type: int) -> bool:
+    return ev_type in (EV_KEY, EV_REL, EV_ABS)
+
+
+def should_resume_saver(
+    *,
+    now: float,
+    last_input: float,
+    idle_s: float,
+    was_logged_in: bool,
+    logged_in: bool,
+) -> bool:
+    """Show the field after 2 minutes idle, or as soon as the console logs out."""
+    if was_logged_in and not logged_in:
+        return True
+    return (now - last_input) >= idle_s
+
+
+def login_from_ps(text: str) -> bool:
+    for raw in text.splitlines():
+        comm = raw.strip().split("/")[-1]
+        if comm and comm not in _GETTY_COMMS:
+            return True
+    return False
+
+
+def console_logged_in(tty: str) -> bool:
+    name = (tty or "tty1").strip().removeprefix("/dev/")
+    try:
+        out = subprocess.check_output(
+            ["loginctl", "list-sessions", "--no-legend"],
+            text=True,
+            timeout=1.0,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        out = ""
+    if out:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[4].removeprefix("/dev/") == name:
+                return True
+    try:
+        ps_out = subprocess.check_output(
+            ["ps", "-t", name, "-o", "comm="],
+            text=True,
+            timeout=1.0,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return login_from_ps(ps_out)
+
+
+def activate_vt(nr: int) -> None:
+    last_exc: OSError | None = None
+    for path in ("/dev/tty0", "/dev/console"):
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+        except OSError as exc:
+            last_exc = exc
+            continue
+        try:
+            fcntl.ioctl(fd, VT_ACTIVATE, nr)
+            fcntl.ioctl(fd, VT_WAITACTIVE, nr)
+            return
+        except OSError as exc:
+            last_exc = exc
+        finally:
+            os.close(fd)
+    if last_exc is not None:
+        print(f"tabby-saver: chvt {nr} failed: {last_exc}", file=sys.stderr)
+
+
+def is_dismiss_event(event: Any, pygame_mod: Any, windowed: bool) -> str | None:
+    if event.type == pygame_mod.QUIT:
+        return "quit"
+    if windowed and event.type == pygame_mod.KEYDOWN:
+        if event.key in (pygame_mod.K_ESCAPE, pygame_mod.K_q):
+            return "quit"
+        return None
+    if windowed:
+        return None
+    types = {getattr(pygame_mod, name, None) for name in _DISMISS_EVENT_NAMES}
+    types.discard(None)
+    if event.type in types:
+        return "dismiss"
+    return None
+
+
+class InputWatch:
+    """Global keyboard/mouse timestamps while the field is not on screen."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def last(self) -> float:
+        with self._lock:
+            return self._last
+
+    def bump(self) -> None:
+        with self._lock:
+            self._last = time.monotonic()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="saver-input", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _open_devices(self) -> list[int]:
+        fds: list[int] = []
+        for path in sorted(glob.glob("/dev/input/event*")):
+            try:
+                fds.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+            except OSError:
+                continue
+        return fds
+
+    def _run(self) -> None:
+        fmt = "llHHi"
+        size = struct.calcsize(fmt)
+        fds: list[int] = []
+        refresh = 0.0
+        while not self._stop.is_set():
+            now = time.monotonic()
+            if now >= refresh:
+                for fd in fds:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                fds = self._open_devices()
+                refresh = now + 5.0
+            if not fds:
+                self._stop.wait(0.5)
+                continue
+            try:
+                ready, _, _ = select.select(fds, [], [], 0.4)
+            except (OSError, ValueError):
+                refresh = 0.0
+                continue
+            activity = False
+            for fd in ready:
+                try:
+                    data = os.read(fd, size * 32)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    refresh = 0.0
+                    activity = False
+                    break
+                for off in range(0, len(data) - size + 1, size):
+                    _sec, _usec, ev_type, _code, _value = struct.unpack_from(fmt, data, off)
+                    if evdev_is_activity(ev_type):
+                        activity = True
+                        break
+                if activity:
+                    break
+            if activity:
+                self.bump()
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Tabby-stack activity screensaver (KMSDRM)")
     parser.add_argument(
@@ -378,6 +596,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=256, help="Internal field width")
     parser.add_argument("--height", type=int, default=144, help="Internal field height")
     parser.add_argument("--poll", type=float, default=1.0, help="Seconds between API polls")
+    parser.add_argument(
+        "--idle",
+        type=float,
+        default=float(os.environ.get("TABBY_SAVER_IDLE_S", "120")),
+        help="Seconds without input before the field comes back (default 120)",
+    )
+    parser.add_argument(
+        "--user-tty",
+        default=os.environ.get("TABBY_SAVER_USER_TTY", "tty1"),
+        help="Login/getty TTY to show when the saver dismisses",
+    )
+    parser.add_argument(
+        "--saver-tty",
+        default=os.environ.get("TABBY_SAVER_TTY", "tty8"),
+        help="Virtual console the KMS field runs on",
+    )
     return parser.parse_args(argv)
 
 
@@ -398,7 +632,12 @@ def _init_display(windowed: bool):
         ) from exc
     pygame.init()
     pygame.mouse.set_visible(False)
-    pygame.event.set_allowed([pygame.QUIT, pygame.KEYDOWN])
+    allowed = [pygame.QUIT, pygame.KEYDOWN, pygame.KEYUP]
+    for name in _DISMISS_EVENT_NAMES:
+        val = getattr(pygame, name, None)
+        if val is not None and val not in allowed:
+            allowed.append(val)
+    pygame.event.set_allowed(allowed)
     flags = pygame.RESIZABLE if windowed else pygame.FULLSCREEN | pygame.NOFRAME
     size = (1280, 720) if windowed else (0, 0)
     try:
@@ -411,33 +650,46 @@ def _init_display(windowed: bool):
     return pygame, screen
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    url = saver_url(args.url)
-    bus = StateBus()
-    thread = threading.Thread(target=bus.run, args=(url, max(0.4, args.poll)), daemon=True)
-    thread.start()
+def _close_display(pygame_mod: Any) -> None:
+    if pygame_mod is None:
+        return
     try:
-        pygame, screen = _init_display(args.window)
-    except Exception as exc:
-        bus.stop.set()
-        return _drm_fail(exc)
+        pygame_mod.event.set_grab(False)
+    except Exception:
+        pass
+    try:
+        pygame_mod.display.quit()
+    except Exception:
+        pass
+    try:
+        pygame_mod.quit()
+    except Exception:
+        pass
 
+
+def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFollow) -> str:
+    """Paint until input (kiosk) or ESC/Q (window). Returns dismiss or quit."""
+    pygame, screen = _init_display(args.window)
+    try:
+        if not args.window:
+            pygame.event.set_grab(True)
+    except Exception:
+        pass
+    pygame.event.clear()
     font = pygame.font.Font(None, 36)
     small = pygame.font.Font(None, 28)
     clock = pygame.time.Clock()
-    follow = SceneFollow()
     prev = time.monotonic()
-    running = True
+    grace_until = prev if args.window else prev + 0.6
     try:
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN and args.window:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                        running = False
+        while True:
             now = time.monotonic()
+            for event in pygame.event.get():
+                action = is_dismiss_event(event, pygame, args.window)
+                if action == "quit":
+                    return "quit"
+                if action == "dismiss" and now >= grace_until:
+                    return "dismiss"
             dt = now - prev
             prev = now
             data, ok = bus.snapshot()
@@ -448,8 +700,71 @@ def main(argv: list[str] | None = None) -> int:
             pygame.display.flip()
             clock.tick(max(8, min(30, args.fps)))
     finally:
+        _close_display(pygame)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    url = saver_url(args.url)
+    bus = StateBus()
+    thread = threading.Thread(target=bus.run, args=(url, max(0.4, args.poll)), daemon=True)
+    thread.start()
+    follow = SceneFollow()
+    watch: InputWatch | None = None
+    try:
+        if args.window:
+            try:
+                action = run_visible_field(args, bus, follow)
+            except Exception as exc:
+                return _drm_fail(exc)
+            return 0 if action in {"quit", "dismiss"} else 0
+
+        watch = InputWatch()
+        watch.start()
+        user_tty = str(args.user_tty or "tty1")
+        try:
+            saver_nr = tty_nr(args.saver_tty)
+            user_nr = tty_nr(user_tty)
+        except ValueError as exc:
+            print(f"tabby-saver: {exc}", file=sys.stderr)
+            return 1
+        logged_in = console_logged_in(user_tty)
+        show = True
+        while True:
+            if show:
+                activate_vt(saver_nr)
+                try:
+                    action = run_visible_field(args, bus, follow)
+                except Exception as exc:
+                    print(f"tabby-saver: display failed: {exc}", file=sys.stderr)
+                    time.sleep(2.0)
+                    continue
+                if action == "quit":
+                    return 0
+                watch.bump()
+                logged_in = console_logged_in(user_tty)
+                activate_vt(user_nr)
+                show = False
+                continue
+            while not show:
+                now = time.monotonic()
+                now_login = console_logged_in(user_tty)
+                if should_resume_saver(
+                    now=now,
+                    last_input=watch.last(),
+                    idle_s=max(5.0, float(args.idle)),
+                    was_logged_in=logged_in,
+                    logged_in=now_login,
+                ):
+                    show = True
+                logged_in = now_login
+                if show:
+                    break
+                time.sleep(0.25)
+    finally:
         bus.stop.set()
-        pygame.quit()
+        if watch is not None:
+            watch.stop()
     return 0
 
 

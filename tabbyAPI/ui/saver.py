@@ -97,7 +97,7 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "gpu_mode": gpu_mode,
         "profile": profile,
-        "busy": bool(raw.get("busy") or queue.get("busy")),
+        "busy": bool(raw.get("busy") or queue.get("busy") or queue.get("live")),
         "switching": bool(raw.get("switching")),
         "restarting": bool(raw.get("restarting")),
         "kind": _kind(queue.get("kind")),

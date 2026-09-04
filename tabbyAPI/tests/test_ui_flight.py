@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 import unittest
 
-from ui.flight import ConsoleFlight, get_flight, register_flight, reset_for_tests
+from ui.flight import (
+    ConsoleFlight,
+    get_flight,
+    iter_live_flights,
+    register_flight,
+    reset_for_tests,
+)
 
 
 class FlightIngestTests(unittest.TestCase):
@@ -122,6 +128,16 @@ class FlightRegisterTests(unittest.TestCase):
         self.assertIs(get_flight("u", "chat-a"), first)
         self.assertIs(get_flight("u", "chat-b"), second)
         self.assertIsNone(get_flight("u", "missing"))
+
+    def test_iter_live_flights_includes_replaced_username_entry(self):
+        first = ConsoleFlight("u", "chat-a", "chat", "one")
+        second = ConsoleFlight("u", "chat-b", "code", "two")
+        register_flight(first)
+        register_flight(second)
+        live = iter_live_flights()
+        self.assertEqual({flight.chat_id for flight in live}, {"chat-a", "chat-b"})
+        first.done = True
+        self.assertEqual([flight.chat_id for flight in iter_live_flights()], ["chat-b"])
 
 
 if __name__ == "__main__":

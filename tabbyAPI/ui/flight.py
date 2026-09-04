@@ -58,6 +58,18 @@ def snapshot_for(username: str) -> Optional[dict[str, Any]]:
     }
 
 
+def iter_live_flights() -> list["ConsoleFlight"]:
+    """Active console jobs, any user — for the wall kiosk."""
+    seen: set[str] = set()
+    live: list[ConsoleFlight] = []
+    for flight in list(_FLIGHTS.values()) + list(_FLIGHTS_BY_CHAT.values()):
+        if flight.done or flight.id in seen:
+            continue
+        seen.add(flight.id)
+        live.append(flight)
+    return live
+
+
 def _sse_ping() -> bytes:
     """Comment that matches sse-starlette / tabbyIsSsePing keep-alives."""
     return f": ping - {datetime.now(timezone.utc)}\n\n".encode("utf-8")

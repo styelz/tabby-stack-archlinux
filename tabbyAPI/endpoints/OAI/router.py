@@ -147,8 +147,10 @@ async def chat_completion_request(
         )
         if isinstance(result, EventSourceResponse):
             handed_off = True
+            # adopt=True: the HTTP handler task finishes when this returns, and
+            # occupancy would otherwise reclaim the lease mid-stream.
             return EventSourceResponse(
-                stream_and_release(gate, result),
+                stream_and_release(gate, result, adopt=True),
                 ping=get_sse_ping_interval(),
                 sep="\n",
             )

@@ -86,6 +86,36 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("You are in a queue", other["hint"])
             await occupancy.release(oid)
 
+    async def test_live_flight_marks_kiosk_busy_without_occupant(self):
+        from ui.flight import ConsoleFlight, register_flight
+
+        register_flight(ConsoleFlight("alice", "c1", "chat", "hello"))
+        with (
+            mock.patch("ui.occupancy._image_job", return_value=None),
+            mock.patch("ui.occupancy._switch_busy", return_value=False),
+            mock.patch("ui.occupancy._llm_jobs_active", return_value=False),
+        ):
+            snap = occupancy.snapshot("")
+        self.assertTrue(snap["busy"])
+        self.assertTrue(snap["live"])
+        self.assertEqual(snap["kind"], "chat")
+        self.assertIsNone(snap["occupant"])
+
+    async def test_reclaim_skips_done_task_while_llm_job_runs(self):
+        with (
+            mock.patch("ui.occupancy._image_job", return_value=None),
+            mock.patch("ui.occupancy._switch_busy", return_value=False),
+            mock.patch("ui.occupancy._llm_jobs_active", return_value=False),
+        ):
+            oid = await occupancy.try_acquire("alice", kind="chat")
+        occupancy._occupant.task = mock.Mock(done=lambda: True)
+        with mock.patch("ui.occupancy._llm_jobs_active", return_value=True):
+            self.assertFalse(occupancy._reclaim_stale())
+            snap = occupancy.snapshot("")
+        self.assertEqual(occupancy._occupant.id, oid)
+        self.assertTrue(snap["busy"])
+        occupancy._occupant = None
+
     async def test_image_job_fills_snapshot_without_occupant(self):
         job = SimpleNamespace(
             status="running", phase="generating", owner="alice", chat_id="c1"

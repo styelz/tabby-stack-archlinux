@@ -112,6 +112,13 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payload["kind"])
         self.assertIsNone(payload["gpu"]["vram_pct"])
 
+    def test_queue_live_without_busy_flag_is_still_busy(self):
+        payload = saver.sanitize_status(
+            {"gpu_mode": "llm", "stack_queue": {"busy": False, "live": True, "kind": "chat"}}
+        )
+        self.assertTrue(payload["busy"])
+        self.assertEqual(payload["kind"], "chat")
+
     async def test_saver_state_uses_empty_username(self):
         leaked = {
             "gpu_mode": "comfy",
@@ -176,20 +183,21 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(scene["palette"], "idle")
         self.assertFalse(scene["live"])
 
-    def test_chat_busy_is_generating(self):
+    def test_chat_busy_is_thinking_and_hot(self):
         scene = self.kiosk.scene_from_state(
             {
                 "gpu_mode": "llm",
                 "kind": "chat",
                 "busy": True,
-                "gpu": {"utilization_pct": 80, "vram_pct": 70, "temperature_c": 64},
+                "gpu": {"utilization_pct": 0, "vram_pct": 70, "temperature_c": 48},
             },
             True,
         )
-        self.assertEqual(scene["phase"], "generating")
+        self.assertEqual(scene["phase"], "thinking")
         self.assertEqual(scene["palette"], "chat")
         self.assertTrue(scene["live"])
-        self.assertGreater(scene["speed"], 0.2)
+        self.assertGreaterEqual(scene["intensity"], 0.75)
+        self.assertGreater(scene["speed"], 0.5)
 
     def test_comfy_and_switch_palettes(self):
         image = self.kiosk.scene_from_state(
@@ -245,3 +253,71 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertTrue(held["live"])
         later = follow.tick(idle, 0.04, 8.0)
         self.assertFalse(later["live"])
+
+    def test_follow_reaches_hot_intensity_while_thinking(self):
+        follow = self.kiosk.SceneFollow()
+        hot = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "gpu": {"utilization_pct": 5},
+            },
+            True,
+        )
+        scene = None
+        for step in range(40):
+            scene = follow.tick(hot, 0.04, 1.0 + step * 0.04)
+        self.assertEqual(scene["phase"], "thinking")
+        self.assertGreater(scene["intensity"], 0.7)
+        self.assertGreater(scene["weights"]["chat"], 0.8)
+
+    def test_resume_on_idle_or_logout(self):
+        resume = self.kiosk.should_resume_saver
+        self.assertFalse(
+            resume(now=10.0, last_input=9.0, idle_s=120.0, was_logged_in=False, logged_in=False)
+        )
+        self.assertTrue(
+            resume(now=130.0, last_input=9.0, idle_s=120.0, was_logged_in=False, logged_in=False)
+        )
+        self.assertTrue(
+            resume(now=11.0, last_input=10.5, idle_s=120.0, was_logged_in=True, logged_in=False)
+        )
+        self.assertFalse(
+            resume(now=11.0, last_input=10.5, idle_s=120.0, was_logged_in=True, logged_in=True)
+        )
+
+    def test_login_from_ps_ignores_getty(self):
+        self.assertFalse(self.kiosk.login_from_ps("agetty\nlogin\n"))
+        self.assertTrue(self.kiosk.login_from_ps("agetty\nbash\n"))
+
+    def test_tty_nr_and_evdev(self):
+        self.assertEqual(self.kiosk.tty_nr("tty8"), 8)
+        self.assertEqual(self.kiosk.tty_nr("/dev/tty1"), 1)
+        self.assertTrue(self.kiosk.evdev_is_activity(self.kiosk.EV_KEY))
+        self.assertFalse(self.kiosk.evdev_is_activity(0))
+
+    def test_kiosk_key_dismisses_window_esc_quits(self):
+        pygame = SimpleNamespace(
+            QUIT=256,
+            KEYDOWN=768,
+            KEYUP=769,
+            MOUSEMOTION=1024,
+            K_ESCAPE=27,
+            K_q=113,
+        )
+        key = SimpleNamespace(type=768, key=97)
+        esc = SimpleNamespace(type=768, key=27)
+        mouse = SimpleNamespace(type=1024, key=0)
+        self.assertEqual(self.kiosk.is_dismiss_event(key, pygame, False), "dismiss")
+        self.assertEqual(self.kiosk.is_dismiss_event(mouse, pygame, False), "dismiss")
+        self.assertEqual(self.kiosk.is_dismiss_event(esc, pygame, True), "quit")
+        self.assertIsNone(self.kiosk.is_dismiss_event(key, pygame, True))
+
+    def test_parse_args_idle_default_is_two_minutes(self):
+        args = self.kiosk.parse_args(
+            ["--idle", "120", "--user-tty", "tty1", "--saver-tty", "tty8"]
+        )
+        self.assertEqual(args.idle, 120.0)
+        self.assertEqual(args.user_tty, "tty1")
+        self.assertEqual(args.saver_tty, "tty8")

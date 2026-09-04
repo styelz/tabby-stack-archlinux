@@ -95,14 +95,25 @@ def _reclaim_stale() -> bool:
     occupant = _occupant
     if occupant is None:
         return False
-    task = occupant.task
-    if task is not None and task.done():
-        _occupant = None
-        return True
     if time.time() - occupant.started_at > _LEASE_MAX_S:
         _occupant = None
         return True
-    return False
+    task = occupant.task
+    if task is None or not task.done():
+        return False
+    # Streaming hands the HTTP task off to an SSE generator. The acquire task
+    # looks done while the GPU job is still running — do not drop that lease.
+    if _llm_jobs_active():
+        return False
+    try:
+        from ui.flight import iter_live_flights
+
+        if iter_live_flights():
+            return False
+    except Exception:
+        pass
+    _occupant = None
+    return True
 
 
 def _holder(occupant: Optional[Occupant]) -> tuple[Optional[str], str]:
@@ -136,9 +147,19 @@ def snapshot(username: str = "") -> dict[str, Any]:
     mine = bool(who and occupant_name and occupant_name == who)
     queued = position is not None
     busy = occupant is not None or bool(waiters) or _externally_busy()
+    try:
+        from ui.flight import iter_live_flights
+
+        live_flights = iter_live_flights()
+    except Exception:
+        live_flights = []
+    if live_flights:
+        busy = True
+        if not kind:
+            kind = str(live_flights[0].kind or "chat") or "chat"
     chat_id = ""
     prompt = ""
-    live = False
+    live = bool(live_flights)
     if occupant and who and occupant.username == who:
         chat_id = occupant.chat_id or ""
     elif position is not None:
@@ -157,7 +178,7 @@ def snapshot(username: str = "") -> dict[str, Any]:
     except Exception:
         info = None
     if info:
-        live = bool(info.get("live"))
+        live = live or bool(info.get("live"))
         chat_id = str(info.get("chat_id") or chat_id or "")
         prompt = str(info.get("prompt") or "")
         kind = str(info.get("kind") or kind or "") or kind
