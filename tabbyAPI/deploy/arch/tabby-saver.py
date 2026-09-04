@@ -386,20 +386,27 @@ def _ramp_color(ramp: list[tuple[int, int, int]], t: float) -> tuple[int, int, i
 
 
 def _neuron_rest(cols: int = 12, rows: int = 8) -> list[tuple[float, float]]:
-    """Jittered grid that runs past the bezel so axons clip at the screen edge."""
+    """Jittered tissue with soma pinned to the bezel so axons meet the edge."""
     pts: list[tuple[float, float]] = []
-    ox, oy = 0.12, 0.14
-    span_x = 1.0 + 2.0 * ox
-    span_y = 1.0 + 2.0 * oy
     denom_c = max(1, cols - 1)
     denom_r = max(1, rows - 1)
     for row in range(rows):
         for col in range(cols):
             i = row * cols + col
-            jx = 0.035 * (_u01(i, 1) - 0.5)
-            jy = 0.035 * (_u01(i, 2) - 0.5)
-            x = -ox + span_x * col / denom_c + jx
-            y = -oy + span_y * row / denom_r + jy
+            jx = 0.028 * (_u01(i, 1) - 0.5)
+            jy = 0.028 * (_u01(i, 2) - 0.5)
+            if col == 0:
+                x = 0.0
+            elif col == cols - 1:
+                x = 1.0
+            else:
+                x = _clamp01(col / denom_c + jx)
+            if row == 0:
+                y = 0.0
+            elif row == rows - 1:
+                y = 1.0
+            else:
+                y = _clamp01(row / denom_r + jy)
             pts.append((x, y))
     return pts
 
@@ -419,21 +426,18 @@ def _neuron_edges(pts: list[tuple[float, float]], cols: int = 12) -> list[tuple[
         seen.add((a, b))
         edges.append((a, b))
 
-    for row in range(rows):
-        for col in range(cols):
-            i = row * cols + col
-            if col + 1 < cols:
-                add(i, i + 1)
-            if row + 1 < rows:
-                add(i, i + cols)
-            if col + 1 < cols and row + 1 < rows:
-                add(i, i + cols + 1)
     for i, p in enumerate(pts):
         near = sorted(
             (math.hypot(p[0] - pts[j][0], p[1] - pts[j][1]), j) for j in range(n) if j != i
         )
-        for _dist, j in near[:3]:
+        for _dist, j in near[:4]:
             add(i, j)
+    for row in range(rows):
+        add(row * cols, row * cols + cols - 1)
+    for col in range(cols):
+        add(col, (rows - 1) * cols + col)
+    add(0, n - 1)
+    add(cols - 1, (rows - 1) * cols)
     return edges
 
 
@@ -447,12 +451,6 @@ NEURON_RAMPS: dict[str, list[tuple[int, int, int]]] = {
     "chat": [(40, 220, 255), (80, 150, 255), (139, 92, 246), (220, 70, 210), (255, 90, 170)],
     "image": [(255, 196, 64), (255, 140, 48), (255, 88, 72), (255, 110, 160), (255, 190, 140)],
     "switch": [(20, 200, 190), (48, 230, 130), (140, 255, 170), (200, 255, 210)],
-}
-NEURON_SPARK = {
-    "idle": ((90, 130, 210), (210, 230, 255)),
-    "chat": ((90, 160, 255), (255, 210, 240)),
-    "image": ((180, 110, 40), (255, 220, 120)),
-    "switch": ((40, 160, 110), (180, 255, 210)),
 }
 
 
@@ -505,12 +503,19 @@ def neuron_overlay_state(scene: dict[str, Any]) -> dict[str, Any] | None:
     for i, (nx, ny) in enumerate(NEURON_REST):
         vis = _node_reveal(i, overlay, cycle, cycle_t)
         reveal.append(vis)
-        nodes.append(
-            (
-                nx + 0.012 * lsin(st * 0.33 + i * 0.37),
-                ny + 0.010 * lsin(st * 0.27 + i * 0.51),
-            )
-        )
+        col = i % NEURON_COLS
+        row = i // NEURON_COLS
+        x = nx + 0.012 * lsin(st * 0.33 + i * 0.37)
+        y = ny + 0.010 * lsin(st * 0.27 + i * 0.51)
+        if col == 0:
+            x = 0.0
+        elif col == NEURON_COLS - 1:
+            x = 1.0
+        if row == 0:
+            y = 0.0
+        elif row == NEURON_ROWS - 1:
+            y = 1.0
+        nodes.append((x, y))
         rest = 0.10 + 0.10 * (0.5 + 0.5 * lsin(st * 2.3 + i * 0.91))
         pop = 0.5 + 0.5 * lsin(st * (4.1 + 0.13 * (i % 8)) + i * 1.27)
         thresh = 0.84 - 0.14 * intensity
@@ -570,7 +575,17 @@ def _draw_glow(
 def _draw_line(pygame_mod: Any, screen: Any, color: tuple[int, int, int], a, b, width: int) -> None:
     if a == b:
         return
-    pygame_mod.draw.line(screen, color, a, b, max(1, width))
+    if width <= 1:
+        aaline = getattr(pygame_mod.draw, "aaline", None)
+        if aaline is not None:
+            try:
+                aaline(screen, color, a, b)
+                return
+            except Exception:
+                pass
+        pygame_mod.draw.line(screen, color, a, b, 1)
+        return
+    pygame_mod.draw.line(screen, color, a, b, width)
 
 
 def neuron_draw_sizes(fire: float, bright: float) -> tuple[int, int]:
@@ -587,39 +602,51 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     w, h = screen.get_size()
     overlay = float(state["overlay"])
     name = str(scene.get("palette") or "chat")
-    axon, spark = NEURON_SPARK.get(name) or NEURON_SPARK["chat"]
-    nodes = [(int(round(x * w)), int(round(y * h))) for x, y in state["nodes"]]
+    ramp = NEURON_RAMPS.get(name) or NEURON_RAMPS["chat"]
+    last_x = max(1, w - 1)
+    last_y = max(1, h - 1)
+    nodes = [(int(round(x * last_x)), int(round(y * last_y))) for x, y in state["nodes"]]
     edges: list[tuple[int, int]] = state["edges"]
     reveal: list[float] = state["reveal"]
-    for a, b in edges:
+    for ei, (a, b) in enumerate(edges):
         vis = min(reveal[a], reveal[b]) * overlay
         if vis <= 0.03 or nodes[a] == nodes[b]:
             continue
-        _draw_line(pygame_mod, screen, _mix(BG, axon, 0.42 * vis), nodes[a], nodes[b], 1)
+        hue = _u01(ei, 4)
+        axon = _ramp_color(ramp, hue)
+        _draw_line(pygame_mod, screen, _mix(BG, axon, 0.08 * vis), nodes[a], nodes[b], 2)
+        _draw_line(pygame_mod, screen, _mix(BG, axon, 0.48 * vis), nodes[a], nodes[b], 1)
     for ei, u, bright in state["pulses"]:
         a, b = edges[ei]
         x0, y0 = nodes[a]
         x1, y1 = nodes[b]
+        hue = (_u01(ei, 9) + u * 0.38) % 1.0
+        color = _ramp_color(ramp, hue)
         vis = bright * overlay
-        px = int(round(x0 + (x1 - x0) * u))
-        py = int(round(y0 + (y1 - y0) * u))
-        color = _mix(axon, spark, vis)
-        _, head = neuron_draw_sizes(0.0, vis)
-        pygame_mod.draw.circle(screen, color, (px, py), head)
-        if head > 1:
-            pygame_mod.draw.circle(screen, (255, 255, 255), (px, py), 1)
+        reverse = bool(state.get("reverse"))
+        for k in range(3):
+            t = u + k * 0.035 if reverse else u - k * 0.035
+            if t < 0.0 or t > 1.0:
+                continue
+            fall = 1.0 - k / 3.0
+            px = int(x0 + (x1 - x0) * t)
+            py = int(y0 + (y1 - y0) * t)
+            strength = vis * fall
+            _draw_glow(pygame_mod, screen, (px, py), color, strength, scale=0.32 if k else 0.52)
+            _, head = neuron_draw_sizes(0.0, strength)
+            pygame_mod.draw.circle(screen, _mix(BG, color, 0.85 * strength), (px, py), head)
     fires: list[float] = state["fires"]
     for i, (x, y) in enumerate(nodes):
         vis = reveal[i] * overlay
         if vis <= 0.03:
             continue
         fire = fires[i]
-        body = _mix(axon, spark, fire)
+        color = _ramp_color(ramp, (_u01(i, 11) + 0.25 * fire) % 1.0)
+        _draw_glow(pygame_mod, screen, (x, y), color, vis * (0.35 + 0.65 * fire), scale=0.52)
         ring, _head = neuron_draw_sizes(fire, 0.0)
-        pygame_mod.draw.circle(screen, _mix(BG, body, (0.55 + 0.45 * fire) * vis), (x, y), ring)
-        pygame_mod.draw.circle(screen, _mix(BG, body, vis), (x, y), max(1, ring - 1))
-        if fire > 0.35 and vis > 0.35:
-            pygame_mod.draw.circle(screen, (255, 255, 255), (x, y), 1)
+        ring_color = _mix(BG, color, 0.62 * vis)
+        pygame_mod.draw.circle(screen, ring_color, (x, y), ring, 1)
+        pygame_mod.draw.circle(screen, _mix(BG, color, vis), (x, y), 1)
 
 
 def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:

@@ -237,10 +237,10 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreater(sum(overlay["fires"]), 0.5)
         xs = [p[0] for p in overlay["nodes"]]
         ys = [p[1] for p in overlay["nodes"]]
-        self.assertLess(min(xs), 0.08)
-        self.assertGreater(max(xs), 0.92)
-        self.assertLess(min(ys), 0.08)
-        self.assertGreater(max(ys), 0.92)
+        self.assertEqual(min(xs), 0.0)
+        self.assertEqual(max(xs), 1.0)
+        self.assertEqual(min(ys), 0.0)
+        self.assertEqual(max(ys), 1.0)
         ring, head = self.kiosk.neuron_draw_sizes(1.0, 1.0)
         self.assertLessEqual(ring, 3)
         self.assertLessEqual(head, 2)
