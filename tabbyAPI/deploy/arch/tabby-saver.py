@@ -184,7 +184,7 @@ def draw_field(
     height: int,
     t: float,
     scene: dict[str, Any],
-) -> "pygame.Surface":
+) -> Any:
     import pygame
 
     palette = _warm_palette(str(scene["palette"]), float(scene["heat"]))
@@ -225,15 +225,16 @@ def draw_field(
     return pygame.image.frombuffer(buf, (width, height), "RGB").convert()
 
 
-def draw_hud(screen: "pygame.Surface", font, small, scene: dict[str, Any]) -> None:
-    import pygame
-
+def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     w, h = screen.get_size()
     profile = str(scene["profile"])
     mode = str(scene["mode"]).upper()
     phase = str(scene["phase"])
     if scene["connected"]:
-        stats = f"GPU {int(round(scene['util']))}%   VRAM {int(round(scene['vram']))}%   {int(round(scene['temp']))}°C"
+        util = int(round(scene["util"]))
+        vram = int(round(scene["vram"]))
+        temp = int(round(scene["temp"]))
+        stats = f"GPU {util}%   VRAM {vram}%   {temp}°C"
     else:
         stats = "no telemetry"
     shadow = (0, 0, 0)
@@ -328,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
                         running = False
             data, ok = bus.snapshot()
             scene = scene_from_state(data, ok)
-            field = draw_field(max(64, args.width), max(36, args.height), time.monotonic() - t0, scene)
+            now = time.monotonic() - t0
+            field = draw_field(max(64, args.width), max(36, args.height), now, scene)
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
             draw_hud(screen, font, small, scene)
             pygame.display.flip()
@@ -354,4 +356,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        raise SystemExit(0)
+        raise SystemExit(0) from None

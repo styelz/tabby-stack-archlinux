@@ -119,11 +119,16 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
             "busy": False,
             "switching": True,
             "restarting": False,
-            "gpu": {"utilization_pct": 10, "memory_used_mib": 100, "memory_total_mib": 200},
+            "gpu": {
+                "utilization_pct": 10,
+                "memory_used_mib": 100,
+                "memory_total_mib": 200,
+            },
             "host": {"cpu_pct": 1},
             "stack_queue": {"busy": False, "kind": "gpu", "occupant": "bob"},
         }
-        with mock.patch("ui.manager.stack_status", new=mock.AsyncMock(return_value=leaked)) as status:
+        mocked = mock.AsyncMock(return_value=leaked)
+        with mock.patch("ui.manager.stack_status", new=mocked) as status:
             payload = await saver.saver_state()
         status.assert_awaited_once()
         kwargs = status.await_args.kwargs
