@@ -26,6 +26,25 @@ def _request(host: str | None, forwarded: str | None = None):
     return SimpleNamespace(client=client, headers=headers)
 
 
+class _FakeScreen:
+    def __init__(self) -> None:
+        self.blits: list[tuple] = []
+
+    def get_size(self) -> tuple[int, int]:
+        return (1280, 720)
+
+    def blit(self, *args: object) -> None:
+        self.blits.append(args)
+
+
+class _FakeFont:
+    def size(self, text: str) -> tuple[int, int]:
+        return (len(text) * 8, 16)
+
+    def render(self, text: str, _aa: bool, _color: object) -> str:
+        return text
+
+
 class SaverLoopbackTests(unittest.TestCase):
     def test_loopback_peers_allowed(self):
         for host in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"):
@@ -174,7 +193,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(scene["phase"], "idle")
         self.assertFalse(scene["live"])
 
-    def test_idle_uses_slow_idle_palette(self):
+    def test_idle_uses_idle_palette_but_keeps_moving(self):
         scene = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "profile": "qwen", "busy": False, "gpu": {"utilization_pct": 3}},
             True,
@@ -182,6 +201,43 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(scene["phase"], "idle")
         self.assertEqual(scene["palette"], "idle")
         self.assertFalse(scene["live"])
+        self.assertGreaterEqual(scene["speed"], 0.30)
+        self.assertLess(scene["speed"], 0.55)
+        self.assertGreaterEqual(scene["intensity"], 0.45)
+
+    def test_hud_only_when_live(self):
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        idle_screen = _FakeScreen()
+        hot_screen = _FakeScreen()
+        font = _FakeFont()
+        self.kiosk.draw_hud(idle_screen, font, font, idle)
+        self.kiosk.draw_hud(hot_screen, font, font, hot)
+        self.assertEqual(idle_screen.blits, [])
+        self.assertGreater(len(hot_screen.blits), 0)
+
+    def test_neurons_only_fire_when_live(self):
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        self.assertIsNone(self.kiosk.neuron_overlay_state(idle))
+        overlay = self.kiosk.neuron_overlay_state(hot)
+        assert overlay is not None
+        self.assertGreater(len(overlay["nodes"]), 20)
+        self.assertGreater(len(overlay["edges"]), 20)
+        self.assertGreater(len(overlay["pulses"]), 10)
+        self.assertGreater(sum(overlay["fires"]), 0.5)
 
     def test_chat_busy_is_thinking_and_hot(self):
         scene = self.kiosk.scene_from_state(

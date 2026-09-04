@@ -135,9 +135,9 @@ class SceneFollow:
     _TAU_S = 2.4
 
     def __init__(self) -> None:
-        self.intensity = 0.28
-        self.speed = 0.09
-        self.heat = 0.15
+        self.intensity = 0.52
+        self.speed = 0.34
+        self.heat = 0.18
         self.util = 0.0
         self.vram = 0.0
         self.temp = 40.0
@@ -240,9 +240,10 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         phase = "waiting for api"
 
     if not live:
-        intensity = min(0.24 + 0.18 * (vram / 100.0), 0.38)
-        speed = 0.08
-        heat = max(0.0, min(0.25, (temp - 38.0) / 80.0))
+        # Idle still has to drift: a nearly-static navy field reads as frozen.
+        intensity = min(0.52 + 0.18 * (vram / 100.0), 0.70)
+        speed = 0.36 + 0.10 * (vram / 100.0)
+        heat = max(0.10, min(0.38, 0.12 + (temp - 38.0) / 90.0))
     else:
         # Job running: ignore nvidia-smi (often near 0 during decode).
         intensity = 0.78 + 0.20 * (util / 100.0)
@@ -294,6 +295,132 @@ def _warm_palette(
     return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
 
 
+def _u01(i: int, salt: int = 0) -> float:
+    x = (i * 374761393 + salt * 668265263) & 0xFFFFFFFF
+    x = (x ^ (x >> 13)) * 1274126177 & 0xFFFFFFFF
+    return (x & 0xFFFFFF) / float(0xFFFFFF)
+
+
+def _neuron_rest(n: int = 58) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = []
+    golden = 0.5 * (1.0 + math.sqrt(5.0))
+    for i in range(n):
+        x = 0.08 + 0.84 * ((i * golden) % 1.0)
+        y = 0.12 + 0.76 * ((i + 0.5) / n)
+        pts.append((x, y))
+    return pts
+
+
+def _neuron_edges(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
+    n = len(pts)
+    seen: set[tuple[int, int]] = set()
+    edges: list[tuple[int, int]] = []
+
+    def add(i: int, j: int) -> None:
+        if i == j:
+            return
+        a, b = (i, j) if i < j else (j, i)
+        if (a, b) in seen:
+            return
+        seen.add((a, b))
+        edges.append((a, b))
+
+    for i, p in enumerate(pts):
+        near = sorted(
+            (math.hypot(p[0] - pts[j][0], p[1] - pts[j][1]), j) for j in range(n) if j != i
+        )
+        for _dist, j in near[:3]:
+            add(i, j)
+    for i in range(0, n, 7):
+        add(i, (i + n // 3) % n)
+    return edges
+
+
+NEURON_REST = _neuron_rest()
+NEURON_EDGES = _neuron_edges(NEURON_REST)
+NEURON_SPARK = {
+    "idle": ((90, 130, 210), (210, 230, 255)),
+    "chat": ((90, 160, 255), (255, 210, 240)),
+    "image": ((180, 110, 40), (255, 220, 120)),
+    "switch": ((40, 160, 110), (180, 255, 210)),
+}
+
+
+def neuron_overlay_state(scene: dict[str, Any]) -> dict[str, Any] | None:
+    """Unit-space graph + fires. None when the stack is idle."""
+    if not scene.get("live"):
+        return None
+    st = float(scene.get("st", 0.0))
+    intensity = float(scene.get("intensity") or 0.0)
+    nodes: list[tuple[float, float]] = []
+    fires: list[float] = []
+    for i, (nx, ny) in enumerate(NEURON_REST):
+        nodes.append(
+            (
+                nx + 0.018 * lsin(st * 0.33 + i * 0.37),
+                ny + 0.016 * lsin(st * 0.27 + i * 0.51),
+            )
+        )
+        rest = 0.10 + 0.10 * (0.5 + 0.5 * lsin(st * 2.3 + i * 0.91))
+        pop = 0.5 + 0.5 * lsin(st * (4.1 + 0.13 * (i % 8)) + i * 1.27)
+        thresh = 0.84 - 0.14 * intensity
+        spike = 0.0
+        if pop > thresh:
+            spike = min(1.0, (pop - thresh) / max(0.04, 1.0 - thresh))
+        fires.append(max(rest, spike))
+    pulses: list[tuple[int, float, float]] = []
+    rate = 0.70 + 1.25 * intensity
+    extra = 1 + (1 if intensity > 0.72 else 0) + (1 if intensity > 0.90 else 0)
+    for ei, (a, b) in enumerate(NEURON_EDGES):
+        for p in range(extra):
+            phase = (st * rate * (0.50 + 0.85 * _u01(ei, p + 3)) + _u01(ei, p + 17)) % 1.0
+            u = phase * 2.0
+            if u > 1.0:
+                u = 2.0 - u
+            bright = 0.45 + 0.55 * intensity
+            pulses.append((ei, u, bright))
+            width = 0.16
+            if u < width:
+                fires[a] = max(fires[a], 1.0 - u / width)
+            if u > 1.0 - width:
+                fires[b] = max(fires[b], (u - (1.0 - width)) / width)
+    return {"nodes": nodes, "edges": NEURON_EDGES, "fires": fires, "pulses": pulses}
+
+
+def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
+    state = neuron_overlay_state(scene)
+    if state is None:
+        return
+    w, h = screen.get_size()
+    name = str(scene.get("palette") or "chat")
+    axon, spark = NEURON_SPARK.get(name) or NEURON_SPARK["chat"]
+    dim_axon = _mix(BG, axon, 0.42)
+    nodes = [(int(x * w), int(y * h)) for x, y in state["nodes"]]
+    edges: list[tuple[int, int]] = state["edges"]
+    for a, b in edges:
+        if nodes[a] != nodes[b]:
+            pygame_mod.draw.line(screen, dim_axon, nodes[a], nodes[b], 1)
+    for ei, u, bright in state["pulses"]:
+        a, b = edges[ei]
+        x0, y0 = nodes[a]
+        x1, y1 = nodes[b]
+        px = int(x0 + (x1 - x0) * u)
+        py = int(y0 + (y1 - y0) * u)
+        color = _mix(axon, spark, bright)
+        rad = max(2, int(round((h / 420.0) * (2.2 + 2.8 * bright))))
+        pygame_mod.draw.circle(screen, color, (px, py), rad)
+        pygame_mod.draw.circle(screen, (255, 255, 255), (px, py), max(1, rad // 2))
+    fires: list[float] = state["fires"]
+    for i, (x, y) in enumerate(nodes):
+        fire = fires[i]
+        rad = max(3, int(round((h / 380.0) * (3.0 + 7.0 * fire))))
+        body = _mix(axon, spark, fire)
+        pygame_mod.draw.circle(screen, _mix(BG, body, 0.55 + 0.45 * fire), (x, y), rad + 2)
+        pygame_mod.draw.circle(screen, body, (x, y), rad)
+        if fire > 0.35:
+            pygame_mod.draw.circle(screen, (255, 255, 255), (x, y), max(1, rad // 3))
+
+
 def _blended_palette(weights: dict[str, float], heat: float) -> list[tuple[int, int, int]]:
     names = [name for name, w in weights.items() if w > 0.01 and name in PALETTES]
     if not names:
@@ -331,12 +458,18 @@ def draw_field(
     intensity = float(scene["intensity"])
     live = bool(scene["live"])
     st = float(scene.get("st", 0.0))
-    breath = 0.5 + 0.5 * lsin(st * (1.15 if live else 0.72))
+    breath = 0.5 + 0.5 * lsin(st * (1.15 if live else 1.55))
     gain = intensity * (0.82 + 0.18 * breath)
     cx = (width - 1) * 0.5
     cy = (height - 1) * 0.5
     inv_diag = 1.0 / (math.hypot(cx, cy) + 1.0)
-    pulse = (0.28 if live else 0.08) * (0.45 + 0.55 * breath)
+    pulse = (0.28 if live else 0.22) * (0.45 + 0.55 * breath)
+    ax = ay = bx = by = 0.0
+    if not live:
+        ax = cx + lsin(st * 0.62) * cx * 0.38
+        ay = cy + lsin(st * 0.47 + 1.2) * cy * 0.32
+        bx = cx + lsin(st * 0.31 + 2.1) * cx * 0.45
+        by = cy + lsin(st * 0.53 + 0.4) * cy * 0.40
     buf = bytearray(width * height * 3)
     i = 0
     for y in range(height):
@@ -344,23 +477,29 @@ def draw_field(
             dx = x - cx
             dy = y - cy
             dist = math.sqrt(dx * dx + dy * dy)
-            wave = (
-                lsin(x * 0.041 + st)
-                + lsin(y * 0.036 - st * 0.81)
-                + lsin((x + y) * 0.021 + st * 1.13)
-                + lsin(dist * 0.048 - st * 0.47)
-            )
-            wave = wave * 0.25 + 0.5
-            if wave < 0.0:
-                wave = 0.0
-            elif wave > 1.0:
-                wave = 1.0
             glow = pulse * math.exp(-dist * inv_diag * 3.2)
             if live:
-                # Sit in the hot half of the palette so chat reaches purple/pink.
-                v = 0.40 + wave * 0.52 * gain + glow
+                wave = (
+                    lsin(x * 0.041 + st)
+                    + lsin(y * 0.036 - st * 0.81)
+                    + lsin((x + y) * 0.021 + st * 1.13)
+                    + lsin(dist * 0.048 - st * 0.47)
+                ) * 0.25 + 0.5
+                # Dimmer tissue so the neuron overlay can read as spikes.
+                v = 0.26 + wave * 0.46 * gain + glow * 0.72
             else:
-                v = wave * 0.55 * gain + glow * 0.35
+                da = math.sqrt((x - ax) ** 2 + (y - ay) ** 2)
+                db = math.sqrt((x - bx) ** 2 + (y - by) ** 2)
+                wave = (
+                    lsin(x * 0.048 + st * 1.35)
+                    + lsin(y * 0.042 - st * 1.18)
+                    + lsin((x + y) * 0.028 + st * 0.92)
+                    + lsin(dist * 0.055 - st * 0.74)
+                    + lsin(da * 0.062 - st * 1.05)
+                    + lsin(db * 0.051 + st * 0.88)
+                ) * (1.0 / 6.0) + 0.5
+                blob = pulse * math.exp(-min(da, db) * inv_diag * 2.4)
+                v = 0.22 + wave * 0.70 * gain + glow * 0.50 + blob * 0.55
             if v < 0.0:
                 v = 0.0
             elif v > 0.999:
@@ -374,6 +513,8 @@ def draw_field(
 
 
 def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
+    if not scene.get("live"):
+        return
     w, h = screen.get_size()
     profile = str(scene["profile"])
     mode = str(scene["mode"]).upper()
@@ -696,6 +837,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             scene = follow.tick(scene_from_state(data, ok), dt, now)
             field = draw_field(max(64, args.width), max(36, args.height), scene)
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
+            draw_neurons(pygame, screen, scene)
             draw_hud(screen, font, small, scene)
             pygame.display.flip()
             clock.tick(max(8, min(30, args.fps)))
