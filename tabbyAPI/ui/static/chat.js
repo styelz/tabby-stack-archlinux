@@ -559,6 +559,10 @@ function mountChat(root) {
   const BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation.";
   const AGENT_EMPTY_NUDGE =
     "Continue. You stopped without changing files. Apply the user's last request now with Write or StrReplace, then give a short summary. Do not generate images unless they asked.";
+  const AGENT_DONE_NUDGE =
+    "The file edits already landed. Reply with a short summary only. Do not call tools.";
+  const SKIP_INSPECT_RESULT =
+    "Already applied in this turn. Do not inspect this file again. If the request is done, summarize with no tools.";
   const AGENT_KEY = "tabby-ui-code-agent";
   let livePlanChecklist = null;
   let planChecklistOpen = true;
@@ -9433,6 +9437,7 @@ function mountChat(root) {
     const out = { role: "assistant", content: item.content };
     if (code && Array.isArray(item.tool_calls) && item.tool_calls.length) {
       out.tool_calls = item.tool_calls;
+      out.content = "";
     }
     return out;
   }
@@ -11910,6 +11915,40 @@ function mountChat(root) {
   }
 
   const MAX_AGENT_ROUNDS = 64;
+  const INSPECT_TOOL_NAMES = new Set(["read", "grep", "glob", "list", "list_files"]);
+
+  function toolNameKey(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function toolCallPath(args) {
+    const raw = args && typeof args === "object"
+      ? (args.path || args.filename || args.file || "")
+      : "";
+    return String(raw).replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  }
+
+  function inspectToolSignature(call) {
+    return `${toolNameKey(call.name)}:${JSON.stringify(call.arguments || {})}`;
+  }
+
+  function isInspectToolCall(call) {
+    return INSPECT_TOOL_NAMES.has(toolNameKey(call.name));
+  }
+
+  function shouldSkipInspectTool(call, mutatedPaths, seenInspect) {
+    if (!isInspectToolCall(call)) return false;
+    const sig = inspectToolSignature(call);
+    if (seenInspect.has(sig)) return true;
+    const path = toolCallPath(call.arguments);
+    return Boolean(path && mutatedPaths.has(path));
+  }
+
+  function isMutateToolCall(call) {
+    const key = toolNameKey(call.name);
+    if (INSPECT_TOOL_NAMES.has(key)) return false;
+    return /write|strreplace|search_replace|replace_in_file|apply_patch|edit_notebook|edit_file|delete|rename|optimize/.test(key);
+  }
 
   function normalizeToolCalls(raw) {
     if (!Array.isArray(raw)) return [];
@@ -12077,6 +12116,9 @@ function mountChat(root) {
     let toolRounds = 0;
     let toolCalls = [];
     let agentEmptyNudges = 0;
+    let agentDoneNudges = 0;
+    const mutatedPaths = new Set();
+    const seenInspect = new Set();
     await persist({ flush: true });
     agentTurn:
     while (true) {
@@ -12284,17 +12326,25 @@ function mountChat(root) {
       list.push(assistantItem);
       const userText = lastUserTextFor(chatId);
       const workspace = workspaceId(targetChat) || activeWorkspaceId();
+      let ranMutate = false;
+      let ranInspect = false;
       for (const call of calls) {
-        working.setActivity(call.name, { processing: true });
+        const skipInspect = shouldSkipInspectTool(call, mutatedPaths, seenInspect);
+        working.setActivity(skipInspect ? "Skipped" : call.name, { processing: !skipInspect });
         working.addStep({ type: "tool", name: call.name, label: call.name, args: call.arguments });
-        const ran = await executeWorkspaceTool(
-          workspace,
-          call.name,
-          call.arguments,
-          sendAgent,
-          userText,
-          historyRun
-        );
+        let ran;
+        if (skipInspect) {
+          ran = { label: "Skipped", result: SKIP_INSPECT_RESULT, change: null };
+        } else {
+          ran = await executeWorkspaceTool(
+            workspace,
+            call.name,
+            call.arguments,
+            sendAgent,
+            userText,
+            historyRun
+          );
+        }
         const toolStep = {
           type: "tool",
           name: call.name,
@@ -12314,6 +12364,15 @@ function mountChat(root) {
         };
         if (historyRun) toolItem.historyRun = historyRun;
         list.push(toolItem);
+        if (isInspectToolCall(call)) {
+          seenInspect.add(inspectToolSignature(call));
+          if (!skipInspect) ranInspect = true;
+        }
+        if (!skipInspect && isMutateToolCall(call)) {
+          const written = toolCallPath(call.arguments) || (ran.change && ran.change.path) || "";
+          if (written) mutatedPaths.add(written.replace(/\\/g, "/").replace(/^\/+/, ""));
+          ranMutate = true;
+        }
         if (ran.change && chatsShareWorkspace(chatId)) {
           const written = ran.change.path;
           if (isChangePath(written)) {
@@ -12328,7 +12387,26 @@ function mountChat(root) {
       }
       persist();
       toolRounds += 1;
-      if (!stopKind && toolRounds < MAX_AGENT_ROUNDS) {
+      const allInspectSkipped = !ranMutate && !ranInspect && mutatedPaths.size;
+      if (!stopKind && allInspectSkipped && !visibleAnswerText(assembled) && agentDoneNudges < 1) {
+        agentDoneNudges += 1;
+        liveMessages(chatId).push({
+          role: "user",
+          content: AGENT_DONE_NUDGE,
+          hidden: true,
+          createdAt: Date.now(),
+        });
+        persist();
+        assembled = "";
+        reasoning = "";
+        toolCalls = [];
+        streamResume = false;
+        networkTries = 0;
+        if (working.resetLive) working.resetLive();
+        working.setActivity("Summarizing", { processing: false });
+        continue;
+      }
+      if (!stopKind && toolRounds < MAX_AGENT_ROUNDS && !allInspectSkipped) {
         if (visibleAnswerText(assembled)) working.addStep({ type: "demote" });
         assembled = "";
         reasoning = "";
@@ -12348,6 +12426,7 @@ function mountChat(root) {
       && !stopKind
       && !visibleAnswerText(assembled)
       && agentEmptyNudges < 1
+      && !mutatedPaths.size
     ) {
       agentEmptyNudges += 1;
       liveMessages(chatId).push({

@@ -589,7 +589,30 @@ def start_stack_update(*, full: bool = False) -> dict[str, Any]:
     return _prompt_response(load_update_prompt(prompt_path), "Git update finished.")
 
 
-MAX_CODE_TOOL_ROUNDS = 8
+MAX_CODE_TOOL_ROUNDS = 32
+_INSPECT_TOOLS = frozenset({"read", "grep", "glob", "list", "list_files"})
+
+
+def _tool_call_names(item: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for call in item.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        raw = ""
+        if isinstance(fn, dict):
+            raw = str(fn.get("name") or "")
+        if not raw:
+            raw = str(call.get("name") or "")
+        names.append(raw.strip().lower())
+    return names
+
+
+def _is_inspect_tool_round(item: dict[str, Any]) -> bool:
+    names = _tool_call_names(item)
+    if not names:
+        return False
+    return all(name in _INSPECT_TOOLS for name in names)
 
 
 def _cap_tool_rounds(messages: list[dict[str, Any]], limit: int = MAX_CODE_TOOL_ROUNDS) -> list:
@@ -598,10 +621,17 @@ def _cap_tool_rounds(messages: list[dict[str, Any]], limit: int = MAX_CODE_TOOL_
         for index, item in enumerate(messages)
         if item.get("role") == "assistant" and item.get("tool_calls")
     ]
-    if len(starts) <= limit:
+    extra = len(starts) - limit
+    if extra <= 0:
         return messages
+    inspect_starts = [index for index in starts if _is_inspect_tool_round(messages[index])]
+    mutate_starts = [index for index in starts if index not in inspect_starts]
+    drop_starts = inspect_starts[:extra]
+    still = extra - len(drop_starts)
+    if still > 0:
+        drop_starts = drop_starts + mutate_starts[:still]
     drop: set[int] = set()
-    for start in starts[:-limit]:
+    for start in drop_starts:
         drop.add(start)
         index = start + 1
         while index < len(messages) and messages[index].get("role") == "tool":

@@ -50,6 +50,9 @@ CODE_SYSTEM = (
     "short summary of what you wrote or optimized. "
     "If the user asked to change files, do not stop after only Read, Grep, "
     "Glob, or List — Write or StrReplace, then summarize. "
+    "When several files need edits, emit every Write and StrReplace in one "
+    "response. After those tools succeed, stop and summarize. Do not Read, "
+    "Grep, or List to check your own edits unless a tool returned an error. "
     "If they named files such as index.html, styles.css, and app.js, Write "
     "each of those files. If HTML links local CSS or JS, Write those files "
     "in the same coding pass — do not leave broken stylesheet or script "
@@ -123,8 +126,8 @@ PLAN_THEME_HINT = (
 )
 _LAYOUT_WRITE_REFUSE = (
     "This turn is a small layout or alignment fix. Do not Write whole files. "
-    "Read the existing CSS and use StrReplace on the rules that place the "
-    "hero text or buttons. Leave image paths as they are on disk."
+    "Read the existing CSS once if you need it, then emit every StrReplace "
+    "in one response and stop. Leave image paths as they are on disk."
 )
 _LAYOUT_SRC_REFUSE = (
     "This turn is a layout fix. Do not change image paths. Use StrReplace "
@@ -158,8 +161,9 @@ LAYOUT_REPORT_MARK = "<layout_report>"
 LAYOUT_FIX_SUFFIX = (
     "\n\n<layout_fix>\n"
     "The user asked for a small layout or alignment change. Read the "
-    "existing CSS. Use StrReplace on only the rules that place the hero "
-    "text or buttons. Do not Write whole files. Do not change "
+    "existing CSS once if you need it. Emit every StrReplace in a single "
+    "response, then summarize and stop. Do not Read files again to verify. "
+    "Do not Write whole files. Do not change "
     "image paths. Do not generate images.\n"
     "</layout_fix>"
 )

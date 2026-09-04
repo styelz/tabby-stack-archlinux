@@ -112,6 +112,7 @@ class UiManagerTests(unittest.TestCase):
         self.assertEqual(payload["chat_id"], "w1")
         self.assertEqual(payload["mode"], "code")
         self.assertIn("workspace", payload["messages"][0]["content"].lower())
+        self.assertIn("emit every Write and StrReplace in one", payload["messages"][0]["content"])
         self.assertNotIn("per-chat project", payload["messages"][0]["content"])
 
     def test_sanitize_code_appends_workspace_file_list(self):
@@ -180,6 +181,63 @@ class UiManagerTests(unittest.TestCase):
         self.assertNotIn(code_agent.PLAN_CONTRACT_MARK, payload["messages"][-1]["content"])
         self.assertNotIn(code_agent.BUILD_CONTRACT_MARK, payload["messages"][-1]["content"])
         self.assertEqual(payload["messages"][-1]["content"], "what files are here?")
+
+    def test_code_tool_round_cap_drops_inspect_before_writes(self):
+        def write_round(idx):
+            return [
+                {
+                    "role": "assistant",
+                    "content": f"plan {idx}",
+                    "tool_calls": [
+                        {
+                            "id": f"w{idx}",
+                            "function": {
+                                "name": "Write",
+                                "arguments": '{"path":"f.html"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": f"w{idx}", "content": "wrote"},
+            ]
+
+        def read_round(idx):
+            return [
+                {
+                    "role": "assistant",
+                    "content": f"check {idx}",
+                    "tool_calls": [
+                        {
+                            "id": f"r{idx}",
+                            "function": {
+                                "name": "Read",
+                                "arguments": '{"path":"f.html"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": f"r{idx}", "content": "<html>"},
+            ]
+
+        messages = [{"role": "user", "content": "edit the page"}]
+        for i in range(6):
+            messages.extend(write_round(i))
+            messages.extend(read_round(i))
+        capped = manager._cap_tool_rounds(messages, limit=8)
+        writes = [
+            item
+            for item in capped
+            if item.get("role") == "assistant"
+            and (item.get("tool_calls") or [{}])[0].get("function", {}).get("name") == "Write"
+        ]
+        reads = [
+            item
+            for item in capped
+            if item.get("role") == "assistant"
+            and (item.get("tool_calls") or [{}])[0].get("function", {}).get("name") == "Read"
+        ]
+        self.assertEqual(len(writes), 6)
+        self.assertEqual(len(reads), 2)
 
     def test_update_missing_script(self):
         missing = Path("/tmp/does-not-exist-tabby-update.sh")
