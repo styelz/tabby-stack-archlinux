@@ -85,6 +85,55 @@ SYSTEM_FIELDS = (
     },
 )
 
+SAVER_FIELDS = (
+    {
+        "name": "enabled",
+        "env": "TABBY_SAVER_ENABLED",
+        "label": "Enable screensaver",
+        "description": "KMS kiosk on a spare TTY. Do not enable if a desktop already owns the GPU.",
+        "kind": "bool",
+        "optional": False,
+        "default": False,
+    },
+    {
+        "name": "timeout",
+        "env": "TABBY_SAVER_IDLE_S",
+        "label": "Idle timeout (seconds)",
+        "description": "Seconds without keyboard or mouse while logged in on the console before the field returns.",
+        "kind": "int",
+        "optional": False,
+        "default": 120,
+    },
+    {
+        "name": "logout_timeout",
+        "env": "TABBY_SAVER_LOGOUT_IDLE_S",
+        "label": "Logout timeout (seconds)",
+        "description": "Seconds after console logout, or idle at the login prompt, before the field returns.",
+        "kind": "int",
+        "optional": False,
+        "default": 10,
+    },
+)
+
+SAVER_ALIASES = {
+    "timeout": "timeout",
+    "idle": "timeout",
+    "idle_s": "timeout",
+    "idle-timeout": "timeout",
+    "logout-timeout": "logout_timeout",
+    "logout_timeout": "logout_timeout",
+    "logout_idle": "logout_timeout",
+    "logout-idle": "logout_timeout",
+    "enabled": "enabled",
+    "enable": "enabled",
+}
+
+SAVER_ENV_NAMES = frozenset(item["env"] for item in SAVER_FIELDS) | {
+    "TABBY_SAVER_TTY",
+    "TABBY_SAVER_USER_TTY",
+    "TABBY_SAVER_URL",
+}
+
 _ENV_ASSIGN = re.compile(r"^(\s*)(?:#\s*)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
@@ -293,7 +342,7 @@ def _parse_env(path: Path) -> dict[str, str]:
 
 
 def _system_schema(file_values: dict[str, str]) -> list[dict[str, Any]]:
-    known = {item["name"] for item in SYSTEM_FIELDS}
+    known = {item["name"] for item in SYSTEM_FIELDS} | set(SAVER_ENV_NAMES)
     fields = []
     for item in SYSTEM_FIELDS:
         field = dict(item)
@@ -485,6 +534,122 @@ def _reload_live() -> None:
         os.chdir(cwd)
 
 
+def _env_truthy(raw: str) -> bool:
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def normalize_saver_key(name: str) -> str:
+    key = str(name or "").strip()
+    if key in SAVER_ALIASES:
+        return SAVER_ALIASES[key]
+    env_match = next((item["name"] for item in SAVER_FIELDS if item["env"] == key), None)
+    if env_match:
+        return env_match
+    raise SettingsError(f"Unknown screensaver setting {name}")
+
+
+def _saver_payload(env_values: dict[str, str]) -> dict[str, Any]:
+    fields = []
+    for item in SAVER_FIELDS:
+        field = dict(item)
+        raw = env_values.get(item["env"], "")
+        if item["kind"] == "bool":
+            value: Any = _env_truthy(raw)
+        elif item["kind"] == "int":
+            if str(raw).strip() == "":
+                value = item.get("default")
+            else:
+                try:
+                    value = int(str(raw).strip())
+                except ValueError:
+                    value = item.get("default")
+        else:
+            value = raw
+        field["value"] = value
+        field["set"] = bool(str(raw).strip())
+        field["live"] = value
+        fields.append(field)
+    return {
+        "name": "screensaver",
+        "label": "Screensaver",
+        "description": "TTY activity kiosk. Timeouts apply after tabby-saver restarts; enable/disable talks to systemd.",
+        "path": str(ENV_PATH),
+        "fields": fields,
+    }
+
+
+def _sudo_systemctl(args: list[str]) -> str:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:
+        return f"tabby.env saved; run tsctl screensaver enable from a terminal ({exc})"
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+        return f"tabby.env saved; systemd: {err}. Try: tsctl screensaver enable"
+    return ""
+
+
+def _systemctl_is(action: str, unit: str) -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["systemctl", action, unit],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def apply_saver_unit(enabled: Optional[bool] = None) -> str:
+    """Enable, disable, or restart tabby-saver so tabby.env timeouts apply."""
+    if enabled is True:
+        was_active = _systemctl_is("is-active", "tabby-saver")
+        warning = _sudo_systemctl(["enable", "--now", "tabby-saver"])
+        if not warning and was_active:
+            warning = _sudo_systemctl(["restart", "tabby-saver"])
+        return warning
+    if enabled is False:
+        return _sudo_systemctl(["disable", "--now", "tabby-saver"])
+    if _systemctl_is("is-active", "tabby-saver"):
+        return _sudo_systemctl(["restart", "tabby-saver"])
+    return ""
+
+
+def _apply_screensaver(updates: dict[str, Any]) -> str:
+    env_updates: dict[str, Optional[str]] = {}
+    enabled: Optional[bool] = None
+    for key, raw in updates.items():
+        name = normalize_saver_key(str(key))
+        spec = next(item for item in SAVER_FIELDS if item["name"] == name)
+        try:
+            coerced = _coerce_field(spec, raw)
+        except Exception as exc:
+            raise SettingsError(f"screensaver.{name}: {exc}") from exc
+        if spec["kind"] == "bool":
+            flag = bool(coerced)
+            env_updates[spec["env"]] = "1" if flag else "0"
+            if name == "enabled":
+                enabled = flag
+        elif coerced is None:
+            env_updates[spec["env"]] = str(spec.get("default", ""))
+        else:
+            env_updates[spec["env"]] = str(coerced)
+    if env_updates:
+        _write_env(env_updates)
+    return apply_saver_unit(enabled=enabled)
+
+
 def load_settings() -> dict[str, Any]:
     file_values = _file_tabby_values()
     live_values = _live_tabby_values()
@@ -529,14 +694,16 @@ def load_settings() -> dict[str, Any]:
             "path": str(ENV_PATH),
             "fields": system,
         },
+        "screensaver": _saver_payload(env_values),
         "paths": {"config": str(CONFIG_PATH), "env": str(ENV_PATH)},
-        "restart_hint": "Network, model, and tabby.env changes apply after Restart API.",
+        "restart_hint": "Network, model, and tabby.env changes apply after Restart API. Screensaver enable/timeouts apply to tabby-saver.",
     }
 
 
 def save_settings(body: dict[str, Any]) -> dict[str, Any]:
     tabby = body.get("tabby")
     system = body.get("system")
+    screensaver = body.get("screensaver")
     if tabby is not None:
         if not isinstance(tabby, dict):
             raise SettingsError("tabby must be an object")
@@ -557,13 +724,19 @@ def save_settings(body: dict[str, Any]) -> dict[str, Any]:
                 updates[name] = str(raw)
         if updates:
             _write_env(updates)
+    saver_warning = ""
+    if screensaver is not None:
+        if not isinstance(screensaver, dict):
+            raise SettingsError("screensaver must be an object")
+        saver_warning = _apply_screensaver(screensaver)
     reload_warning = ""
     try:
         _reload_live()
     except Exception as exc:
         reload_warning = f"Saved, but live reload failed: {exc}"
     data = load_settings()
-    if reload_warning:
+    warning = " ".join(part for part in (reload_warning, saver_warning) if part)
+    if warning:
         data = dict(data)
-        data["reload_warning"] = reload_warning
+        data["reload_warning"] = warning
     return data

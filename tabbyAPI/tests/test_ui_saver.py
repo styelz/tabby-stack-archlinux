@@ -139,29 +139,26 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["kind"], "chat")
 
     async def test_saver_state_uses_empty_username(self):
-        leaked = {
-            "gpu_mode": "comfy",
-            "profile": "flux",
-            "busy": False,
-            "switching": True,
-            "restarting": False,
-            "gpu": {
-                "utilization_pct": 10,
-                "memory_used_mib": 100,
-                "memory_total_mib": 200,
-            },
-            "host": {"cpu_pct": 1},
-            "stack_queue": {"busy": False, "kind": "gpu", "occupant": "bob"},
-        }
-        mocked = mock.AsyncMock(return_value=leaked)
-        with mock.patch("ui.manager.stack_status", new=mocked) as status:
+        snap = mock.Mock(
+            return_value={"busy": False, "kind": "gpu", "occupant": "bob", "live": False}
+        )
+        with (
+            mock.patch("ui.occupancy.snapshot", snap),
+            mock.patch("ui.manager.stack_status", new=mock.AsyncMock()) as status,
+            mock.patch("common.phrase_switch.switch_lock_held", return_value=True),
+            mock.patch("common.phrase_switch.switch_lock_name", return_value="comfy"),
+            mock.patch("common.gpu_mode.read_mode", return_value={"mode": "comfy"}),
+            mock.patch("images.jobs.loaded_tabby_name", return_value=None),
+            mock.patch("common.phrase_switch.profile_alias_for_model", return_value=None),
+            mock.patch("common.phrase_switch.last_llm_profile_name", return_value=""),
+            mock.patch("select_model.last_profile", return_value="flux"),
+        ):
             payload = await saver.saver_state()
-        status.assert_awaited_once()
-        kwargs = status.await_args.kwargs
-        self.assertEqual(kwargs.get("username"), "")
-        self.assertIsNone(kwargs.get("request"))
+        snap.assert_called_once_with("")
+        status.assert_not_called()
         self.assertEqual(payload["kind"], "gpu")
         self.assertTrue(payload["switching"])
+        self.assertEqual(payload["profile"], "flux")
         self.assertNotIn("bob", repr(payload))
 
 
@@ -238,6 +235,49 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreater(len(overlay["edges"]), 20)
         self.assertGreater(len(overlay["pulses"]), 10)
         self.assertGreater(sum(overlay["fires"]), 0.5)
+        xs = [p[0] for p in overlay["nodes"]]
+        ys = [p[1] for p in overlay["nodes"]]
+        self.assertLess(min(xs), 0.08)
+        self.assertGreater(max(xs), 0.92)
+        self.assertLess(min(ys), 0.08)
+        self.assertGreater(max(ys), 0.92)
+        ring, head = self.kiosk.neuron_draw_sizes(1.0, 1.0)
+        self.assertLessEqual(ring, 3)
+        self.assertLessEqual(head, 2)
+        fading = dict(hot)
+        fading["live"] = False
+        fading["overlay"] = 0.4
+        self.assertIsNotNone(self.kiosk.neuron_overlay_state(fading))
+        gone = dict(hot)
+        gone["live"] = False
+        gone["overlay"] = 0.0
+        self.assertIsNone(self.kiosk.neuron_overlay_state(gone))
+        boot = dict(hot)
+        boot["cycle"] = "boot"
+        boot["cycle_t"] = 0.0
+        boot["overlay"] = 0.08
+        boot_state = self.kiosk.neuron_overlay_state(boot)
+        self.assertIsNotNone(boot_state)
+        halt = dict(hot)
+        halt["live"] = False
+        halt["cycle"] = "halt"
+        halt["cycle_t"] = 0.2
+        halt["overlay"] = 0.7
+        self.assertIsNotNone(self.kiosk.neuron_overlay_state(halt))
+
+    def test_neuron_pulses_travel_one_way(self):
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        hot["st"] = 1.0
+        first = self.kiosk.neuron_overlay_state(hot)
+        hot["st"] = 1.05
+        second = self.kiosk.neuron_overlay_state(hot)
+        assert first is not None and second is not None
+        u0 = first["pulses"][0][1]
+        u1 = second["pulses"][0][1]
+        self.assertTrue(u1 > u0 or (u0 > 0.9 and u1 < 0.2))
 
     def test_chat_busy_is_thinking_and_hot(self):
         scene = self.kiosk.scene_from_state(
@@ -293,6 +333,10 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreaterEqual(b["st"], a["st"])
         self.assertLess(b["st"] - a["st"], 0.05)
         self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
+        self.assertEqual(b["cycle"], "boot")
+        self.assertEqual(b["phase"], "gearing up")
+        self.assertGreater(b["overlay"], 0.05)
+        self.assertIsNotNone(self.kiosk.neuron_overlay_state(b))
 
     def test_follow_holds_live_through_a_brief_idle_poll(self):
         follow = self.kiosk.SceneFollow()
@@ -309,6 +353,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertTrue(held["live"])
         later = follow.tick(idle, 0.04, 8.0)
         self.assertFalse(later["live"])
+        self.assertIn(later["cycle"], ("halt", "idle"))
 
     def test_follow_reaches_hot_intensity_while_thinking(self):
         follow = self.kiosk.SceneFollow()
@@ -331,17 +376,80 @@ class SaverKioskSceneTests(unittest.TestCase):
     def test_resume_on_idle_or_logout(self):
         resume = self.kiosk.should_resume_saver
         self.assertFalse(
-            resume(now=10.0, last_input=9.0, idle_s=120.0, was_logged_in=False, logged_in=False)
+            resume(
+                now=10.0,
+                last_input=9.0,
+                idle_s=120.0,
+                logout_idle_s=10.0,
+                logged_in=False,
+            )
         )
         self.assertTrue(
-            resume(now=130.0, last_input=9.0, idle_s=120.0, was_logged_in=False, logged_in=False)
-        )
-        self.assertTrue(
-            resume(now=11.0, last_input=10.5, idle_s=120.0, was_logged_in=True, logged_in=False)
+            resume(
+                now=20.0,
+                last_input=9.0,
+                idle_s=120.0,
+                logout_idle_s=10.0,
+                logged_in=False,
+            )
         )
         self.assertFalse(
-            resume(now=11.0, last_input=10.5, idle_s=120.0, was_logged_in=True, logged_in=True)
+            resume(
+                now=11.0,
+                last_input=10.5,
+                idle_s=120.0,
+                logout_idle_s=10.0,
+                logged_in=False,
+            )
         )
+        self.assertFalse(
+            resume(
+                now=11.0,
+                last_input=10.5,
+                idle_s=120.0,
+                logout_idle_s=10.0,
+                logged_in=True,
+            )
+        )
+        self.assertTrue(
+            resume(
+                now=140.0,
+                last_input=10.5,
+                idle_s=120.0,
+                logout_idle_s=10.0,
+                logged_in=True,
+            )
+        )
+
+    def test_follow_fades_neuron_overlay(self):
+        follow = self.kiosk.SceneFollow()
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True},
+            True,
+        )
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "busy": False},
+            True,
+        )
+        now = 10.0
+        scene = follow.tick(hot, 0.04, now)
+        for _step in range(80):
+            now += 0.04
+            scene = follow.tick(hot, 0.04, now)
+        self.assertGreater(scene["overlay"], 0.9)
+        after = now
+        for _step in range(20):
+            after += 0.04
+            scene = follow.tick(idle, 0.04, after)
+        self.assertEqual(scene["cycle"], "halt")
+        self.assertEqual(scene["phase"], "gearing down")
+        after += 6.0
+        scene = follow.tick(idle, 0.04, after)
+        for _step in range(90):
+            after += 0.04
+            scene = follow.tick(idle, 0.04, after)
+        self.assertLess(scene["overlay"], 0.05)
+        self.assertEqual(scene["cycle"], "idle")
 
     def test_login_from_ps_ignores_getty(self):
         self.assertFalse(self.kiosk.login_from_ps("agetty\nlogin\n"))
@@ -371,9 +479,14 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertIsNone(self.kiosk.is_dismiss_event(key, pygame, True))
 
     def test_parse_args_idle_default_is_two_minutes(self):
+        args = self.kiosk.parse_args([])
+        self.assertEqual(args.idle, 120.0)
+        self.assertEqual(args.logout_idle, 10.0)
+        self.assertEqual(args.poll, 0.25)
         args = self.kiosk.parse_args(
-            ["--idle", "120", "--user-tty", "tty1", "--saver-tty", "tty8"]
+            ["--idle", "120", "--logout-idle", "10", "--user-tty", "tty1", "--saver-tty", "tty8"]
         )
         self.assertEqual(args.idle, 120.0)
+        self.assertEqual(args.logout_idle, 10.0)
         self.assertEqual(args.user_tty, "tty1")
         self.assertEqual(args.saver_tty, "tty8")

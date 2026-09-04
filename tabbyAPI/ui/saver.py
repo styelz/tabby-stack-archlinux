@@ -117,7 +117,39 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 async def saver_state() -> dict[str, Any]:
-    from ui.manager import stack_status
+    """Occupancy weather only — never wait on nvidia-smi or HealthManager.
 
-    raw = await stack_status(request=None, username="")
-    return sanitize_status(raw)
+    The kiosk needs to see a prompt the moment StackGate is taken. Full
+    stack_status blocks the event loop on nvidia-smi (up to 5s), which is why
+    the field used to sit idle for several seconds after a chat started.
+    """
+    from common.gpu_mode import read_mode
+    from common.phrase_switch import (
+        last_llm_profile_name,
+        profile_alias_for_model,
+        switch_lock_held,
+        switch_lock_name,
+    )
+    from images.jobs import loaded_tabby_name
+    from select_model import last_profile
+    from ui.occupancy import snapshot as stack_queue_snapshot
+
+    mode = read_mode()
+    tabby = loaded_tabby_name()
+    gpu_mode = "llm" if tabby else (mode.get("mode") or "llm")
+    lock_name = switch_lock_name()
+    lock_held = switch_lock_held()
+    restarting = lock_held and lock_name == "restart"
+    switching = lock_held and not restarting
+    profile = profile_alias_for_model(tabby) or last_llm_profile_name() or last_profile()
+    queue = stack_queue_snapshot("")
+    return sanitize_status(
+        {
+            "gpu_mode": gpu_mode,
+            "profile": profile,
+            "busy": bool(lock_held) or bool(queue.get("busy")),
+            "switching": switching,
+            "restarting": restarting,
+            "stack_queue": queue,
+        }
+    )

@@ -1,0 +1,9 @@
+#compdef tsctl
+_tsctl() {
+  local -a replies
+  local out
+  out="$(tsctl --complete "$CURRENT" "${words[@]}" 2>/dev/null)" || return 0
+  replies=(${(z)out})
+  _describe 'tsctl' replies
+}
+_tsctl

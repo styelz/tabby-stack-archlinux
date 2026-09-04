@@ -562,6 +562,9 @@ write_resume_env() {
     printf 'TABBY_SSH_REMOTE=%q\n' "${TABBY_SSH_REMOTE-}"
     printf 'TABBY_SSH_FORWARD=%q\n' "${TABBY_SSH_FORWARD-}"
     printf 'TABBY_SSH_KEY=%q\n' "${TABBY_SSH_KEY-}"
+    printf 'TABBY_SAVER_ENABLED=%q\n' "${TABBY_SAVER_ENABLED-}"
+    printf 'TABBY_SAVER_IDLE_S=%q\n' "${TABBY_SAVER_IDLE_S-}"
+    printf 'TABBY_SAVER_LOGOUT_IDLE_S=%q\n' "${TABBY_SAVER_LOGOUT_IDLE_S-}"
     printf 'TABBY_INSTALL_VERBOSE=%q\n' "${TABBY_INSTALL_VERBOSE-}"
     printf 'TABBY_INSTALL_SH=%q\n' "$DEST/install.sh"
   } > "$f"
@@ -1262,6 +1265,44 @@ apply_network_defaults() {
   API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
 }
 
+graphical_session_present() {
+  [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && return 0
+  if need_cmd systemctl; then
+    systemctl is-active --quiet display-manager 2>/dev/null && return 0
+  fi
+  if need_cmd loginctl; then
+    local sess type
+    while read -r sess _uid _user _seat _tty; do
+      [[ -n "$sess" ]] || continue
+      type="$(loginctl show-session "$sess" -p Type --value 2>/dev/null || true)"
+      case "$type" in
+        wayland|x11) return 0 ;;
+      esac
+    done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+  fi
+  return 1
+}
+
+valid_seconds() {
+  [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v n="$1" 'BEGIN { exit !(n >= 0 && n <= 86400) }'
+}
+
+apply_saver_defaults() {
+  TABBY_SAVER_IDLE_S="${TABBY_SAVER_IDLE_S:-120}"
+  TABBY_SAVER_LOGOUT_IDLE_S="${TABBY_SAVER_LOGOUT_IDLE_S:-10}"
+  TABBY_SAVER_TTY="${TABBY_SAVER_TTY:-tty8}"
+  TABBY_SAVER_USER_TTY="${TABBY_SAVER_USER_TTY:-tty1}"
+  if [[ -z "${TABBY_SAVER_ENABLED:-}" ]]; then
+    if [[ "${UPDATE_MODE:-0}" -eq 1 ]]; then
+      TABBY_SAVER_ENABLED=0
+    elif graphical_session_present; then
+      TABBY_SAVER_ENABLED=0
+    else
+      TABBY_SAVER_ENABLED=1
+    fi
+  fi
+}
+
 write_tabby_env() {
   local env_file="$1"
   mkdir -p "$(dirname "$env_file")"
@@ -1273,6 +1314,11 @@ TABBY_INSTALL_ROOT=$DEST
 TABBY_NETWORK_HOST=$TABBY_NETWORK_HOST
 TABBY_NETWORK_PORT=$TABBY_NETWORK_PORT
 TABBY_MODELS=$MODEL_SET
+TABBY_SAVER_ENABLED=${TABBY_SAVER_ENABLED:-0}
+TABBY_SAVER_IDLE_S=${TABBY_SAVER_IDLE_S:-120}
+TABBY_SAVER_LOGOUT_IDLE_S=${TABBY_SAVER_LOGOUT_IDLE_S:-10}
+TABBY_SAVER_TTY=${TABBY_SAVER_TTY:-tty8}
+TABBY_SAVER_USER_TTY=${TABBY_SAVER_USER_TTY:-tty1}
 EOF
   if [[ -n "$TABBY_SSH_REMOTE" ]]; then
     cat >> "$env_file" <<EOF
@@ -1413,6 +1459,7 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
   MODEL_SET="${TABBY_MODELS:-core}"
   apply_choices
   apply_network_defaults
+  apply_saver_defaults
   if ! valid_model_set "$MODEL_SET"; then
     echo "Model set must be core, all, or comma-separated ids (got $MODEL_SET)."
     exit 1
@@ -1496,6 +1543,7 @@ API / tunnel URLs."
       step_ssh="3 / 4  — Reverse SSH tunnel"
       step_fwd="3 / 4  — SSH forward spec"
       step_key="3 / 4  — SSH private key"
+      step_saver="3 / 4  — Screensaver"
       step_confirm="4 / 4  — Confirm"
     else
     DEST="$(ui_input "1 / 6  — Arch install root" \
@@ -1553,6 +1601,7 @@ The installer lists what it finds next. Blank = Hugging Face." \
       step_ssh="5 / 6  — Reverse SSH tunnel"
       step_fwd="5 / 6  — SSH forward spec"
       step_key="5 / 6  — SSH private key"
+      step_saver="5 / 6  — Screensaver"
       step_confirm="6 / 6  — Confirm"
     fi
 
@@ -1775,7 +1824,49 @@ Default is fine unless your key has another name." \
       TABBY_SSH_FORWARD=""
       TABBY_SSH_KEY=""
     fi
+    apply_saver_defaults
+    SAVER_DEFAULT_YN=0
+    [[ "${TABBY_SAVER_ENABLED}" == "1" ]] && SAVER_DEFAULT_YN=1
+    if ui_yesno "${step_saver:-Screensaver}" \
+"Enable the TTY activity screensaver?
+
+A CPU-rendered field on a spare VT (default tty8). tty1 stays a
+login prompt. A key or mouse hides it. While logged in it waits
+${TABBY_SAVER_IDLE_S}s with no input; after logout it waits
+${TABBY_SAVER_LOGOUT_IDLE_S}s.
+
+Do not enable if Omarchy or another desktop already owns the GPU." \
+      "$SAVER_DEFAULT_YN"; then
+      TABBY_SAVER_ENABLED=1
+      TABBY_SAVER_IDLE_S="$(ui_input "${step_saver:-Screensaver}" \
+"Seconds of no keyboard/mouse while logged in on the console
+before the screensaver returns. Default 120 (2 minutes)." \
+"${TABBY_SAVER_IDLE_S}")"
+      TABBY_SAVER_IDLE_S="${TABBY_SAVER_IDLE_S:-120}"
+      if ! valid_seconds "$TABBY_SAVER_IDLE_S"; then
+        ui_msg "Invalid idle timeout" "Use a number of seconds from 0 to 86400."
+        TABBY_SAVER_IDLE_S=120
+        continue
+      fi
+      TABBY_SAVER_LOGOUT_IDLE_S="$(ui_input "${step_saver:-Screensaver}" \
+"Seconds after logging out of the console (or idle at the login
+prompt) before the screensaver returns. Default 10." \
+"${TABBY_SAVER_LOGOUT_IDLE_S}")"
+      TABBY_SAVER_LOGOUT_IDLE_S="${TABBY_SAVER_LOGOUT_IDLE_S:-10}"
+      if ! valid_seconds "$TABBY_SAVER_LOGOUT_IDLE_S"; then
+        ui_msg "Invalid logout timeout" "Use a number of seconds from 0 to 86400."
+        TABBY_SAVER_LOGOUT_IDLE_S=10
+        continue
+      fi
+    else
+      TABBY_SAVER_ENABLED=0
+    fi
     API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
+    if [[ "${TABBY_SAVER_ENABLED}" == "1" ]]; then
+      SAVER_CONFIRM="on (idle ${TABBY_SAVER_IDLE_S}s, logout ${TABBY_SAVER_LOGOUT_IDLE_S}s)"
+    else
+      SAVER_CONFIRM="off"
+    fi
 
     if ui_yesno "$step_confirm" \
 "Start the install with these settings?
@@ -1791,6 +1882,7 @@ Default is fine unless your key has another name." \
   SSH remote:    ${TABBY_SSH_REMOTE:- (none — no tunnel)}
   SSH forward:   ${TABBY_SSH_FORWARD:- (n/a)}
   SSH key:       ${TABBY_SSH_KEY:- (n/a)}
+  Screensaver:   ${SAVER_CONFIRM}
 
 This can take a long time (Python 3.12, pip wheels, model files).
 Re-run is safe: a good venv and existing weights are skipped.
@@ -1803,6 +1895,7 @@ Yes = begin.  No = change answers.  Esc = cancel." \
 fi
 
 apply_network_defaults
+apply_saver_defaults
 if [[ -z "$TABBY_SSH_REMOTE" ]]; then
   TABBY_SSH_FORWARD=""
   TABBY_SSH_KEY=""
@@ -1907,6 +2000,9 @@ PACKAGES=(
   npm
   docker
 )
+if [[ "${TABBY_SAVER_ENABLED:-0}" == "1" ]]; then
+  PACKAGES+=(python-pygame)
+fi
 
 ensure_sudo
 if need_cmd sudo; then
@@ -2359,7 +2455,7 @@ if [[ -f "$COMFY_UNIT_SRC" ]]; then
 fi
 
 # Opt-in KMS kiosk. Written as a system unit so it can own a TTY without a
-# desktop session. Never enabled here — Omarchy / a GUI would lose the GPU.
+# desktop session. Enabled only when TABBY_SAVER_ENABLED=1.
 SAVER_UNIT_SRC="$DEST_TABBY/deploy/arch/tabby-saver.service"
 if [[ ! -f "$SAVER_UNIT_SRC" ]]; then
   SAVER_UNIT_SRC="$SCRIPT_DIR/tabby-saver.service"
@@ -2382,7 +2478,15 @@ if [[ -f "$SAVER_UNIT_SRC" ]]; then
   if sudo -n install -m 644 "$SAVER_TMP" /etc/systemd/system/tabby-saver.service \
        >>"$INSTALL_LOG" 2>&1; then
     sudo -n systemctl daemon-reload >>"$INSTALL_LOG" 2>&1 || true
-    echo "Wrote /etc/systemd/system/tabby-saver.service (not enabled; opt-in kiosk)" >> "$INSTALL_LOG"
+    echo "Wrote /etc/systemd/system/tabby-saver.service" >> "$INSTALL_LOG"
+    if [[ "${TABBY_SAVER_ENABLED:-0}" == "1" ]]; then
+      sudo -n usermod -aG video,input,tty "$USER" >>"$INSTALL_LOG" 2>&1 || true
+      if sudo -n systemctl enable --now tabby-saver >>"$INSTALL_LOG" 2>&1; then
+        echo "Enabled tabby-saver" >> "$INSTALL_LOG"
+      else
+        echo "WARNING: could not enable tabby-saver" >> "$INSTALL_LOG"
+      fi
+    fi
   else
     echo "WARNING: could not write /etc/systemd/system/tabby-saver.service (opt-in screensaver)" >> "$INSTALL_LOG"
   fi
@@ -2409,6 +2513,27 @@ if [[ -f "$DEST_TABBY/deploy/arch/tsos-motd" ]] && \
     echo "WARNING: could not refresh /usr/local/bin/tsos-motd" >> "$INSTALL_LOG"
   fi
 fi
+
+install_tsctl() {
+  local wrap="$DEST_TABBY/deploy/arch/tsctl"
+  [[ -f "$wrap" ]] || return 0
+  if sudo -n install -D -m 0755 "$wrap" /usr/local/bin/tsctl >>"$INSTALL_LOG" 2>&1; then
+    echo "Installed /usr/local/bin/tsctl" >> "$INSTALL_LOG"
+  else
+    echo "WARNING: could not install /usr/local/bin/tsctl" >> "$INSTALL_LOG"
+  fi
+  local bashc="$DEST_TABBY/deploy/arch/tsctl.bash-completion"
+  if [[ -f "$bashc" ]]; then
+    sudo -n install -D -m 0644 "$bashc" /usr/share/bash-completion/completions/tsctl \
+      >>"$INSTALL_LOG" 2>&1 || true
+  fi
+  local zshc="$DEST_TABBY/deploy/arch/_tsctl"
+  if [[ -f "$zshc" ]]; then
+    sudo -n install -D -m 0644 "$zshc" /usr/share/zsh/site-functions/_tsctl \
+      >>"$INSTALL_LOG" 2>&1 || true
+  fi
+}
+install_tsctl
 START_NOTE=""
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl && \
    systemctl --user daemon-reload >>"$INSTALL_LOG" 2>&1; then
@@ -2465,6 +2590,7 @@ Paths
   How-to:    $HOWTO
   Agents:    $DEST/AGENTS.md
   README:    $DEST_TABBY/deploy/arch/README.md
+  tsctl:     tsctl   (stack settings; also $DEST_TABBY/deploy/arch/tsctl)
 
 Start / stop
   Starts at boot (no login) via linger + systemctl --user enable tabbyapi
@@ -2484,17 +2610,19 @@ Start / stop
   Do not run start.bat.
   If you used a USB cache you can unmount it.
 
-Optional TTY screensaver (no desktop; opt-in; spare VT, default tty8)
-  Do not enable if Omarchy or a graphical session owns the GPU.
-  sudo pacman -S --needed python-pygame
-  sudo usermod -aG video $USER
-  sudo systemctl enable --now tabby-saver
-  sudo systemctl status tabby-saver
-  journalctl -u tabby-saver -f
-  Key/mouse hides it (login on tty1). Idle 2 min or logout shows it again.
+Optional TTY screensaver (spare VT, default tty8)
+  Settings / tsctl, or this install, can enable it. Do not enable beside Omarchy.
+  tsctl screensaver enable
+  tsctl screensaver timeout=120
+  tsctl screensaver logout-timeout=10
+  Idle 2 min while logged in; 10 s after logout (defaults). Key/mouse hides it.
   Probe in a window: /usr/bin/python $DEST_TABBY/deploy/arch/tabby-saver.py --window
-  Stop: sudo systemctl disable --now tabby-saver
-  VTs: TABBY_SAVER_TTY=tty8 TABBY_SAVER_USER_TTY=tty1 before re-running install.sh.
+  Stop: tsctl screensaver disable
+  VTs: TABBY_SAVER_TTY=tty8 TABBY_SAVER_USER_TTY=tty1
+
+  tsctl                         interactive settings (dialog)
+  tsctl list                    every Settings section
+  tsctl network host=0.0.0.0
 
 Management UI ($API_URL/v1/ui)
   Sign in with the Linux user that runs tabbyapi (admin), or a Tabby-only account.

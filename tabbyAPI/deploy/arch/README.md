@@ -136,25 +136,34 @@ Manual start (same as the unit):
 /path/to/tabbyAPI/venv/bin/python /path/to/tabbyAPI/watch_api.py
 ```
 
-### Optional: TTY activity screensaver (no desktop)
+### TTY activity screensaver
 
-A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal field. It is **not** a real attention heatmap. It does **not** start with install — enable it only on a headless box with a monitor. **Do not enable this if Omarchy or any graphical session already owns the GPU.**
+A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal field. It is **not** a real attention heatmap. **Do not enable this if Omarchy or any graphical session already owns the GPU.** The installer asks; default is on for a headless/TTY box and off if a desktop is already running.
 
 ```bash
-sudo pacman -S --needed python-pygame
-# installer already writes /etc/systemd/system/tabby-saver.service (not enabled)
-sudo usermod -aG video "$USER"
-sudo systemctl enable --now tabby-saver
-sudo systemctl status tabby-saver
-journalctl -u tabby-saver -f
+tsctl screensaver enable
+tsctl screensaver timeout=120
+tsctl screensaver logout-timeout=10
+tsctl screensaver status
+# or: Settings → Screensaver in /v1/ui
 ```
 
-- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse movement drops the field and switches back; **2 minutes** with no input, or a logout from that TTY, starts it again. Override with `TABBY_SAVER_TTY` / `TABBY_SAVER_USER_TTY` before re-running `install.sh`, or edit the unit and `systemctl daemon-reload`.
-- Needs `nvidia-drm.modeset=1` (Arch `nvidia-open` usually sets this) and a connector on `/dev/dri/card*`.
+- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field; **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts it again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`).
+- Needs `python-pygame`, `nvidia-drm.modeset=1`, and a connector on `/dev/dri/card*`.
 - Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
 - Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.
-- Windowed probe on a machine that already has a GUI: `/usr/bin/python "$HOME/tabby-stack/tabbyAPI/deploy/arch/tabby-saver.py" --window`
-- Stop: `sudo systemctl disable --now tabby-saver`
+- Windowed probe: `/usr/bin/python "$HOME/tabby-stack/tabbyAPI/deploy/arch/tabby-saver.py" --window`
+- Stop: `tsctl screensaver disable`
+
+### tsctl
+
+`tsctl` is installed to `/usr/local/bin/tsctl`. Bare `tsctl` opens a dialog menu (or a readline shell). The same keys as Settings:
+
+```bash
+tsctl list
+tsctl network host=0.0.0.0
+tsctl screensaver enable
+```
 
 ## 4. IDE / agents
 
@@ -202,6 +211,6 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Chat `switch to …` returns 500 / `creationflags is only supported on Windows` | Re-run `install.sh` (it patches the spawn), then `systemctl --user restart tabbyapi` |
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |
 | First start hangs / no `:5000` | Model is loading before the port opens. qwen ~65s; qwen35 ~3 min. First Linux boot may compile Triton. |
-| `tabby-saver` fails to start | Opt-in kiosk. Needs `python-pygame`, a free TTY, and `video` group. Do not enable beside Omarchy. Check `journalctl -u tabby-saver -e` and `nvidia-drm.modeset=1`. |
+| `tabby-saver` fails to start | Needs `python-pygame`, a free TTY, and `video` group. Do not enable beside Omarchy. `tsctl screensaver status` and `journalctl -u tabby-saver -e`. |
 
 `update.sh` is the usual way to pull new code. Re-running `install.sh` is still safe for missing weights: it skips files that already exist. A healthy venv is rebuilt only when `update.sh` runs (pip -U).

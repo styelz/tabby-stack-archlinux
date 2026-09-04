@@ -34,8 +34,40 @@ class UiSettingsSaveTests(unittest.TestCase):
         self.assertNotIn("reload_warning", data)
 
 
+class ScreensaverSettingsTests(unittest.TestCase):
+    def test_load_includes_screensaver_section(self):
+        data = settings.load_settings()
+        self.assertIn("screensaver", data)
+        names = [field["name"] for field in data["screensaver"]["fields"]]
+        self.assertEqual(names, ["enabled", "timeout", "logout_timeout"])
+
+    def test_screensaver_save_writes_env(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "tabby.env"
+            env.write_text("COMFYUI_URL=http://127.0.0.1:8188\n", encoding="utf-8")
+            with mock.patch.object(settings, "ENV_PATH", env):
+                with mock.patch.object(settings, "apply_saver_unit", return_value="") as apply_unit:
+                    with mock.patch.object(settings, "_reload_live"):
+                        settings.save_settings(
+                            {"screensaver": {"timeout": 90, "logout_timeout": 8}}
+                        )
+            text = env.read_text(encoding="utf-8")
+            self.assertIn("TABBY_SAVER_IDLE_S=90", text)
+            self.assertIn("TABBY_SAVER_LOGOUT_IDLE_S=8", text)
+            apply_unit.assert_called()
+
+    def test_normalize_saver_aliases(self):
+        self.assertEqual(settings.normalize_saver_key("timeout"), "timeout")
+        self.assertEqual(settings.normalize_saver_key("logout-timeout"), "logout_timeout")
+        self.assertEqual(settings.normalize_saver_key("TABBY_SAVER_IDLE_S"), "timeout")
+
+
 class SettingsJsTests(unittest.TestCase):
     def test_save_shows_reload_warning(self):
         src = SETTINGS_JS.read_text(encoding="utf-8")
         self.assertIn("data.reload_warning", src)
         self.assertIn("showError(data.reload_warning)", src)
+        self.assertIn("data.screensaver", src)
+        self.assertIn("section === \"screensaver\"", src)

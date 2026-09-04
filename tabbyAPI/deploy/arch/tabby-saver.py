@@ -128,10 +128,25 @@ def _exp_approach(current: float, target: float, dt: float, tau: float) -> float
     return current + (target - current) * (1.0 - math.exp(-dt / tau))
 
 
+def _clamp01(value: float) -> float:
+    if value <= 0.0:
+        return 0.0
+    if value >= 1.0:
+        return 1.0
+    return value
+
+
+def _smoothstep(t: float) -> float:
+    t = _clamp01(t)
+    return t * t * (3.0 - 2.0 * t)
+
+
 class SceneFollow:
     """Hold one continuous field: never snap phase, palette, or HUD on a poll."""
 
-    _HOLD_LIVE_S = 5.0
+    _HOLD_LIVE_S = 0.7
+    _BOOT_S = 1.25
+    _HALT_S = 1.55
     _TAU_S = 2.4
 
     def __init__(self) -> None:
@@ -150,6 +165,10 @@ class SceneFollow:
         self.mode = "—"
         self.profile = "—"
         self.connected = False
+        self.overlay = 0.0
+        self.cycle = "idle"
+        self.cycle_t = 0.0
+        self._cycle_started = 0.0
 
     def _hold_live(self, want: bool, now: float) -> bool:
         if want:
@@ -157,11 +176,56 @@ class SceneFollow:
             return True
         return now < self._live_until
 
+    def _enter_cycle(self, name: str, now: float, t0: float = 0.0) -> None:
+        self.cycle = name
+        self.cycle_t = _clamp01(t0)
+        if name == "boot":
+            self._cycle_started = now - self.cycle_t * self._BOOT_S
+        elif name == "halt":
+            self._cycle_started = now - self.cycle_t * self._HALT_S
+        else:
+            self._cycle_started = now
+
+    def _tick_cycle(self, held: bool, now: float) -> None:
+        if held:
+            if self.cycle == "idle":
+                self._enter_cycle("boot", now)
+            elif self.cycle == "halt":
+                self._enter_cycle("boot", now, t0=max(0.0, 1.0 - self.cycle_t))
+            if self.cycle == "boot":
+                self.cycle_t = min(1.0, (now - self._cycle_started) / self._BOOT_S)
+                if self.cycle_t >= 1.0:
+                    self._enter_cycle("run", now)
+                    self.cycle_t = 1.0
+            elif self.cycle == "run":
+                self.cycle_t = 1.0
+            return
+        if self.cycle in ("boot", "run"):
+            t0 = 0.0 if self.cycle == "run" else max(0.0, 1.0 - self.cycle_t)
+            self._enter_cycle("halt", now, t0=t0)
+        if self.cycle == "halt":
+            self.cycle_t = min(1.0, (now - self._cycle_started) / self._HALT_S)
+            if self.cycle_t >= 1.0:
+                self._enter_cycle("idle", now)
+                self.cycle_t = 0.0
+
     def tick(self, target: dict[str, Any], dt: float, now: float) -> dict[str, Any]:
         dt = 0.0 if dt < 0.0 else 0.08 if dt > 0.08 else dt
         want_live = bool(target.get("live"))
-        self.live = self._hold_live(want_live, now)
-        tau = 0.5 if (want_live or self.live) else 2.2
+        held = self._hold_live(want_live, now)
+        self.live = held
+        self._tick_cycle(held, now)
+        if self.cycle == "boot":
+            self.overlay = _smoothstep(0.16 + 0.84 * self.cycle_t)
+        elif self.cycle == "run":
+            self.overlay = 1.0
+        elif self.cycle == "halt":
+            self.overlay = 1.0 - _smoothstep(self.cycle_t)
+        else:
+            self.overlay = 0.0
+        if self.overlay < 0.002:
+            self.overlay = 0.0
+        tau = 0.45 if (want_live or held) else 2.2
         self.intensity = _exp_approach(self.intensity, float(target["intensity"]), dt, tau)
         self.speed = _exp_approach(self.speed, float(target["speed"]), dt, tau)
         self.heat = _exp_approach(self.heat, float(target["heat"]), dt, tau)
@@ -172,7 +236,7 @@ class SceneFollow:
         dest = str(target.get("palette") or "idle")
         if dest not in self.weights:
             dest = "idle"
-        blend_tau = 0.4 if (want_live or self.live) else 1.8
+        blend_tau = 0.35 if (want_live or held) else 1.8
         for name in self.weights:
             goal = 1.0 if name == dest else 0.0
             self.weights[name] = _exp_approach(self.weights[name], goal, dt, blend_tau)
@@ -182,7 +246,11 @@ class SceneFollow:
         self.connected = bool(target.get("connected"))
         if not self.connected:
             self.phase = "waiting for api"
-        elif self.live:
+        elif self.cycle == "boot":
+            self.phase = "gearing up"
+        elif self.cycle == "halt":
+            self.phase = "gearing down"
+        elif held:
             self.phase = str(target.get("phase") or self.phase)
         elif self.weights.get("idle", 0.0) > 0.65:
             self.phase = "idle"
@@ -201,6 +269,9 @@ class SceneFollow:
             "vram": self.vram,
             "temp": self.temp,
             "connected": self.connected,
+            "overlay": self.overlay,
+            "cycle": self.cycle,
+            "cycle_t": self.cycle_t,
         }
 
 
@@ -301,23 +372,40 @@ def _u01(i: int, salt: int = 0) -> float:
     return (x & 0xFFFFFF) / float(0xFFFFFF)
 
 
-def _neuron_rest(n: int = 58) -> list[tuple[float, float]]:
+def _ramp_color(ramp: list[tuple[int, int, int]], t: float) -> tuple[int, int, int]:
+    if not ramp:
+        return ACCENT
+    t = _clamp01(t)
+    if len(ramp) == 1:
+        return ramp[0]
+    span = (len(ramp) - 1) * t
+    idx = int(span)
+    if idx >= len(ramp) - 1:
+        return ramp[-1]
+    return _mix(ramp[idx], ramp[idx + 1], span - idx)
+
+
+def _neuron_rest(cols: int = 12, rows: int = 8) -> list[tuple[float, float]]:
+    """Jittered grid covering the whole viewport, including corners."""
     pts: list[tuple[float, float]] = []
-    golden = 0.5 * (1.0 + math.sqrt(5.0))
-    for i in range(n):
-        x = 0.08 + 0.84 * ((i * golden) % 1.0)
-        y = 0.12 + 0.76 * ((i + 0.5) / n)
-        pts.append((x, y))
+    for row in range(rows):
+        for col in range(cols):
+            i = row * cols + col
+            jx = 0.028 * (_u01(i, 1) - 0.5)
+            jy = 0.028 * (_u01(i, 2) - 0.5)
+            x = 0.025 + 0.95 * (col + 0.5) / cols + jx
+            y = 0.025 + 0.95 * (row + 0.5) / rows + jy
+            pts.append((_clamp01(x), _clamp01(y)))
     return pts
 
 
-def _neuron_edges(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
+def _neuron_edges(pts: list[tuple[float, float]], cols: int = 12) -> list[tuple[int, int]]:
     n = len(pts)
     seen: set[tuple[int, int]] = set()
     edges: list[tuple[int, int]] = []
 
     def add(i: int, j: int) -> None:
-        if i == j:
+        if i == j or i < 0 or j < 0 or i >= n or j >= n:
             return
         a, b = (i, j) if i < j else (j, i)
         if (a, b) in seen:
@@ -329,36 +417,85 @@ def _neuron_edges(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
         near = sorted(
             (math.hypot(p[0] - pts[j][0], p[1] - pts[j][1]), j) for j in range(n) if j != i
         )
-        for _dist, j in near[:3]:
+        for _dist, j in near[:4]:
             add(i, j)
-    for i in range(0, n, 7):
-        add(i, (i + n // 3) % n)
+    rows = max(1, n // cols)
+    for row in range(rows):
+        add(row * cols, row * cols + cols - 1)
+    for col in range(cols):
+        add(col, (rows - 1) * cols + col)
+    add(0, n - 1)
+    add(cols - 1, (rows - 1) * cols)
     return edges
 
 
-NEURON_REST = _neuron_rest()
-NEURON_EDGES = _neuron_edges(NEURON_REST)
-NEURON_SPARK = {
-    "idle": ((90, 130, 210), (210, 230, 255)),
-    "chat": ((90, 160, 255), (255, 210, 240)),
-    "image": ((180, 110, 40), (255, 220, 120)),
-    "switch": ((40, 160, 110), (180, 255, 210)),
+NEURON_COLS = 12
+NEURON_ROWS = 8
+NEURON_REST = _neuron_rest(NEURON_COLS, NEURON_ROWS)
+NEURON_EDGES = _neuron_edges(NEURON_REST, NEURON_COLS)
+NEURON_SEEDS = (0, NEURON_COLS - 1, (NEURON_ROWS - 1) * NEURON_COLS, len(NEURON_REST) - 1)
+NEURON_RAMPS: dict[str, list[tuple[int, int, int]]] = {
+    "idle": [(90, 130, 210), (140, 175, 235), (190, 215, 250), (220, 235, 255)],
+    "chat": [(40, 220, 255), (80, 150, 255), (139, 92, 246), (220, 70, 210), (255, 90, 170)],
+    "image": [(255, 196, 64), (255, 140, 48), (255, 88, 72), (255, 110, 160), (255, 190, 140)],
+    "switch": [(20, 200, 190), (48, 230, 130), (140, 255, 170), (200, 255, 210)],
 }
+NEURON_SPARK = {name: (ramp[0], ramp[-1]) for name, ramp in NEURON_RAMPS.items()}
+
+
+def _node_dist_norm(index: int) -> float:
+    px, py = NEURON_REST[index]
+    return _clamp01(math.hypot(px - 0.5, py - 0.5) / 0.72)
+
+
+def _node_reveal(index: int, overlay: float, cycle: str = "", cycle_t: float = 0.0) -> float:
+    dist = _node_dist_norm(index)
+    if cycle == "boot":
+        return _smoothstep((cycle_t + 0.10 - dist * 0.62) / 0.26)
+    if cycle == "halt":
+        return 1.0 - _smoothstep((cycle_t - (1.0 - dist) * 0.62) / 0.26)
+    px, py = NEURON_REST[index]
+    delay = 1.0
+    for seed in NEURON_SEEDS:
+        sx, sy = NEURON_REST[seed]
+        delay = min(delay, math.hypot(px - sx, py - sy) * 0.48)
+    return _smoothstep((overlay - delay) / 0.38)
+
+
+def overlay_amount(scene: dict[str, Any]) -> float:
+    raw = scene.get("overlay")
+    if raw is None:
+        return 1.0 if scene.get("live") else 0.0
+    try:
+        return _clamp01(float(raw))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def neuron_overlay_state(scene: dict[str, Any]) -> dict[str, Any] | None:
-    """Unit-space graph + fires. None when the stack is idle."""
-    if not scene.get("live"):
+    """Unit-space graph + fires. None when the overlay has fully faded."""
+    overlay = overlay_amount(scene)
+    cycle = str(scene.get("cycle") or "")
+    if overlay <= 0.02 and cycle not in ("boot", "halt"):
         return None
     st = float(scene.get("st", 0.0))
     intensity = float(scene.get("intensity") or 0.0)
+    try:
+        cycle_t = _clamp01(float(scene.get("cycle_t") or 0.0))
+    except (TypeError, ValueError):
+        cycle_t = 0.0
+    if cycle in ("boot", "halt") and overlay < 0.08:
+        overlay = 0.08
     nodes: list[tuple[float, float]] = []
     fires: list[float] = []
+    reveal: list[float] = []
     for i, (nx, ny) in enumerate(NEURON_REST):
+        vis = _node_reveal(i, overlay, cycle, cycle_t)
+        reveal.append(vis)
         nodes.append(
             (
-                nx + 0.018 * lsin(st * 0.33 + i * 0.37),
-                ny + 0.016 * lsin(st * 0.27 + i * 0.51),
+                nx + 0.012 * lsin(st * 0.33 + i * 0.37),
+                ny + 0.010 * lsin(st * 0.27 + i * 0.51),
             )
         )
         rest = 0.10 + 0.10 * (0.5 + 0.5 * lsin(st * 2.3 + i * 0.91))
@@ -367,24 +504,77 @@ def neuron_overlay_state(scene: dict[str, Any]) -> dict[str, Any] | None:
         spike = 0.0
         if pop > thresh:
             spike = min(1.0, (pop - thresh) / max(0.04, 1.0 - thresh))
-        fires.append(max(rest, spike))
+        fire = max(rest, spike) * vis
+        if cycle == "boot":
+            band = 1.0 - min(1.0, abs(_node_dist_norm(i) - cycle_t) / 0.16)
+            fire = max(fire, band * vis)
+        fires.append(fire)
     pulses: list[tuple[int, float, float]] = []
-    rate = 0.70 + 1.25 * intensity
-    extra = 1 + (1 if intensity > 0.72 else 0) + (1 if intensity > 0.90 else 0)
+    rate = 0.45 + 0.35 * intensity
+    extra = 1 + (1 if intensity > 0.88 else 0) + (1 if cycle == "boot" else 0)
+    reverse = cycle == "halt"
     for ei, (a, b) in enumerate(NEURON_EDGES):
+        edge_vis = min(reveal[a], reveal[b])
+        if edge_vis <= 0.04:
+            continue
         for p in range(extra):
-            phase = (st * rate * (0.50 + 0.85 * _u01(ei, p + 3)) + _u01(ei, p + 17)) % 1.0
-            u = phase * 2.0
-            if u > 1.0:
-                u = 2.0 - u
-            bright = 0.45 + 0.55 * intensity
+            u = (st * rate * (0.50 + 0.85 * _u01(ei, p + 3)) + _u01(ei, p + 17)) % 1.0
+            if reverse:
+                u = 1.0 - u
+            bright = (0.45 + 0.55 * intensity) * edge_vis
             pulses.append((ei, u, bright))
-            width = 0.16
+            width = 0.12
             if u < width:
-                fires[a] = max(fires[a], 1.0 - u / width)
+                fires[a] = max(fires[a], (1.0 - u / width) * edge_vis)
             if u > 1.0 - width:
-                fires[b] = max(fires[b], (u - (1.0 - width)) / width)
-    return {"nodes": nodes, "edges": NEURON_EDGES, "fires": fires, "pulses": pulses}
+                fires[b] = max(fires[b], ((u - (1.0 - width)) / width) * edge_vis)
+    return {
+        "nodes": nodes,
+        "edges": NEURON_EDGES,
+        "fires": fires,
+        "pulses": pulses,
+        "reveal": reveal,
+        "overlay": overlay,
+        "reverse": reverse,
+    }
+
+
+def _draw_glow(
+    pygame_mod: Any,
+    screen: Any,
+    pos: tuple[int, int],
+    color: tuple[int, int, int],
+    strength: float,
+    scale: float = 1.0,
+) -> None:
+    if strength <= 0.02:
+        return
+    for rad, amt in ((9.0, 0.12), (5.0, 0.28), (2.0, 0.55)):
+        r = max(1, int(round(rad * scale * (0.55 + 0.45 * strength))))
+        pygame_mod.draw.circle(screen, _mix(BG, color, amt * strength), pos, r)
+
+
+def _draw_line(pygame_mod: Any, screen: Any, color: tuple[int, int, int], a, b, width: int) -> None:
+    if a == b:
+        return
+    if width <= 1:
+        aaline = getattr(pygame_mod.draw, "aaline", None)
+        if aaline is not None:
+            try:
+                aaline(screen, color, a, b)
+                return
+            except Exception:
+                pass
+        pygame_mod.draw.line(screen, color, a, b, 1)
+        return
+    pygame_mod.draw.line(screen, color, a, b, width)
+
+
+def neuron_draw_sizes(fire: float, bright: float) -> tuple[int, int]:
+    """Ring radius and pulse-head radius in pixels. Tests pin these thin."""
+    ring = 2 if fire < 0.85 else 3
+    head = 1 if bright < 0.7 else 2
+    return ring, head
 
 
 def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
@@ -392,33 +582,83 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     if state is None:
         return
     w, h = screen.get_size()
+    overlay = float(state["overlay"])
     name = str(scene.get("palette") or "chat")
-    axon, spark = NEURON_SPARK.get(name) or NEURON_SPARK["chat"]
-    dim_axon = _mix(BG, axon, 0.42)
+    ramp = NEURON_RAMPS.get(name) or NEURON_RAMPS["chat"]
     nodes = [(int(x * w), int(y * h)) for x, y in state["nodes"]]
     edges: list[tuple[int, int]] = state["edges"]
-    for a, b in edges:
-        if nodes[a] != nodes[b]:
-            pygame_mod.draw.line(screen, dim_axon, nodes[a], nodes[b], 1)
+    reveal: list[float] = state["reveal"]
+    for ei, (a, b) in enumerate(edges):
+        vis = min(reveal[a], reveal[b]) * overlay
+        if vis <= 0.03 or nodes[a] == nodes[b]:
+            continue
+        hue = _u01(ei, 4)
+        axon = _ramp_color(ramp, hue)
+        _draw_line(pygame_mod, screen, _mix(BG, axon, 0.10 * vis), nodes[a], nodes[b], 3)
+        _draw_line(pygame_mod, screen, _mix(BG, axon, 0.42 * vis), nodes[a], nodes[b], 1)
     for ei, u, bright in state["pulses"]:
         a, b = edges[ei]
         x0, y0 = nodes[a]
         x1, y1 = nodes[b]
-        px = int(x0 + (x1 - x0) * u)
-        py = int(y0 + (y1 - y0) * u)
-        color = _mix(axon, spark, bright)
-        rad = max(2, int(round((h / 420.0) * (2.2 + 2.8 * bright))))
-        pygame_mod.draw.circle(screen, color, (px, py), rad)
-        pygame_mod.draw.circle(screen, (255, 255, 255), (px, py), max(1, rad // 2))
+        hue = (_u01(ei, 9) + u * 0.38) % 1.0
+        color = _ramp_color(ramp, hue)
+        vis = bright * overlay
+        reverse = bool(state.get("reverse"))
+        for k in range(4):
+            t = u + k * 0.035 if reverse else u - k * 0.035
+            if t < 0.0 or t > 1.0:
+                continue
+            fall = 1.0 - k / 4.0
+            px = int(x0 + (x1 - x0) * t)
+            py = int(y0 + (y1 - y0) * t)
+            strength = vis * fall
+            _draw_glow(pygame_mod, screen, (px, py), color, strength, scale=0.45 if k else 0.7)
+            _, head = neuron_draw_sizes(0.0, strength)
+            pygame_mod.draw.circle(screen, _mix(BG, color, 0.85 * strength), (px, py), head)
     fires: list[float] = state["fires"]
     for i, (x, y) in enumerate(nodes):
+        vis = reveal[i] * overlay
+        if vis <= 0.03:
+            continue
         fire = fires[i]
-        rad = max(3, int(round((h / 380.0) * (3.0 + 7.0 * fire))))
-        body = _mix(axon, spark, fire)
-        pygame_mod.draw.circle(screen, _mix(BG, body, 0.55 + 0.45 * fire), (x, y), rad + 2)
-        pygame_mod.draw.circle(screen, body, (x, y), rad)
-        if fire > 0.35:
-            pygame_mod.draw.circle(screen, (255, 255, 255), (x, y), max(1, rad // 3))
+        color = _ramp_color(ramp, (_u01(i, 11) + 0.25 * fire) % 1.0)
+        _draw_glow(pygame_mod, screen, (x, y), color, vis * (0.35 + 0.65 * fire), scale=0.85)
+        ring, _head = neuron_draw_sizes(fire, 0.0)
+        ring_color = _mix(BG, color, 0.62 * vis)
+        pygame_mod.draw.circle(screen, ring_color, (x, y), ring, 1)
+        pygame_mod.draw.circle(screen, _mix(BG, color, vis), (x, y), 1)
+
+
+def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
+    """Center bloom + ring: gearing up expands, gearing down contracts. Field stays on."""
+    cycle = str(scene.get("cycle") or "")
+    if cycle not in ("boot", "halt"):
+        return
+    try:
+        t = _clamp01(float(scene.get("cycle_t") or 0.0))
+    except (TypeError, ValueError):
+        t = 0.0
+    w, h = screen.get_size()
+    cx, cy = w // 2, h // 2
+    name = str(scene.get("palette") or "chat")
+    ramp = NEURON_RAMPS.get(name) or NEURON_RAMPS["chat"]
+    color = _ramp_color(ramp, 0.45 if cycle == "boot" else 0.2)
+    span = min(w, h)
+    if cycle == "boot":
+        core = max(0.0, 1.0 - t * 1.15)
+        radius = max(10, int(span * 0.06 + span * 0.42 * t))
+        _draw_glow(pygame_mod, screen, (cx, cy), color, 0.50 + 0.50 * core, scale=2.2 + 3.6 * core)
+        pygame_mod.draw.circle(screen, _mix(BG, color, 0.22 + 0.38 * core), (cx, cy), max(4, int(18 * core)))
+    else:
+        core = max(0.0, 1.0 - t)
+        radius = max(8, int(span * 0.48 * core))
+        _draw_glow(pygame_mod, screen, (cx, cy), color, 0.28 + 0.40 * core, scale=1.6 + 2.2 * core)
+    if radius > 6:
+        ring = _mix(BG, color, 0.40 if cycle == "boot" else 0.28)
+        pygame_mod.draw.circle(screen, ring, (cx, cy), radius, 2)
+        inner = max(1, radius - 6)
+        if inner < radius:
+            pygame_mod.draw.circle(screen, _mix(BG, color, 0.18), (cx, cy), inner, 1)
 
 
 def _blended_palette(weights: dict[str, float], heat: float) -> list[tuple[int, int, int]]:
@@ -456,38 +696,32 @@ def draw_field(
     else:
         palette = _warm_palette(str(scene["palette"]), float(scene["heat"]))
     intensity = float(scene["intensity"])
-    live = bool(scene["live"])
+    mix = overlay_amount(scene)
     st = float(scene.get("st", 0.0))
-    breath = 0.5 + 0.5 * lsin(st * (1.15 if live else 1.55))
+    breath_idle = 0.5 + 0.5 * lsin(st * 1.55)
+    breath_live = 0.5 + 0.5 * lsin(st * 1.15)
+    breath = breath_idle + (breath_live - breath_idle) * mix
     gain = intensity * (0.82 + 0.18 * breath)
     cx = (width - 1) * 0.5
     cy = (height - 1) * 0.5
     inv_diag = 1.0 / (math.hypot(cx, cy) + 1.0)
-    pulse = (0.28 if live else 0.22) * (0.45 + 0.55 * breath)
-    ax = ay = bx = by = 0.0
-    if not live:
-        ax = cx + lsin(st * 0.62) * cx * 0.38
-        ay = cy + lsin(st * 0.47 + 1.2) * cy * 0.32
-        bx = cx + lsin(st * 0.31 + 2.1) * cx * 0.45
-        by = cy + lsin(st * 0.53 + 0.4) * cy * 0.40
+    pulse = (0.22 + 0.06 * mix) * (0.45 + 0.55 * breath)
+    ax = cx + lsin(st * 0.62) * cx * 0.38
+    ay = cy + lsin(st * 0.47 + 1.2) * cy * 0.32
+    bx = cx + lsin(st * 0.31 + 2.1) * cx * 0.45
+    by = cy + lsin(st * 0.53 + 0.4) * cy * 0.40
     buf = bytearray(width * height * 3)
     i = 0
+    use_idle = mix <= 0.02
+    use_live = mix >= 0.98
     for y in range(height):
         for x in range(width):
             dx = x - cx
             dy = y - cy
             dist = math.sqrt(dx * dx + dy * dy)
             glow = pulse * math.exp(-dist * inv_diag * 3.2)
-            if live:
-                wave = (
-                    lsin(x * 0.041 + st)
-                    + lsin(y * 0.036 - st * 0.81)
-                    + lsin((x + y) * 0.021 + st * 1.13)
-                    + lsin(dist * 0.048 - st * 0.47)
-                ) * 0.25 + 0.5
-                # Dimmer tissue so the neuron overlay can read as spikes.
-                v = 0.26 + wave * 0.46 * gain + glow * 0.72
-            else:
+            v_idle = v_live = 0.0
+            if not use_live:
                 da = math.sqrt((x - ax) ** 2 + (y - ay) ** 2)
                 db = math.sqrt((x - bx) ** 2 + (y - by) ** 2)
                 wave = (
@@ -499,7 +733,21 @@ def draw_field(
                     + lsin(db * 0.051 + st * 0.88)
                 ) * (1.0 / 6.0) + 0.5
                 blob = pulse * math.exp(-min(da, db) * inv_diag * 2.4)
-                v = 0.22 + wave * 0.70 * gain + glow * 0.50 + blob * 0.55
+                v_idle = 0.22 + wave * 0.70 * gain + glow * 0.50 + blob * 0.55
+            if not use_idle:
+                wave = (
+                    lsin(x * 0.041 + st)
+                    + lsin(y * 0.036 - st * 0.81)
+                    + lsin((x + y) * 0.021 + st * 1.13)
+                    + lsin(dist * 0.048 - st * 0.47)
+                ) * 0.25 + 0.5
+                v_live = 0.26 + wave * 0.46 * gain + glow * 0.72
+            if use_idle:
+                v = v_idle
+            elif use_live:
+                v = v_live
+            else:
+                v = v_idle + (v_live - v_idle) * mix
             if v < 0.0:
                 v = 0.0
             elif v > 0.999:
@@ -513,7 +761,10 @@ def draw_field(
 
 
 def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
-    if not scene.get("live"):
+    showing = bool(scene.get("live")) or overlay_amount(scene) > 0.02
+    if str(scene.get("cycle") or "") in ("boot", "halt"):
+        showing = True
+    if not showing:
         return
     w, h = screen.get_size()
     profile = str(scene["profile"])
@@ -535,7 +786,8 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         screen.blit(img, (x + 1, y + 1))
         screen.blit(face.render(text, True, color), pos)
 
-    phase_color = WARN if not scene["connected"] else (OK if scene["live"] else MUTED)
+    active = bool(scene.get("live")) or str(scene.get("cycle") or "") in ("boot", "halt")
+    phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
     blit(profile, (28, 22), TEXT)
     blit(mode, (w - small.size(mode)[0] - 28, 26), ACCENT, use_small=True)
     blit(phase, (28, h - 52), phase_color)
@@ -558,13 +810,14 @@ def should_resume_saver(
     now: float,
     last_input: float,
     idle_s: float,
-    was_logged_in: bool,
+    logout_idle_s: float,
     logged_in: bool,
+    was_logged_in: bool | None = None,
 ) -> bool:
-    """Show the field after 2 minutes idle, or as soon as the console logs out."""
-    if was_logged_in and not logged_in:
-        return True
-    return (now - last_input) >= idle_s
+    """Show the field after idle while logged in, or after logout-idle when not."""
+    del was_logged_in
+    wait = idle_s if logged_in else logout_idle_s
+    return (now - last_input) >= wait
 
 
 def login_from_ps(text: str) -> bool:
@@ -736,12 +989,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=int(os.environ.get("TABBY_SAVER_FPS", "24")))
     parser.add_argument("--width", type=int, default=256, help="Internal field width")
     parser.add_argument("--height", type=int, default=144, help="Internal field height")
-    parser.add_argument("--poll", type=float, default=1.0, help="Seconds between API polls")
+    parser.add_argument("--poll", type=float, default=0.25, help="Seconds between API polls")
     parser.add_argument(
         "--idle",
         type=float,
         default=float(os.environ.get("TABBY_SAVER_IDLE_S", "120")),
-        help="Seconds without input before the field comes back (default 120)",
+        help="Seconds without input while logged in before the field comes back (default 120)",
+    )
+    parser.add_argument(
+        "--logout-idle",
+        type=float,
+        default=float(os.environ.get("TABBY_SAVER_LOGOUT_IDLE_S", "10")),
+        help="Seconds without input after logout / at the login prompt (default 10)",
     )
     parser.add_argument(
         "--user-tty",
@@ -838,6 +1097,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             field = draw_field(max(64, args.width), max(36, args.height), scene)
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
             draw_neurons(pygame, screen, scene)
+            draw_cycle_fx(pygame, screen, scene)
             draw_hud(screen, font, small, scene)
             pygame.display.flip()
             clock.tick(max(8, min(30, args.fps)))
@@ -849,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     url = saver_url(args.url)
     bus = StateBus()
-    thread = threading.Thread(target=bus.run, args=(url, max(0.4, args.poll)), daemon=True)
+    thread = threading.Thread(target=bus.run, args=(url, max(0.15, args.poll)), daemon=True)
     thread.start()
     follow = SceneFollow()
     watch: InputWatch | None = None
@@ -894,8 +1154,8 @@ def main(argv: list[str] | None = None) -> int:
                 if should_resume_saver(
                     now=now,
                     last_input=watch.last(),
-                    idle_s=max(5.0, float(args.idle)),
-                    was_logged_in=logged_in,
+                    idle_s=max(1.0, float(args.idle)),
+                    logout_idle_s=max(0.0, float(args.logout_idle)),
                     logged_in=now_login,
                 ):
                     show = True

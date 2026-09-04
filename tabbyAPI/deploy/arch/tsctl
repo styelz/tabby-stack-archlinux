@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Locate the tabby-stack checkout and run tools/tsctl.py with its venv.
+set -euo pipefail
+
+resolve_root() {
+  local envf candidate
+  if [[ -n "${TABBY_INSTALL_ROOT:-}" && -d "${TABBY_INSTALL_ROOT}/tabbyAPI" ]]; then
+    printf '%s' "${TABBY_INSTALL_ROOT%/}"
+    return 0
+  fi
+  for candidate in \
+      "${HOME}/tabby-stack" \
+      /opt/tabby-stack \
+      "$(cd "$(dirname "$0")/../../.." 2>/dev/null && pwd)"; do
+    [[ -d "$candidate/tabbyAPI" ]] || continue
+    printf '%s' "$candidate"
+    return 0
+  done
+  for envf in \
+      "${HOME}/tabby-stack/tabbyAPI/deploy/arch/tabby.env" \
+      /opt/tabby-stack/tabbyAPI/deploy/arch/tabby.env; do
+    [[ -f "$envf" ]] || continue
+    # shellcheck disable=SC1090
+    TABBY_INSTALL_ROOT=""
+    set -a
+    # shellcheck disable=SC1090
+    . "$envf"
+    set +a
+    if [[ -n "${TABBY_INSTALL_ROOT:-}" && -d "${TABBY_INSTALL_ROOT}/tabbyAPI" ]]; then
+      printf '%s' "${TABBY_INSTALL_ROOT%/}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ROOT="$(resolve_root || true)"
+if [[ -z "$ROOT" ]]; then
+  echo "tsctl: could not find tabby-stack (set TABBY_INSTALL_ROOT)" >&2
+  exit 1
+fi
+TABBY="$ROOT/tabbyAPI"
+PY="$TABBY/venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  PY="$(command -v python3 || command -v python || true)"
+fi
+if [[ -z "$PY" ]]; then
+  echo "tsctl: python not found" >&2
+  exit 1
+fi
+export PYTHONPATH="$TABBY${PYTHONPATH:+:$PYTHONPATH}"
+cd "$TABBY"
+exec "$PY" "$TABBY/tools/tsctl.py" "$@"

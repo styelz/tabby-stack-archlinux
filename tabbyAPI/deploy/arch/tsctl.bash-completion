@@ -1,0 +1,11 @@
+# bash completion for tsctl
+_tsctl() {
+  local cur cword
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  cword="${COMP_CWORD}"
+  local out
+  out="$(tsctl --complete "$cword" "${COMP_WORDS[@]}" 2>/dev/null)" || return 0
+  # shellcheck disable=SC2207
+  COMPREPLY=( $(compgen -W "$out" -- "$cur") )
+}
+complete -F _tsctl tsctl

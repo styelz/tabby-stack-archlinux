@@ -351,6 +351,17 @@ else
 fi
 
 echo
+echo "Stopping TTY screensaver and removing tsctl"
+if need_cmd systemctl; then
+  run sudo -n systemctl disable --now tabby-saver
+  run sudo -n rm -f /etc/systemd/system/tabby-saver.service
+  run sudo -n systemctl daemon-reload
+fi
+run sudo -n rm -f /usr/local/bin/tsctl \
+  /usr/share/bash-completion/completions/tsctl \
+  /usr/share/zsh/site-functions/_tsctl
+
+echo
 echo "Stopping leftover processes"
 mapfile -t DEST_PIDS < <(procs_under_dest)
 if ((${#DEST_PIDS[@]})); then
