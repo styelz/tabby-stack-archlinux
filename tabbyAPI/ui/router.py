@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.background import BackgroundTask
 from sse_starlette import EventSourceResponse
 
 from ui.assets import STATIC_DIR, file_response
@@ -418,6 +419,81 @@ async def ui_prefs_put(request: Request, _user: str = Depends(require_ui_user)):
     except Exception as exc:
         raise HTTPException(400, "JSON body required") from exc
     return save_prefs(_user, body)
+
+
+@router.get("/backup", include_in_schema=False)
+async def ui_backup_get(_user: str = Depends(require_ui_user)):
+    import tempfile
+    from pathlib import Path
+
+    from ui.backup import BackupError, archive_filename, build_archive
+
+    handle = tempfile.NamedTemporaryFile(
+        prefix="tabby-backup-", suffix=".zip", delete=False
+    )
+    path = Path(handle.name)
+    handle.close()
+    try:
+        await asyncio.to_thread(
+            build_archive,
+            _user,
+            path,
+            include_untagged=is_admin_username(_user),
+        )
+    except BackupError as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    response = FileResponse(
+        path,
+        media_type="application/zip",
+        filename=archive_filename(_user),
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
+    return _private_response(response)
+
+
+@router.post("/backup/restore", include_in_schema=False)
+async def ui_backup_restore(request: Request, _user: str = Depends(require_ui_user)):
+    import tempfile
+    from pathlib import Path
+
+    from ui.backup import UPLOAD_MAX_BYTES, BackupError, restore_archive
+
+    handle = tempfile.NamedTemporaryFile(
+        prefix="tabby-restore-", suffix=".zip", delete=False
+    )
+    path = Path(handle.name)
+    total = 0
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > UPLOAD_MAX_BYTES:
+                raise HTTPException(413, "Backup is too large")
+            handle.write(chunk)
+        handle.close()
+        if total <= 0:
+            raise BackupError("Backup file is empty")
+        return await asyncio.to_thread(
+            restore_archive,
+            _user,
+            path,
+            include_untagged=is_admin_username(_user),
+        )
+    except HTTPException:
+        raise
+    except BackupError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
 
 
 @router.get("/chats", include_in_schema=False)

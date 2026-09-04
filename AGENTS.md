@@ -23,6 +23,7 @@ Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; t
   - **Logs** — live TabbyAPI and ComfyUI output
   - **Users** — administrator-only account creation. Extra users get Chat, Code, Status, Gallery, and Logs; they cannot create accounts
   - **Settings** — administrator-only Tabby `config.yml` and system `tabby.env`
+  - **Account menu** — Download backup / Restore backup for this signed-in account (chats, Code files, prefs, gallery). After a fresh install, recreate extra Tabby users, then each person restores their own zip.
 - The GPU is shared. Browser UI and editor `/v1` requests wait in one queue.
 
 Do not SSH into the GPU host just to change models. Send a chat phrase, use Status in `/v1/ui`, or send `restart` to bounce the API.

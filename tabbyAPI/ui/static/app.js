@@ -453,6 +453,74 @@
     }
   }
 
+  async function downloadBackup() {
+    closeUserMenu();
+    const yes = await TabbyUI.confirmModal({
+      title: "Download backup?",
+      text: "Downloads this account's chats, Code files, prefs, and gallery images. Other accounts and model weights are not included. Keep this tab open until the download finishes.",
+      yes: "Download",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    const link = document.createElement("a");
+    link.href = TabbyUI.path("backup");
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function restoreBackupFile(file) {
+    if (!file) return;
+    const yes = await TabbyUI.confirmModal({
+      title: "Restore this backup?",
+      text: "This replaces this account's chats, Code files, prefs, and gallery images. Other accounts are not changed. If the zip was made by another user, it is imported into this account.",
+      yes: "Restore",
+      no: "Cancel",
+    });
+    if (!yes) return;
+    if (TabbyUI.suspendPersistence) TabbyUI.suspendPersistence();
+    const modal = TabbyUI.progressModal({
+      title: "Restoring backup",
+      note: "Uploading and restoring this account's data.",
+    });
+    try {
+      const response = await fetch(TabbyUI.path("backup/restore"), {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      });
+      const type = response.headers.get("content-type") || "";
+      const data = type.includes("application/json") ? await response.json() : await response.text();
+      if (response.status === 401) {
+        TabbyUI.redirectToLogin();
+        throw new Error("Not authenticated");
+      }
+      if (!response.ok) {
+        throw new Error(TabbyUI.httpErrorMessage(response, data));
+      }
+      modal.setBusy(false);
+      modal.setTitle("Backup restored");
+      modal.setNote("Reloading this account's chats, Code files, and gallery.");
+      modal.setActions([]);
+      location.reload();
+    } catch (err) {
+      modal.setBusy(false);
+      modal.setTitle("Restore failed");
+      modal.setNote((err && err.message) || "Could not restore the backup.");
+      modal.setActions([{ label: "Close", primary: true, run: () => modal.close() }]);
+    }
+  }
+
+  function pickBackupFile() {
+    closeUserMenu();
+    const input = document.getElementById("user-backup-file");
+    if (!input) return;
+    input.value = "";
+    input.click();
+  }
+
   async function restartApi() {
     closeUserMenu();
     const yes = await TabbyUI.confirmModal({
@@ -499,12 +567,25 @@
       } else if (name === "settings") {
         closeUserMenu();
         location.hash = "#settings";
+      } else if (name === "backup") {
+        downloadBackup();
+      } else if (name === "restore") {
+        pickBackupFile();
       } else if (name === "restart") {
         restartApi();
       } else if (name === "logout") {
         closeUserMenu();
         logout();
       }
+    });
+  }
+
+  const backupFile = document.getElementById("user-backup-file");
+  if (backupFile) {
+    backupFile.addEventListener("change", () => {
+      const file = backupFile.files && backupFile.files[0];
+      backupFile.value = "";
+      restoreBackupFile(file);
     });
   }
 

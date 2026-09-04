@@ -58,7 +58,7 @@ journalctl --user -u tabbyapi -f
 
 Open `http://127.0.0.1:5000/v1/ui` on the GPU host, or `/v1/ui` under the public URL you configured. Sign in with the Linux account that installed the stack.
 
-The first account is the administrator. It can create separate Tabby-only accounts from **Users**; those accounts do not become Linux users. Conversations, Code projects, and images are kept per account, while the administrator can manage users and view all gallery images.
+The first account is the administrator. It can create separate Tabby-only accounts from **Users**; those accounts do not become Linux users. Conversations, Code projects, and images are kept per account, while the administrator can manage users and view all gallery images. Each signed-in account can **Download backup** / **Restore backup** from the account menu; the zip is that account only. After a fresh install, recreate extra Tabby users, then each person restores their own zip.
 
 ## Use the browser UI
 

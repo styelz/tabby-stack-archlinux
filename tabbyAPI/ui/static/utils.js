@@ -1308,7 +1308,17 @@
     return next;
   }
 
+  function suspendPersistence() {
+    window.TABBY_SUSPEND_PERSIST = true;
+    prefsDirty = false;
+    if (prefsTimer) {
+      clearTimeout(prefsTimer);
+      prefsTimer = 0;
+    }
+  }
+
   function flushPrefs() {
+    if (window.TABBY_SUSPEND_PERSIST) return prefsFlushing;
     if (prefsTimer) {
       clearTimeout(prefsTimer);
       prefsTimer = 0;
@@ -1497,6 +1507,7 @@
     prefs: prefsState,
     patchPrefs,
     flushPrefs,
+    suspendPersistence,
     THEME_FAMILIES,
     THEME_LABELS,
     THEME_MODES,

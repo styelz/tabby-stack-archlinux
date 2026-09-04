@@ -1438,7 +1438,7 @@ function mountChat(root) {
     paintToolbar();
     renderSidebar();
     paintActiveContext();
-    if (!persistReady) return persistTail;
+    if (!persistReady || window.TABBY_SUSPEND_PERSIST) return persistTail;
     previous.forEach((item) => {
       if (kept.has(item.id)) return;
       forgetTabs(item.id);

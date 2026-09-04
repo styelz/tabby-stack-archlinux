@@ -180,12 +180,15 @@
           <button type="button" class="user-menu-item" data-user-act="settings" id="user-menu-settings" hidden>Settings</button>
           <button type="button" class="user-menu-item" data-user-act="keys">Keyboard shortcuts</button>
           <button type="button" class="user-menu-item" data-user-act="copy">Copy username</button>
+          <button type="button" class="user-menu-item" data-user-act="backup">Download backup</button>
+          <button type="button" class="user-menu-item" data-user-act="restore">Restore backup…</button>
           <button type="button" class="user-menu-item" data-user-act="fullscreen">Full screen</button>
           <button type="button" class="user-menu-item" data-user-act="restart" id="user-menu-restart" hidden>Restart API</button>
           <div class="user-menu-sep"></div>
           <button type="button" class="user-menu-item is-danger" data-user-act="logout">Log out</button>
         </div>
       </div>
+      <input type="file" id="user-backup-file" accept=".zip,application/zip,application/x-zip-compressed" hidden />
     </div>
   </header>
 
