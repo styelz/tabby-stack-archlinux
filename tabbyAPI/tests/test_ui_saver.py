@@ -144,6 +144,29 @@ class SaverKioskSceneTests(unittest.TestCase):
     def setUpClass(cls):
         cls.kiosk = _load_kiosk()
 
+    def test_high_gpu_util_alone_is_still_idle(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "profile": "qwen",
+                "busy": False,
+                "kind": None,
+                "gpu": {"utilization_pct": 41, "vram_pct": 70, "temperature_c": 55},
+            },
+            True,
+        )
+        self.assertEqual(scene["phase"], "idle")
+        self.assertEqual(scene["palette"], "idle")
+        self.assertFalse(scene["live"])
+
+    def test_kind_without_a_job_is_idle(self):
+        scene = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": False},
+            True,
+        )
+        self.assertEqual(scene["phase"], "idle")
+        self.assertFalse(scene["live"])
+
     def test_idle_uses_slow_idle_palette(self):
         scene = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "profile": "qwen", "busy": False, "gpu": {"utilization_pct": 3}},
@@ -185,3 +208,40 @@ class SaverKioskSceneTests(unittest.TestCase):
             self.kiosk.saver_url("http://127.0.0.1:5000/"),
             "http://127.0.0.1:5000/v1/ui/saver/state",
         )
+
+    def test_follow_keeps_plasma_phase_when_speed_jumps(self):
+        follow = self.kiosk.SceneFollow()
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "busy": False, "gpu": {"utilization_pct": 2}},
+            True,
+        )
+        hot = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "gpu": {"utilization_pct": 90},
+            },
+            True,
+        )
+        a = follow.tick(idle, 0.04, 10.0)
+        b = follow.tick(hot, 0.04, 10.04)
+        self.assertGreaterEqual(b["st"], a["st"])
+        self.assertLess(b["st"] - a["st"], 0.05)
+        self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
+
+    def test_follow_holds_live_through_a_brief_idle_poll(self):
+        follow = self.kiosk.SceneFollow()
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "gpu": {"utilization_pct": 80}},
+            True,
+        )
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "busy": False, "gpu": {"utilization_pct": 0}},
+            True,
+        )
+        follow.tick(hot, 0.04, 1.0)
+        held = follow.tick(idle, 0.04, 1.5)
+        self.assertTrue(held["live"])
+        later = follow.tick(idle, 0.04, 8.0)
+        self.assertFalse(later["live"])

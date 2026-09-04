@@ -98,6 +98,86 @@ def fetch_state(url: str, timeout: float = 0.8) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _exp_approach(current: float, target: float, dt: float, tau: float) -> float:
+    if tau <= 0.0:
+        return target
+    return current + (target - current) * (1.0 - math.exp(-dt / tau))
+
+
+class SceneFollow:
+    """Hold one continuous field: never snap phase, palette, or HUD on a poll."""
+
+    _HOLD_LIVE_S = 5.0
+    _TAU_S = 2.4
+
+    def __init__(self) -> None:
+        self.intensity = 0.28
+        self.speed = 0.09
+        self.heat = 0.15
+        self.util = 0.0
+        self.vram = 0.0
+        self.temp = 40.0
+        self.st = 0.0
+        self.live = False
+        self._live_until = 0.0
+        self.weights = {name: (1.0 if name == "idle" else 0.0) for name in PALETTES}
+        self.phase = "idle"
+        self.palette = "idle"
+        self.mode = "—"
+        self.profile = "—"
+        self.connected = False
+
+    def _hold_live(self, want: bool, now: float) -> bool:
+        if want:
+            self._live_until = now + self._HOLD_LIVE_S
+            return True
+        return now < self._live_until
+
+    def tick(self, target: dict[str, Any], dt: float, now: float) -> dict[str, Any]:
+        dt = 0.0 if dt < 0.0 else 0.08 if dt > 0.08 else dt
+        want_live = bool(target.get("live"))
+        self.live = self._hold_live(want_live, now)
+        self.intensity = _exp_approach(self.intensity, float(target["intensity"]), dt, self._TAU_S)
+        self.speed = _exp_approach(self.speed, float(target["speed"]), dt, self._TAU_S)
+        self.heat = _exp_approach(self.heat, float(target["heat"]), dt, self._TAU_S)
+        self.util = _exp_approach(self.util, float(target["util"]), dt, 1.6)
+        self.vram = _exp_approach(self.vram, float(target["vram"]), dt, 1.6)
+        self.temp = _exp_approach(self.temp, float(target["temp"]), dt, 2.0)
+        self.st += self.speed * dt
+        dest = str(target.get("palette") or "idle")
+        if dest not in self.weights:
+            dest = "idle"
+        for name in self.weights:
+            goal = 1.0 if name == dest else 0.0
+            self.weights[name] = _exp_approach(self.weights[name], goal, dt, 1.8)
+        self.palette = max(self.weights, key=lambda name: self.weights[name])
+        self.mode = str(target.get("mode") or self.mode)
+        self.profile = str(target.get("profile") or self.profile)
+        self.connected = bool(target.get("connected"))
+        if not self.connected:
+            self.phase = "waiting for api"
+        elif self.live:
+            self.phase = str(target.get("phase") or self.phase)
+        elif self.weights.get("idle", 0.0) > 0.65:
+            self.phase = "idle"
+        return {
+            "phase": self.phase,
+            "palette": self.palette,
+            "weights": dict(self.weights),
+            "live": self.live,
+            "intensity": self.intensity,
+            "speed": self.speed,
+            "heat": self.heat,
+            "st": self.st,
+            "mode": self.mode,
+            "profile": self.profile,
+            "util": self.util,
+            "vram": self.vram,
+            "temp": self.temp,
+            "connected": self.connected,
+        }
+
+
 def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, Any]:
     data = data or {}
     gpu = data.get("gpu") if isinstance(data.get("gpu"), dict) else {}
@@ -110,18 +190,23 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     restarting = bool(data.get("restarting"))
     switching = bool(data.get("switching") or restarting)
     busy = bool(data.get("busy"))
-    live = busy or switching or util >= 12.0
+    working = busy or switching or restarting
+    # GPU % only tints the field. nvidia-smi also moves when this kiosk
+    # scanouts on the same card, so it must not rename the HUD to generating.
+    live = working
 
     if restarting:
         phase, palette = "restarting", "switch"
-    elif switching or kind == "gpu":
+    elif switching or (working and kind == "gpu"):
         phase, palette = "switching", "switch"
     elif kind == "image" or mode == "comfy":
-        phase, palette = ("rendering" if live else "comfy"), "image"
-    elif kind == "code":
+        phase, palette = ("rendering" if working else "comfy"), "image"
+    elif working and kind == "code":
         phase, palette = "writing code", "chat"
-    elif kind == "chat" or (live and mode != "comfy"):
+    elif working and kind == "chat":
         phase, palette = "generating", "chat"
+    elif working:
+        phase, palette = "in use", "chat"
     else:
         phase, palette = "idle", "idle"
 
@@ -179,19 +264,44 @@ def _warm_palette(
     return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
 
 
+def _blended_palette(weights: dict[str, float], heat: float) -> list[tuple[int, int, int]]:
+    names = [name for name, w in weights.items() if w > 0.01 and name in PALETTES]
+    if not names:
+        names = ["idle"]
+    total = sum(weights[name] for name in names) or 1.0
+    out: list[tuple[int, int, int]] = []
+    for i in range(256):
+        r = g = b = 0.0
+        for name in names:
+            w = weights[name] / total
+            cr, cg, cb = PALETTES[name][i]
+            r += cr * w
+            g += cg * w
+            b += cb * w
+        color = (int(r), int(g), int(b))
+        if heat > 0.02:
+            color = _mix(color, WARN, heat * 0.28 * (i / 255.0))
+        out.append(color)
+    return out
+
+
 def draw_field(
     width: int,
     height: int,
-    t: float,
     scene: dict[str, Any],
 ) -> Any:
     import pygame
 
-    palette = _warm_palette(str(scene["palette"]), float(scene["heat"]))
+    weights = scene.get("weights")
+    if isinstance(weights, dict) and weights:
+        mixed = {str(k): float(v) for k, v in weights.items()}
+        palette = _blended_palette(mixed, float(scene["heat"]))
+    else:
+        palette = _warm_palette(str(scene["palette"]), float(scene["heat"]))
     intensity = float(scene["intensity"])
-    speed = float(scene["speed"])
     live = bool(scene["live"])
-    breath = 0.5 + 0.5 * lsin(t * (0.55 if live else 0.28))
+    st = float(scene.get("st", 0.0))
+    breath = 0.5 + 0.5 * lsin(st * (1.15 if live else 0.72))
     gain = intensity * (0.82 + 0.18 * breath)
     cx = (width - 1) * 0.5
     cy = (height - 1) * 0.5
@@ -199,7 +309,6 @@ def draw_field(
     pulse = (0.22 if live else 0.08) * (0.45 + 0.55 * breath)
     buf = bytearray(width * height * 3)
     i = 0
-    st = t * speed
     for y in range(height):
         for x in range(width):
             dx = x - cx
@@ -317,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     font = pygame.font.Font(None, 36)
     small = pygame.font.Font(None, 28)
     clock = pygame.time.Clock()
-    t0 = time.monotonic()
+    follow = SceneFollow()
+    prev = time.monotonic()
     running = True
     try:
         while running:
@@ -327,10 +437,12 @@ def main(argv: list[str] | None = None) -> int:
                 elif event.type == pygame.KEYDOWN and args.window:
                     if event.key in (pygame.K_ESCAPE, pygame.K_q):
                         running = False
+            now = time.monotonic()
+            dt = now - prev
+            prev = now
             data, ok = bus.snapshot()
-            scene = scene_from_state(data, ok)
-            now = time.monotonic() - t0
-            field = draw_field(max(64, args.width), max(36, args.height), now, scene)
+            scene = follow.tick(scene_from_state(data, ok), dt, now)
+            field = draw_field(max(64, args.width), max(36, args.height), scene)
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
             draw_hud(screen, font, small, scene)
             pygame.display.flip()
