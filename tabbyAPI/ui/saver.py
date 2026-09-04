@@ -225,6 +225,7 @@ def _compose_weather(
         if decode_stage in ("prefill", "decode"):
             stage = decode_stage
             tokens = decode_tokens
+            kind = kind or "chat"
         else:
             flight_tokens, flight_stage = _flight_weather(flights)
             if flight_stage != "idle":
@@ -286,11 +287,12 @@ async def saver_state() -> dict[str, Any]:
     if weather.get("kind"):
         queue = dict(queue)
         queue["kind"] = weather["kind"]
+    thinking = weather["stage"] in {"prefill", "decode", "tool"}
     return sanitize_status(
         {
             "gpu_mode": gpu_mode,
             "profile": profile,
-            "busy": bool(lock_held) or bool(queue.get("busy")),
+            "busy": bool(lock_held) or bool(queue.get("busy")) or thinking,
             "switching": switching,
             "restarting": restarting,
             "stack_queue": queue,

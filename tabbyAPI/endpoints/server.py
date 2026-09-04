@@ -73,6 +73,21 @@ def setup_app(host: Optional[str] = None, port: Optional[int] = None):
     app.include_router(UiLegacyRouter)
     logger.info(f"Management UI: http://{host}:{port}/v1/ui")
 
+    @app.middleware("http")
+    async def saver_note_generate_posts(request, call_next):
+        """Thinking on the wall starts at the HTTP POST, not after StackGate."""
+        from common.live_decode import hold, is_generate_post, release
+
+        key = ""
+        if is_generate_post(getattr(request, "method", ""), str(request.url.path)):
+            key = f"http:{id(request)}"
+            hold(key)
+        try:
+            return await call_next(request)
+        finally:
+            if key:
+                release(key)
+
     return app
 
 

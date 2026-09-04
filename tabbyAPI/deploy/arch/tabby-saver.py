@@ -8,6 +8,7 @@ Software SDL only — do not point this at a GL renderer on the LLM GPU.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import fcntl
 import glob
 import json
@@ -98,6 +99,33 @@ PALETTES = {
 }
 
 
+def _shift_color(color: tuple[int, int, int], hue_delta: float) -> tuple[int, int, int]:
+    """Rotate hue; leave near-black / gray stops so the field still sits on BG."""
+    if abs(hue_delta) < 1e-6:
+        return color
+    r, g, b = color
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    if s < 0.08 or v < 0.08:
+        return color
+    nr, ng, nb = colorsys.hsv_to_rgb((h + hue_delta) % 1.0, s, v)
+    return (int(nr * 255.0 + 0.5), int(ng * 255.0 + 0.5), int(nb * 255.0 + 0.5))
+
+
+def _shift_ramp(
+    ramp: list[tuple[int, int, int]], hue_delta: float
+) -> list[tuple[int, int, int]]:
+    if abs(hue_delta) < 1e-6:
+        return ramp
+    return [_shift_color(c, hue_delta) for c in ramp]
+
+
+def _chat_hue_rate(speed: float, token_rate: float, chatty: bool) -> float:
+    """Turns of the colour wheel per second. Faster decode / tokens → faster travel."""
+    if not chatty:
+        return 0.004
+    return 0.016 + 0.030 * max(0.0, speed) + min(0.038, max(0.0, token_rate) * 0.0015)
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -157,6 +185,8 @@ class SceneFollow:
         self.vram = 0.0
         self.temp = 40.0
         self.st = 0.0
+        # Wall-clock seed so a restart is not always the same blue/pink family.
+        self.hue = (time.time() * 0.007) % 1.0
         self.live = False
         self._live_until = 0.0
         self.weights = {name: (1.0 if name == "idle" else 0.0) for name in PALETTES}
@@ -240,12 +270,14 @@ class SceneFollow:
         self.heat = _exp_approach(self.heat, float(target["heat"]), dt, tau)
         self.util = _exp_approach(self.util, float(target["util"]), dt, 1.6)
         self.vram = _exp_approach(self.vram, float(target["vram"]), dt, 1.6)
-        self.temp = _exp_approach(self.temp, float(target["temp"]), dt, 2.0)
+        self.temp = _exp_approach(
+            self.temp, float(target["temp"]), dt, 0.55 if (want_live or held) else 1.6
+        )
         self.st += self.speed * dt
         dest = str(target.get("palette") or "idle")
         if dest not in self.weights:
             dest = "idle"
-        blend_tau = 0.35 if (want_live or held) else 1.8
+        blend_tau = 0.12 if (want_live or held) else 1.8
         for name in self.weights:
             goal = 1.0 if name == dest else 0.0
             self.weights[name] = _exp_approach(self.weights[name], goal, dt, blend_tau)
@@ -262,6 +294,8 @@ class SceneFollow:
             inst = min(80.0, delta / dt) if dt > 1e-6 else 0.0
             self.token_rate = _exp_approach(self.token_rate, inst, dt, 0.22)
             self.tokens = dest_tokens
+        chatty = dest == "chat" or self.weights.get("chat", 0.0) > 0.18
+        self.hue = (self.hue + _chat_hue_rate(self.speed, self.token_rate, chatty) * dt) % 1.0
         self.stage = str(target.get("stage") or self.stage or "idle")
         self.has_gpu = bool(target.get("has_gpu"))
         self.image_n = _exp_approach(
@@ -271,7 +305,7 @@ class SceneFollow:
         if not self.connected:
             self.phase = "waiting for api"
         elif self.cycle == "boot":
-            self.phase = "gearing up"
+            self.phase = str(target.get("phase") or "thinking")
         elif self.cycle == "halt":
             self.phase = "gearing down"
         elif held:
@@ -287,6 +321,7 @@ class SceneFollow:
             "speed": self.speed,
             "heat": self.heat,
             "st": self.st,
+            "hue": self.hue,
             "mode": self.mode,
             "profile": self.profile,
             "util": self.util,
@@ -321,14 +356,14 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     restarting = bool(data.get("restarting"))
     switching = bool(data.get("switching") or restarting)
     busy = bool(data.get("busy"))
-    working = busy or switching or restarting
     stage = str(data.get("stage") or "").strip().lower()
+    working = busy or switching or restarting or stage in {"prefill", "decode", "tool"}
     tokens = max(0.0, _num(data.get("tokens")))
     image_n = _num(data.get("image_n")) if data.get("image_n") is not None else 0.0
     image_of = _num(data.get("image_of")) if data.get("image_of") is not None else 0.0
     # GPU % only tints the field. nvidia-smi also moves when this kiosk
     # scanouts on the same card, so it must not rename the HUD to generating.
-    live = working
+    live = working or stage in {"prefill", "decode", "tool"}
 
     image_job = kind == "image" or mode == "comfy" or stage == "image"
     if restarting:
@@ -345,11 +380,11 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     elif working and stage == "tool":
         phase, palette = "using tools", "chat"
     elif working and kind == "chat" and stage == "prefill":
-        phase, palette = "reading", "chat"
+        phase, palette = "thinking", "chat"
     elif working and kind == "chat":
         phase, palette = "thinking", "chat"
     elif working and stage == "prefill":
-        phase, palette = "reading", "chat"
+        phase, palette = "thinking", "chat"
     elif working and stage == "decode":
         phase, palette = "thinking", "chat"
     elif working:
@@ -428,9 +463,11 @@ class StateBus:
 
 
 def _warm_palette(
-    name: str, heat: float
+    name: str, heat: float, hue: float = 0.0
 ) -> list[tuple[int, int, int]]:
     base = PALETTES.get(name) or PALETTES["idle"]
+    if name == "chat":
+        base = _shift_ramp(base, hue)
     if heat <= 0.02:
         return base
     return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
@@ -510,6 +547,20 @@ NEURON_RAMPS: dict[str, list[tuple[int, int, int]]] = {
     "image": [(255, 196, 64), (255, 140, 48), (255, 88, 72), (255, 110, 160), (255, 190, 140)],
     "switch": [(20, 200, 190), (48, 230, 130), (140, 255, 170), (200, 255, 210)],
 }
+# GPU °C outline: gold → ember → red-orange → white-hot.
+HOT_GLOW = [(255, 210, 96), (255, 158, 48), (255, 86, 32), (255, 236, 210)]
+# Real envelope from Status metrics on this 4070 Ti: idle 37–44°C,
+# busy 50–68°C (never the 80–90°C the first scale assumed).
+_TEMP_GLOW_LO = 44.0
+_TEMP_GLOW_HI = 68.0
+
+
+def _temp_hotness(temp: float) -> float:
+    """Linear 0 at idle-cluster top, 1 at the hottest samples this card hits."""
+    span = _TEMP_GLOW_HI - _TEMP_GLOW_LO
+    if span <= 0.0:
+        return 0.0
+    return _clamp01((float(temp) - _TEMP_GLOW_LO) / span)
 
 
 def overlay_amount(scene: dict[str, Any]) -> float:
@@ -639,6 +690,12 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     overlay = float(state["overlay"])
     name = str(scene.get("palette") or "chat")
     axon, spark = NEURON_SPARK.get(name) or NEURON_SPARK["chat"]
+    if name == "chat":
+        hue = float(scene.get("hue") or 0.0)
+        axon = _shift_color(axon, hue)
+        spark = _shift_color(spark, hue)
+    hotness = _temp_hotness(float(scene.get("temp") or 0.0)) if scene.get("has_gpu") else 0.0
+    hot = _ramp_color(HOT_GLOW, hotness)
     dim_axon = _mix(BG, axon, 0.42 * overlay)
     last_x = max(1, w - 1)
     last_y = max(1, h - 1)
@@ -665,6 +722,27 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     for i, (x, y) in enumerate(nodes):
         fire = fires[i]
         ring, _head = neuron_draw_sizes(fire, 0.0, h, overlay)
+        if hotness > 0.05 and overlay > 0.08:
+            halo = overlay * hotness * (0.30 + 0.70 * max(fire, 0.22))
+            soma_r = max(ring, int(round((h / 380.0) * 1.5 * overlay)))
+            if halo > 0.02 and soma_r >= 1:
+                _draw_glow(
+                    pygame_mod,
+                    screen,
+                    (x, y),
+                    hot,
+                    halo,
+                    scale=1.05 + 1.7 * hotness + 0.45 * fire,
+                )
+                outline_r = max(soma_r + 2, int(round(soma_r * (1.35 + 0.55 * hotness))))
+                width = max(1, int(round(1.0 + 2.4 * hotness)))
+                pygame_mod.draw.circle(
+                    screen,
+                    _mix(BG, hot, overlay * (0.38 + 0.52 * hotness)),
+                    (x, y),
+                    outline_r,
+                    width,
+                )
         if ring < 1:
             continue
         body = _mix(axon, spark, fire)
@@ -692,6 +770,8 @@ def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     cx, cy = w // 2, h // 2
     name = str(scene.get("palette") or "chat")
     ramp = NEURON_RAMPS.get(name) or NEURON_RAMPS["chat"]
+    if name == "chat":
+        ramp = _shift_ramp(ramp, float(scene.get("hue") or 0.0))
     color = _ramp_color(ramp, 0.45 if cycle == "boot" else 0.2)
     span = min(w, h)
     if cycle == "boot":
@@ -711,17 +791,23 @@ def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
             pygame_mod.draw.circle(screen, _mix(BG, color, 0.18), (cx, cy), inner, 1)
 
 
-def _blended_palette(weights: dict[str, float], heat: float) -> list[tuple[int, int, int]]:
+def _blended_palette(
+    weights: dict[str, float], heat: float, hue: float = 0.0
+) -> list[tuple[int, int, int]]:
     names = [name for name, w in weights.items() if w > 0.01 and name in PALETTES]
     if not names:
         names = ["idle"]
     total = sum(weights[name] for name in names) or 1.0
+    ramps = {
+        name: (_shift_ramp(PALETTES[name], hue) if name == "chat" else PALETTES[name])
+        for name in names
+    }
     out: list[tuple[int, int, int]] = []
     for i in range(256):
         r = g = b = 0.0
         for name in names:
             w = weights[name] / total
-            cr, cg, cb = PALETTES[name][i]
+            cr, cg, cb = ramps[name][i]
             r += cr * w
             g += cg * w
             b += cb * w
@@ -733,12 +819,13 @@ def _blended_palette(weights: dict[str, float], heat: float) -> list[tuple[int, 
 
 
 def _field_common(width: int, height: int, scene: dict[str, Any]):
+    hue = float(scene.get("hue") or 0.0)
     weights = scene.get("weights")
     if isinstance(weights, dict) and weights:
         mixed = {str(k): float(v) for k, v in weights.items()}
-        palette = _blended_palette(mixed, float(scene["heat"]))
+        palette = _blended_palette(mixed, float(scene["heat"]), hue)
     else:
-        palette = _warm_palette(str(scene["palette"]), float(scene["heat"]))
+        palette = _warm_palette(str(scene["palette"]), float(scene["heat"]), hue)
     intensity = float(scene["intensity"])
     mix = overlay_amount(scene)
     st = float(scene.get("st", 0.0))

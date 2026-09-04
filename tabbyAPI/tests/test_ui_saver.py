@@ -190,6 +190,28 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payload["gpu"]["utilization_pct"])
         self.assertNotIn("bob", repr(payload))
 
+    async def test_saver_state_busy_from_generate_post_before_occupancy(self):
+        snap = mock.Mock(return_value={"busy": False, "kind": None, "live": False})
+        with (
+            mock.patch("ui.occupancy.snapshot", snap),
+            mock.patch("ui.manager.cached_nvidia_stats", return_value={}),
+            mock.patch("ui.manager.ensure_gpu_cache"),
+            mock.patch("common.live_decode.snapshot", return_value={"tokens": 0, "stage": "prefill"}),
+            mock.patch("images.jobs.active_mcp_image_job", return_value=None),
+            mock.patch("ui.flight.iter_live_flights", return_value=[]),
+            mock.patch("common.phrase_switch.switch_lock_held", return_value=False),
+            mock.patch("common.phrase_switch.switch_lock_name", return_value=""),
+            mock.patch("common.gpu_mode.read_mode", return_value={"mode": "llm"}),
+            mock.patch("images.jobs.loaded_tabby_name", return_value="Qwen"),
+            mock.patch("common.phrase_switch.profile_alias_for_model", return_value="qwen"),
+            mock.patch("common.phrase_switch.last_llm_profile_name", return_value="qwen"),
+            mock.patch("select_model.last_profile", return_value="qwen"),
+        ):
+            payload = await saver.saver_state()
+        self.assertTrue(payload["busy"])
+        self.assertEqual(payload["stage"], "prefill")
+        self.assertEqual(payload["kind"], "chat")
+
 
 class SaverKioskSceneTests(unittest.TestCase):
     @classmethod
@@ -325,6 +347,15 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreaterEqual(scene["intensity"], 0.75)
         self.assertGreater(scene["speed"], 0.5)
 
+    def test_prefill_stage_is_live_without_busy_flag(self):
+        scene = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "stage": "prefill", "busy": False, "kind": "chat"},
+            True,
+        )
+        self.assertTrue(scene["live"])
+        self.assertEqual(scene["phase"], "thinking")
+        self.assertEqual(scene["palette"], "chat")
+
     def test_comfy_and_switch_palettes(self):
         image = self.kiosk.scene_from_state(
             {"gpu_mode": "comfy", "kind": "image", "busy": True}, True
@@ -364,7 +395,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertLess(b["st"] - a["st"], 0.05)
         self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
         self.assertEqual(b["cycle"], "boot")
-        self.assertEqual(b["phase"], "gearing up")
+        self.assertEqual(b["phase"], "thinking")
         self.assertGreaterEqual(b["overlay"], 0.85)
         self.assertIsNotNone(self.kiosk.neuron_overlay_state(b))
 
@@ -606,6 +637,18 @@ class SaverComposeTests(unittest.TestCase):
         self.assertEqual(weather["waiters"], 1)
         self.assertEqual(weather["elapsed_s"], 4)
 
+    def test_decode_prefill_without_occupancy_is_still_thinking(self):
+        weather = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": False, "kind": None},
+            decode={"tokens": 0, "stage": "prefill"},
+            job=None,
+            flights=[],
+        )
+        self.assertEqual(weather["stage"], "prefill")
+        self.assertEqual(weather["kind"], "chat")
+
     def test_flight_chars_when_decode_idle(self):
         flight = SimpleNamespace(
             done=False, assembled="hello world", reasoning="", kind="chat", steps=[]
@@ -673,3 +716,20 @@ class LiveDecodeTests(unittest.TestCase):
         live_decode.clear("a")
         self.assertEqual(live_decode.snapshot()["stage"], "idle")
         self.assertEqual(live_decode.snapshot()["tokens"], 0)
+
+    def test_generate_post_paths(self):
+        self.assertTrue(live_decode.is_generate_post("POST", "/v1/chat/completions"))
+        self.assertTrue(live_decode.is_generate_post("POST", "/v1/completions"))
+        self.assertTrue(live_decode.is_generate_post("POST", "/v1/ui/chat"))
+        self.assertFalse(live_decode.is_generate_post("GET", "/v1/chat/completions"))
+        self.assertFalse(live_decode.is_generate_post("POST", "/v1/ui/saver/state"))
+        self.assertFalse(live_decode.is_generate_post("POST", "/v1/models"))
+
+    def test_http_hold_shows_prefill_before_generate(self):
+        live_decode.hold("http:1")
+        self.assertEqual(live_decode.snapshot()["stage"], "prefill")
+        live_decode.note_prefill("job")
+        live_decode.clear("job")
+        self.assertEqual(live_decode.snapshot()["stage"], "prefill")
+        live_decode.release("http:1")
+        self.assertEqual(live_decode.snapshot()["stage"], "idle")
