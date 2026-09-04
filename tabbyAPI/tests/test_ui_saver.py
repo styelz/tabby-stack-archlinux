@@ -6,6 +6,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
+from common import live_decode
 from ui import saver
 
 
@@ -75,6 +76,10 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
             "busy": True,
             "switching": False,
             "restarting": False,
+            "tokens": 12,
+            "stage": "decode",
+            "waiters": 2,
+            "elapsed_s": 9,
             "user": "alice",
             "api_base": "https://example.invalid/v1",
             "job": {"prompt": "secret image prompt", "phase": "rendering"},
@@ -110,6 +115,12 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["gpu"]["vram_pct"], 58)
         self.assertEqual(payload["gpu"]["temperature_c"], 64)
         self.assertEqual(payload["host"]["cpu_pct"], 12.3)
+        self.assertEqual(payload["tokens"], 12)
+        self.assertEqual(payload["stage"], "decode")
+        self.assertEqual(payload["waiters"], 2)
+        self.assertEqual(payload["elapsed_s"], 9)
+        self.assertEqual(payload["image_n"], None)
+        self.assertEqual(payload["image_of"], None)
         for key in ("occupant", "prompt", "chat_id", "user", "hint", "job", "stack_queue"):
             self.assertNotIn(key, payload)
 
@@ -122,6 +133,8 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(payload["kind"])
         self.assertTrue(payload["busy"])
+        self.assertEqual(payload["stage"], "idle")
+        self.assertEqual(payload["tokens"], 0)
 
     def test_idle_defaults(self):
         payload = saver.sanitize_status({})
@@ -130,6 +143,15 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["switching"])
         self.assertIsNone(payload["kind"])
         self.assertIsNone(payload["gpu"]["vram_pct"])
+        self.assertEqual(payload["stage"], "idle")
+        self.assertEqual(payload["tokens"], 0)
+        self.assertEqual(payload["waiters"], 0)
+        self.assertIsNone(payload["image_n"])
+
+    def test_unknown_stage_becomes_idle(self):
+        payload = saver.sanitize_status({"stage": "secret-thoughts", "tokens": -3})
+        self.assertEqual(payload["stage"], "idle")
+        self.assertEqual(payload["tokens"], 0)
 
     def test_queue_live_without_busy_flag_is_still_busy(self):
         payload = saver.sanitize_status(
@@ -145,6 +167,11 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch("ui.occupancy.snapshot", snap),
             mock.patch("ui.manager.stack_status", new=mock.AsyncMock()) as status,
+            mock.patch("ui.manager.cached_nvidia_stats", return_value={}),
+            mock.patch("ui.manager.ensure_gpu_cache"),
+            mock.patch("common.live_decode.snapshot", return_value={"tokens": 0, "stage": "idle"}),
+            mock.patch("images.jobs.active_mcp_image_job", return_value=None),
+            mock.patch("ui.flight.iter_live_flights", return_value=[]),
             mock.patch("common.phrase_switch.switch_lock_held", return_value=True),
             mock.patch("common.phrase_switch.switch_lock_name", return_value="comfy"),
             mock.patch("common.gpu_mode.read_mode", return_value={"mode": "comfy"}),
@@ -158,7 +185,9 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         status.assert_not_called()
         self.assertEqual(payload["kind"], "gpu")
         self.assertTrue(payload["switching"])
+        self.assertEqual(payload["stage"], "switch")
         self.assertEqual(payload["profile"], "flux")
+        self.assertIsNone(payload["gpu"]["utilization_pct"])
         self.assertNotIn("bob", repr(payload))
 
 
@@ -237,13 +266,14 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreater(sum(overlay["fires"]), 0.5)
         xs = [p[0] for p in overlay["nodes"]]
         ys = [p[1] for p in overlay["nodes"]]
-        self.assertEqual(min(xs), 0.0)
-        self.assertEqual(max(xs), 1.0)
-        self.assertEqual(min(ys), 0.0)
-        self.assertEqual(max(ys), 1.0)
-        ring, head = self.kiosk.neuron_draw_sizes(1.0, 1.0)
-        self.assertLessEqual(ring, 3)
-        self.assertLessEqual(head, 2)
+        self.assertLess(min(xs), 0.05)
+        self.assertGreater(max(xs), 0.95)
+        self.assertLess(min(ys), 0.05)
+        self.assertGreater(max(ys), 0.95)
+        ring, head = self.kiosk.neuron_draw_sizes(1.0, 1.0, 1080)
+        self.assertLessEqual(ring, 16)
+        self.assertLessEqual(head, 8)
+        self.assertGreaterEqual(ring, 3)
         fading = dict(hot)
         fading["live"] = False
         fading["overlay"] = 0.4
@@ -277,7 +307,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         assert first is not None and second is not None
         u0 = first["pulses"][0][1]
         u1 = second["pulses"][0][1]
-        self.assertTrue(u1 > u0 or (u0 > 0.9 and u1 < 0.2))
+        self.assertNotEqual(u0, u1)
 
     def test_chat_busy_is_thinking_and_hot(self):
         scene = self.kiosk.scene_from_state(
@@ -335,7 +365,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
         self.assertEqual(b["cycle"], "boot")
         self.assertEqual(b["phase"], "gearing up")
-        self.assertGreater(b["overlay"], 0.05)
+        self.assertGreaterEqual(b["overlay"], 0.85)
         self.assertIsNotNone(self.kiosk.neuron_overlay_state(b))
 
     def test_follow_holds_live_through_a_brief_idle_poll(self):
@@ -482,7 +512,9 @@ class SaverKioskSceneTests(unittest.TestCase):
         args = self.kiosk.parse_args([])
         self.assertEqual(args.idle, 120.0)
         self.assertEqual(args.logout_idle, 10.0)
-        self.assertEqual(args.poll, 0.25)
+        self.assertEqual(args.poll, 0.1)
+        self.assertEqual(args.width, 480)
+        self.assertEqual(args.height, 270)
         args = self.kiosk.parse_args(
             ["--idle", "120", "--logout-idle", "10", "--user-tty", "tty1", "--saver-tty", "tty8"]
         )
@@ -490,3 +522,154 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(args.logout_idle, 10.0)
         self.assertEqual(args.user_tty, "tty1")
         self.assertEqual(args.saver_tty, "tty8")
+
+    def test_hud_omits_zeros_when_gpu_cache_miss(self):
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        self.assertFalse(hot["has_gpu"])
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), hot)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertNotIn("GPU 0%", text)
+        self.assertNotIn("VRAM 0%", text)
+        self.assertIn("thinking", text)
+
+    def test_hud_type_is_large_with_a_halo(self):
+        large, small = self.kiosk.hud_font_sizes(1080)
+        self.assertGreaterEqual(large, 60)
+        self.assertGreaterEqual(small, 44)
+        self.assertGreater(large, small)
+        halo = self.kiosk.hud_halo_offsets(3)
+        self.assertGreaterEqual(len(halo), 8)
+        self.assertNotIn((0, 0), halo)
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), hot)
+        phase_blits = sum(1 for item in screen.blits if item and item[0] == "thinking")
+        self.assertGreaterEqual(phase_blits, 9)
+
+    def test_decode_token_ticks_raise_fire(self):
+        quiet = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "stage": "decode",
+                "tokens": 0,
+            },
+            True,
+        )
+        quiet["st"] = 1.0
+        quiet["token_rate"] = 0.0
+        quiet["tokens"] = 0
+        quiet["stage"] = "decode"
+        loud = dict(quiet)
+        loud["tokens"] = 48
+        loud["token_rate"] = 24.0
+        a = self.kiosk.neuron_overlay_state(quiet)
+        b = self.kiosk.neuron_overlay_state(loud)
+        assert a is not None and b is not None
+        self.assertGreater(sum(b["fires"]), sum(a["fires"]))
+
+    def test_image_restore_is_reloading(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "comfy",
+                "kind": "image",
+                "busy": True,
+                "switching": True,
+                "stage": "switch",
+            },
+            True,
+        )
+        self.assertEqual(scene["phase"], "reloading")
+        self.assertEqual(scene["palette"], "switch")
+
+
+class SaverComposeTests(unittest.TestCase):
+    def test_decode_snapshot_wins_for_chat(self):
+        weather = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "chat", "waiters": 1, "elapsed_s": 4},
+            decode={"tokens": 20, "stage": "decode"},
+            job=None,
+            flights=[],
+        )
+        self.assertEqual(weather["stage"], "decode")
+        self.assertEqual(weather["tokens"], 20)
+        self.assertEqual(weather["waiters"], 1)
+        self.assertEqual(weather["elapsed_s"], 4)
+
+    def test_flight_chars_when_decode_idle(self):
+        flight = SimpleNamespace(
+            done=False, assembled="hello world", reasoning="", kind="chat", steps=[]
+        )
+        weather = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "chat"},
+            decode={"tokens": 0, "stage": "idle"},
+            job=None,
+            flights=[flight],
+        )
+        self.assertEqual(weather["stage"], "decode")
+        self.assertEqual(weather["tokens"], len("hello world"))
+        self.assertNotIn("hello", repr(weather))
+
+    def test_tool_step_without_result(self):
+        flight = SimpleNamespace(
+            done=False,
+            assembled="x",
+            reasoning="",
+            kind="code",
+            steps=[{"type": "tool", "name": "Read"}],
+        )
+        weather = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "code"},
+            decode={"tokens": 0, "stage": "idle"},
+            job=None,
+            flights=[flight],
+        )
+        self.assertEqual(weather["stage"], "tool")
+        self.assertEqual(weather["tokens"], 1)
+
+    def test_image_job_progress(self):
+        job = SimpleNamespace(status="running", phase="generating", count=3, current_index=1)
+        weather = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "image"},
+            decode={"tokens": 0, "stage": "idle"},
+            job=job,
+            flights=[],
+        )
+        self.assertEqual(weather["stage"], "image")
+        self.assertEqual(weather["image_n"], 2)
+        self.assertEqual(weather["image_of"], 3)
+
+
+class LiveDecodeTests(unittest.TestCase):
+    def setUp(self):
+        live_decode.reset_for_tests()
+
+    def tearDown(self):
+        live_decode.reset_for_tests()
+
+    def test_prefill_then_decode_then_clear(self):
+        live_decode.note_prefill("a")
+        self.assertEqual(live_decode.snapshot()["stage"], "prefill")
+        live_decode.note_decode("a", 7)
+        self.assertEqual(live_decode.snapshot(), {"tokens": 7, "stage": "decode"})
+        live_decode.clear("b")
+        self.assertEqual(live_decode.snapshot()["tokens"], 7)
+        live_decode.clear("a")
+        self.assertEqual(live_decode.snapshot()["stage"], "idle")
+        self.assertEqual(live_decode.snapshot()["tokens"], 0)

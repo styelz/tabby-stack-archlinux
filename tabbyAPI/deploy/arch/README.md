@@ -149,7 +149,7 @@ tsctl screensaver status
 ```
 
 - Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field; **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts it again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`).
-- Needs `python-pygame`, `nvidia-drm.modeset=1`, and a connector on `/dev/dri/card*`.
+- Needs `python-pygame`, `python-numpy`, `nvidia-drm.modeset=1`, and a connector on `/dev/dri/card*`.
 - Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
 - Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.
 - Windowed probe: `/usr/bin/python "$HOME/tabby-stack/tabbyAPI/deploy/arch/tabby-saver.py" --window`
@@ -211,6 +211,6 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Chat `switch to …` returns 500 / `creationflags is only supported on Windows` | Re-run `install.sh` (it patches the spawn), then `systemctl --user restart tabbyapi` |
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |
 | First start hangs / no `:5000` | Model is loading before the port opens. qwen ~65s; qwen35 ~3 min. First Linux boot may compile Triton. |
-| `tabby-saver` fails to start | Needs `python-pygame`, a free TTY, and `video` group. Do not enable beside Omarchy. `tsctl screensaver status` and `journalctl -u tabby-saver -e`. |
+| `tabby-saver` fails to start | Needs `python-pygame`, `python-numpy`, a free TTY, and `video` group. Do not enable beside Omarchy. `tsctl screensaver status` and `journalctl -u tabby-saver -e`. |
 
 `update.sh` is the usual way to pull new code. Re-running `install.sh` is still safe for missing weights: it skips files that already exist. A healthy venv is rebuilt only when `update.sh` runs (pip -U).

@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 
 SAFE_KINDS = frozenset({"chat", "code", "image", "gpu"})
+SAFE_STAGES = frozenset({"prefill", "decode", "tool", "image", "switch", "idle"})
 _LEAK_KEYS = frozenset(
     {
         "occupant",
@@ -73,6 +74,29 @@ def _kind(raw: Any) -> str | None:
     return text if text in SAFE_KINDS else None
 
 
+def _stage(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    return text if text in SAFE_STAGES else "idle"
+
+
+def _int_ge0(value: Any, default: int = 0) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return 0 if number < 0 else number
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return 0 if number < 0 else number
+
+
 def _vram_pct(gpu: dict[str, Any]) -> int | None:
     used = gpu.get("memory_used_mib")
     total = gpu.get("memory_total_mib")
@@ -100,10 +124,22 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
         "busy": bool(raw.get("busy") or queue.get("busy") or queue.get("live")),
         "switching": bool(raw.get("switching")),
         "restarting": bool(raw.get("restarting")),
-        "kind": _kind(queue.get("kind")),
+        "kind": _kind(queue.get("kind") if queue.get("kind") is not None else raw.get("kind")),
+        "stage": _stage(raw.get("stage")),
+        "tokens": _int_ge0(raw.get("tokens")),
+        "image_n": _optional_int(raw.get("image_n")),
+        "image_of": _optional_int(raw.get("image_of")),
+        "waiters": _int_ge0(
+            raw.get("waiters") if raw.get("waiters") is not None else queue.get("waiters")
+        ),
+        "elapsed_s": _int_ge0(
+            raw.get("elapsed_s")
+            if raw.get("elapsed_s") is not None
+            else queue.get("elapsed_s")
+        ),
         "gpu": {
             "utilization_pct": gpu.get("utilization_pct"),
-            "vram_pct": _vram_pct(gpu),
+            "vram_pct": _vram_pct(gpu) if gpu.get("vram_pct") is None else gpu.get("vram_pct"),
             "temperature_c": gpu.get("temperature_c"),
         },
         "host": {
@@ -116,6 +152,98 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _flight_weather(flights: list[Any]) -> tuple[int, str]:
+    """Character counts only — never the assembled text."""
+    for flight in flights:
+        if getattr(flight, "done", False):
+            continue
+        chars = len(str(getattr(flight, "assembled", "") or "")) + len(
+            str(getattr(flight, "reasoning", "") or "")
+        )
+        kind = str(getattr(flight, "kind", "") or "")
+        steps = getattr(flight, "steps", None) or []
+        last = steps[-1] if steps else None
+        if kind == "image" and not chars:
+            return chars, "image"
+        if isinstance(last, dict) and last.get("type") == "tool" and not last.get("result"):
+            return chars, "tool"
+        if chars:
+            return chars, "decode"
+        return 0, "prefill"
+    return 0, "idle"
+
+
+def _image_progress(job: Any) -> tuple[int | None, int | None, str]:
+    if job is None:
+        return None, None, ""
+    status = str(getattr(job, "status", "") or "")
+    if status not in ("queued", "running", "coding"):
+        return None, None, ""
+    phase = str(getattr(job, "phase", "") or status)
+    try:
+        count = max(1, int(getattr(job, "count", 0) or 1))
+    except (TypeError, ValueError):
+        count = 1
+    try:
+        index = int(getattr(job, "current_index", 0) or 0)
+    except (TypeError, ValueError):
+        index = 0
+    n = index + 1
+    if n > count:
+        n = count
+    return n, count, phase
+
+
+def _compose_weather(
+    *,
+    switching: bool,
+    restarting: bool,
+    queue: dict[str, Any],
+    decode: dict[str, Any],
+    job: Any,
+    flights: list[Any],
+) -> dict[str, Any]:
+    image_n, image_of, image_phase = _image_progress(job)
+    tokens = 0
+    stage = "idle"
+    kind = queue.get("kind")
+    busy = bool(queue.get("busy") or queue.get("live"))
+
+    if restarting or switching:
+        stage = "switch"
+    elif image_phase == "restoring_llm":
+        stage = "switch"
+    elif image_phase in ("writing_code", "coding"):
+        kind = kind or "code"
+    elif image_phase:
+        stage = "image"
+        kind = kind or "image"
+
+    if stage == "idle":
+        decode_stage = str(decode.get("stage") or "idle")
+        decode_tokens = _int_ge0(decode.get("tokens"))
+        if decode_stage in ("prefill", "decode"):
+            stage = decode_stage
+            tokens = decode_tokens
+        else:
+            flight_tokens, flight_stage = _flight_weather(flights)
+            if flight_stage != "idle":
+                stage = flight_stage
+                tokens = flight_tokens
+            elif busy and str(kind or "") in {"chat", "code"}:
+                stage = "prefill"
+
+    return {
+        "tokens": tokens,
+        "stage": stage,
+        "image_n": image_n,
+        "image_of": image_of,
+        "kind": kind,
+        "waiters": _int_ge0(queue.get("waiters")),
+        "elapsed_s": _int_ge0(queue.get("elapsed_s")),
+    }
+
+
 async def saver_state() -> dict[str, Any]:
     """Occupancy weather only — never wait on nvidia-smi or HealthManager.
 
@@ -124,14 +252,17 @@ async def saver_state() -> dict[str, Any]:
     the field used to sit idle for several seconds after a chat started.
     """
     from common.gpu_mode import read_mode
+    from common.live_decode import snapshot as decode_snapshot
     from common.phrase_switch import (
         last_llm_profile_name,
         profile_alias_for_model,
         switch_lock_held,
         switch_lock_name,
     )
-    from images.jobs import loaded_tabby_name
+    from images.jobs import active_mcp_image_job, loaded_tabby_name
     from select_model import last_profile
+    from ui.flight import iter_live_flights
+    from ui.manager import cached_nvidia_stats, ensure_gpu_cache
     from ui.occupancy import snapshot as stack_queue_snapshot
 
     mode = read_mode()
@@ -143,6 +274,18 @@ async def saver_state() -> dict[str, Any]:
     switching = lock_held and not restarting
     profile = profile_alias_for_model(tabby) or last_llm_profile_name() or last_profile()
     queue = stack_queue_snapshot("")
+    ensure_gpu_cache()
+    weather = _compose_weather(
+        switching=switching,
+        restarting=restarting,
+        queue=queue if isinstance(queue, dict) else {},
+        decode=decode_snapshot(),
+        job=active_mcp_image_job(),
+        flights=iter_live_flights(),
+    )
+    if weather.get("kind"):
+        queue = dict(queue)
+        queue["kind"] = weather["kind"]
     return sanitize_status(
         {
             "gpu_mode": gpu_mode,
@@ -151,5 +294,12 @@ async def saver_state() -> dict[str, Any]:
             "switching": switching,
             "restarting": restarting,
             "stack_queue": queue,
+            "tokens": weather["tokens"],
+            "stage": weather["stage"],
+            "image_n": weather["image_n"],
+            "image_of": weather["image_of"],
+            "waiters": weather["waiters"],
+            "elapsed_s": weather["elapsed_s"],
+            "gpu": cached_nvidia_stats(),
         }
     )

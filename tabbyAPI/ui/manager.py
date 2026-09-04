@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -194,6 +195,54 @@ def nvidia_stats() -> dict[str, Any]:
     }
 
 
+_GPU_CACHE_INTERVAL_S = 1.0
+_gpu_cache_lock = threading.Lock()
+_gpu_cache: dict[str, Any] = {}
+_gpu_cache_stop = threading.Event()
+_gpu_cache_thread: Optional[threading.Thread] = None
+
+
+def cached_nvidia_stats() -> dict[str, Any]:
+    """Last background nvidia-smi sample. Never blocks on the driver."""
+    with _gpu_cache_lock:
+        return dict(_gpu_cache)
+
+
+def ensure_gpu_cache() -> None:
+    """Start a 1s nvidia-smi sampler so the kiosk HUD is not zeros or a stall."""
+    global _gpu_cache_thread
+    with _gpu_cache_lock:
+        if _gpu_cache_thread is not None and _gpu_cache_thread.is_alive():
+            return
+        _gpu_cache_stop.clear()
+        _gpu_cache_thread = threading.Thread(
+            target=_gpu_cache_loop, name="saver-gpu-cache", daemon=True
+        )
+        _gpu_cache_thread.start()
+
+
+def _gpu_cache_loop() -> None:
+    while True:
+        sample = nvidia_stats()
+        with _gpu_cache_lock:
+            _gpu_cache.clear()
+            _gpu_cache.update(sample)
+        if _gpu_cache_stop.wait(_GPU_CACHE_INTERVAL_S):
+            break
+
+
+def reset_gpu_cache_for_tests() -> None:
+    global _gpu_cache_thread
+    _gpu_cache_stop.set()
+    thread = _gpu_cache_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=0.2)
+    with _gpu_cache_lock:
+        _gpu_cache.clear()
+        _gpu_cache_thread = None
+    _gpu_cache_stop.clear()
+
+
 def unit_active(name: str) -> Optional[bool]:
     if shutil.which("systemctl") is None:
         return None
@@ -300,7 +349,7 @@ async def stack_status(request=None, username: str = "") -> dict[str, Any]:
             "tabbyapi": unit_active("tabbyapi"),
             "comfyui": comfy_unit,
         },
-        "gpu": nvidia_stats(),
+        "gpu": await asyncio.to_thread(nvidia_stats),
         "host": _host_live(),
         "uptime_s": int(time.time() - _STARTED_AT),
         "api_base": public_api_base(request),

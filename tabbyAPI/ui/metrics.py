@@ -251,7 +251,7 @@ async def _sampler_loop() -> None:
     await asyncio.sleep(1.0)
     while True:
         try:
-            record_sample()
+            await asyncio.to_thread(record_sample)
         except Exception as exc:
             logger.warning(f"Metrics sample failed: {exc}")
         await asyncio.sleep(SAMPLE_INTERVAL_S)

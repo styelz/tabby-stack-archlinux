@@ -1037,6 +1037,12 @@ class ExllamaV3Container:
 
             # Mark that the job is running
             self.active_job_ids[request_id] = None
+            try:
+                from common.live_decode import note_prefill
+
+                note_prefill(request_id)
+            except Exception:
+                pass
 
             # Yield from the internal generator
             async for generation_chunk in self.generate_gen(
@@ -1052,6 +1058,12 @@ class ExllamaV3Container:
             # Clean up and remove the job from active IDs. This must not raise:
             # a KeyError here masked the real error and left the id behind, so
             # wait_for_jobs spun forever and the stack looked permanently busy.
+            try:
+                from common.live_decode import clear as clear_decode
+
+                clear_decode(request_id)
+            except Exception:
+                pass
             self.active_job_ids.pop(request_id, None)
 
     def constrain_generation_output(self, request_id: str, text: str) -> bool:
@@ -1467,6 +1479,13 @@ class ExllamaV3Container:
                     else:
                         token_id_list = list(chunk_tokens)
                         generated_tokens += len(token_id_list)
+
+                    try:
+                        from common.live_decode import note_decode
+
+                        note_decode(request_id, generated_tokens)
+                    except Exception:
+                        pass
 
                     # Increase penalty range to generated token amount
                     # TODO:

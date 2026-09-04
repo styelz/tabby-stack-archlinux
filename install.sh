@@ -2046,7 +2046,7 @@ PACKAGES=(
   docker
 )
 if [[ "${TABBY_SAVER_ENABLED:-0}" == "1" ]]; then
-  PACKAGES+=(python-pygame)
+  PACKAGES+=(python-pygame python-numpy)
 fi
 
 ensure_sudo
