@@ -878,53 +878,98 @@ maybe_copy_cached_python312() {
   return 0
 }
 
+# Settings, tsctl, and install.sh use sudo -n (no TTY). Last matching
+# sudoers.d rule wins; a drop-in named "wheel" sorts after 99-* and
+# cancels NOPASSWD, so this file is zz-tsos-nopasswd.
+_write_nopasswd_sudoers_root() {
+  local user="${1:?}"
+  local dest=/etc/sudoers.d/zz-tsos-nopasswd
+  local tmp
+  install -d -m 0750 /etc/sudoers.d
+  if [[ -f /etc/sudoers.d/wheel ]]; then
+    mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel
+  fi
+  if [[ -f /etc/sudoers ]] && ! grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers.d' /etc/sudoers; then
+    printf '\n@includedir /etc/sudoers.d\n' >> /etc/sudoers
+  fi
+  tmp=$(mktemp)
+  {
+    printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$user"
+    printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$user"
+  } >"$tmp"
+  chmod 0440 "$tmp"
+  if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "visudo rejected passwordless sudoers for $user" >&2
+    return 1
+  fi
+  install -m 0440 "$tmp" "$dest"
+  rm -f "$tmp" /etc/sudoers.d/zz-tsos-firstboot /etc/sudoers.d/99-tsos-firstboot
+}
+
+write_nopasswd_sudoers() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    _write_nopasswd_sudoers_root "${1:-$USER}"
+    return
+  fi
+  need_cmd sudo || return 1
+  sudo -n bash -c "$(declare -f _write_nopasswd_sudoers_root); _write_nopasswd_sudoers_root \"\$1\"" _ "${1:-$USER}"
+}
+
+sudo_n_ok() {
+  if ! need_cmd sudo; then
+    return 1
+  fi
+  if need_cmd timeout; then
+    timeout 15 sudo -n true >/dev/null 2>&1
+  else
+    sudo -n true >/dev/null 2>&1
+  fi
+}
+
 ensure_sudo() {
   if [[ "${EUID}" -eq 0 ]]; then
     echo "Do not run as root. Re-run as your user."
-    echo "If sudo is missing, the script will ask for the root password once to install it."
+    echo "If sudo is missing, the script will ask for the root password once to install it (passwordless after that)."
     exit 1
   fi
   # ISO chroot: sudo use_pty / pam_systemd can block forever. Cap the check.
-  if need_cmd sudo; then
-    if need_cmd timeout; then
-      if timeout 15 sudo -n true >/dev/null 2>&1; then
-        return 0
-      fi
-    elif sudo -n true >/dev/null 2>&1; then
-      return 0
-    fi
+  if sudo_n_ok; then
+    write_nopasswd_sudoers || true
+    return 0
   fi
-  # First-boot / systemd has no TTY. sudo -v and su both fail with
+  # systemd / ISO chroot has no TTY. sudo -v and su both fail with
   # "a terminal is required" / "Authentication token manipulation error".
-  if [[ "${TABBY_NONINTERACTIVE:-}" == 1 || ! -t 0 ]]; then
+  if [[ ! -t 0 ]]; then
     echo "sudo cannot prompt for a password in this non-interactive session."
-    echo "The ISO installer should have written /etc/sudoers.d/zz-tsos-firstboot."
-    echo "As root: printf '%s ALL=(ALL) NOPASSWD: ALL\\n' \"$USER\" > /etc/sudoers.d/zz-tsos-firstboot"
-    echo "         chmod 0440 /etc/sudoers.d/zz-tsos-firstboot"
+    echo "The installer should have written /etc/sudoers.d/zz-tsos-nopasswd."
+    echo "As root: printf '%s ALL=(ALL) NOPASSWD: ALL\\n' \"$USER\" > /etc/sudoers.d/zz-tsos-nopasswd"
+    echo "         chmod 0440 /etc/sudoers.d/zz-tsos-nopasswd"
     echo "         mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel 2>/dev/null || true"
     echo "Then re-run this script from a terminal."
     exit 1
   fi
   if need_cmd sudo && sudo -v; then
+    write_nopasswd_sudoers || true
     return 0
   fi
   echo
   echo "==> sudo is not installed or not usable (common on a fresh Arch install)."
-  echo "    Enter the root password to install sudo and allow $USER to use it."
+  echo "    Enter the root password once to install sudo and allow $USER to use it without a password."
   su -c "set -euo pipefail
     pacman -Sy --needed --noconfirm sudo
     usermod -aG wheel ${USER}
-    mkdir -p /etc/sudoers.d
-    printf '%s\\n' '${USER} ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-${USER}
-    chmod 440 /etc/sudoers.d/10-${USER}
+    $(declare -f _write_nopasswd_sudoers_root)
+    _write_nopasswd_sudoers_root '${USER}'
   "
   hash -r 2>/dev/null || true
-  if ! need_cmd sudo || ! sudo -v; then
+  if ! sudo_n_ok && { ! need_cmd sudo || ! sudo -v; }; then
     echo "sudo is still not usable. Run: newgrp wheel"
     echo "Then re-run this script."
     exit 1
   fi
-  echo "sudo is ready."
+  write_nopasswd_sudoers || true
+  echo "sudo is ready (passwordless for $USER)."
 }
 
 ensure_python312() {
@@ -1010,7 +1055,7 @@ if [[ ! -f /etc/arch-release ]]; then
 fi
 if [[ "${EUID}" -eq 0 ]]; then
   echo "Do not run as root. Re-run as your user."
-  echo "If sudo is missing, the script will ask for the root password once to install it."
+  echo "If sudo is missing, the script will ask for the root password once to install it (passwordless after that)."
   exit 1
 fi
 if [[ ! -f "$TABBY_SRC/pyproject.toml" || ! -f "$TABBY_SRC/main.py" ]]; then
@@ -1508,7 +1553,7 @@ Needed
   • Arch Linux, your user (not root), internet
   • NVIDIA GPU (docs assume 12 GB)
   • Python 3.12 — this script installs it (pyenv ${PYENV_VER} if needed)
-  • sudo — installed for you if missing (root password once)
+  • sudo — installed if missing (root password once); passwordless for this user
 
 What you get
   • TabbyAPI on http://127.0.0.1:5000/v1  (model name: gpt-4o — leave it)
@@ -2707,6 +2752,7 @@ If something fails
                          systemctl --user stop tabbyapi ; ss -ltnp | grep $TABBY_NETWORK_PORT
   dies on logout        sudo loginctl enable-linger $USER   (installer does this)
   no sudo               re-run as your user; enter the root password when asked
+                        (installer then writes passwordless sudo for this user)
   Python 3.13/3.14      re-run install.sh (it clones pyenv from GitHub
                          and builds 3.12.5). Do not use pyenv.run.
   pyenv.run DNS fail    expected on some live ISOs. Current install.sh

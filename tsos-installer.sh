@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.24"
+SCRIPT_VERSION="1.0.25"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -2258,14 +2258,15 @@ fi
 echo "${TARGET_USER}:${USER_PASSWORD}" | chpasswd
 
 install -d -m 0750 /etc/sudoers.d
-# Named 10-wheel so it sorts before the chroot NOPASSWD drop-in.
+# Named 10-wheel so it sorts before the NOPASSWD drop-in.
 # A file named "wheel" sorts last and cancels NOPASSWD (sudo last-match wins).
 printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
 chmod 0440 /etc/sudoers.d/10-wheel
-# Passwordless sudo only while tabby-stack install.sh runs in the ISO chroot.
-printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-firstboot
-printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >>/etc/sudoers.d/zz-tsos-firstboot
-chmod 0440 /etc/sudoers.d/zz-tsos-firstboot
+# Passwordless sudo for the stack user (Settings systemd, tsctl, updates).
+printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$TARGET_USER" >/etc/sudoers.d/zz-tsos-nopasswd
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >>/etc/sudoers.d/zz-tsos-nopasswd
+chmod 0440 /etc/sudoers.d/zz-tsos-nopasswd
+rm -f /etc/sudoers.d/zz-tsos-firstboot /etc/sudoers.d/99-tsos-firstboot
 if [[ "$OMARCHY_MODE" != "skip" ]]; then
   printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER" >/etc/sudoers.d/99-omarchy-installer
   chmod 0440 /etc/sudoers.d/99-omarchy-installer
@@ -2833,7 +2834,7 @@ run_tabby_install_chroot() {
   [[ -f "$TARGET$stack_home/install.sh" ]] || die "missing $stack_home/install.sh on the new system"
 
   bind_tabby_cache_into_target
-  write_firstboot_sudoers "$TARGET"
+  write_nopasswd_sudoers "$TARGET"
 
   log "Installing tabby-stack in the new system (Python, venvs, model files)"
   log "This stays on the live ISO until it finishes. Full log: $stack_home/tabby-install.log"
@@ -2915,7 +2916,7 @@ or:
   refresh_tsos_conf_from_tabby_env
   install -d -m 0755 "$TARGET/var/lib/tsos"
   touch "$TARGET/var/lib/tsos/tabby-firstboot.done"
-  rm -f "$TARGET/etc/sudoers.d/zz-tsos-firstboot" "$TARGET/etc/sudoers.d/99-tsos-firstboot" || true
+  write_nopasswd_sudoers "$TARGET"
   log "tabby-stack installed. After reboot, linger starts the API."
 }
 
@@ -2939,7 +2940,7 @@ refresh_tsos_conf_from_tabby_env() {
 
 # sudoers.d is included in lexical order; last matching rule wins.
 # A drop-in named "wheel" sorts after 99-* and cancels NOPASSWD.
-write_firstboot_sudoers() {
+write_nopasswd_sudoers() {
   local root=$1
   install -d -m 0750 "$root/etc/sudoers.d"
   if [[ -f "$root/etc/sudoers.d/wheel" ]]; then
@@ -2951,8 +2952,9 @@ write_firstboot_sudoers() {
   {
     printf 'Defaults:%s !use_pty,!requiretty,!pam_session\n' "$TARGET_USER"
     printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$TARGET_USER"
-  } >"$root/etc/sudoers.d/zz-tsos-firstboot"
-  chmod 0440 "$root/etc/sudoers.d/zz-tsos-firstboot"
+  } >"$root/etc/sudoers.d/zz-tsos-nopasswd"
+  chmod 0440 "$root/etc/sudoers.d/zz-tsos-nopasswd"
+  rm -f "$root/etc/sudoers.d/zz-tsos-firstboot" "$root/etc/sudoers.d/99-tsos-firstboot"
 }
 
 configure_chroot() {
@@ -3016,11 +3018,9 @@ EOF
   else
     log "Omarchy installer finished"
   fi
-  # Omarchy removes 99-omarchy-installer when it finishes. Restore NOPASSWD
-  # only if the chroot install.sh has not finished yet.
-  if [[ ! -f "$TARGET/var/lib/tsos/tabby-firstboot.done" ]]; then
-    write_firstboot_sudoers "$TARGET"
-  fi
+  # Omarchy removes 99-omarchy-installer when it finishes. Keep passwordless
+  # sudo so Settings / tsctl / install.sh can use sudo -n after reboot.
+  write_nopasswd_sudoers "$TARGET"
 }
 
 cleanup() {
@@ -3155,7 +3155,7 @@ resume_tabby_install() {
   local stack_home="/home/${TARGET_USER}/tabby-stack"
   [[ -f "$TARGET$stack_home/install.sh" ]] || \
     die "missing $stack_home/install.sh under $TARGET"
-  write_firstboot_sudoers "$TARGET"
+  write_nopasswd_sudoers "$TARGET"
   refresh_tabby_stack_in_target
   gauge_start || true
   gauge_update 40 "Resuming tabby-stack"

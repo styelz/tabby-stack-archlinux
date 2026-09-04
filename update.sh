@@ -551,6 +551,39 @@ json.dump(
 ' "$path" <<<"$(restart_prompt_text)" || true
 }
 
+# Settings uses sudo -n from the API (no TTY). Keep the stack user passwordless.
+ensure_nopasswd_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! sudo -n true >/dev/null 2>&1; then
+    [[ -t 0 ]] || return 0
+    echo "==> sudo password once: write passwordless sudo for $USER (Settings / tsctl)"
+    sudo -v || return 0
+  fi
+  sudo -n bash -c '
+    set -euo pipefail
+    user="${1:?}"
+    dest=/etc/sudoers.d/zz-tsos-nopasswd
+    install -d -m 0750 /etc/sudoers.d
+    if [[ -f /etc/sudoers.d/wheel ]]; then
+      mv /etc/sudoers.d/wheel /etc/sudoers.d/10-wheel
+    fi
+    tmp=$(mktemp)
+    {
+      printf "Defaults:%s !use_pty,!requiretty,!pam_session\n" "$user"
+      printf "%s ALL=(ALL) NOPASSWD: ALL\n" "$user"
+    } >"$tmp"
+    chmod 0440 "$tmp"
+    if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      exit 1
+    fi
+    install -m 0440 "$tmp" "$dest"
+    rm -f "$tmp" /etc/sudoers.d/zz-tsos-firstboot /etc/sudoers.d/99-tsos-firstboot
+  ' _ "$USER" 2>/dev/null || true
+}
+
 install_tsos_motd() {
   local src="$DEST/tabbyAPI/deploy/arch/tsos-motd"
   [[ -f "$src" ]] || return 0
@@ -572,6 +605,7 @@ install_tsctl() {
 finish_git_update() {
   local new_head=""
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
+  ensure_nopasswd_sudo
   install_tsos_motd
   install_tsctl
   collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"

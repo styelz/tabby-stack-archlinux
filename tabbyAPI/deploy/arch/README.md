@@ -70,7 +70,7 @@ Catalog of Hugging Face repos: [`models.json`](models.json).
 
 It will:
 
-- Install `sudo` if missing (asks for the root password once) and add your user
+- Install `sudo` if missing (asks for the root password once) and give your user passwordless sudo
 - Install pacman packages (NVIDIA userspace, git, rsync, openssh, build tools, `dos2unix`, image/FFmpeg libs)
 - Install **Python 3.12** via pyenv 3.12.5 if `python3.12` is not on PATH (does not use system 3.13/3.14)
 - Skip any weight that already exists; copy from the cache if present; otherwise download
@@ -89,7 +89,7 @@ It does **not** install the full `cuda` toolkit. Torch and ExLlamaV3 wheels alre
 
 It uses **Python 3.12 only**. Official Arch `python` is 3.14, and `python312` is AUR-only, so if `python3.12` is missing it installs **pyenv 3.12.5** (same workaround as the first Arch boot). It will not use system 3.13/3.14.
 
-Fresh Arch often has **no sudo**. Run as your user (not root). The script asks for the root password once, installs `sudo`, and adds your user.
+Fresh Arch often has **no sudo**. Run as your user (not root). The script asks for the root password once, installs `sudo`, and gives your user passwordless sudo (`/etc/sudoers.d/zz-tsos-nopasswd`) so Settings and `tsctl` can run `systemctl` without a TTY.
 
 If `nvidia-smi` is missing it installs `nvidia-open` (Arch dropped the proprietary `nvidia` package). It will not request `nvidia` unless that name still exists in the repos.
 
@@ -204,7 +204,7 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | `~/.ssh` empty after ISO install | There was no cache key to copy, and older `install.sh` did not create one. Current `install.sh` generates `id_ed25519`. On an already-installed box: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519` and put the `.pub` on `TABBY_SSH_REMOTE`. |
 | `systemctl --user` fails | Log in graphically or `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | Tabby dies when you log out of the shell | User units need linger. `sudo loginctl enable-linger $USER` then `loginctl show-user $USER -p Linger` should be `yes` |
-| No sudo / not in wheel | Re-run as your user; enter the root password when asked. Or: `su -c 'pacman -S sudo && usermod -aG wheel USER'` |
+| No sudo / not in wheel | Re-run as your user; enter the root password when asked. The installer then writes passwordless sudo. Or: `su -c 'pacman -S sudo && usermod -aG wheel USER'` |
 | System Python is 3.13/3.14 | Expected. Re-run `install.sh` — it clones pyenv from GitHub and builds 3.12.5. Do not `pacman -S python312` (not in official repos). |
 | `curl: (6) Could not resolve host: pyenv.run` | The short domain often fails DNS in the live-ISO chroot. Current `install.sh` clones `github.com/pyenv/pyenv`. Do not re-run `tsos-installer.sh` (that wipes the disk). Resume: `tsos-installer.sh --resume-tabby`, or copy this `install.sh` into `/mnt/home/USER/tabby-stack/` and re-run `install.sh` in the chroot. |
 | Interrupted download | Re-run `install.sh`; finished files are skipped |
