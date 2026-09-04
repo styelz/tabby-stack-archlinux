@@ -179,6 +179,15 @@ async def ui_status(request: Request, _user: str = Depends(require_ui_user)):
     return await stack_status(request, username=_user)
 
 
+@router.get("/saver/state", include_in_schema=False)
+async def ui_saver_state(request: Request):
+    """Kiosk feed: loopback only, no session, no prompts or usernames."""
+    from ui.saver import require_loopback, saver_state
+
+    require_loopback(request)
+    return await saver_state()
+
+
 @router.get("/metrics", include_in_schema=False)
 async def ui_metrics(
     hours: float | None = None,

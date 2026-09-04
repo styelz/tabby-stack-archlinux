@@ -1,0 +1,36 @@
+[Unit]
+Description=Tabby-stack LLM activity screensaver (KMS kiosk)
+Documentation=file://__TABBY_DIR__/deploy/arch/README.md
+After=network-online.target systemd-user-sessions.service
+Wants=network-online.target
+# Opt-in. Do not enable if Omarchy or a graphical session owns this GPU/TTY.
+Conflicts=getty@__SAVER_TTY__.service autovt@__SAVER_TTY__.service
+ConditionPathExistsGlob=/dev/dri/card*
+
+[Service]
+Type=simple
+User=__SAVER_USER__
+SupplementaryGroups=video
+PAMName=login
+TTYPath=/dev/__SAVER_TTY__
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tabby-saver
+Environment=HOME=__SAVER_HOME__
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_RENDER_DRIVER=software
+Environment=LIBGL_ALWAYS_SOFTWARE=1
+Environment=SDL_AUDIODRIVER=dummy
+Environment=PYGAME_HIDE_SUPPORT_PROMPT=1
+Environment=TABBY_SAVER_URL=__SAVER_URL__
+UnsetEnvironment=DISPLAY WAYLAND_DISPLAY
+WorkingDirectory=__TABBY_DIR__/deploy/arch
+ExecStart=/usr/bin/python -u __TABBY_DIR__/deploy/arch/tabby-saver.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -136,6 +136,26 @@ Manual start (same as the unit):
 /path/to/tabbyAPI/venv/bin/python /path/to/tabbyAPI/watch_api.py
 ```
 
+### Optional: TTY activity screensaver (no desktop)
+
+A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal field. It is **not** a real attention heatmap. It does **not** start with install — enable it only on a headless box with a monitor. **Do not enable this if Omarchy or any graphical session already owns the GPU.**
+
+```bash
+sudo pacman -S --needed python-pygame
+# installer already writes /etc/systemd/system/tabby-saver.service (not enabled)
+sudo usermod -aG video "$USER"
+sudo systemctl enable --now tabby-saver
+sudo systemctl status tabby-saver
+journalctl -u tabby-saver -f
+```
+
+- Takes over **tty1** by default (`Conflicts=getty@tty1`). Pick another with `TABBY_SAVER_TTY=tty7` before re-running `install.sh`, or edit `TTYPath=` / `Conflicts=` in the unit and `systemctl daemon-reload`.
+- Needs `nvidia-drm.modeset=1` (Arch `nvidia-open` usually sets this) and a connector on `/dev/dri/card*`.
+- Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
+- Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.
+- Windowed probe on a machine that already has a GUI: `/usr/bin/python "$HOME/tabby-stack/tabbyAPI/deploy/arch/tabby-saver.py" --window`
+- Stop: `sudo systemctl disable --now tabby-saver`
+
 ## 4. IDE / agents
 
 Chat phrases, images, and mixed page+images: `$HOME/tabby-stack/AGENTS.md` (copied by the installer). Editor model name is **`gpt-4o`** (a label only).
@@ -182,5 +202,6 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Chat `switch to …` returns 500 / `creationflags is only supported on Windows` | Re-run `install.sh` (it patches the spawn), then `systemctl --user restart tabbyapi` |
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |
 | First start hangs / no `:5000` | Model is loading before the port opens. qwen ~65s; qwen35 ~3 min. First Linux boot may compile Triton. |
+| `tabby-saver` fails to start | Opt-in kiosk. Needs `python-pygame`, a free TTY, and `video` group. Do not enable beside Omarchy. Check `journalctl -u tabby-saver -e` and `nvidia-drm.modeset=1`. |
 
 `update.sh` is the usual way to pull new code. Re-running `install.sh` is still safe for missing weights: it skips files that already exist. A healthy venv is rebuilt only when `update.sh` runs (pip -U).
