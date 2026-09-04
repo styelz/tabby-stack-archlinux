@@ -1764,6 +1764,7 @@ PACKAGES=(
   procps-ng
   pciutils
   iproute2
+  inetutils   # hostname for the TSOS login MOTD
   ca-certificates
   openssl
   zlib
@@ -2254,6 +2255,17 @@ WANTS_DIR="$UNIT_DIR/default.target.wants"
 mkdir -p "$WANTS_DIR"
 ln -sfn ../tabbyapi.service "$WANTS_DIR/tabbyapi.service"
 echo "Enabled tabbyapi via $WANTS_DIR/tabbyapi.service" >> "$INSTALL_LOG"
+
+# Refresh the TSOS login banner when this is a tabby-stack OS install.
+if [[ -f "$DEST_TABBY/deploy/arch/tsos-motd" ]] && \
+   { [[ -e /usr/local/bin/tsos-motd ]] || [[ -d /etc/tsos ]]; }; then
+  if sudo -n install -D -m 0755 "$DEST_TABBY/deploy/arch/tsos-motd" /usr/local/bin/tsos-motd \
+       >>"$INSTALL_LOG" 2>&1; then
+    echo "Installed /usr/local/bin/tsos-motd" >> "$INSTALL_LOG"
+  else
+    echo "WARNING: could not refresh /usr/local/bin/tsos-motd" >> "$INSTALL_LOG"
+  fi
+fi
 START_NOTE=""
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && need_cmd systemctl && \
    systemctl --user daemon-reload >>"$INSTALL_LOG" 2>&1; then

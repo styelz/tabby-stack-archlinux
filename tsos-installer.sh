@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.23"
+SCRIPT_VERSION="1.0.24"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -2050,6 +2050,7 @@ install_base() {
     btrfs-progs cryptsetup
     networkmanager iwd wireless-regdb
     sudo git curl wget
+    iproute2 inetutils   # ip + hostname for the login MOTD
     limine
     vim nano man-db
     pipewire pipewire-pulse pipewire-alsa wireplumber
@@ -2337,6 +2338,8 @@ tabby-stack OS — log in as ${TARGET_USER} for API URLs and install status.
 
 EOF
 
+  # Fallback if the cloned tree has no tsos-motd. Keep in sync with
+  # tabbyAPI/deploy/arch/tsos-motd
   cat >"$TARGET/usr/local/bin/tsos-motd" <<'MOTD'
 #!/usr/bin/env bash
 # Printed on interactive login. Safe to run any time.
@@ -2357,17 +2360,81 @@ OMARCHY_MODE="${OMARCHY_MODE:-skip}"
 TABBY_MODELS="${TABBY_MODELS:-core}"
 TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
 
+ENV_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/deploy/arch/tabby.env"
+CONFIG_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/config.yml"
+TOKENS_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/api_tokens.yml"
+
 STATUS_FILE="/home/${TARGET_USER}/.config/tabby-stack/tsos-firstboot.status"
 DONE_FILE=/var/lib/tsos/tabby-firstboot.done
 RESUME_FILE="/home/${TARGET_USER}/.config/tabby-stack/install-resume.env"
 LOG_FILE="${TABBY_INSTALL_ROOT}/tabby-install.log"
 FIRSTBOOT_LOG=/var/log/tsos-firstboot.log
 
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  C0=$'\033[0m'
+  C_HDR=$'\033[1;36m'
+  C_KEY=$'\033[1;37m'
+  C_DIM=$'\033[2m'
+  C_GREEN=$'\033[1;32m'
+  C_YELLOW=$'\033[1;33m'
+  C_RED=$'\033[1;31m'
+else
+  C0= C_HDR= C_KEY= C_DIM= C_GREEN= C_YELLOW= C_RED=
+fi
+
+line() {
+  printf '  %s%-12s%s %s\n' "$C_KEY" "$1" "$C0" "$2"
+}
+
+note() {
+  printf '  %s%-12s%s %s%s%s\n' "$C_KEY" "" "$C0" "$C_DIM" "$1" "$C0"
+}
+
+rule() {
+  printf '%s================================================================%s\n' "$C_HDR" "$C0"
+}
+
+paint() {
+  printf '%s%s%s' "$1" "$2" "$C0"
+}
+
+host_name() {
+  local h=""
+  if [[ -r /etc/hostname ]]; then
+    h=$(tr -d ' \t\r\n' </etc/hostname)
+  fi
+  if [[ -z "$h" ]] && command -v hostnamectl >/dev/null 2>&1; then
+    h=$(hostnamectl --static 2>/dev/null || true)
+  fi
+  if [[ -z "$h" ]]; then
+    h=$(uname -n 2>/dev/null || true)
+  fi
+  if [[ -z "$h" ]] && command -v hostname >/dev/null 2>&1; then
+    h=$(hostname 2>/dev/null || true)
+  fi
+  if [[ -z "$h" && -r /proc/sys/kernel/hostname ]]; then
+    h=$(tr -d ' \t\r\n' </proc/sys/kernel/hostname)
+  fi
+  if [[ -z "$h" && -n "${TARGET_HOSTNAME:-}" ]]; then
+    h="$TARGET_HOSTNAME"
+  fi
+  printf '%s' "${h:-unknown}"
+}
+
 lan_ips() {
   if command -v ip >/dev/null 2>&1; then
     ip -4 -o addr show scope global 2>/dev/null | awk '{
       gsub(/\/.*/, "", $4)
       if ($4 != "") { if (n++) printf " "; printf "%s", $4 }
+    }'
+  elif command -v hostname >/dev/null 2>&1; then
+    hostname -I 2>/dev/null | awk '{
+      for (i = 1; i <= NF; i++) {
+        if ($i !~ /^127\./ && $i != "::1") {
+          if (n++) printf " "
+          printf "%s", $i
+        }
+      }
     }'
   fi
 }
@@ -2377,28 +2444,28 @@ health_line() {
   local body
   body=$(curl -sf --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
   if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
-    printf 'healthy'
+    paint "$C_GREEN" "healthy"
   elif [[ -n "$body" ]]; then
-    printf 'up (not healthy yet)'
+    paint "$C_YELLOW" "up (not healthy yet)"
   else
-    printf 'not listening'
+    paint "$C_RED" "not listening"
   fi
 }
 
 install_status() {
   if [[ -f "$DONE_FILE" ]]; then
-    printf 'finished'
+    paint "$C_GREEN" "finished"
     return 0
   fi
   if [[ -f "$RESUME_FILE" ]]; then
-    printf 'waiting for NVIDIA reboot resume'
+    paint "$C_YELLOW" "waiting for NVIDIA reboot resume"
     return 0
   fi
   if [[ -f "$STATUS_FILE" ]]; then
-    tr -d '\n' <"$STATUS_FILE"
+    paint "$C_YELLOW" "$(tr -d '\n' <"$STATUS_FILE")"
     return 0
   fi
-  printf 'not finished on the live ISO'
+  paint "$C_YELLOW" "not finished on the live ISO"
 }
 
 enc_label() {
@@ -2439,55 +2506,53 @@ else
   public_line="(none — local / LAN only)"
 fi
 
-cat <<EOF
+printf '\n'
+rule
+printf '  %stabby-stack OS%s\n' "$C_HDR" "$C0"
+rule
+printf '\n'
 
-================================================================
-  tabby-stack OS
-================================================================
-
-  Host:       $(hostname 2>/dev/null || echo unknown)
-  User:       ${TARGET_USER}
-  Disk:       $(enc_label)
-  Desktop:    $(omarchy_label)
-  Models:     ${TABBY_MODELS}
-
-  Install:    ${TABBY_INSTALL_ROOT}
-  API:        ${api_url}
-  UI:         http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui
-  Health:     curl -sS http://127.0.0.1:${TABBY_NETWORK_PORT}/health
-  Editor:     http://<this-host>:${TABBY_NETWORK_PORT}/v1
-  Model name: gpt-4o   (leave it — compatibility label only)
-  Public:     ${public_line}
-
-  Sign in to the UI with this Linux account (${TARGET_USER}).
-
-  Status:     $(install_status)
-  API health: $(health_line)
-  Unit:       systemctl --user status tabbyapi
-  Logs:       journalctl --user -u tabbyapi -f
-  Update:     bash ${TABBY_INSTALL_ROOT}/update.sh
-  How-to:     ${TABBY_INSTALL_ROOT}/tabbyAPI/HOW-TO-ARCH.txt
-  MOTD:       tsos-motd
-
-EOF
+line "Host:" "$(host_name)"
+line "User:" "${TARGET_USER}"
+line "Disk:" "$(enc_label)"
+line "Desktop:" "$(omarchy_label)"
+line "Models:" "${TABBY_MODELS}"
+printf '\n'
+line "Install:" "${TABBY_INSTALL_ROOT}"
+line "API:" "${api_url}"
+line "UI:" "http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui"
+line "Health:" "curl -sS http://127.0.0.1:${TABBY_NETWORK_PORT}/health"
+line "Editor:" "http://<this-host>:${TABBY_NETWORK_PORT}/v1"
+line "Model name:" "gpt-4o   (leave it — compatibility label only)"
+line "Public:" "${public_line}"
+printf '\n'
+line "Password:" "Linux login for ${TARGET_USER} — that is the UI / API key"
+note "change with: passwd"
+line "Env:" "${ENV_FILE}"
+line "Config:" "${CONFIG_FILE}"
+note "Settings in /v1/ui (admin) edits the same files"
+line "Extra keys:" "${TOKENS_FILE}"
+printf '\n'
+line "Status:" "$(install_status)"
+line "API health:" "$(health_line)"
+line "Unit:" "systemctl --user status tabbyapi"
+line "Logs:" "journalctl --user -u tabbyapi -f"
+line "Update:" "bash ${TABBY_INSTALL_ROOT}/update.sh"
+line "How-to:" "${TABBY_INSTALL_ROOT}/tabbyAPI/HOW-TO-ARCH.txt"
+line "MOTD:" "tsos-motd"
+printf '\n'
 
 if [[ "$ENCRYPT" == "1" || "$ENCRYPT" == "yes" ]]; then
-  cat <<EOF
-  Disk unlock: enter the LUKS password at the Limine/unlock prompt.
-
-EOF
+  printf '  %sDisk unlock:%s enter the LUKS password at the Limine/unlock prompt.\n\n' "$C_YELLOW" "$C0"
 fi
 
 if [[ ! -f "$DONE_FILE" ]]; then
-  cat <<EOF
-  tabby-stack did not finish on the live ISO. Re-run tsos-installer.sh
-  from the Arch ISO — install.sh is not run after reboot.
-  Log:    ${LOG_FILE}
-
-EOF
+  printf '  %stabby-stack did not finish on the live ISO. Re-run tsos-installer.sh%s\n' "$C_YELLOW" "$C0"
+  printf '  %sfrom the Arch ISO — install.sh is not run after reboot.%s\n' "$C_YELLOW" "$C0"
+  printf '  Log:    %s\n\n' "${LOG_FILE}"
 fi
 
-printf '%s\n' "================================================================"
+rule
 printf '\n'
 MOTD
   chmod 0755 "$TARGET/usr/local/bin/tsos-motd"
@@ -2506,6 +2571,7 @@ PROFILE
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
   overlay_local_tabby_sources "$TARGET$stack_home"
+  install_tsos_motd_from_tree
 }
 
 # curl | bash clones GitHub. A local tree (this script's directory, or
@@ -2591,6 +2657,14 @@ refresh_tabby_stack_in_target() {
     fi
   fi
   overlay_local_tabby_sources "$TARGET$stack_home"
+  install_tsos_motd_from_tree
+}
+
+# Prefer the tree copy so update.sh / overlay can refresh the login banner.
+install_tsos_motd_from_tree() {
+  local src="$TARGET/home/${TARGET_USER}/tabby-stack/tabbyAPI/deploy/arch/tsos-motd"
+  [[ -f "$src" ]] || return 0
+  install -m 0755 "$src" "$TARGET/usr/local/bin/tsos-motd"
 }
 
 # If the weights cache is under $TARGET (often /mnt/usb), mounting the new

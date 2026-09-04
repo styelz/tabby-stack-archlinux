@@ -551,9 +551,18 @@ json.dump(
 ' "$path" <<<"$(restart_prompt_text)" || true
 }
 
+install_tsos_motd() {
+  local src="$DEST/tabbyAPI/deploy/arch/tsos-motd"
+  [[ -f "$src" ]] || return 0
+  if [[ -e /usr/local/bin/tsos-motd || -d /etc/tsos ]]; then
+    sudo -n install -D -m 0755 "$src" /usr/local/bin/tsos-motd 2>/dev/null || true
+  fi
+}
+
 finish_git_update() {
   local new_head=""
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
+  install_tsos_motd
   collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"
   printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]} restart=${RESTART_API:-auto}" >> "$UPDATE_LOG"
   write_restart_prompt_json

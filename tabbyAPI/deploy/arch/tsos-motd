@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# Printed on interactive login. Safe to run any time.
+set -euo pipefail
+
+CONF=/etc/tsos/install.conf
+if [[ -f "$CONF" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONF"
+fi
+
+TARGET_USER="${TARGET_USER:-$USER}"
+TABBY_INSTALL_ROOT="${TABBY_INSTALL_ROOT:-$HOME/tabby-stack}"
+TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+ENCRYPT="${ENCRYPT:-1}"
+OMARCHY_MODE="${OMARCHY_MODE:-skip}"
+TABBY_MODELS="${TABBY_MODELS:-core}"
+TABBY_PUBLIC_BASE="${TABBY_PUBLIC_BASE:-}"
+
+ENV_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/deploy/arch/tabby.env"
+CONFIG_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/config.yml"
+TOKENS_FILE="${TABBY_INSTALL_ROOT}/tabbyAPI/api_tokens.yml"
+
+STATUS_FILE="/home/${TARGET_USER}/.config/tabby-stack/tsos-firstboot.status"
+DONE_FILE=/var/lib/tsos/tabby-firstboot.done
+RESUME_FILE="/home/${TARGET_USER}/.config/tabby-stack/install-resume.env"
+LOG_FILE="${TABBY_INSTALL_ROOT}/tabby-install.log"
+FIRSTBOOT_LOG=/var/log/tsos-firstboot.log
+
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  C0=$'\033[0m'
+  C_HDR=$'\033[1;36m'
+  C_KEY=$'\033[1;37m'
+  C_DIM=$'\033[2m'
+  C_GREEN=$'\033[1;32m'
+  C_YELLOW=$'\033[1;33m'
+  C_RED=$'\033[1;31m'
+else
+  C0= C_HDR= C_KEY= C_DIM= C_GREEN= C_YELLOW= C_RED=
+fi
+
+line() {
+  printf '  %s%-12s%s %s\n' "$C_KEY" "$1" "$C0" "$2"
+}
+
+note() {
+  printf '  %s%-12s%s %s%s%s\n' "$C_KEY" "" "$C0" "$C_DIM" "$1" "$C0"
+}
+
+rule() {
+  printf '%s================================================================%s\n' "$C_HDR" "$C0"
+}
+
+paint() {
+  printf '%s%s%s' "$1" "$2" "$C0"
+}
+
+host_name() {
+  local h=""
+  if [[ -r /etc/hostname ]]; then
+    h=$(tr -d ' \t\r\n' </etc/hostname)
+  fi
+  if [[ -z "$h" ]] && command -v hostnamectl >/dev/null 2>&1; then
+    h=$(hostnamectl --static 2>/dev/null || true)
+  fi
+  if [[ -z "$h" ]]; then
+    h=$(uname -n 2>/dev/null || true)
+  fi
+  if [[ -z "$h" ]] && command -v hostname >/dev/null 2>&1; then
+    h=$(hostname 2>/dev/null || true)
+  fi
+  if [[ -z "$h" && -r /proc/sys/kernel/hostname ]]; then
+    h=$(tr -d ' \t\r\n' </proc/sys/kernel/hostname)
+  fi
+  if [[ -z "$h" && -n "${TARGET_HOSTNAME:-}" ]]; then
+    h="$TARGET_HOSTNAME"
+  fi
+  printf '%s' "${h:-unknown}"
+}
+
+lan_ips() {
+  if command -v ip >/dev/null 2>&1; then
+    ip -4 -o addr show scope global 2>/dev/null | awk '{
+      gsub(/\/.*/, "", $4)
+      if ($4 != "") { if (n++) printf " "; printf "%s", $4 }
+    }'
+  elif command -v hostname >/dev/null 2>&1; then
+    hostname -I 2>/dev/null | awk '{
+      for (i = 1; i <= NF; i++) {
+        if ($i !~ /^127\./ && $i != "::1") {
+          if (n++) printf " "
+          printf "%s", $i
+        }
+      }
+    }'
+  fi
+}
+
+health_line() {
+  local url="http://127.0.0.1:${TABBY_NETWORK_PORT}/health"
+  local body
+  body=$(curl -sf --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
+  if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
+    paint "$C_GREEN" "healthy"
+  elif [[ -n "$body" ]]; then
+    paint "$C_YELLOW" "up (not healthy yet)"
+  else
+    paint "$C_RED" "not listening"
+  fi
+}
+
+install_status() {
+  if [[ -f "$DONE_FILE" ]]; then
+    paint "$C_GREEN" "finished"
+    return 0
+  fi
+  if [[ -f "$RESUME_FILE" ]]; then
+    paint "$C_YELLOW" "waiting for NVIDIA reboot resume"
+    return 0
+  fi
+  if [[ -f "$STATUS_FILE" ]]; then
+    paint "$C_YELLOW" "$(tr -d '\n' <"$STATUS_FILE")"
+    return 0
+  fi
+  paint "$C_YELLOW" "not finished on the live ISO"
+}
+
+enc_label() {
+  if [[ "$ENCRYPT" == "1" || "$ENCRYPT" == "yes" ]]; then
+    printf 'LUKS + btrfs'
+  else
+    printf 'btrfs (unencrypted)'
+  fi
+}
+
+omarchy_label() {
+  case "$OMARCHY_MODE" in
+    now) printf 'installed during setup (or run: install-omarchy)' ;;
+    *) printf 'not selected — optional later: install-omarchy' ;;
+  esac
+}
+
+listen_urls() {
+  local host="$TABBY_NETWORK_HOST"
+  local port="$TABBY_NETWORK_PORT"
+  if [[ "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    local ips
+    ips=$(lan_ips)
+    if [[ -n "$ips" ]]; then
+      printf 'http://%s:%s  (also LAN: %s)' "127.0.0.1" "$port" "$ips"
+    else
+      printf 'http://127.0.0.1:%s  (listening on all interfaces)' "$port"
+    fi
+  else
+    printf 'http://%s:%s' "$host" "$port"
+  fi
+}
+
+api_url=$(listen_urls)
+if [[ -n "$TABBY_PUBLIC_BASE" ]]; then
+  public_line="$TABBY_PUBLIC_BASE"
+else
+  public_line="(none — local / LAN only)"
+fi
+
+printf '\n'
+rule
+printf '  %stabby-stack OS%s\n' "$C_HDR" "$C0"
+rule
+printf '\n'
+
+line "Host:" "$(host_name)"
+line "User:" "${TARGET_USER}"
+line "Disk:" "$(enc_label)"
+line "Desktop:" "$(omarchy_label)"
+line "Models:" "${TABBY_MODELS}"
+printf '\n'
+line "Install:" "${TABBY_INSTALL_ROOT}"
+line "API:" "${api_url}"
+line "UI:" "http://127.0.0.1:${TABBY_NETWORK_PORT}/v1/ui"
+line "Health:" "curl -sS http://127.0.0.1:${TABBY_NETWORK_PORT}/health"
+line "Editor:" "http://<this-host>:${TABBY_NETWORK_PORT}/v1"
+line "Model name:" "gpt-4o   (leave it — compatibility label only)"
+line "Public:" "${public_line}"
+printf '\n'
+line "Password:" "Linux login for ${TARGET_USER} — that is the UI / API key"
+note "change with: passwd"
+line "Env:" "${ENV_FILE}"
+line "Config:" "${CONFIG_FILE}"
+note "Settings in /v1/ui (admin) edits the same files"
+line "Extra keys:" "${TOKENS_FILE}"
+printf '\n'
+line "Status:" "$(install_status)"
+line "API health:" "$(health_line)"
+line "Unit:" "systemctl --user status tabbyapi"
+line "Logs:" "journalctl --user -u tabbyapi -f"
+line "Update:" "bash ${TABBY_INSTALL_ROOT}/update.sh"
+line "How-to:" "${TABBY_INSTALL_ROOT}/tabbyAPI/HOW-TO-ARCH.txt"
+line "MOTD:" "tsos-motd"
+printf '\n'
+
+if [[ "$ENCRYPT" == "1" || "$ENCRYPT" == "yes" ]]; then
+  printf '  %sDisk unlock:%s enter the LUKS password at the Limine/unlock prompt.\n\n' "$C_YELLOW" "$C0"
+fi
+
+if [[ ! -f "$DONE_FILE" ]]; then
+  printf '  %stabby-stack did not finish on the live ISO. Re-run tsos-installer.sh%s\n' "$C_YELLOW" "$C0"
+  printf '  %sfrom the Arch ISO — install.sh is not run after reboot.%s\n' "$C_YELLOW" "$C0"
+  printf '  Log:    %s\n\n' "${LOG_FILE}"
+fi
+
+rule
+printf '\n'
