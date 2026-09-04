@@ -32,8 +32,8 @@ You will be asked:
 1. **Arch install root** — Linux disk, default `$HOME/tabby-stack` (TabbyAPI and ComfyUI go underneath). Not a USB or other removable mount.
 2. **Weights cache** — Hugging Face, USB, or a custom path
 3. **Model set** — `core` (qwen 9B + Flux + Qwen-Image + embedder) or `all` (every `switch to …` profile)
-4. **Listen URLs** — TabbyAPI host/port and ComfyUI URL (defaults `127.0.0.1:5000` and `http://127.0.0.1:8188`)
-5. **Public URL / tunnel** — optional public API base, SSH remote, forward spec, and key
+4. **Listen URLs** — TabbyAPI bind address (menu of this machine's IPs: `127.0.0.1`, LAN NICs, or `0.0.0.0`), port, and ComfyUI URL (default `http://127.0.0.1:8188`)
+5. **Public URL / tunnel** — optional public API base, SSH remote, forward spec, and key. The key screen shows the host and the path `https://... -> SSH reverse port -> TabbyAPI`. Upload the matching `.pub` to that host.
 6. **Confirm** — review paths and URLs before anything is installed
 
 Non-interactive (no menus):

@@ -871,6 +871,107 @@ Choose the machine disk, not a second installer stick." \
   done
 }
 
+# "addr iface" lines for the listen-host menu. Always returns 0.
+listen_ipv4_ifaces() {
+  if need_cmd ip; then
+    ip -4 -o addr show scope global 2>/dev/null | awk '{
+      iface=$2
+      gsub(/\/.*/, "", $4)
+      if ($4 == "" || index($4, ":")) next
+      print $4, iface
+    }' || true
+    return 0
+  fi
+  if need_cmd hostname; then
+    hostname -I 2>/dev/null | tr ' ' '\n' | awk '
+      /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $0 !~ /^127\./ { print $1, "lan" }
+    ' || true
+  fi
+  return 0
+}
+
+ui_listen_host() {
+  local title="$1"
+  local current="${2:-127.0.0.1}"
+  local -a items=()
+  local seen="|"
+  local addr iface choice
+  _listen_host_add() {
+    local ip="$1" desc="$2"
+    [[ -n "$ip" ]] || return 0
+    [[ "$seen" == *"|$ip|"* ]] && return 0
+    seen+="${ip}|"
+    items+=("$ip" "$desc")
+  }
+  case "$current" in
+    127.0.0.1) _listen_host_add "$current" "this machine only (usual)" ;;
+    0.0.0.0) _listen_host_add "$current" "all interfaces — LAN clients can connect" ;;
+    "") ;;
+    *) _listen_host_add "$current" "current choice" ;;
+  esac
+  _listen_host_add "127.0.0.1" "this machine only (usual)"
+  while read -r addr iface; do
+    _listen_host_add "$addr" "this NIC (${iface})"
+  done < <(listen_ipv4_ifaces)
+  _listen_host_add "0.0.0.0" "all interfaces — LAN clients can connect"
+  _listen_host_add "other" "type a different address"
+  unset -f _listen_host_add
+  choice="$(ui_menu "$title" \
+"Which address should TabbyAPI bind on? Pick from this machine.
+
+  127.0.0.1  — this machine only (usual)
+  a LAN IP   — only that NIC
+  0.0.0.0    — other devices on the LAN can connect
+
+Do not pick a public hostname. The TCP port is the next screen.
+On the live ISO these IPs are the installer NIC; 0.0.0.0 still
+means “all interfaces” after reboot." \
+    "${items[@]}")"
+  if [[ "$choice" == "other" ]]; then
+    choice="$(ui_input "$title" \
+"Address TabbyAPI binds on.
+
+Examples: 127.0.0.1 (this machine), 0.0.0.0 (all NICs), or a LAN IPv4.
+Do not put a public hostname here." \
+      "${current:-127.0.0.1}")"
+  fi
+  printf '%s' "${choice:-127.0.0.1}"
+}
+
+ssh_tunnel_help() {
+  local remote="${1:-${TABBY_SSH_REMOTE:-user@your-vps}}"
+  local spec="${2:-${TABBY_SSH_FORWARD:-}}"
+  local public="${3:-${TABBY_PUBLIC_BASE:-}}"
+  local port="${TABBY_NETWORK_PORT:-5000}"
+  local bind="127.0.0.1" rport="12345" lhost="127.0.0.1" lport="$port"
+  local a="" b="" c="" d=""
+  [[ -n "$spec" ]] || spec="127.0.0.1:12345:127.0.0.1:${port}"
+  IFS=: read -r a b c d <<< "$spec" || true
+  if [[ -n "${d:-}" ]]; then
+    bind=$a; rport=$b; lhost=$c; lport=$d
+  elif [[ -n "${c:-}" ]]; then
+    bind="0.0.0.0"; rport=$a; lhost=$b; lport=$c
+  fi
+  [[ -n "$public" ]] || public="https://YOUR-HOST/v1"
+  cat <<EOF
+What this tunnel is for
+
+  ${public}
+    →  SSH reverse listen on ${remote}
+       (${bind}:${rport} on that host)
+    →  TabbyAPI on this GPU box
+       (${lhost}:${lport})
+
+Editors and the browser hit the HTTPS URL (or that SSH host).
+They do not connect to this machine's LAN IP. This box opens
+ssh -R and holds the path open.
+
+You must upload this account's public key to ${remote}
+(authorized_keys on that host) so the tunnel can log in.
+EOF
+  return 0
+}
+
 # Asked when --config is not passed. Defaults come from the script
 # (or from a flag / env var if you already set one).
 prompt_settings() {
@@ -922,14 +1023,25 @@ prompt_settings_text() {
 
   TABBY_CACHE=$(ask "Weights cache path (optional; Hugging Face if blank)" "$TABBY_CACHE")
   TABBY_MODELS=$(ask_until "Models (core / all / comma-separated ids)" "${TABBY_MODELS:-core}" valid_models)
-  TABBY_NETWORK_HOST=$(ask "TabbyAPI listen address" "${TABBY_NETWORK_HOST:-127.0.0.1}")
+  TABBY_NETWORK_HOST=$(ui_listen_host "TabbyAPI listen address" "${TABBY_NETWORK_HOST:-127.0.0.1}")
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
   TABBY_NETWORK_PORT=$(ask_until "TabbyAPI listen port" "${TABBY_NETWORK_PORT:-5000}" valid_port)
   COMFYUI_URL=$(ask "ComfyUI URL" "${COMFYUI_URL:-http://127.0.0.1:8188}")
   TABBY_PUBLIC_BASE=$(ask "Public URL (blank = local only)" "${TABBY_PUBLIC_BASE}")
+  printf '%s\n' >/dev/tty \
+"Optional SSH login for a reverse tunnel (user@host).
+Blank = API stays on this machine. If you set a host you will
+need to put this box's public key in authorized_keys there."
   TABBY_SSH_REMOTE=$(ask "SSH tunnel target (blank = none)" "${TABBY_SSH_REMOTE}")
   if [[ -n "$TABBY_SSH_REMOTE" ]]; then
+    printf '%s\n' >/dev/tty \
+"ssh -R spec: bind:remote_port:local_host:local_port
+Default listens on ${TABBY_SSH_REMOTE} port 12345 and lands
+on TabbyAPI here at 127.0.0.1:${TABBY_NETWORK_PORT}."
     TABBY_SSH_FORWARD=$(ask "SSH -R spec" \
       "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
+    ssh_tunnel_help "$TABBY_SSH_REMOTE" "$TABBY_SSH_FORWARD" "$TABBY_PUBLIC_BASE" >/dev/tty
+    printf '\nUpload the matching .pub to %s after install.\n' "$TABBY_SSH_REMOTE" >/dev/tty
     TABBY_SSH_KEY=$(ask "SSH key path" \
       "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}")
   else
@@ -1157,13 +1269,7 @@ If a later download returns 401 or 403:
 You do not need a token for qwen / Flux / Qwen-Image."
   fi
 
-  TABBY_NETWORK_HOST=$(ui_input "8 / 10  -  API listen address" \
-"Address TabbyAPI binds on. Clients (and Cursor) use this host.
-
-  127.0.0.1  — this machine only (usual)
-  0.0.0.0    — other devices on the LAN can connect
-
-Do not put a public hostname here." \
+  TABBY_NETWORK_HOST=$(ui_listen_host "8 / 10  -  API listen address" \
     "${TABBY_NETWORK_HOST:-127.0.0.1}")
   TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 
@@ -1194,26 +1300,42 @@ Leave blank if you do not have a reverse proxy or tunnel." \
     "${TABBY_PUBLIC_BASE}")
 
   TABBY_SSH_REMOTE=$(ui_input "10 / 10  -  SSH tunnel" \
-"Optional SSH target that forwards a remote port to TabbyAPI.
+"Optional SSH login for a reverse tunnel (user@host).
 
-Example:  user@host.example
+Leave blank if the API should stay on this machine only.
 
-Blank = no tunnel (API stays on this machine).
-If you set a host, the next screens ask for the forward spec and key." \
+If you set a host, the next screens ask how traffic reaches
+TabbyAPI, then which key this box uses to log in. You will
+need to put the matching public key in authorized_keys on
+that host." \
     "${TABBY_SSH_REMOTE}")
   if [[ -n "$TABBY_SSH_REMOTE" ]]; then
     TABBY_SSH_FORWARD=$(ui_input "10 / 10  -  SSH forward" \
-"ssh -R spec: remote listen → local TabbyAPI.
+"ssh -R spec: where ${TABBY_SSH_REMOTE} listens, and where
+that lands on this GPU box.
 
-Default matches the listen port you chose (${TABBY_NETWORK_PORT})." \
+  bind:remote_port:local_host:local_port
+
+Default 127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT} means:
+  On ${TABBY_SSH_REMOTE}, listen on 127.0.0.1:12345
+  Forward to TabbyAPI here on 127.0.0.1:${TABBY_NETWORK_PORT}
+
+If HTTPS sits in front of that remote port, that is the
+Public URL from the previous screen." \
       "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
     TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
-    TABBY_SSH_KEY=$(ui_input "10 / 10  -  SSH key" \
-"Key file for ${TABBY_SSH_REMOTE}.
+    ui_msg "10 / 10  -  SSH key" \
+"Private key this GPU box uses to log in to ${TABBY_SSH_REMOTE}.
+
+$(ssh_tunnel_help "$TABBY_SSH_REMOTE" "$TABBY_SSH_FORWARD" "$TABBY_PUBLIC_BASE")
 
 The installer copies that key from a weights cache if present,
-otherwise it creates a new ed25519 key. Install the .pub on the
-tunnel host. Use this path unless your key has another name." \
+otherwise it creates a new ed25519 key. After install, copy the
+matching .pub onto ${TABBY_SSH_REMOTE}."
+    TABBY_SSH_KEY=$(ui_input "10 / 10  -  SSH key" \
+"Path to that private key for ${TABBY_SSH_REMOTE}.
+
+Default is fine unless your key has another name." \
       "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}")
     TABBY_SSH_KEY="${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}"
   else
