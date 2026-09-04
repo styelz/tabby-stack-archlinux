@@ -488,10 +488,12 @@ def list_files(username: str, chat_id: str) -> list[dict[str, Any]]:
         rel = path.relative_to(root.resolve()).as_posix()
         suffix = path.suffix.lower()
         image = suffix in IMAGE_SUFFIXES
+        info = path.stat()
         rows.append(
             {
                 "path": rel,
-                "size": path.stat().st_size,
+                "size": info.st_size,
+                "mtime": info.st_mtime_ns,
                 "kind": "image" if image else "text",
                 "raster": raster_file_ok(path) if image else False,
                 "editable": suffix in TEXT_SUFFIXES,

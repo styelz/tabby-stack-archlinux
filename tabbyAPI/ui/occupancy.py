@@ -146,6 +146,10 @@ def snapshot(username: str = "") -> dict[str, Any]:
             if who and waiter.username == who:
                 chat_id = waiter.chat_id or ""
                 break
+    if not chat_id and who:
+        job = _image_job()
+        if job and str(getattr(job, "owner", "") or "") == who:
+            chat_id = str(getattr(job, "chat_id", "") or "")
     try:
         from ui.flight import snapshot_for
 

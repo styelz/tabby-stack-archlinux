@@ -148,7 +148,10 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('id="chat-waiting-mark"', self.src)
         self.assertIn('function applyStackOccupancy(data, working, kind)', self.src)
         self.assertNotIn("function showIdleOccupancy(hint)", self.src)
-        self.assertIn("queued && !(mine && here && !stackWaiting)", self.src)
+        self.assertIn("queued && !ownChat", self.src)
+        self.assertIn("function summaryFromCodeSteps(steps)", self.src)
+        self.assertIn("Wrote ${unique[0]}.", self.src)
+        self.assertIn("mtime === (Number(tab.mtime) || 0)", self.src)
         utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
         app = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.js"
         status = Path(__file__).resolve().parents[1] / "ui" / "static" / "status.js"

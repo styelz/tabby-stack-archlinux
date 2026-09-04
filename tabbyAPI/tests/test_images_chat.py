@@ -15,6 +15,7 @@ from endpoints.OAI.types.chat_completion import (
 )
 from endpoints.OAI.types.tools import Tool, ToolCall
 from images.chat import (
+    _dest_exists,
     _explicit_new_rasters,
     _named_image_dests,
     _plan_asset_dests,
@@ -93,6 +94,12 @@ def _job(**kwargs):
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
+
+
+class DestExistsTests(unittest.TestCase):
+    def test_png_dest_matches_webp_on_disk(self):
+        self.assertTrue(_dest_exists("images/logo.png", ["images/logo.webp"]))
+        self.assertFalse(_dest_exists("images/logo.png", ["images/hero.webp"]))
 
 
 class NestedGenerateHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -661,7 +668,7 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_called()
         classify.assert_awaited()
         self.assertIn(
-            "These PNG files exist at:",
+            "These image files exist at:",
             data.messages[-1].content,
         )
 
@@ -886,6 +893,65 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         launch.assert_awaited()
         args = response.choices[0].message.tool_calls[0].function.arguments
         self.assertIn("generated-logo.png", args)
+
+    async def test_coding_followup_holds_until_named_pages_exist(self):
+        job = _job(id="abc-123", status="coding", code_turns=2)
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(
+                    role="user",
+                    content=(
+                        "Create a website with index.html, tours.html, "
+                        "about.html, and visit.html plus a logo"
+                    ),
+                ),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content="tabby-image-job: abc-123",
+                ),
+                ChatCompletionMessage(
+                    role="tool",
+                    content="wrote index.html",
+                    tool_call_id="call_1",
+                ),
+            ]
+        )
+        replies = [
+            ChatCompletionResponse(
+                model="gpt-4o",
+                choices=[
+                    ChatCompletionRespChoice(
+                        finish_reason="stop",
+                        message=ChatCompletionMessage(
+                            role="assistant",
+                            content="page is ready",
+                        ),
+                    )
+                ],
+            ),
+            _write_code_response(path="tours.html"),
+        ]
+
+        async def fake_write(_data, _handler):
+            return replies.pop(0)
+
+        with (
+            mock.patch("images.chat.get_mcp_image_job", return_value=job),
+            mock.patch("images.chat.note_coding_progress", return_value=3),
+            mock.patch("images.chat._write_site_code", side_effect=fake_write),
+            mock.patch("images.chat.launch_mcp_image_job", new=mock.AsyncMock()) as launch,
+            mock.patch("images.chat.start_mcp_image_job", new=mock.AsyncMock()) as start,
+            mock.patch("images.chat.wait_until_done", new=mock.AsyncMock()) as wait,
+        ):
+            job.code_turns = 3
+            response = await handle(data, "https://gpu.example/v1")
+        start.assert_not_called()
+        launch.assert_not_awaited()
+        wait.assert_not_awaited()
+        message = response.choices[0].message
+        self.assertEqual(message.tool_calls[0].function.name, "Write")
+        self.assertIn("tours.html", message.tool_calls[0].function.arguments)
+        self.assertEqual(replies, [])
 
     async def test_running_job_without_id_does_not_say_no_llm(self):
         busy = _job(id="abc-123", status="running")

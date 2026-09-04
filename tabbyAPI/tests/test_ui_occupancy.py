@@ -87,9 +87,12 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
             await occupancy.release(oid)
 
     async def test_image_job_fills_snapshot_without_occupant(self):
-        job = SimpleNamespace(status="running", phase="generating", owner="alice")
+        job = SimpleNamespace(
+            status="running", phase="generating", owner="alice", chat_id="c1"
+        )
         with mock.patch("images.jobs.active_mcp_image_job", return_value=job):
             snap = occupancy.snapshot("bob")
+            mine = occupancy.snapshot("alice")
         self.assertTrue(snap["busy"])
         self.assertEqual(snap["kind"], "image")
         self.assertEqual(snap["occupant"], "alice")
@@ -97,6 +100,9 @@ class OccupancySnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snap["queued"])
         self.assertIn("alice is generating images", snap["hint"])
         self.assertNotIn("You are in a queue", snap["hint"])
+        self.assertTrue(mine["mine"])
+        self.assertEqual(mine["chat_id"], "c1")
+        self.assertEqual(mine["hint"], occupancy.MINE_HINT)
 
     async def test_switch_lock_is_externally_busy(self):
         with mock.patch("common.phrase_switch.switch_lock_held", return_value=True):

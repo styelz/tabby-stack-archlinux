@@ -253,16 +253,12 @@ def _dest_exists(dest: str, existing: list[str]) -> bool:
         return False
     dest_name = Path(wanted).name.lower()
     dest_stem = _raster_stem(wanted)
-    dest_suffix = Path(wanted).suffix.lower()
     dest_stems = {dest_stem}
     if dest_stem in _HERO_STEMS:
         dest_stems |= _HERO_STEMS
     for path in existing:
         have = str(path or "").strip().replace("\\", "/").lstrip("/")
         if not have:
-            continue
-        have_suffix = Path(have).suffix.lower()
-        if dest_suffix and have_suffix and dest_suffix != have_suffix:
             continue
         if have == wanted or have.endswith("/" + wanted) or wanted.endswith("/" + have):
             return True
@@ -443,10 +439,27 @@ def _explicit_new_rasters(data: ChatCompletionRequest) -> bool:
     return bool(_plan_asset_rasters(assistant))
 
 
+def _workspace_dest_facts(job) -> str:
+    """Prefer on-disk workspace copies (.webp) over the job's original .png dests."""
+    names = [
+        str(path).strip()
+        for path in (getattr(job, "workspace_files", None) or [])
+        if str(path).strip()
+    ]
+    if names:
+        listed = ", ".join(names)
+        return (
+            f"These image files exist at: {listed}. "
+            "Write HTML/CSS/JS that points at those local paths. "
+            "Do not generate images. Do not write Python drawing scripts."
+        )
+    return dest_fact_list(living_download_pairs(job))
+
+
 def _classify_prior_facts(job, workspace_paths: list[str]) -> str:
     parts: list[str] = []
     if job and job.status in ("done", "error"):
-        dests = dest_fact_list(living_download_pairs(job))
+        dests = _workspace_dest_facts(job)
         if dests:
             parts.append(dests)
     raster = workspace_raster_facts(workspace_paths)
@@ -548,7 +561,7 @@ def _append_user_facts(data: ChatCompletionRequest, facts: str) -> None:
 
 
 def _inject_dest_facts(data: ChatCompletionRequest, job) -> None:
-    _append_user_facts(data, dest_fact_list(living_download_pairs(job)))
+    _append_user_facts(data, _workspace_dest_facts(job))
 
 
 def _inject_planned_dests(data: ChatCompletionRequest, items: list[dict[str, str]]) -> None:
@@ -634,21 +647,47 @@ def _requested_pages_on_disk(owner: str | None, chat_id: str | None, data) -> bo
     required = _requested_page_paths(data)
     if not required:
         return _pages_on_disk(owner, chat_id)
+    return not _missing_requested_pages(owner, chat_id, data)
+
+
+def _missing_requested_pages(
+    owner: str | None, chat_id: str | None, data
+) -> list[str]:
+    """Named HTML dests from the user prompt that are not on disk yet."""
+    required = _requested_page_paths(data)
+    if not required:
+        return []
     if not owner or not chat_id:
-        return False
+        return list(required)
     try:
         from ui.workspace import list_files
 
         rows = list_files(owner, chat_id)
     except Exception:
-        return False
+        return list(required)
     have = {str(row.get("path") or "").replace("\\", "/") for row in rows or []}
     have_names = {Path(p).name.lower() for p in have}
+    missing: list[str] = []
     for rel in required:
         name = Path(rel).name.lower()
         if rel not in have and name not in have_names:
-            return False
-    return True
+            missing.append(rel)
+    return missing
+
+
+def _inject_missing_requested_pages(data: ChatCompletionRequest, job) -> None:
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    missing = _missing_requested_pages(owner, chat_id, data)
+    if not missing:
+        return
+    listed = ", ".join(f"`{path}`" for path in missing)
+    _append_user_facts(
+        data,
+        "These page files are still missing: "
+        f"{listed}. Write each of them now with Write. Do not stop for "
+        "pictures until they exist.",
+    )
 
 
 _LINKED_PAGE_RE = re.compile(
@@ -710,10 +749,13 @@ def _inject_missing_page_files(data: ChatCompletionRequest, job) -> None:
     )
 
 
-def _keep_writing_page(code_response, job) -> bool:
+def _keep_writing_page(code_response, job, data=None) -> bool:
     if int(getattr(job, "code_turns", 0) or 0) >= MAX_CODE_TURNS:
         return False
-    missing = _missing_linked_page_files(job)
+    missing_css = _missing_linked_page_files(job)
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    missing_html = _missing_requested_pages(owner, chat_id, data) if data is not None else []
     if not code_response:
         return False
     message = _assistant_message(code_response)
@@ -727,25 +769,33 @@ def _keep_writing_page(code_response, job) -> bool:
     if new_pages:
         job.written_pages = written + new_pages
         return True
-    return bool(missing)
+    return bool(missing_css or missing_html)
 
 
 async def _write_page_then_maybe_launch(data, job, disconnect_handler):
-    """Another coding completion. Hold while linked CSS/JS are still missing."""
+    """Another coding completion. Hold while named HTML or linked CSS/JS are missing."""
     _inject_missing_page_files(data, job)
+    _inject_missing_requested_pages(data, job)
     note_coding_progress(job)
     code_response = await _write_site_code(data, disconnect_handler)
-    if _keep_writing_page(code_response, job):
+    if _keep_writing_page(code_response, job, data):
         return code_response, False
-    if (
-        _missing_linked_page_files(job)
-        and int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
-    ):
+    can_retry = int(getattr(job, "code_turns", 0) or 0) < MAX_CODE_TURNS
+    if _missing_linked_page_files(job) and can_retry:
         _inject_missing_page_files(data, job)
         extra = await _write_site_code(data, disconnect_handler)
         if extra is not None:
             code_response = extra
-        if _keep_writing_page(code_response, job):
+        if _keep_writing_page(code_response, job, data):
+            return code_response, False
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    if _missing_requested_pages(owner, chat_id, data) and can_retry:
+        _inject_missing_requested_pages(data, job)
+        extra = await _write_site_code(data, disconnect_handler)
+        if extra is not None:
+            code_response = extra
+        if _keep_writing_page(code_response, job, data):
             return code_response, False
     return code_response, True
 
@@ -1389,6 +1439,11 @@ async def handle(
 
     if job and job.status == "coding" and llm_ready:
         if workspace:
+            bound_owner, bound_chat = workspace
+            if bound_owner and (not job.owner or job.owner == bound_owner):
+                job.owner = bound_owner
+            if bound_chat and (not job.chat_id or job.chat_id == bound_chat):
+                job.chat_id = bound_chat
             _inject_planned_dests(data, _job_plan_items(job))
             code_response, launch = await _write_page_then_maybe_launch(
                 data, job, disconnect_handler

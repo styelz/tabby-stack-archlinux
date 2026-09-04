@@ -4479,6 +4479,7 @@ function mountChat(root) {
       openTabs.push({
         path,
         size: Number(row.size) || 0,
+        mtime: Number(row.mtime) || 0,
         kind: row.kind,
         editable: Boolean(row.editable),
         state: "loading",
@@ -4717,8 +4718,10 @@ function mountChat(root) {
       else if (tab.sniffed === "hex") tab.editable = false;
       else tab.editable = Boolean(row.editable);
       const size = Number(row.size) || 0;
-      if (size === tab.size) continue;
+      const mtime = Number(row.mtime) || 0;
+      if (size === tab.size && mtime === (Number(tab.mtime) || 0)) continue;
       tab.size = size;
+      tab.mtime = mtime;
       // A code turn rewrote the file. Unsaved edits win until the user decides.
       if (!tab.dirty && !tab.busy) {
         tab.state = "loading";
@@ -9762,6 +9765,45 @@ function mountChat(root) {
   const SETTLED_LABEL = /^(Generated|Replied|Thought|Restarted|Stopped|Loaded |Still loading$)/;
   const STOPPED_NOTE = "Generation stopped.";
   const EMPTY_REPLY_NOTE = "(empty reply)";
+  const CODE_WRITE_TOOLS = /write|strreplace|search_replace|replace_in_file|apply_patch|edit_notebook|edit_file/i;
+
+  function stepToolArgs(step) {
+    const raw = step && step.args;
+    if (!raw) return {};
+    if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+    try {
+      return JSON.parse(String(raw));
+    } catch {
+      return {};
+    }
+  }
+
+  function summaryFromCodeSteps(steps) {
+    const names = [];
+    (steps || []).forEach((step) => {
+      if (!step || step.type === "demote" || step.type === "said" || step.type === "thought") {
+        return;
+      }
+      const tool = String(step.name || step.label || "");
+      if (!CODE_WRITE_TOOLS.test(tool)) return;
+      const args = stepToolArgs(step);
+      const path = String(
+        args.path
+        || args.filename
+        || args.file
+        || (step.change && step.change.path)
+        || ""
+      ).replace(/\\/g, "/").replace(/^\/+/, "").trim();
+      if (path) names.push(path);
+    });
+    const unique = [];
+    names.forEach((path) => {
+      if (!unique.includes(path)) unique.push(path);
+    });
+    if (!unique.length) return "";
+    if (unique.length === 1) return `Wrote ${unique[0]}.`;
+    return `Wrote ${unique.length} files: ${unique.join(", ")}.`;
+  }
 
   function settledLabel({ kind, target, reasoning, answer }) {
     if (kind === "image") return looksLikeImageReply(answer) ? "Generated" : "Replied";
@@ -10258,7 +10300,12 @@ function mountChat(root) {
         } else if (wasStopped) {
           showStoppedNote();
         } else if (!bubbleMounted || !visibleAnswerText(bubble.textContent)) {
-          showAnswer(TabbyUI.renderMarkdown(EMPTY_REPLY_NOTE), EMPTY_REPLY_NOTE);
+          const fromSteps = summaryFromCodeSteps(steps);
+          if (fromSteps) {
+            showAnswer(TabbyUI.renderMarkdown(fromSteps), fromSteps);
+          } else {
+            showAnswer(TabbyUI.renderMarkdown(EMPTY_REPLY_NOTE), EMPTY_REPLY_NOTE);
+          }
         }
         if (!alreadySettled) {
           settleThought(seconds);
@@ -11465,8 +11512,12 @@ function mountChat(root) {
     const queued = Boolean(queue && queue.queued);
     const mine = Boolean(queue && queue.mine);
     const here = flightIsHere();
+    const ownChat = Boolean(
+      mine
+      && (here || (queue && queue.chat_id && queue.chat_id === store.activeId))
+    );
     const live = working || (here ? flightWorking : null);
-    if (queued && !(mine && here && !stackWaiting)) {
+    if (queued && !ownChat) {
       showStackQueue((queue && queue.hint) || "", live);
       return;
     }
@@ -12368,9 +12419,10 @@ function mountChat(root) {
     }
     const persistEmpty = emptyReply && !userStopped && !steerEmpty && !resumeEmpty && !imageHoldEmpty;
     if (String(assembled || "").trim() || reasoning || userStopped || savedSteps.length || persistEmpty) {
+      const stepSummary = summaryFromCodeSteps(savedSteps);
       const item = {
         role: "assistant",
-        content: assembled || (persistEmpty ? EMPTY_REPLY_NOTE : ""),
+        content: assembled || (persistEmpty ? (stepSummary || EMPTY_REPLY_NOTE) : stepSummary),
         createdAt: Date.now(),
       };
       if (historyRun) item.historyRun = historyRun;

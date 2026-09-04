@@ -325,8 +325,9 @@ def dest_fact_list(pairs: Iterable[tuple[str, str]]) -> str:
         return ""
     names = ", ".join(dest for _, dest in rows)
     return (
-        f"These PNG files exist at: {names}. "
-        "Write HTML/CSS/JS that points at those local paths. "
+        f"These image files exist at: {names}. "
+        "Write HTML/CSS/JS that points at those local paths "
+        "(use the extensions listed — they may be .webp). "
         "Do not generate images. Do not write Python drawing scripts."
     )
 
