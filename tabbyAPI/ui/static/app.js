@@ -453,21 +453,85 @@
     }
   }
 
+  function backupFilename(response) {
+    const header = (response && response.headers && response.headers.get("content-disposition")) || "";
+    const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
+    if (star) {
+      try {
+        const name = decodeURIComponent(star[1].trim().replace(/^["']|["']$/g, ""));
+        if (name) return name.toLowerCase().endsWith(".zip") ? name : `${name}.zip`;
+      } catch {
+        /* ignore */
+      }
+    }
+    const quoted = /filename="([^"]+)"/i.exec(header);
+    if (quoted && quoted[1]) {
+      const name = quoted[1];
+      return name.toLowerCase().endsWith(".zip") ? name : `${name}.zip`;
+    }
+    return "tabby-backup.zip";
+  }
+
+  function saveBackupZip(blob, filename) {
+    const type = (blob && blob.type) || "";
+    const zip = type.includes("zip") ? blob : new Blob([blob], { type: "application/zip" });
+    const url = URL.createObjectURL(zip);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename || "tabby-backup.zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
   async function downloadBackup() {
     closeUserMenu();
     const yes = await TabbyUI.confirmModal({
       title: "Download backup?",
-      text: "Downloads this account's chats, Code files, prefs, and gallery images. Other accounts and model weights are not included. Keep this tab open until the download finishes.",
+      text: "Downloads a zip of this account's chats, Code files, prefs, and gallery images. Other accounts and model weights are not included. Keep this tab open until the download finishes.",
       yes: "Download",
       no: "Cancel",
     });
     if (!yes) return;
-    const link = document.createElement("a");
-    link.href = TabbyUI.path("backup");
-    link.download = "";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const modal = TabbyUI.progressModal({
+      title: "Preparing backup",
+      note: "Building a zip of this account's chats, Code files, prefs, and gallery.",
+    });
+    try {
+      const response = await fetch(TabbyUI.path("backup.zip"), {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "application/zip, application/octet-stream" },
+      });
+      if (response.status === 401) {
+        TabbyUI.redirectToLogin();
+        throw new Error("Not authenticated");
+      }
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+      if (isZip) {
+        saveBackupZip(new Blob([buffer], { type: "application/zip" }), backupFilename(response));
+        modal.close();
+        return;
+      }
+      let data = "";
+      try {
+        data = JSON.parse(new TextDecoder().decode(buffer));
+      } catch {
+        data = new TextDecoder().decode(buffer).slice(0, 240);
+      }
+      if (!response.ok || !bytes.length) {
+        throw new Error(TabbyUI.httpErrorMessage(response, data) || "Backup file is empty");
+      }
+      throw new Error("Backup was not a zip file.");
+    } catch (err) {
+      modal.setBusy(false);
+      modal.setTitle("Backup failed");
+      modal.setNote((err && err.message) || "Could not download the backup zip.");
+      modal.setActions([{ label: "Close", primary: true, run: () => modal.close() }]);
+    }
   }
 
   async function restoreBackupFile(file) {

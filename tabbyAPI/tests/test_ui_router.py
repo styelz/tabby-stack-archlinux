@@ -23,6 +23,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/v1/ui/chats", paths)
         self.assertIn("/v1/ui/prefs", paths)
         self.assertIn("/v1/ui/backup", paths)
+        self.assertIn("/v1/ui/backup.zip", paths)
         self.assertIn("/v1/ui/backup/restore", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/folder", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/drafts", paths)
@@ -59,8 +60,10 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/gpu"))
         self.assertIn("require_ui_user", self._dep_names("/v1/ui/gpu"))
         self.assertIn("require_ui_user", self._dep_names("/v1/ui/backup"))
+        self.assertIn("require_ui_user", self._dep_names("/v1/ui/backup.zip"))
         self.assertIn("require_ui_user", self._dep_names("/v1/ui/backup/restore"))
         self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/backup"))
+        self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/backup.zip"))
         self.assertNotIn("require_ui_admin", self._dep_names("/v1/ui/backup/restore"))
 
     def test_saver_state_is_not_session_gated(self):

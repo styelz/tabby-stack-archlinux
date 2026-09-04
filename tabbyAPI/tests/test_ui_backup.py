@@ -231,6 +231,8 @@ class UserBackupTests(unittest.TestCase):
         self.assertIn('data-user-act="restore"', html)
         self.assertIn("id=\"user-backup-file\"", html)
         self.assertIn("downloadBackup", js)
+        self.assertIn("backup.zip", js)
+        self.assertIn("application/zip", js)
         self.assertIn("backup/restore", js)
 
 

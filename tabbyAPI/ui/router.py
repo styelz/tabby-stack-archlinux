@@ -422,6 +422,7 @@ async def ui_prefs_put(request: Request, _user: str = Depends(require_ui_user)):
 
 
 @router.get("/backup", include_in_schema=False)
+@router.get("/backup.zip", include_in_schema=False)
 async def ui_backup_get(_user: str = Depends(require_ui_user)):
     import tempfile
     from pathlib import Path
@@ -446,12 +447,18 @@ async def ui_backup_get(_user: str = Depends(require_ui_user)):
     except Exception:
         path.unlink(missing_ok=True)
         raise
+    name = archive_filename(_user)
     response = FileResponse(
         path,
         media_type="application/zip",
-        filename=archive_filename(_user),
+        filename=name,
         background=BackgroundTask(path.unlink, missing_ok=True),
     )
+    response.headers["Content-Type"] = "application/zip"
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{name}"; filename*=UTF-8\'\'{quote(name)}'
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return _private_response(response)
 
 
