@@ -155,6 +155,15 @@
     out = out.replace(/^These URLs are on this API host\.[^\n]*$/gim, "");
     out = out.replace(/^Another picture:\s*[^\n]+$/gim, "");
     out = out.replace(/^This picture:\s*/gim, "");
+    // Model-only image dest reminders. The GPU already has the plan.
+    out = out.replace(/Write the page now\.[^\n]*/gi, "");
+    out = out.replace(/Point img src or CSS url\(\) at these exact (?:local )?paths:[^\n]*/gi, "");
+    out = out.replace(/Write HTML, CSS, and JS only[^\n]*/gi, "");
+    out = out.replace(/Do not Write PNG[^\n]*/gi, "");
+    out = out.replace(/Write every HTML\/CSS\/JS file for this page now\.[^\n]*/gi, "");
+    out = out.replace(/Do not generate images\.[^\n]*/gi, "");
+    out = out.replace(/Do not dump the page in chat[^\n]*/gi, "");
+    out = out.replace(/The GPU will save those PNG files[^\n]*/gi, "");
     out = out.replace(/\n{3,}/g, "\n\n");
     return out.trim();
   }

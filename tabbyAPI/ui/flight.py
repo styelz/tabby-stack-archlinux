@@ -131,10 +131,26 @@ class ConsoleFlight:
                 if step.get("type") == "demote":
                     draft = self.assembled.strip()
                     if draft:
-                        self.steps.append({"type": "said", "content": draft})
+                        last = self.steps[-1] if self.steps else None
+                        if not (
+                            last
+                            and last.get("type") == "said"
+                            and str(last.get("content") or "").strip() == draft
+                        ):
+                            self.steps.append({"type": "said", "content": draft})
                     self.assembled = ""
                 else:
-                    self.steps.append(step)
+                    prev = self.steps[-1] if self.steps else None
+                    if (
+                        step.get("type") == "tool"
+                        and prev
+                        and prev.get("type") == "tool"
+                        and not prev.get("result")
+                        and prev.get("name") == step.get("name")
+                    ):
+                        self.steps[-1] = {**prev, **step}
+                    else:
+                        self.steps.append(step)
         data_lines = [
             line[5:].strip()
             for line in chunk.split("\n")

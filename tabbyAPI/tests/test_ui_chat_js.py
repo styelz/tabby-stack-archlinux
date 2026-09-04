@@ -150,6 +150,9 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertNotIn("function showIdleOccupancy(hint)", self.src)
         self.assertIn("queued && !ownChat", self.src)
         self.assertIn("function summaryFromCodeSteps(steps)", self.src)
+        self.assertIn("function compactToolTitle(step)", self.src)
+        self.assertIn("function lastPendingToolIndex(steps, incoming)", self.src)
+        self.assertIn("function stepIsVisible(step)", self.src)
         self.assertIn("Wrote ${unique[0]}.", self.src)
         self.assertIn("mtime === (Number(tab.mtime) || 0)", self.src)
         utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
@@ -309,6 +312,18 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("Agent edits files, Ask answers without changing them", self.src)
         css = CHAT_CSS.read_text(encoding="utf-8")
         self.assertIn(".chat-agent-hint", css)
+
+    def test_code_agent_steps_stay_compact(self):
+        utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
+        utils_src = utils.read_text(encoding="utf-8")
+        self.assertIn("Point img src or CSS url", utils_src)
+        self.assertIn("Write the page now", utils_src)
+        self.assertIn("Do not Write PNG", utils_src)
+        self.assertIn("lastPendingToolIndex(steps, row)", self.src)
+        self.assertIn("compactToolTitle(step)", self.src)
+        self.assertIn("writeResultIsEcho(step, path)", self.src)
+        self.assertIn("if (row) thought.appendChild(row)", self.src)
+        self.assertIn("draft !== lastText", self.src)
 
     def test_code_git_pane(self):
         css = CHAT_CSS.read_text(encoding="utf-8")

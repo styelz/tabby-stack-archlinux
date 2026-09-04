@@ -15,6 +15,8 @@ from endpoints.OAI.types.chat_completion import (
 )
 from endpoints.OAI.types.tools import Tool, ToolCall
 from images.chat import (
+    _assistant_already_has_dest_hint,
+    _code_reply,
     _dest_exists,
     _explicit_new_rasters,
     _named_image_dests,
@@ -100,6 +102,50 @@ class DestExistsTests(unittest.TestCase):
     def test_png_dest_matches_webp_on_disk(self):
         self.assertTrue(_dest_exists("images/logo.png", ["images/logo.webp"]))
         self.assertFalse(_dest_exists("images/logo.png", ["images/hero.webp"]))
+
+
+class CodeReplyHintTests(unittest.TestCase):
+    def test_first_code_reply_lists_dests_once(self):
+        job = _job(id="abc-123", status="coding", code_turns=1)
+        data = _user("Create a website with a logo")
+        response = _code_reply(data, job, _write_code_response())
+        content = response.choices[0].message.content
+        self.assertIn("tabby-image-job: abc-123", content)
+        self.assertIn("Point img src", content)
+        self.assertIn("images/logo.png", content)
+        self.assertEqual(content.count("Do not Write PNG"), 1)
+
+    def test_later_code_turn_skips_dest_hint_without_history(self):
+        job = _job(id="abc-123", status="coding", code_turns=2)
+        data = _user("Create a website with a logo")
+        response = _code_reply(data, job, _write_code_response())
+        content = response.choices[0].message.content
+        self.assertIn("writing the page", content)
+        self.assertNotIn("Point img src", content)
+        self.assertNotIn("Write the page now", content)
+
+    def test_followup_code_reply_does_not_repeat_dest_hint(self):
+        job = _job(id="abc-123", status="coding", code_turns=2)
+        first = (
+            "tabby-image-job: abc-123\n"
+            "Point img src or CSS url() at these exact paths: images/logo.png. "
+            "Do not Write PNG, WebP, or placeholder image files."
+        )
+        data = ChatCompletionRequest(
+            messages=[
+                ChatCompletionMessage(role="user", content="Create a website with a logo"),
+                ChatCompletionMessage(role="assistant", content=first),
+                ChatCompletionMessage(role="tool", content="Wrote index.html"),
+            ]
+        )
+        self.assertTrue(_assistant_already_has_dest_hint(data))
+        response = _code_reply(data, job, _write_code_response(path="styles.css"))
+        content = response.choices[0].message.content
+        self.assertIn("tabby-image-job: abc-123", content)
+        self.assertIn("writing the page", content)
+        self.assertNotIn("Point img src", content)
+        self.assertNotIn("Write the page now", content)
+        self.assertNotIn("Do not Write PNG", content)
 
 
 class NestedGenerateHandlerTests(unittest.IsolatedAsyncioTestCase):

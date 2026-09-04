@@ -30,6 +30,29 @@ class FlightIngestTests(unittest.TestCase):
             f": tabby-agent-step: {json.dumps(step, separators=(',', ':'))}\n\n".encode()
         )
         self.assertEqual(flight.steps[-1]["name"], "Write")
+        pending = {
+            "type": "tool",
+            "name": "Write",
+            "label": "Write",
+            "args": {"path": "b.html"},
+        }
+        flight.ingest(
+            f": tabby-agent-step: {json.dumps(pending, separators=(',', ':'))}\n\n".encode()
+        )
+        done = {
+            "type": "tool",
+            "name": "Write",
+            "label": "Writing b.html",
+            "args": {"path": "b.html"},
+            "result": "Wrote b.html",
+        }
+        flight.ingest(
+            f": tabby-agent-step: {json.dumps(done, separators=(',', ':'))}\n\n".encode()
+        )
+        writes = [item for item in flight.steps if item.get("name") == "Write"]
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[-1]["result"], "Wrote b.html")
+        self.assertEqual(writes[-1]["args"]["path"], "b.html")
         flight.ingest(
             b'data: {"choices":[{"delta":{"content":"Wrote a.html"}}]}\n\n'
         )

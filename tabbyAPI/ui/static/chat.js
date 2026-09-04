@@ -9663,6 +9663,64 @@ function mountChat(root) {
     }
   }
 
+  function toolStepPath(step) {
+    const args = stepToolArgs(step);
+    return String(
+      args.path
+      || args.filename
+      || args.file
+      || (step && step.change && step.change.path)
+      || ""
+    ).replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  }
+
+  function writeResultIsEcho(step, path) {
+    const result = String((step && step.result) || "").trim();
+    if (!result || !path) return false;
+    const lower = result.toLowerCase();
+    const name = path.toLowerCase();
+    return (
+      lower === name
+      || lower === `wrote ${name}`
+      || lower === `updated ${name}`
+      || lower === `writing ${name}`
+      || lower === `editing ${name}`
+    );
+  }
+
+  function compactToolTitle(step) {
+    const name = String((step && (step.name || step.label)) || "Tool");
+    const path = toolStepPath(step);
+    const result = String((step && step.result) || "").trim();
+    const label = String((step && step.label) || "");
+    const write = CODE_WRITE_TOOLS.test(name) || CODE_WRITE_TOOLS.test(label);
+    if (write && path) {
+      if (/^updated\b/i.test(result) || /^editing\b/i.test(label)) return `Updated ${path}`;
+      if (result || /^wrote\b/i.test(label)) return `Wrote ${path}`;
+      return `Writing ${path}`;
+    }
+    return label || name;
+  }
+
+  function lastPendingToolIndex(steps, incoming) {
+    if (!incoming || incoming.type !== "tool") return -1;
+    const incomingName = String(incoming.name || "");
+    const incomingPath = toolStepPath(incoming);
+    for (let i = (steps || []).length - 1; i >= 0; i -= 1) {
+      const prev = steps[i];
+      if (!prev || prev.type !== "tool") {
+        if (prev && (prev.type === "said" || prev.type === "thought")) continue;
+        return -1;
+      }
+      if (prev.result) return -1;
+      if (incomingName && String(prev.name || "") !== incomingName) return -1;
+      const prevPath = toolStepPath(prev);
+      if (incomingPath && prevPath && incomingPath !== prevPath) return -1;
+      return i;
+    }
+    return -1;
+  }
+
   function summaryFromCodeSteps(steps) {
     const names = [];
     (steps || []).forEach((step) => {
@@ -9671,14 +9729,7 @@ function mountChat(root) {
       }
       const tool = String(step.name || step.label || "");
       if (!CODE_WRITE_TOOLS.test(tool)) return;
-      const args = stepToolArgs(step);
-      const path = String(
-        args.path
-        || args.filename
-        || args.file
-        || (step.change && step.change.path)
-        || ""
-      ).replace(/\\/g, "/").replace(/^\/+/, "").trim();
+      const path = toolStepPath(step);
       if (path) names.push(path);
     });
     const unique = [];
@@ -9863,22 +9914,30 @@ function mountChat(root) {
     function renderAgentStep(step) {
       const kind = String((step && step.type) || "");
       if (kind === "said" || kind === "thought") {
-        const row = document.createElement("div");
-        row.className = kind === "said" ? "agent-step agent-step-said" : "agent-step agent-step-thought";
-        const body = document.createElement("div");
-        body.className = "agent-step-said-body";
         const stepText = String((step && step.content) || "");
         const cleaned = TabbyUI.formatAssistantContent
           ? TabbyUI.formatAssistantContent(stepText)
           : stepText;
+        if (!String(cleaned || "").trim()) return null;
+        const row = document.createElement("div");
+        row.className = kind === "said" ? "agent-step agent-step-said" : "agent-step agent-step-thought";
+        const body = document.createElement("div");
+        body.className = "agent-step-said-body";
         body.innerHTML = TabbyUI.renderMarkdown(cleaned);
         row.appendChild(body);
         return row;
       }
-      const titleText = String((step && (step.label || step.name)) || "Tool");
-      const args = (step && step.args) || {};
-      const detail = [args.path, args.to, args.pattern, args.glob, args.command].filter(Boolean).join(" → ");
-      const hasBody = Boolean(detail || (step && step.result));
+      const args = stepToolArgs(step);
+      const path = toolStepPath(step);
+      const name = String((step && (step.name || step.label)) || "Tool");
+      const write = CODE_WRITE_TOOLS.test(name) || CODE_WRITE_TOOLS.test(String((step && step.label) || ""));
+      const titleText = compactToolTitle(step);
+      const detail = write
+        ? ""
+        : [args.path, args.to, args.pattern, args.glob, args.command].filter(Boolean).join(" → ");
+      const result = String((step && step.result) || "").trim();
+      const showResult = Boolean(result) && !(write && writeResultIsEcho(step, path));
+      const hasBody = Boolean(detail || showResult);
       const row = document.createElement(finished && hasBody ? "details" : "div");
       row.className = "agent-step";
       const title = document.createElement(finished && hasBody ? "summary" : "div");
@@ -9891,17 +9950,25 @@ function mountChat(root) {
         meta.textContent = detail;
         row.appendChild(meta);
       }
-      if (step && step.result) {
+      if (showResult) {
         const pre = document.createElement("pre");
         pre.className = "agent-step-result";
-        pre.textContent = String(step.result);
+        pre.textContent = result;
         row.appendChild(pre);
       }
       return row;
     }
 
+    function stepIsVisible(step) {
+      if (!step || step.type === "demote") return false;
+      if (step.type === "said" || step.type === "thought") {
+        return Boolean(visibleAnswerText(step.content));
+      }
+      return true;
+    }
+
     function visibleStepCount() {
-      return steps.filter((step) => step && step.type !== "demote").length;
+      return steps.filter(stepIsVisible).length;
     }
 
     function paintStepCount() {
@@ -9911,7 +9978,7 @@ function mountChat(root) {
     }
 
     function hasTrace() {
-      return Boolean(reasoningText || steps.length || statusNotes.length);
+      return Boolean(reasoningText || steps.some(stepIsVisible) || statusNotes.length);
     }
 
     let followThought = true;
@@ -9967,7 +10034,10 @@ function mountChat(root) {
         block.innerHTML = TabbyUI.renderMarkdown(reasoningText);
         thought.appendChild(block);
       }
-      steps.forEach((step) => thought.appendChild(renderAgentStep(step)));
+      steps.forEach((step) => {
+        const row = renderAgentStep(step);
+        if (row) thought.appendChild(row);
+      });
       thought.hidden = finished ? !expanded : false;
       if (finished) {
         thought.scrollTop = keepScroll;
@@ -10102,7 +10172,11 @@ function mountChat(root) {
         }
         if (step.type === "demote") {
           const draft = visibleAnswerText(answerText);
-          if (draft) steps.push({ type: "said", content: String(answerText) });
+          const lastSaid = [...steps].reverse().find((item) => item && item.type === "said");
+          const lastText = lastSaid ? visibleAnswerText(lastSaid.content) : "";
+          if (draft && draft !== lastText) {
+            steps.push({ type: "said", content: String(answerText) });
+          }
           answerText = "";
           if (bubbleMounted) {
             bubble.innerHTML = "";
@@ -10116,7 +10190,15 @@ function mountChat(root) {
         }
         const row = Object.assign({}, step);
         if (origin === "stream") row._stream = streamMark;
-        steps.push(row);
+        const pendingAt = lastPendingToolIndex(steps, row);
+        if (pendingAt >= 0) {
+          const prev = steps[pendingAt];
+          steps[pendingAt] = Object.assign({}, prev, row, {
+            _stream: prev._stream != null ? prev._stream : row._stream,
+          });
+        } else {
+          steps.push(row);
+        }
         paintThought();
         thought.hidden = false;
         stickLog();

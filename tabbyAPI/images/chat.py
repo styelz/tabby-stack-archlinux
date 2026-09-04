@@ -1066,6 +1066,17 @@ async def _start_prompt_job(
     return job
 
 
+def _assistant_already_has_dest_hint(data: ChatCompletionRequest) -> bool:
+    """True when a prior assistant turn already listed the planned PNG dests."""
+    for message in data.messages or []:
+        if (getattr(message, "role", "") or "").lower() != "assistant":
+            continue
+        text = _content_text(getattr(message, "content", None))
+        if "Do not Write PNG" in text or "Point img src" in text:
+            return True
+    return False
+
+
 def _code_reply(data: ChatCompletionRequest, job, code_response):
     from common.phrase_switch import text_response, tool_call_response
 
@@ -1074,8 +1085,10 @@ def _code_reply(data: ChatCompletionRequest, job, code_response):
         return text_response(data, f"{JOB_MARK} {job.id}")
     content = _stamp_job_content(getattr(message, "content", None), job)
     dests = _job_dests(job)
+    hinted = _assistant_already_has_dest_hint(data)
+    turns = int(getattr(job, "code_turns", 0) or 0)
     hint = ""
-    if dests:
+    if dests and not hinted and turns <= 1:
         hint = (
             f" Point img src or CSS url() at these exact paths: {', '.join(dests)}. "
             "Write HTML, CSS, and JS only — if the HTML links styles.css or "
@@ -1083,10 +1096,11 @@ def _code_reply(data: ChatCompletionRequest, job, code_response):
             "or placeholder image files."
         )
     if content == f"{JOB_MARK} {job.id}":
-        content = (
-            f"{content}\nWrite the page now. The GPU will render the images "
-            f"after these files are written.{hint}"
-        )
+        if hint:
+            content = (
+                f"{content}\nWrite the page now. The GPU will render the images "
+                f"after these files are written.{hint}"
+            )
     elif hint and "Do not Write PNG" not in content:
         content = content.rstrip() + "\n" + hint.strip()
     calls = _tool_call_pairs(message)
