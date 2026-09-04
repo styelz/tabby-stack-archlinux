@@ -2246,6 +2246,32 @@ if [[ -f "$COMFY_UNIT_SRC" ]]; then
   sed "s|__COMFY_DIR__|$DEST_COMFY|g" "$COMFY_UNIT_SRC" > "$UNIT_DIR/comfyui.service"
 fi
 
+# Opt-in KMS kiosk. Written as a system unit so it can own a TTY without a
+# desktop session. Never enabled here — Omarchy / a GUI would lose the GPU.
+SAVER_UNIT_SRC="$DEST_TABBY/deploy/arch/tabby-saver.service"
+if [[ ! -f "$SAVER_UNIT_SRC" ]]; then
+  SAVER_UNIT_SRC="$SCRIPT_DIR/tabby-saver.service"
+fi
+if [[ -f "$SAVER_UNIT_SRC" ]]; then
+  SAVER_TTY="${TABBY_SAVER_TTY:-tty1}"
+  SAVER_TMP="$(mktemp)"
+  sed \
+    -e "s|__TABBY_DIR__|$DEST_TABBY|g" \
+    -e "s|__SAVER_USER__|$USER|g" \
+    -e "s|__SAVER_HOME__|$HOME|g" \
+    -e "s|__SAVER_TTY__|$SAVER_TTY|g" \
+    -e "s|__SAVER_URL__|http://127.0.0.1:${TABBY_NETWORK_PORT}|g" \
+    "$SAVER_UNIT_SRC" > "$SAVER_TMP"
+  if sudo -n install -m 644 "$SAVER_TMP" /etc/systemd/system/tabby-saver.service \
+       >>"$INSTALL_LOG" 2>&1; then
+    sudo -n systemctl daemon-reload >>"$INSTALL_LOG" 2>&1 || true
+    echo "Wrote /etc/systemd/system/tabby-saver.service (not enabled; opt-in kiosk)" >> "$INSTALL_LOG"
+  else
+    echo "WARNING: could not write /etc/systemd/system/tabby-saver.service (opt-in screensaver)" >> "$INSTALL_LOG"
+  fi
+  rm -f "$SAVER_TMP"
+fi
+
 if ! sudo -n loginctl enable-linger "$USER" >>"$INSTALL_LOG" 2>&1; then
   echo "WARNING: linger failed. Run: sudo loginctl enable-linger $USER" >> "$INSTALL_LOG"
 fi
@@ -2340,6 +2366,17 @@ Start / stop
 
   Do not run start.bat.
   If you used a USB cache you can unmount it.
+
+Optional TTY screensaver (no desktop; opt-in; takes over ${TABBY_SAVER_TTY:-tty1})
+  Do not enable if Omarchy or a graphical session owns the GPU.
+  sudo pacman -S --needed python-pygame
+  sudo usermod -aG video $USER
+  sudo systemctl enable --now tabby-saver
+  sudo systemctl status tabby-saver
+  journalctl -u tabby-saver -f
+  Probe in a window: /usr/bin/python $DEST_TABBY/deploy/arch/tabby-saver.py --window
+  Stop: sudo systemctl disable --now tabby-saver
+  Another TTY: TABBY_SAVER_TTY=tty7 before re-running install.sh, or edit the unit.
 
 Management UI ($API_URL/v1/ui)
   Sign in with the Linux user that runs tabbyapi (admin), or a Tabby-only account.
