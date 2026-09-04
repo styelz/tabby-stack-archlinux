@@ -79,16 +79,187 @@ def is_ready(dest: Path, item: dict) -> bool:
     return any(dest.glob("model*.safetensors"))
 
 
+SKIP_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pyenv",
+    "pyenv",
+    "lost+found",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+}
+MAX_SEARCH_DEPTH = 6
+MAX_WALK_DIRS = 4000
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
+def _wanted_names(item: dict) -> list[str]:
+    names: list[str] = []
+    dest = item.get("dest") or ""
+    if dest:
+        names.append(Path(dest).name)
+    for rel in item.get("cache") or []:
+        names.append(Path(rel).name)
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _relative_suffixes(item: dict) -> list[Path]:
+    suffixes: list[Path] = []
+    for rel in item.get("cache") or []:
+        suffixes.append(Path(rel))
+    dest = item.get("dest") or ""
+    if dest.startswith("tabby/"):
+        rel = Path(dest[len("tabby/") :])
+        suffixes.extend((rel, Path(rel.name), Path("tabby-stack") / "tabbyAPI" / rel))
+    elif dest.startswith("comfy/"):
+        rel = Path(dest[len("comfy/") :])
+        suffixes.extend(
+            (
+                rel,
+                Path("ComfyUI") / rel,
+                Path("tabby-stack") / "ComfyUI" / rel,
+                Path(rel.name),
+            )
+        )
+        if len(rel.parts) >= 2:
+            suffixes.append(Path(*rel.parts[-2:]))
+    return _unique_paths(suffixes)
+
+
+def _hub_snapshot_paths(item: dict, cache_root: Path) -> list[Path]:
+    repo = item.get("repo") or ""
+    if "/" not in repo:
+        return []
+    hub_name = "models--" + repo.replace("/", "--")
+    rev = item.get("revision") or "main"
+    remote = item.get("remote") or ""
+    remote_name = Path(remote).name if remote else ""
+    out: list[Path] = []
+    for base in (
+        cache_root,
+        cache_root / "hub",
+        cache_root / "huggingface" / "hub",
+        cache_root / ".cache" / "huggingface" / "hub",
+    ):
+        snap = base / hub_name / "snapshots" / rev
+        if item.get("kind") == "file":
+            if remote:
+                out.append(snap / remote)
+            if remote_name:
+                out.append(snap / remote_name)
+        else:
+            out.append(snap)
+    return _unique_paths(out)
+
+
+def _cache_hit(item: dict, candidate: Path) -> bool:
+    if item.get("kind") == "file":
+        return candidate.is_file() and candidate.stat().st_size > 0
+    return candidate.is_dir() and is_ready(candidate, item)
+
+
 def find_cache(item: dict, cache_root: Path | None) -> Path | None:
+    """Return an existing copy of this item under cache_root, if any.
+
+    Exact catalog paths are tried first (a tabby-stack tree). If those miss,
+    the given folder is searched for the same file or directory names so a
+    models/ dir, a USB mount, or a Hugging Face hub cache still copies.
+    """
     if cache_root is None:
         return None
-    for rel in item.get("cache") or []:
-        candidate = cache_root / rel
-        if item.get("kind") == "file":
-            if candidate.is_file() and candidate.stat().st_size > 0:
-                return candidate
-        elif candidate.is_dir() and is_ready(candidate, item):
+    try:
+        cache_root = cache_root.resolve()
+    except OSError:
+        return None
+    if not cache_root.is_dir():
+        return None
+
+    tried: set[Path] = set()
+
+    def consider(candidate: Path) -> Path | None:
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            return None
+        if candidate in tried:
+            return None
+        tried.add(candidate)
+        if _cache_hit(item, candidate):
             return candidate
+        return None
+
+    wanted = set(_wanted_names(item))
+    if cache_root.name in wanted:
+        hit = consider(cache_root)
+        if hit is not None:
+            return hit
+
+    for rel in _relative_suffixes(item):
+        hit = consider(cache_root / rel)
+        if hit is not None:
+            return hit
+
+    for candidate in _hub_snapshot_paths(item, cache_root):
+        hit = consider(candidate)
+        if hit is not None:
+            return hit
+
+    if not wanted:
+        return None
+
+    walked = 0
+    root_depth = len(cache_root.parts)
+    for dirpath, dirnames, filenames in os.walk(cache_root, followlinks=False):
+        walked += 1
+        if walked > MAX_WALK_DIRS:
+            break
+        here = Path(dirpath)
+        depth = len(here.parts) - root_depth
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in SKIP_DIR_NAMES and not name.startswith(".")
+        ]
+        if depth > MAX_SEARCH_DEPTH:
+            dirnames.clear()
+            continue
+        if item.get("kind") == "file":
+            for name in filenames:
+                if name in wanted:
+                    hit = consider(here / name)
+                    if hit is not None:
+                        return hit
+        else:
+            if here.name in wanted:
+                hit = consider(here)
+                if hit is not None:
+                    return hit
+            for name in list(dirnames):
+                if name in wanted:
+                    hit = consider(here / name)
+                    if hit is not None:
+                        return hit
     return None
 
 

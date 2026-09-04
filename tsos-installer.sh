@@ -990,8 +990,12 @@ Default follows the current setting ($(encrypt_label))." \
 
   local cache_choice
   cache_choice=$(ui_menu "6 / 10  -  Weights cache" \
-"If weights already live on a USB copy of tabby-stack or another
-folder, they must be named now — the new root mounts at /mnt next.
+"If weights already live on a USB, an old tabby-stack, or a folder of
+model directories, name that path now — the new root mounts at /mnt next.
+
+The installer searches that folder for catalog names (a tabby-stack
+tree, tabbyAPI/models, ComfyUI/models, or the files themselves).
+Missing items still download from Hugging Face.
 
 Mount the USB first if you want that option (not under /mnt).
 
@@ -1004,10 +1008,10 @@ Leave the cache empty to download from Hugging Face." \
     usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
     custom)
       TABBY_CACHE=$(ui_input "Weights cache path" \
-"Folder that contains tabbyAPI/models and ComfyUI/models.
+"Folder to search for existing weights. Any of these work:
 
-Examples
   /run/media/usb/tabby-stack
+  /run/media/usb/tabby-stack/tabbyAPI/models
   /tmp/tabby-weights
 
 Blank = download from Hugging Face." \
@@ -1021,7 +1025,7 @@ Blank = download from Hugging Face." \
 
 prompt_tabby_settings_tui() {
   local default_set="${TABBY_MODELS:-core}"
-  if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE/tabbyAPI/models" ]]; then
+  if cache_has_any_weights "${TABBY_CACHE:-}"; then
     default_set="all"
   fi
   TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
@@ -1232,6 +1236,20 @@ nvidia_pkg() {
   else
     return 1
   fi
+}
+
+cache_has_any_weights() {
+  local root="${1:-}"
+  local hit=""
+  [[ -n "$root" && -d "$root" ]] || return 1
+  [[ -d "$root/tabbyAPI" || -d "$root/ComfyUI" || -d "$root/models" || -d "$root/hub" ]] && return 0
+  hit="$(find -P "$root" -maxdepth 4 \( \
+      -name 'model.safetensors' -o \
+      -name 'quantization_config.json' -o \
+      -name '*.gguf' -o \
+      -name 'flux1-schnell-fp8.safetensors' \
+    \) -print -quit 2>/dev/null || true)"
+  [[ -n "$hit" ]]
 }
 
 self_test() {
@@ -1802,6 +1820,7 @@ install_base() {
     pipewire pipewire-pulse pipewire-alsa wireplumber
     nvidia-utils
     docker
+    openssh
   )
   [[ -n "$ucode" ]] && packages+=("$ucode")
   packages+=("$nvidia")
@@ -1897,6 +1916,7 @@ fi
 systemctl enable NetworkManager
 systemctl enable NetworkManager-wait-online.service || true
 systemctl enable docker.service || true
+systemctl enable sshd.service
 install -d -m 0755 /var/lib/systemd/linger
 touch "/var/lib/systemd/linger/${TARGET_USER}"
 loginctl enable-linger "$TARGET_USER" || true

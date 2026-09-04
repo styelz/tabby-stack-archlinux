@@ -123,7 +123,78 @@ class FetchModelsTests(unittest.TestCase):
             cached = cache / "ComfyUI/models/checkpoints/flux1-schnell-fp8.safetensors"
             cached.parent.mkdir(parents=True)
             cached.write_bytes(b"flux")
-            self.assertEqual(find_cache(item, cache), cached)
+            self.assertEqual(find_cache(item, cache), cached.resolve())
+
+    def test_find_cache_searches_layout_variants(self):
+        snap_item = {
+            "kind": "snapshot",
+            "dest": "tabby/models/Qwen3.5-9B-exl3-4.00bpw",
+            "cache": ["tabbyAPI/models/Qwen3.5-9B-exl3-4.00bpw"],
+            "ready": ["model.safetensors"],
+        }
+        file_item = {
+            "kind": "file",
+            "dest": "comfy/models/checkpoints/flux1-schnell-fp8.safetensors",
+            "cache": ["ComfyUI/models/checkpoints/flux1-schnell-fp8.safetensors"],
+        }
+
+        def ready_snap(path: Path) -> Path:
+            path.mkdir(parents=True)
+            (path / "model.safetensors").write_bytes(b"weights")
+            return path
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+
+            models_dir = root / "just-models"
+            snap = ready_snap(models_dir / "Qwen3.5-9B-exl3-4.00bpw")
+            self.assertEqual(find_cache(snap_item, models_dir), snap.resolve())
+
+            tabby_root = root / "tabbyAPI"
+            snap = ready_snap(tabby_root / "models" / "Qwen3.5-9B-exl3-4.00bpw")
+            self.assertEqual(find_cache(snap_item, tabby_root), snap.resolve())
+
+            usb = root / "usb"
+            snap = ready_snap(
+                usb / "tabby-stack" / "tabbyAPI" / "models" / "Qwen3.5-9B-exl3-4.00bpw"
+            )
+            self.assertEqual(find_cache(snap_item, usb), snap.resolve())
+
+            self.assertEqual(find_cache(snap_item, snap), snap.resolve())
+
+            loose = root / "loose"
+            loose.mkdir()
+            flux = loose / "flux1-schnell-fp8.safetensors"
+            flux.write_bytes(b"flux")
+            self.assertEqual(find_cache(file_item, loose), flux.resolve())
+
+            nested = root / "nested" / "copy"
+            flux = nested / "extra" / "flux1-schnell-fp8.safetensors"
+            flux.parent.mkdir(parents=True)
+            flux.write_bytes(b"flux")
+            self.assertEqual(find_cache(file_item, nested), flux.resolve())
+
+    def test_find_cache_hub_snapshot(self):
+        item = {
+            "kind": "snapshot",
+            "repo": "turboderp/Qwen3.5-9B-exl3",
+            "revision": "4.00bpw",
+            "dest": "tabby/models/Qwen3.5-9B-exl3-4.00bpw",
+            "cache": ["tabbyAPI/models/Qwen3.5-9B-exl3-4.00bpw"],
+            "ready": ["model.safetensors"],
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            snap = (
+                cache
+                / "hub"
+                / "models--turboderp--Qwen3.5-9B-exl3"
+                / "snapshots"
+                / "4.00bpw"
+            )
+            snap.mkdir(parents=True)
+            (snap / "model.safetensors").write_bytes(b"weights")
+            self.assertEqual(find_cache(item, cache), snap.resolve())
 
 
 if __name__ == "__main__":

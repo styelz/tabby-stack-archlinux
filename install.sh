@@ -1140,6 +1140,22 @@ cache_on_dest() {
   [[ -n "$WIN_ROOT" && ( "$DEST" == "$WIN_ROOT" || "$DEST" == "$WIN_ROOT"/* || "$DEST_TABBY" == "$WIN_TABBY" ) ]]
 }
 
+# True when PATH looks like it already holds installer weights (any layout
+# fetch_models.py will search: tabby-stack tree, models/, or weight files).
+cache_has_any_weights() {
+  local root="${1:-}"
+  local hit=""
+  [[ -n "$root" && -d "$root" ]] || return 1
+  [[ -d "$root/tabbyAPI" || -d "$root/ComfyUI" || -d "$root/models" || -d "$root/hub" ]] && return 0
+  hit="$(find -P "$root" -maxdepth 4 \( \
+      -name 'model.safetensors' -o \
+      -name 'quantization_config.json' -o \
+      -name '*.gguf' -o \
+      -name 'flux1-schnell-fp8.safetensors' \
+    \) -print -quit 2>/dev/null || true)"
+  [[ -n "$hit" ]]
+}
+
 DEFAULT_DEST="$HOME/tabby-stack"
 
 if [[ "$INTERACTIVE" -eq 0 ]]; then
@@ -1260,14 +1276,17 @@ Default is \$HOME/tabby-stack." \
     DEST="${DEST:-$DEFAULT_DEST}"
 
     cache_choice="$(ui_menu "2 / 6  — Weights cache" \
-"If weights already live on a USB copy of tabby-stack or another
-folder, this script copies them instead of re-downloading.
+"If weights already live on a USB, an old tabby-stack, or a folder of
+model directories, this script searches that path and copies what it
+finds instead of re-downloading. Missing items still come from Hugging Face.
 
 Mount the USB first if you want that option:
   sudo pacman -S --needed ntfs-3g
   sudo mkdir -p /mnt/usb
   sudo mount /dev/sdXN /mnt/usb
-  (you should see /mnt/usb/tabby-stack/tabbyAPI)
+
+Point at the folder that holds the weights (a tabby-stack copy, a
+tabbyAPI/models dir, ComfyUI/models, or the files themselves).
 
 Leave the cache empty to download from Hugging Face." \
       none "Download from Hugging Face (no cache)" \
@@ -1279,13 +1298,14 @@ Leave the cache empty to download from Hugging Face." \
       usb) WIN_ROOT="/mnt/usb/tabby-stack" ;;
       custom)
         WIN_ROOT="$(ui_input "Weights cache path" \
-"Folder that contains tabbyAPI/models and ComfyUI/models.
+"Folder to search for existing weights. Any of these work:
 
-Examples
-  /mnt/usb/tabby-stack
-  /data/tabby-weights
+  /mnt/usb/tabby-stack          (full tree: tabbyAPI/ + ComfyUI/)
+  /mnt/usb/tabby-stack/tabbyAPI/models
+  /data/weights                 (model dirs / .safetensors / .gguf)
 
-Blank = download from Hugging Face." \
+The installer looks up the catalog names under that path; it does not
+need a fixed layout. Blank = download from Hugging Face." \
 "${TABBY_CACHE:-$DEFAULT_CACHE}")"
         ;;
       *) WIN_ROOT="$cache_choice" ;;
@@ -1302,10 +1322,10 @@ Blank = download from Hugging Face." \
       step_confirm="6 / 6  — Confirm"
     fi
 
-    if [[ -n "$WIN_ROOT" && ! -d "$WIN_ROOT/tabbyAPI" ]]; then
+    if [[ -n "$WIN_ROOT" && ! -d "$WIN_ROOT" ]]; then
       if ! ui_yesno "Cache not found" \
-"No tabbyAPI folder at:
-  ${WIN_ROOT}/tabbyAPI
+"That path is not a directory:
+  ${WIN_ROOT}
 
 Typical cause: the USB is not mounted, or the path is wrong.
 
@@ -1313,10 +1333,23 @@ Yes = continue and download missing files from Hugging Face.
 No = go back and pick another cache." 0; then
         continue
       fi
+    elif [[ -n "$WIN_ROOT" ]] && ! cache_has_any_weights "$WIN_ROOT"; then
+      if ! ui_yesno "No weights seen in cache" \
+"Opened:
+  ${WIN_ROOT}
+
+Did not find tabbyAPI/, ComfyUI/, models/, or weight files there.
+The installer will still search that tree; anything it cannot copy
+is downloaded from Hugging Face.
+
+Yes = continue.
+No = go back and pick another cache." 0; then
+        continue
+      fi
     fi
 
     default_set="core"
-    if [[ -n "$WIN_ROOT" && -d "$WIN_ROOT/tabbyAPI/models" ]]; then
+    if cache_has_any_weights "${WIN_ROOT:-}"; then
       default_set="all"
     fi
     MODEL_SET="$(ui_menu "$step_models" \
