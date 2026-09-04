@@ -35,49 +35,14 @@
     };
     setTimeout(window.TABBY_REVEAL_UI, 8000);
     (function () {
-      var THEME_KEY = "tabby-ui-theme";
-      var MODE_KEY = "tabby-ui-mode";
-      var FAMILIES = { midnight: 1, ember: 1, glacier: 1, moss: 1, contrast: 1 };
-      var MODES = { dark: 1, light: 1, system: 1 };
-      var BG = {
-        "midnight-dark": "#0b0d12",
-        "midnight-light": "#f4f6fb",
-        "ember-dark": "#140e0c",
-        "ember-light": "#faf4eb",
-        "glacier-dark": "#0a1218",
-        "glacier-light": "#f2f7fa",
-        "moss-dark": "#0e1410",
-        "moss-light": "#f3f6f1",
-        "contrast-dark": "#000000",
-        "contrast-light": "#ffffff"
-      };
-      function read(key, fallback, allowed) {
-        var v = "";
-        try { v = localStorage.getItem(key) || ""; } catch (e) {}
-        return allowed[v] ? v : fallback;
-      }
-      function family() { return read(THEME_KEY, "midnight", FAMILIES); }
-      function mode() { return read(MODE_KEY, "dark", MODES); }
-      function resolved() {
-        var m = mode();
-        if (m === "system") {
-          m = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-        }
-        return family() + "-" + m;
-      }
-      function apply(id) {
-        id = id || resolved();
-        var root = document.documentElement;
-        var bg = BG[id] || BG["midnight-dark"];
-        var light = /-light$/.test(id);
-        root.setAttribute("data-theme", id);
-        root.style.colorScheme = light ? "light" : "dark";
-        root.style.setProperty("--boot-bg", bg);
-        root.style.background = bg;
-      }
-      apply();
+      var id = "midnight-dark";
+      var root = document.documentElement;
+      root.setAttribute("data-theme", id);
+      root.style.colorScheme = "dark";
+      root.style.setProperty("--boot-bg", "#0b0d12");
+      root.style.background = "#0b0d12";
     })();
-    window.TABBY_UI_ASSET_V = "20260903-audit";
+    window.TABBY_UI_ASSET_V = "20260904-prefs";
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');
   </script>
 </head>

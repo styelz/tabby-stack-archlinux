@@ -125,7 +125,7 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('id="chat-files-history-toggle"', self.src)
         self.assertIn("function setHistoryOpen(open)", self.src)
         self.assertIn("function setChangesOpen(open)", self.src)
-        self.assertIn("tabby-ui-chat-changes", self.src)
+        self.assertIn("persistLayout()", self.src)
         self.assertIn("chat-files-twist", self.src)
         self.assertIn("function changeMenuItems(", self.src)
         self.assertIn("function discardChange(", self.src)
@@ -227,7 +227,9 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn("if (item.historyRun)", self.src)
         self.assertIn("userItem.historyRun = historyRun", self.src)
         self.assertIn("await Promise.all(", self.src.split("async function clearHistory")[1].split("function hideHistoryMenu")[0])
-        self.assertIn("if (isWorkspaceRoot(chat)) return;", self.src.split("function mergeChatStores")[1].split("function persist(")[0])
+        self.assertNotIn("function mergeChatStores", self.src)
+        self.assertIn("function wipeClientUiStorage(", self.src)
+        self.assertIn("function readLegacyStore(", self.src)
         self.assertIn('id="chat-tabs"', self.src)
         self.assertIn("chat-editor-col", self.src)
         self.assertIn("Boolean(tab) && !previewAsTab", self.src)
@@ -330,9 +332,34 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('gitActionBtn("commit"', self.src)
         self.assertIn('gitActionBtn("push"', self.src)
         self.assertIn("workspace/${encodeURIComponent(chatId)}/git", self.src)
-        self.assertIn("tabby-ui-chat-git", self.src)
+        self.assertIn("function setGitOpen(open)", self.src)
         self.assertIn(".chat-git-commit", css)
         self.assertIn("#chat-files-git:not(.is-collapsed)", css)
+
+    def test_prefs_live_on_the_server(self):
+        utils = Path(__file__).resolve().parents[1] / "ui" / "static" / "utils.js"
+        html = Path(__file__).resolve().parents[1] / "ui" / "static" / "index.html"
+        login = Path(__file__).resolve().parents[1] / "ui" / "static" / "login.html"
+        app = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.js"
+        utils_src = utils.read_text(encoding="utf-8")
+        html_src = html.read_text(encoding="utf-8")
+        login_src = login.read_text(encoding="utf-8")
+        app_src = app.read_text(encoding="utf-8")
+        self.assertIn("window.TABBY_UI_PREFS = null;", html_src)
+        self.assertNotIn("localStorage", html_src)
+        self.assertNotIn("localStorage", login_src)
+        self.assertNotIn("localStorage", utils_src)
+        self.assertNotIn("sessionStorage", utils_src)
+        self.assertNotIn("localStorage.setItem", self.src)
+        self.assertNotIn("sessionStorage", self.src.split("function wipeClientUiStorage")[0])
+        self.assertIn('api("prefs"', utils_src)
+        self.assertIn("function patchPrefs(", utils_src)
+        self.assertIn("function persistLayout(", self.src)
+        self.assertIn("patchPrefs({ layout })", self.src)
+        self.assertIn("patchPrefs({ codeAgent })", self.src)
+        self.assertIn("wipeClientUiStorage()", self.src)
+        self.assertIn("readLegacyStore()", self.src)
+        self.assertIn("TabbyUI.flushPrefs", app_src)
 
 
 if __name__ == "__main__":

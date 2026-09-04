@@ -30,13 +30,12 @@
       var i = p.indexOf(m);
       return i >= 0 ? p.slice(0, i + m.length) : m;
     })();
+    window.TABBY_UI_PREFS = null;
     window.TABBY_REVEAL_UI = function () {
       document.documentElement.classList.remove("ui-loading");
     };
     setTimeout(window.TABBY_REVEAL_UI, 8000);
     (function () {
-      var THEME_KEY = "tabby-ui-theme";
-      var MODE_KEY = "tabby-ui-mode";
       var FAMILIES = { midnight: 1, ember: 1, glacier: 1, moss: 1, contrast: 1 };
       var MODES = { dark: 1, light: 1, system: 1 };
       var BG = {
@@ -51,13 +50,13 @@
         "contrast-dark": "#000000",
         "contrast-light": "#ffffff"
       };
+      function prefs() { return window.TABBY_UI_PREFS || {}; }
       function read(key, fallback, allowed) {
-        var v = "";
-        try { v = localStorage.getItem(key) || ""; } catch (e) {}
+        var v = prefs()[key] || "";
         return allowed[v] ? v : fallback;
       }
-      function family() { return read(THEME_KEY, "midnight", FAMILIES); }
-      function mode() { return read(MODE_KEY, "dark", MODES); }
+      function family() { return read("theme", "midnight", FAMILIES); }
+      function mode() { return read("mode", "dark", MODES); }
       function resolved() {
         var m = mode();
         if (m === "system") {
@@ -76,8 +75,6 @@
         root.style.background = bg;
       }
       window.TABBY_THEME_BOOT = {
-        THEME_KEY: THEME_KEY,
-        MODE_KEY: MODE_KEY,
         FAMILIES: ["midnight", "ember", "glacier", "moss", "contrast"],
         LABELS: { midnight: "Midnight", ember: "Ember", glacier: "Glacier", moss: "Moss", contrast: "Contrast" },
         MODES: ["dark", "light", "system"],
@@ -90,16 +87,14 @@
       };
       apply();
       (function () {
-        var KEY = "tabby-ui-zoom";
-        var n = 100;
-        try { n = parseInt(localStorage.getItem(KEY) || "", 10); } catch (e) {}
+        var n = parseInt(prefs().zoom, 10);
         if (!isFinite(n)) n = 100;
         n = Math.min(150, Math.max(75, Math.round(n / 5) * 5));
         document.documentElement.style.setProperty("--ui-zoom", String(n / 100));
       })();
     })();
     // Bust browser/proxy caches when chat status UI changes.
-    window.TABBY_UI_ASSET_V = "20260903-audit";
+    window.TABBY_UI_ASSET_V = "20260904-prefs";
     // document.write keeps CSS render-blocking. createElement("link") does not,
     // and unhiding on the first sheet's onload flashed the unstyled shell.
     document.write('<link rel="stylesheet" href="' + TABBY_UI_BASE + "/assets/styles.css?v=" + TABBY_UI_ASSET_V + '">');

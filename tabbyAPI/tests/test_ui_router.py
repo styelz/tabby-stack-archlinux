@@ -20,6 +20,7 @@ class UiRoutePrefixTests(unittest.TestCase):
         self.assertIn("/v1/ui/users", paths)
         self.assertIn("/v1/ui/settings", paths)
         self.assertIn("/v1/ui/chats", paths)
+        self.assertIn("/v1/ui/prefs", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/folder", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/drafts", paths)
         self.assertIn("/v1/ui/workspace/{chat_id}/shell", paths)

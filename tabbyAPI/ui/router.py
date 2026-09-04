@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sse_starlette import EventSourceResponse
 
 from ui.assets import STATIC_DIR, file_response
@@ -99,9 +99,12 @@ async def ui_index_noslash(request: Request):
 
 @router.get("/", include_in_schema=False)
 async def ui_index(request: Request):
-    if not validate_session(_session_token(request)):
+    user = validate_session(_session_token(request))
+    if not user:
         return _private_response(RedirectResponse("./login", status_code=303))
-    return _private_response(file_response("index.html"))
+    from ui.prefs import index_page_html
+
+    return _private_response(HTMLResponse(index_page_html(user)))
 
 
 @router.get("/assets/vs/{rest:path}", include_in_schema=False)
@@ -375,6 +378,7 @@ async def ui_users_password(name: str, request: Request, _admin: str = Depends(r
 async def ui_users_delete(name: str, _admin: str = Depends(require_ui_admin)):
     from ui.auth import destroy_sessions_for_user
     from ui.chats import delete_store
+    from ui.prefs import delete_prefs
     from ui.users import delete_user
 
     try:
@@ -385,7 +389,26 @@ async def ui_users_delete(name: str, _admin: str = Depends(require_ui_admin)):
         raise HTTPException(400, str(exc)) from exc
     destroy_sessions_for_user(name)
     delete_store(name)
+    delete_prefs(name)
     return {"ok": True}
+
+
+@router.get("/prefs", include_in_schema=False)
+async def ui_prefs_get(_user: str = Depends(require_ui_user)):
+    from ui.prefs import load_prefs
+
+    return load_prefs(_user)
+
+
+@router.put("/prefs", include_in_schema=False)
+async def ui_prefs_put(request: Request, _user: str = Depends(require_ui_user)):
+    from ui.prefs import save_prefs
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "JSON body required") from exc
+    return save_prefs(_user, body)
 
 
 @router.get("/chats", include_in_schema=False)

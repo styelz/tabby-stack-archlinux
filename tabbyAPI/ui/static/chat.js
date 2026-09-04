@@ -502,13 +502,22 @@ function mountChat(root) {
   let filesFocusDir = "";
   let extraFolders = [];
   let folderOpen = Object.create(null);
-  const FOLDER_EXTRA_KEY = "tabby-ui-chat-extra-folders";
-  try {
-    const raw = JSON.parse(localStorage.getItem(FOLDER_EXTRA_KEY) || "[]");
-    if (Array.isArray(raw)) extraFolders = raw.map((item) => String(item || "").trim()).filter(Boolean);
-  } catch {
-    extraFolders = [];
+  function uiPrefs() {
+    return (window.TabbyUI && TabbyUI.prefs) || window.TABBY_UI_PREFS || {};
   }
+  function uiLayout() {
+    const layout = uiPrefs().layout;
+    return layout && typeof layout === "object" ? layout : {};
+  }
+  function patchPrefs(patch) {
+    if (window.TabbyUI && typeof TabbyUI.patchPrefs === "function") {
+      TabbyUI.patchPrefs(patch);
+    }
+  }
+  (function adoptExtraFolders() {
+    const raw = uiPrefs().extraFolders;
+    if (Array.isArray(raw)) extraFolders = raw.map((item) => String(item || "").trim()).filter(Boolean);
+  })();
   let filesOpenFolders = new Set();
   let filesSeenPaths = new Set();
   let filesRevealed = "";
@@ -563,7 +572,6 @@ function mountChat(root) {
     "The file edits already landed. Reply with a short summary only. Do not call tools.";
   const SKIP_INSPECT_RESULT =
     "Already applied in this turn. Do not inspect this file again. If the request is done, summarize with no tools.";
-  const AGENT_KEY = "tabby-ui-code-agent";
   let livePlanChecklist = null;
   let planChecklistOpen = true;
   let planChecklistBuilding = false;
@@ -591,11 +599,7 @@ function mountChat(root) {
   }
 
   function readCodeAgent() {
-    try {
-      return normalizeAgent(localStorage.getItem(AGENT_KEY));
-    } catch {
-      return "agent";
-    }
+    return normalizeAgent(uiPrefs().codeAgent);
   }
 
   let codeAgent = readCodeAgent();
@@ -630,16 +634,6 @@ function mountChat(root) {
   const ATTACH_TEXT_LIMIT = 80_000;
   const MAX_ATTACH = 12;
   const STORAGE_KEY = "tabby-ui-chat-store";
-  const SETTINGS_KEY = "tabby-ui-chat-settings";
-  const SIDEBAR_KEY = "tabby-ui-chat-sidebar";
-  const SIDEBAR_W_KEY = "tabby-ui-chat-sidebar-w";
-  const FILES_KEY = "tabby-ui-chat-files";
-  const FILES_W_KEY = "tabby-ui-chat-files-w";
-  const PREVIEW_W_KEY = "tabby-ui-chat-preview-w";
-  const SPLIT_W_KEY = "tabby-ui-chat-split-w";
-  const TERM_H_KEY = "tabby-ui-chat-term-h";
-  const COMPOSE_H_KEY = "tabby-ui-chat-compose-h";
-  const FILES_FR_KEY = "tabby-ui-chat-files-fr";
   const SIDEBAR_W_MIN = 180;
   const SIDEBAR_W_MAX = 520;
   const SIDEBAR_W_DEFAULT = 268;
@@ -658,11 +652,6 @@ function mountChat(root) {
   const COMPOSE_ROWS_MAX = 10;
   const FILES_SPLIT_MIN = 64;
   const CHAT_COL_MIN = 280;
-  const HISTORY_KEY = "tabby-ui-chat-history";
-  const CHANGES_KEY = "tabby-ui-chat-changes";
-  const GIT_KEY = "tabby-ui-chat-git";
-  const WS_OPEN_KEY = "tabby-ui-chat-ws-open";
-  const LISTING_STORE_KEY = "tabby-ui-code-listings";
   const MAX_CHATS = 50;
   const narrowChat = window.matchMedia("(max-width: 900px)");
   // Below 900px the pane is a bottom sheet over the chat, so it starts closed
@@ -673,35 +662,19 @@ function mountChat(root) {
   let gitOpen = readGitOpen();
 
   function readFilesOpen() {
-    try {
-      return localStorage.getItem(FILES_KEY) !== "closed";
-    } catch {
-      return true;
-    }
+    return uiLayout().filesOpen !== false;
   }
 
   function readHistoryOpen() {
-    try {
-      return localStorage.getItem(HISTORY_KEY) !== "closed";
-    } catch {
-      return true;
-    }
+    return uiLayout().historyOpen !== false;
   }
 
   function readChangesOpen() {
-    try {
-      return localStorage.getItem(CHANGES_KEY) !== "closed";
-    } catch {
-      return true;
-    }
+    return uiLayout().changesOpen !== false;
   }
 
   function readGitOpen() {
-    try {
-      return localStorage.getItem(GIT_KEY) === "open";
-    } catch {
-      return false;
-    }
+    return uiLayout().gitOpen === true;
   }
 
   function newId() {
@@ -766,11 +739,7 @@ function mountChat(root) {
   function expandWorkspace(rootId) {
     if (!rootId) return;
     wsOpen[rootId] = true;
-    try {
-      localStorage.setItem(WS_OPEN_KEY, JSON.stringify(wsOpen));
-    } catch {
-      /* ignore */
-    }
+    persistWsOpen();
   }
 
   function addCodeWorkspace() {
@@ -1239,11 +1208,32 @@ function mountChat(root) {
     return { version: 1, activeId, chats, lastByMode };
   }
 
-  function readStore() {
+  function readLegacyStore() {
     try {
       return normalizeStore(JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"));
     } catch {
       return normalizeStore(null);
+    }
+  }
+
+  function wipeClientUiStorage() {
+    const dropPrefixed = (storage) => {
+      const drop = [];
+      for (let i = 0; i < storage.length; i += 1) {
+        const key = storage.key(i);
+        if (key && key.startsWith("tabby-ui-")) drop.push(key);
+      }
+      drop.forEach((key) => storage.removeItem(key));
+    };
+    try {
+      dropPrefixed(localStorage);
+    } catch {
+      /* ignore */
+    }
+    try {
+      dropPrefixed(sessionStorage);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -1269,57 +1259,44 @@ function mountChat(root) {
     max_tokens: null,
   };
   const SAMPLER_KEYS = ["temperature", "top_p", "min_p", "frequency_penalty", "presence_penalty", "max_tokens"];
-  try {
-    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
-    if (raw && typeof raw === "object") {
-      SAMPLER_KEYS.forEach((key) => {
-        if (raw[key] == null) settings[key] = null;
-        else if (Number.isFinite(Number(raw[key]))) settings[key] = Number(raw[key]);
-      });
-    }
-  } catch {
-    /* ignore */
+  (function adoptSamplers() {
+    const raw = uiPrefs().samplers;
+    if (!raw || typeof raw !== "object") return;
+    SAMPLER_KEYS.forEach((key) => {
+      if (raw[key] == null) settings[key] = null;
+      else if (Number.isFinite(Number(raw[key]))) settings[key] = Number(raw[key]);
+    });
+  })();
+  if (uiLayout().sidebarHidden) {
+    shell.classList.add("is-sidebar-hidden");
   }
-  try {
-    if (localStorage.getItem(SIDEBAR_KEY) === "hidden") {
-      shell.classList.add("is-sidebar-hidden");
-    }
-  } catch {
-    /* ignore */
-  }
-  function readStoredWidth(key, fallback, min, max) {
-    try {
-      const n = Number.parseInt(localStorage.getItem(key) || "", 10);
-      if (Number.isFinite(n)) return Math.min(max, Math.max(min, n));
-    } catch {
-      /* ignore */
-    }
+  function clampStored(n, fallback, min, max) {
+    const value = Number(n);
+    if (Number.isFinite(value)) return Math.min(max, Math.max(min, Math.round(value)));
     return fallback;
   }
   function readFilesFr() {
-    try {
-      const parts = String(localStorage.getItem(FILES_FR_KEY) || "").split(",");
-      const nums = parts.map((n) => Number.parseFloat(n));
-      if (
-        parts.length === 4 &&
-        nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)
-      ) {
-        return { tree: nums[0], git: nums[1], changes: nums[2], history: nums[3] };
-      }
-      if (parts.length === 3 && nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)) {
-        return { tree: nums[0], git: 1, changes: nums[1], history: nums[2] };
-      }
-    } catch {
-      /* ignore */
+    const parts = uiLayout().filesFr;
+    if (!Array.isArray(parts)) return { tree: 2, git: 1, changes: 1, history: 1 };
+    const nums = parts.map((n) => Number.parseFloat(n));
+    if (
+      parts.length === 4 &&
+      nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)
+    ) {
+      return { tree: nums[0], git: nums[1], changes: nums[2], history: nums[3] };
+    }
+    if (parts.length === 3 && nums.every((n) => Number.isFinite(n) && n >= 0.15 && n <= 20)) {
+      return { tree: nums[0], git: 1, changes: nums[1], history: nums[2] };
     }
     return { tree: 2, git: 1, changes: 1, history: 1 };
   }
-  let sidebarW = readStoredWidth(SIDEBAR_W_KEY, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
-  let filesW = readStoredWidth(FILES_W_KEY, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
-  let previewW = readStoredWidth(PREVIEW_W_KEY, PREVIEW_W_DEFAULT, PREVIEW_W_MIN, PREVIEW_W_MAX);
-  let splitW = readStoredWidth(SPLIT_W_KEY, SPLIT_W_DEFAULT, SPLIT_W_MIN, SPLIT_W_MAX);
-  let termH = readStoredWidth(TERM_H_KEY, TERM_H_DEFAULT, TERM_H_MIN, 800);
-  let composeH = readStoredWidth(COMPOSE_H_KEY, 0, 0, 800);
+  const layoutNow = uiLayout();
+  let sidebarW = clampStored(layoutNow.sidebarW, SIDEBAR_W_DEFAULT, SIDEBAR_W_MIN, SIDEBAR_W_MAX);
+  let filesW = clampStored(layoutNow.filesW, FILES_W_DEFAULT, FILES_W_MIN, FILES_W_MAX);
+  let previewW = clampStored(layoutNow.previewW, PREVIEW_W_DEFAULT, PREVIEW_W_MIN, PREVIEW_W_MAX);
+  let splitW = clampStored(layoutNow.splitW, SPLIT_W_DEFAULT, SPLIT_W_MIN, SPLIT_W_MAX);
+  let termH = clampStored(layoutNow.termH, TERM_H_DEFAULT, TERM_H_MIN, 800);
+  let composeH = clampStored(layoutNow.composeH, 0, 0, 800);
   let filesFr = readFilesFr();
   const STATIC_COMMANDS = [
     { slash: "/help", send: "help", hint: "Usage guide" },
@@ -1415,38 +1392,6 @@ function mountChat(root) {
   let persistTail = Promise.resolve();
   let persistGen = 0;
 
-  function writeLegacyBackup() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-    } catch {
-      /* ignore quota */
-    }
-  }
-
-  function mergeChatStores(server, local) {
-    const base = normalizeStore(server);
-    const extra = normalizeStore(local);
-    const byId = new Map((base.chats || []).map((chat) => [chat.id, chat]));
-    (extra.chats || []).forEach((chat) => {
-      if (!chat || !chat.id) return;
-      if (!hasUserTurn(chat) && !isWorkspaceRoot(chat)) return;
-      const existing = byId.get(chat.id);
-      if (!existing) {
-        if (isWorkspaceRoot(chat)) return;
-        if (chatParentId(chat) && !byId.has(chatParentId(chat))) return;
-      }
-      if (!existing || (chat.updatedAt || 0) > (existing.updatedAt || 0)) {
-        byId.set(chat.id, chat);
-      }
-    });
-    return normalizeStore({
-      version: 1,
-      activeId: base.activeId || extra.activeId,
-      chats: [...byId.values()],
-      lastByMode: { ...(extra.lastByMode || {}), ...(base.lastByMode || {}) },
-    });
-  }
-
   function persist(opts) {
     rememberActiveMode();
     const chat = activeChat();
@@ -1504,13 +1449,9 @@ function mountChat(root) {
     persistTail = persistTail
       .then(() => {
         if (!flush && gen !== persistGen) return;
-        return TabbyUI.api("chats", { method: "PUT", body: flush ? snapshot : store }).then(() => {
-          writeLegacyBackup();
-        });
+        return TabbyUI.api("chats", { method: "PUT", body: flush ? snapshot : store });
       })
-      .catch(() => {
-        writeLegacyBackup();
-      });
+      .catch(() => {});
     return persistTail;
   }
 
@@ -1624,11 +1565,7 @@ function mountChat(root) {
 
   function setCodeAgent(agent) {
     codeAgent = normalizeAgent(agent);
-    try {
-      localStorage.setItem(AGENT_KEY, codeAgent);
-    } catch {
-      /* ignore */
-    }
+    patchPrefs({ codeAgent });
     hideAgentMenu();
     paintCodeAgent();
     paintCompose();
@@ -1661,13 +1598,7 @@ function mountChat(root) {
   function setFilesOpen(open) {
     filesOpen = !!open;
     // A phone visit should not overwrite the desktop choice.
-    if (!narrowChat.matches) {
-      try {
-        localStorage.setItem(FILES_KEY, filesOpen ? "open" : "closed");
-      } catch {
-        /* ignore */
-      }
-    }
+    if (!narrowChat.matches) persistLayout();
     paintMode();
     reclampPaneWidths();
     if (filesOpen) refreshFiles();
@@ -1700,24 +1631,20 @@ function mountChat(root) {
   }
 
   function readWsOpen() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(WS_OPEN_KEY) || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch {
-      return {};
-    }
+    const raw = uiPrefs().wsOpen;
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {};
   }
 
   let wsOpen = readWsOpen();
 
+  function persistWsOpen() {
+    patchPrefs({ wsOpen });
+  }
+
   function setWorkspaceOpen(id, open) {
     if (!id) return;
     wsOpen[id] = Boolean(open);
-    try {
-      localStorage.setItem(WS_OPEN_KEY, JSON.stringify(wsOpen));
-    } catch {
-      /* ignore */
-    }
+    persistWsOpen();
     renderSidebar();
   }
 
@@ -2023,14 +1950,6 @@ function mountChat(root) {
     rememberCurrentListing(tabsChat);
   }
 
-  function persistListings() {
-    try {
-      sessionStorage.setItem(LISTING_STORE_KEY, JSON.stringify(listingByChat));
-    } catch {
-      /* ignore */
-    }
-  }
-
   function rememberCurrentListing(chatId) {
     if (!chatId) return;
     listingByChat[chatId] = {
@@ -2040,28 +1959,6 @@ function mountChat(root) {
       focusDir: filesFocusDir,
       openFolders: Array.from(filesOpenFolders),
     };
-    persistListings();
-  }
-
-  function restorePersistedListings() {
-    try {
-      const raw = sessionStorage.getItem(LISTING_STORE_KEY);
-      if (!raw) return;
-      const dump = JSON.parse(raw);
-      Object.keys(dump || {}).forEach((id) => {
-        const row = dump[id];
-        if (!row || !Array.isArray(row.files) || listingByChat[id]) return;
-        listingByChat[id] = {
-          files: cloneListingRows(row.files),
-          selected: row.selected || "",
-          entry: row.entry || "",
-          focusDir: row.focusDir || "",
-          openFolders: Array.isArray(row.openFolders) ? row.openFolders : [],
-        };
-      });
-    } catch {
-      /* ignore */
-    }
   }
 
   function reloadRestoredFileTabs() {
@@ -2096,7 +1993,6 @@ function mountChat(root) {
     delete tabsByChat[chatId];
     delete changesByChat[chatId];
     delete listingByChat[chatId];
-    persistListings();
     if (tabsChat === chatId) {
       resetTabs();
       tabsChat = "";
@@ -2345,31 +2241,19 @@ function mountChat(root) {
 
   function setChangesOpen(open) {
     changesOpen = Boolean(open);
-    try {
-      localStorage.setItem(CHANGES_KEY, changesOpen ? "open" : "closed");
-    } catch {
-      /* ignore */
-    }
+    persistLayout();
     paintChangesPane();
   }
 
   function setHistoryOpen(open) {
     historyOpen = Boolean(open);
-    try {
-      localStorage.setItem(HISTORY_KEY, historyOpen ? "open" : "closed");
-    } catch {
-      /* ignore */
-    }
+    persistLayout();
     paintHistoryPane();
   }
 
   function setGitOpen(open) {
     gitOpen = Boolean(open);
-    try {
-      localStorage.setItem(GIT_KEY, gitOpen ? "open" : "closed");
-    } catch {
-      /* ignore */
-    }
+    persistLayout();
     paintGitPane();
     if (gitOpen) refreshGit();
   }
@@ -3119,11 +3003,7 @@ function mountChat(root) {
           body: { url },
         });
         gitOpen = true;
-        try {
-          localStorage.setItem(GIT_KEY, "open");
-        } catch {
-          /* ignore */
-        }
+        persistLayout();
         await refreshFiles();
         await refreshGit();
       });
@@ -3537,11 +3417,7 @@ function mountChat(root) {
       if (name) used.add(name);
     });
     extraFolders = extraFolders.filter((name) => name && !used.has(name));
-    try {
-      localStorage.setItem(FOLDER_EXTRA_KEY, JSON.stringify(extraFolders));
-    } catch {
-      /* ignore */
-    }
+    patchPrefs({ extraFolders });
   }
 
   function knownFolders() {
@@ -6952,11 +6828,7 @@ function mountChat(root) {
 
   function setSidebarHidden(hidden) {
     shell.classList.toggle("is-sidebar-hidden", hidden);
-    try {
-      localStorage.setItem(SIDEBAR_KEY, hidden ? "hidden" : "shown");
-    } catch {
-      /* ignore */
-    }
+    persistLayout();
     paintToolbar();
     reclampPaneWidths();
   }
@@ -6988,12 +6860,27 @@ function mountChat(root) {
     if (termOpen) fitTerm();
   }
 
-  function persistPaneWidth(key, value) {
-    try {
-      localStorage.setItem(key, String(value));
-    } catch {
-      /* ignore */
-    }
+  function persistLayout() {
+    const layout = {
+      sidebarHidden: shell.classList.contains("is-sidebar-hidden"),
+      sidebarW,
+      filesW,
+      previewW,
+      splitW,
+      termH,
+      composeH,
+      filesFr: [filesFr.tree, filesFr.git || 1, filesFr.changes, filesFr.history],
+      historyOpen,
+      changesOpen,
+      gitOpen,
+    };
+    if (!narrowChat.matches) layout.filesOpen = filesOpen;
+    else layout.filesOpen = uiLayout().filesOpen !== false;
+    patchPrefs({ layout });
+  }
+
+  function persistPaneWidth() {
+    persistLayout();
   }
 
   function clampPaneWidth(which, next) {
@@ -7014,7 +6901,7 @@ function mountChat(root) {
     if (which === "sidebar") sidebarW = width;
     else filesW = width;
     applyPaneWidths();
-    if (persist) persistPaneWidth(which === "sidebar" ? SIDEBAR_W_KEY : FILES_W_KEY, width);
+    if (persist) persistPaneWidth();
     return width;
   }
 
@@ -7038,14 +6925,14 @@ function mountChat(root) {
   function setPreviewW(next, persist) {
     previewW = clampPreviewPct(next);
     applyPaneWidths();
-    if (persist) persistPaneWidth(PREVIEW_W_KEY, previewW);
+    if (persist) persistPaneWidth();
     return previewW;
   }
 
   function setSplitW(next, persist) {
     splitW = Math.min(SPLIT_W_MAX, Math.max(SPLIT_W_MIN, next));
     applyPaneWidths();
-    if (persist) persistPaneWidth(SPLIT_W_KEY, splitW);
+    if (persist) persistPaneWidth();
     return splitW;
   }
 
@@ -7058,7 +6945,7 @@ function mountChat(root) {
   function setTermH(next, persist) {
     termH = Math.round(Math.min(termMax(), Math.max(TERM_H_MIN, next)));
     applyPaneWidths();
-    if (persist) persistPaneWidth(TERM_H_KEY, termH);
+    if (persist) persistPaneWidth();
     return termH;
   }
 
@@ -7108,7 +6995,7 @@ function mountChat(root) {
     if (next <= 0) composeH = 0;
     else composeH = Math.round(Math.min(composeMax(), Math.max(COMPOSE_H_MIN, next)));
     applyComposeH();
-    if (persist) persistPaneWidth(COMPOSE_H_KEY, composeH);
+    if (persist) persistPaneWidth();
     return composeH;
   }
 
@@ -7127,10 +7014,7 @@ function mountChat(root) {
   }
 
   function persistFilesFr() {
-    persistPaneWidth(
-      FILES_FR_KEY,
-      `${filesFr.tree.toFixed(3)},${(filesFr.git || 1).toFixed(3)},${filesFr.changes.toFixed(3)},${filesFr.history.toFixed(3)}`
-    );
+    persistLayout();
   }
 
   function filesSplitSections() {
@@ -7323,7 +7207,7 @@ function mountChat(root) {
     def: SIDEBAR_W_DEFAULT,
     get: () => sidebarW,
     set: (next, persist) => setPaneWidth("sidebar", next, persist),
-    persist: () => persistPaneWidth(SIDEBAR_W_KEY, sidebarW),
+    persist: () => persistLayout(),
   });
   bindDragResize(root.querySelector("#chat-files-resize"), {
     axis: "x",
@@ -7333,7 +7217,7 @@ function mountChat(root) {
     def: FILES_W_DEFAULT,
     get: () => filesW,
     set: (next, persist) => setPaneWidth("files", next, persist),
-    persist: () => persistPaneWidth(FILES_W_KEY, filesW),
+    persist: () => persistLayout(),
   });
   bindDragResize(root.querySelector("#chat-preview-resize"), {
     axis: "x",
@@ -7349,7 +7233,7 @@ function mountChat(root) {
     shiftStep: 8,
     get: () => previewW,
     set: (next, persist) => setPreviewW(next, persist),
-    persist: () => persistPaneWidth(PREVIEW_W_KEY, previewW),
+    persist: () => persistLayout(),
   });
   bindDragResize(root.querySelector("#chat-split-resize"), {
     axis: "x",
@@ -7366,7 +7250,7 @@ function mountChat(root) {
     shiftStep: 8,
     get: () => splitW,
     set: (next, persist) => setSplitW(next, persist),
-    persist: () => persistPaneWidth(SPLIT_W_KEY, splitW),
+    persist: () => persistLayout(),
   });
   bindDragResize(root.querySelector("#chat-term-resize"), {
     axis: "y",
@@ -7376,7 +7260,7 @@ function mountChat(root) {
     def: TERM_H_DEFAULT,
     get: () => termH,
     set: (next, persist) => setTermH(next, persist),
-    persist: () => persistPaneWidth(TERM_H_KEY, termH),
+    persist: () => persistLayout(),
   });
   bindDragResize(root.querySelector("#chat-compose-resize"), {
     axis: "y",
@@ -7386,7 +7270,7 @@ function mountChat(root) {
     def: 0,
     get: () => (composeH > 0 ? composeH : Math.round(input.getBoundingClientRect().height)),
     set: (next, persist) => setComposeH(next, persist),
-    persist: () => persistPaneWidth(COMPOSE_H_KEY, composeH),
+    persist: () => persistLayout(),
   });
   bindFilesSplit(root.querySelector("#chat-files-git-resize"), "git");
   bindFilesSplit(root.querySelector("#chat-files-changes-resize"), "changes");
@@ -9475,11 +9359,7 @@ function mountChat(root) {
   }
 
   function saveSettings() {
-    try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    } catch {
-      /* ignore */
-    }
+    patchPrefs({ samplers: { ...settings } });
   }
 
   function showDialog({ title, html, yes = "Close" }) {
@@ -9541,7 +9421,7 @@ function mountChat(root) {
         `<input data-key="${field.key}" type="range" min="${field.min}" max="${field.max}" step="${field.step}" /></label>`
       )).join("") +
       "</div>" +
-      '<p class="muted">Leave at model default unless you want a fixed value for this browser.</p>' +
+      '<p class="muted">Leave at model default unless you want a fixed value for this account.</p>' +
       '<div class="dialog-actions">' +
       '<button type="button" class="btn" id="chat-temp-default">Model default</button>' +
       '<button type="button" class="btn primary" id="chat-temp-save">Save</button>' +
@@ -10575,7 +10455,6 @@ function mountChat(root) {
     if (root) await dropWorkspace(id);
     const mode = chatMode(chat);
     store.chats = store.chats.filter((item) => !ids.has(item.id));
-    writeLegacyBackup();
     if (ids.has(store.activeId)) {
       const parentId = chatParentId(chat);
       const next = mode === "code"
@@ -10687,7 +10566,6 @@ function mountChat(root) {
       doomed.filter((item) => isWorkspaceRoot(item)).map((item) => dropWorkspace(item.id))
     );
     store.chats = store.chats.filter((item) => chatMode(item) !== mode);
-    writeLegacyBackup();
     const chat = mode === "code" ? addCodeWorkspace() : emptyChat(mode);
     if (mode !== "code") store.chats.unshift(chat);
     store = {
@@ -14474,19 +14352,27 @@ function mountChat(root) {
       incoming = null;
     }
     const serverEmpty = !incoming || !Array.isArray(incoming.chats) || !incoming.chats.some(hasUserTurn);
-    const legacy = readStore();
+    let imported = false;
     if (serverEmpty) {
-      if (legacy.chats.some(hasUserTurn)) incoming = legacy;
-    } else if (legacy.chats.some((chat) => hasUserTurn(chat) || isWorkspaceRoot(chat))) {
-      incoming = mergeChatStores(incoming, legacy);
+      const legacy = readLegacyStore();
+      if (legacy.chats.some(hasUserTurn)) {
+        incoming = legacy;
+        imported = true;
+      }
     }
     store = normalizeStore(incoming);
-    writeLegacyBackup();
-    restorePersistedListings();
     messages = cloneMessages(store.chats.find((chat) => chat.id === store.activeId).messages);
     persistReady = true;
-    if (fetched || (incoming && Array.isArray(incoming.chats) && incoming.chats.some(hasUserTurn))) {
-      persist();
+    if (imported) {
+      try {
+        await TabbyUI.api("chats", { method: "PUT", body: store });
+        wipeClientUiStorage();
+      } catch {
+        /* Keep the browser copy until a later save lands on the server. */
+      }
+    } else {
+      wipeClientUiStorage();
+      if (fetched) persist();
     }
     renderLog();
     paintToolbar();

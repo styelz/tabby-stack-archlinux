@@ -1259,8 +1259,6 @@
   }
 
   const THEME_BOOT = window.TABBY_THEME_BOOT || {};
-  const THEME_KEY = THEME_BOOT.THEME_KEY || "tabby-ui-theme";
-  const MODE_KEY = THEME_BOOT.MODE_KEY || "tabby-ui-mode";
   const THEME_FAMILIES = THEME_BOOT.FAMILIES || ["midnight", "ember", "glacier", "moss", "contrast"];
   const THEME_LABELS = THEME_BOOT.LABELS || {
     midnight: "Midnight",
@@ -1271,16 +1269,84 @@
   };
   const THEME_MODES = THEME_BOOT.MODES || ["dark", "light", "system"];
   const MODE_LABELS = THEME_BOOT.MODE_LABELS || { dark: "Dark", light: "Light", system: "System" };
+  const PREFS_SAVE_MS = 400;
+
+  function clonePrefs(raw) {
+    try {
+      return JSON.parse(JSON.stringify(raw && typeof raw === "object" ? raw : {}));
+    } catch {
+      return {};
+    }
+  }
+
+  let prefsState = clonePrefs(window.TABBY_UI_PREFS);
+  window.TABBY_UI_PREFS = prefsState;
+  let prefsTimer = 0;
+  let prefsDirty = false;
+  let prefsFlushing = Promise.resolve();
+
+  function mergePrefsPatch(base, patch) {
+    const next = Object.assign({}, base, patch);
+    if (patch && patch.layout) {
+      next.layout = Object.assign({}, base.layout || {}, patch.layout);
+    }
+    if (patch && patch.samplers) {
+      next.samplers = Object.assign({}, base.samplers || {}, patch.samplers);
+    }
+    if (patch && patch.wsOpen) {
+      next.wsOpen = Object.assign({}, base.wsOpen || {}, patch.wsOpen);
+    }
+    return next;
+  }
+
+  function flushPrefs() {
+    if (prefsTimer) {
+      clearTimeout(prefsTimer);
+      prefsTimer = 0;
+    }
+    if (!prefsDirty) return prefsFlushing;
+    prefsDirty = false;
+    const snapshot = clonePrefs(prefsState);
+    prefsFlushing = prefsFlushing
+      .then(() => api("prefs", { method: "PUT", body: snapshot }))
+      .catch(() => {});
+    return prefsFlushing;
+  }
+
+  function schedulePrefsSave() {
+    if (prefsTimer) clearTimeout(prefsTimer);
+    prefsTimer = setTimeout(() => {
+      prefsTimer = 0;
+      flushPrefs();
+    }, PREFS_SAVE_MS);
+  }
+
+  function patchPrefs(patch) {
+    prefsState = mergePrefsPatch(prefsState, patch);
+    window.TABBY_UI_PREFS = prefsState;
+    if (window.TabbyUI) window.TabbyUI.prefs = prefsState;
+    prefsDirty = true;
+    schedulePrefsSave();
+    return prefsState;
+  }
+
+  window.addEventListener("pagehide", () => {
+    flushPrefs();
+  });
 
   function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
   function getTheme() {
+    const v = prefsState.theme;
+    if (THEME_FAMILIES.includes(v)) return v;
     return THEME_BOOT.family ? THEME_BOOT.family() : "midnight";
   }
 
   function getMode() {
+    const v = prefsState.mode;
+    if (THEME_MODES.includes(v)) return v;
     return THEME_BOOT.mode ? THEME_BOOT.mode() : "dark";
   }
 
@@ -1301,21 +1367,16 @@
 
   function setTheme(family) {
     if (!THEME_FAMILIES.includes(family)) return;
-    try {
-      localStorage.setItem(THEME_KEY, family);
-    } catch (err) {}
+    patchPrefs({ theme: family });
     applyTheme();
   }
 
   function setMode(mode) {
     if (!THEME_MODES.includes(mode)) return;
-    try {
-      localStorage.setItem(MODE_KEY, mode);
-    } catch (err) {}
+    patchPrefs({ mode });
     applyTheme();
   }
 
-  const ZOOM_KEY = "tabby-ui-zoom";
   const ZOOM_MIN = 75;
   const ZOOM_MAX = 150;
   const ZOOM_STEP = 5;
@@ -1328,11 +1389,7 @@
   }
 
   function getZoom() {
-    try {
-      return clampZoom(Number.parseInt(localStorage.getItem(ZOOM_KEY) || "", 10));
-    } catch (err) {
-      return ZOOM_DEFAULT;
-    }
+    return clampZoom(prefsState.zoom);
   }
 
   function applyZoom(pct) {
@@ -1347,9 +1404,7 @@
 
   function setZoom(pct) {
     const value = applyZoom(pct);
-    try {
-      localStorage.setItem(ZOOM_KEY, String(value));
-    } catch (err) {}
+    patchPrefs({ zoom: value });
     window.dispatchEvent(new Event("tabby-zoom-change"));
     window.dispatchEvent(new Event("resize"));
     return value;
@@ -1430,6 +1485,9 @@
     applyZoom,
     resolvedTheme,
     applyTheme,
+    prefs: prefsState,
+    patchPrefs,
+    flushPrefs,
     THEME_FAMILIES,
     THEME_LABELS,
     THEME_MODES,

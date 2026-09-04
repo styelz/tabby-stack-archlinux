@@ -433,6 +433,7 @@
   }
 
   async function logout() {
+    if (TabbyUI.flushPrefs) await TabbyUI.flushPrefs();
     try {
       const response = await fetch(TabbyUI.path("auth/logout"), {
         method: "POST",
