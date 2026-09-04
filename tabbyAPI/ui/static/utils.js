@@ -107,6 +107,54 @@
     return data;
   }
 
+  function drainNdjson(buf, onEvent, flush) {
+    let rest = buf;
+    let nl = rest.indexOf("\n");
+    while (nl >= 0) {
+      const line = rest.slice(0, nl).trim();
+      rest = rest.slice(nl + 1);
+      if (line) onEvent(JSON.parse(line));
+      nl = rest.indexOf("\n");
+    }
+    if (flush && rest.trim()) {
+      onEvent(JSON.parse(rest.trim()));
+      return "";
+    }
+    return rest;
+  }
+
+  async function readNdjson(response, onEvent) {
+    const emit = (event) => {
+      if (typeof onEvent === "function") onEvent(event);
+      return event;
+    };
+    if (!response || !response.body || typeof response.body.getReader !== "function") {
+      const text = await response.text();
+      let last = null;
+      drainNdjson(String(text || ""), (event) => {
+        last = emit(event);
+      }, true);
+      return last;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let last = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      buf = drainNdjson(buf, (event) => {
+        last = emit(event);
+      }, false);
+    }
+    buf += decoder.decode();
+    drainNdjson(buf, (event) => {
+      last = emit(event);
+    }, true);
+    return last;
+  }
+
   function $(sel, root = document) {
     return root.querySelector(sel);
   }
@@ -1488,6 +1536,7 @@
     escapeHtml,
     looksLikeHtml,
     httpErrorMessage,
+    readNdjson,
     formatBytes,
     formatDuration,
     formatAssistantContent,

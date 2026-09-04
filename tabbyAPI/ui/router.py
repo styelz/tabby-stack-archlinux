@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from sse_starlette import EventSourceResponse
 
@@ -74,6 +74,65 @@ def _private_response(response: Response) -> Response:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Vary"] = "Cookie"
     return response
+
+
+def _wants_ndjson(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return "ndjson" in accept
+
+
+def _ndjson_progress(work):
+    """Run work(on_progress) in a thread and stream {line} / {ok|error} NDJSON."""
+    from ui.backup import BackupError
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def on_progress(line: str) -> None:
+        text = str(line or "").strip()
+        if text:
+            loop.call_soon_threadsafe(queue.put_nowait, {"line": text})
+
+    def run_sync() -> None:
+        try:
+            result = work(on_progress)
+            payload = dict(result or {})
+            payload["ok"] = True
+            loop.call_soon_threadsafe(queue.put_nowait, {"done": payload})
+        except BackupError as exc:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, {"error": str(exc) or "Backup failed"}
+            )
+        except Exception as exc:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, {"error": str(exc) or "Backup failed"}
+            )
+
+    async def generate():
+        task = asyncio.create_task(asyncio.to_thread(run_sync))
+        try:
+            while True:
+                item = await queue.get()
+                if "done" in item:
+                    yield json.dumps(item["done"]) + "\n"
+                    break
+                if "error" in item:
+                    yield json.dumps({"ok": False, "error": item["error"]}) + "\n"
+                    break
+                yield json.dumps(item) + "\n"
+        finally:
+            await task
+
+    return _private_response(
+        StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    )
 
 
 @legacy_router.get("/ui", include_in_schema=False)
@@ -423,17 +482,66 @@ async def ui_prefs_put(request: Request, _user: str = Depends(require_ui_user)):
 
 @router.get("/backup", include_in_schema=False)
 @router.get("/backup.zip", include_in_schema=False)
-async def ui_backup_get(_user: str = Depends(require_ui_user)):
+async def ui_backup_get(
+    request: Request,
+    token: str | None = None,
+    _user: str = Depends(require_ui_user),
+):
     import tempfile
     from pathlib import Path
 
-    from ui.backup import BackupError, archive_filename, build_archive
+    from ui.backup import (
+        BackupError,
+        archive_filename,
+        build_archive,
+        issue_download_ticket,
+        take_download_ticket,
+    )
+
+    if token:
+        try:
+            path, name = take_download_ticket(_user, token)
+        except BackupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        response = FileResponse(
+            path,
+            media_type="application/zip",
+            filename=name,
+            background=BackgroundTask(path.unlink, missing_ok=True),
+        )
+        response.headers["Content-Type"] = "application/zip"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{name}"; filename*=UTF-8\'\'{quote(name)}'
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return _private_response(response)
 
     handle = tempfile.NamedTemporaryFile(
         prefix="tabby-backup-", suffix=".zip", delete=False
     )
     path = Path(handle.name)
     handle.close()
+    name = archive_filename(_user)
+
+    if _wants_ndjson(request):
+
+        def work(on_progress):
+            try:
+                build_archive(
+                    _user,
+                    path,
+                    include_untagged=is_admin_username(_user),
+                    on_progress=on_progress,
+                )
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            ticket = issue_download_ticket(_user, path, name)
+            size = path.stat().st_size if path.is_file() else 0
+            return {"token": ticket, "filename": name, "bytes": size}
+
+        return _ndjson_progress(work)
+
     try:
         await asyncio.to_thread(
             build_archive,
@@ -447,7 +555,6 @@ async def ui_backup_get(_user: str = Depends(require_ui_user)):
     except Exception:
         path.unlink(missing_ok=True)
         raise
-    name = archive_filename(_user)
     response = FileResponse(
         path,
         media_type="application/zip",
@@ -474,6 +581,7 @@ async def ui_backup_restore(request: Request, _user: str = Depends(require_ui_us
     )
     path = Path(handle.name)
     total = 0
+    streamed = False
     try:
         async for chunk in request.stream():
             if not chunk:
@@ -485,6 +593,21 @@ async def ui_backup_restore(request: Request, _user: str = Depends(require_ui_us
         handle.close()
         if total <= 0:
             raise BackupError("Backup file is empty")
+        if _wants_ndjson(request):
+            streamed = True
+
+            def work(on_progress):
+                try:
+                    return restore_archive(
+                        _user,
+                        path,
+                        include_untagged=is_admin_username(_user),
+                        on_progress=on_progress,
+                    )
+                finally:
+                    path.unlink(missing_ok=True)
+
+            return _ndjson_progress(work)
         return await asyncio.to_thread(
             restore_archive,
             _user,
@@ -500,7 +623,8 @@ async def ui_backup_restore(request: Request, _user: str = Depends(require_ui_us
             handle.close()
         except OSError:
             pass
-        path.unlink(missing_ok=True)
+        if not streamed:
+            path.unlink(missing_ok=True)
 
 
 @router.get("/chats", include_in_schema=False)

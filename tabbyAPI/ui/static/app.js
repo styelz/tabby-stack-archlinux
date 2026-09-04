@@ -485,6 +485,41 @@
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 
+  async function readZipWithProgress(response, onBytes) {
+    const reader = response.body && response.body.getReader && response.body.getReader();
+    if (!reader) return response.arrayBuffer();
+    const chunks = [];
+    let received = 0;
+    const total = Number(response.headers.get("content-length")) || 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      if (typeof onBytes === "function") onBytes(received, total);
+    }
+    const out = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out.buffer;
+  }
+
+  function applyProgressEvent(modal, event) {
+    if (!event) return;
+    if (event.line) modal.appendLine(event.line);
+    if (event.error) throw new Error(event.error);
+  }
+
+  async function followBackupProgress(response, modal) {
+    const done = await TabbyUI.readNdjson(response, (event) => applyProgressEvent(modal, event));
+    if (done && done.error) throw new Error(done.error);
+    if (!done || !done.ok || !done.token) throw new Error("Backup did not finish.");
+    return done;
+  }
+
   async function downloadBackup() {
     closeUserMenu();
     const yes = await TabbyUI.confirmModal({
@@ -496,17 +531,62 @@
     if (!yes) return;
     const modal = TabbyUI.progressModal({
       title: "Preparing backup",
-      note: "Building a zip of this account's chats, Code files, prefs, and gallery.",
+      note: "Building a zip of this account's chats, Code files, prefs, and gallery. Log output appears below.",
     });
+    modal.appendLine("Starting backup…");
     try {
       const response = await fetch(TabbyUI.path("backup.zip"), {
         credentials: "same-origin",
         cache: "no-store",
-        headers: { Accept: "application/zip, application/octet-stream" },
+        headers: { Accept: "application/x-ndjson, application/zip, application/octet-stream" },
       });
       if (response.status === 401) {
         TabbyUI.redirectToLogin();
         throw new Error("Not authenticated");
+      }
+      const type = (response.headers.get("content-type") || "").toLowerCase();
+      if (type.includes("ndjson")) {
+        if (!response.ok) {
+          const failed = await TabbyUI.readNdjson(response, (event) => applyProgressEvent(modal, event)).catch(() => null);
+          throw new Error((failed && failed.error) || TabbyUI.httpErrorMessage(response, failed) || "Backup failed");
+        }
+        const done = await followBackupProgress(response, modal);
+        const filename = done.filename || "tabby-backup.zip";
+        modal.appendLine(`Downloading ${filename} (${TabbyUI.formatBytes(done.bytes || 0)})…`);
+        const zipRes = await fetch(
+          TabbyUI.path("backup.zip?token=" + encodeURIComponent(done.token || "")),
+          {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/zip, application/octet-stream" },
+          }
+        );
+        if (zipRes.status === 401) {
+          TabbyUI.redirectToLogin();
+          throw new Error("Not authenticated");
+        }
+        if (!zipRes.ok) {
+          throw new Error(TabbyUI.httpErrorMessage(zipRes) || "Could not download the backup zip.");
+        }
+        let lastPaint = 0;
+        const buffer = await readZipWithProgress(zipRes, (received, total) => {
+          const now = Date.now();
+          if (now - lastPaint < 200 && total && received < total) return;
+          lastPaint = now;
+          modal.setNote(
+            total
+              ? `Downloading zip… ${TabbyUI.formatBytes(received)} / ${TabbyUI.formatBytes(total)}`
+              : `Downloading zip… ${TabbyUI.formatBytes(received)}`
+          );
+        });
+        const bytes = new Uint8Array(buffer);
+        if (!(bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+          throw new Error("Backup was not a zip file.");
+        }
+        saveBackupZip(new Blob([buffer], { type: "application/zip" }), backupFilename(zipRes) || filename);
+        modal.appendLine(`Saved ${filename} (${TabbyUI.formatBytes(bytes.length)})`);
+        modal.close();
+        return;
       }
       const buffer = await response.arrayBuffer();
       const bytes = new Uint8Array(buffer);
@@ -530,6 +610,7 @@
       modal.setBusy(false);
       modal.setTitle("Backup failed");
       modal.setNote((err && err.message) || "Could not download the backup zip.");
+      modal.appendLine((err && err.message) || "Could not download the backup zip.");
       modal.setActions([{ label: "Close", primary: true, run: () => modal.close() }]);
     }
   }
@@ -546,24 +627,47 @@
     if (TabbyUI.suspendPersistence) TabbyUI.suspendPersistence();
     const modal = TabbyUI.progressModal({
       title: "Restoring backup",
-      note: "Uploading and restoring this account's data.",
+      note: "Uploading and restoring this account's data. Log output appears below.",
     });
+    modal.appendLine(`Uploading ${file.name || "backup.zip"} (${TabbyUI.formatBytes(file.size || 0)})…`);
     try {
       const response = await fetch(TabbyUI.path("backup/restore"), {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/zip" },
+        headers: {
+          "Content-Type": "application/zip",
+          Accept: "application/x-ndjson, application/json",
+        },
         body: file,
       });
-      const type = response.headers.get("content-type") || "";
-      const data = type.includes("application/json") ? await response.json() : await response.text();
       if (response.status === 401) {
         TabbyUI.redirectToLogin();
         throw new Error("Not authenticated");
       }
+      const type = (response.headers.get("content-type") || "").toLowerCase();
+      let data = null;
+      if (type.includes("ndjson")) {
+        if (!response.ok) {
+          const failed = await TabbyUI.readNdjson(response, (event) => applyProgressEvent(modal, event)).catch(() => null);
+          throw new Error((failed && failed.error) || TabbyUI.httpErrorMessage(response, failed) || "Restore failed");
+        }
+        data = await TabbyUI.readNdjson(response, (event) => applyProgressEvent(modal, event));
+        if (data && data.error) throw new Error(data.error);
+      } else {
+        data = type.includes("application/json") ? await response.json() : await response.text();
+        if (typeof data === "string" && data) modal.appendLine(data.slice(0, 400));
+      }
       if (!response.ok) {
         throw new Error(TabbyUI.httpErrorMessage(response, data));
       }
+      if (!data || data.ok === false) {
+        throw new Error((data && data.error) || "Could not restore the backup.");
+      }
+      const chats = Number(data.chats || 0);
+      const gallery = Number(data.gallery || 0);
+      modal.appendLine(
+        `Restored ${chats} chat${chats === 1 ? "" : "s"} and ${gallery} gallery image${gallery === 1 ? "" : "s"}.`
+      );
       modal.setBusy(false);
       modal.setTitle("Backup restored");
       modal.setNote("Reloading this account's chats, Code files, and gallery.");
@@ -573,6 +677,7 @@
       modal.setBusy(false);
       modal.setTitle("Restore failed");
       modal.setNote((err && err.message) || "Could not restore the backup.");
+      modal.appendLine((err && err.message) || "Could not restore the backup.");
       modal.setActions([{ label: "Close", primary: true, run: () => modal.close() }]);
     }
   }
