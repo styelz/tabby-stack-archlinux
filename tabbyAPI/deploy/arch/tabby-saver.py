@@ -205,6 +205,8 @@ class SceneFollow:
         self.has_gpu = False
         self.image_n = 0.0
         self.image_of = 0.0
+        self.image_file = ""
+        self.image_what = ""
 
     def _hold_live(self, want: bool, now: float) -> bool:
         if want:
@@ -302,12 +304,21 @@ class SceneFollow:
             self.image_n, float(target.get("image_n") or 0.0), dt, 0.4
         )
         self.image_of = float(target.get("image_of") or 0.0)
+        dest_file = str(target.get("image_file") or "").strip()
+        dest_what = str(target.get("image_what") or "").strip()
+        if dest_file:
+            self.image_file = dest_file
+        if dest_what:
+            self.image_what = dest_what
+        if self.cycle == "idle" and not held:
+            self.image_file = dest_file
+            self.image_what = dest_what
         if not self.connected:
             self.phase = "waiting for api"
         elif self.cycle == "boot":
-            self.phase = str(target.get("phase") or "thinking")
+            self.phase = "imagining"
         elif self.cycle == "halt":
-            self.phase = "gearing down"
+            self.phase = "dreaming"
         elif held:
             self.phase = str(target.get("phase") or self.phase)
         elif self.weights.get("idle", 0.0) > 0.65:
@@ -337,6 +348,8 @@ class SceneFollow:
             "has_gpu": self.has_gpu,
             "image_n": self.image_n,
             "image_of": self.image_of,
+            "image_file": self.image_file,
+            "image_what": self.image_what,
         }
 
 
@@ -436,6 +449,8 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         "stage": stage or ("idle" if not live else "decode"),
         "image_n": image_n,
         "image_of": image_of,
+        "image_file": str(data.get("image_file") or "").strip(),
+        "image_what": str(data.get("image_what") or "").strip(),
         "waiters": _num(data.get("waiters")),
         "elapsed_s": _num(data.get("elapsed_s")),
     }
@@ -758,7 +773,7 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
 
 
 def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
-    """Center bloom + ring: gearing up expands, gearing down contracts. Field stays on."""
+    """Center bloom + ring: imagining expands, dreaming contracts. Field stays on."""
     cycle = str(scene.get("cycle") or "")
     if cycle not in ("boot", "halt"):
         return
@@ -987,6 +1002,19 @@ def hud_halo_offsets(radius: int = 3) -> list[tuple[int, int]]:
     return out
 
 
+def _hud_fit(face: Any, text: str, max_w: int) -> str:
+    raw = str(text or "")
+    if not raw or max_w <= 0:
+        return raw
+    if face.size(raw)[0] <= max_w:
+        return raw
+    ell = "..."
+    keep = raw
+    while keep and face.size(keep + ell)[0] > max_w:
+        keep = keep[:-1]
+    return (keep + ell) if keep else ell
+
+
 def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     showing = bool(scene.get("live")) or overlay_amount(scene) > 0.02
     if str(scene.get("cycle") or "") in ("boot", "halt"):
@@ -1011,6 +1039,20 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     pad = max(32, int(round(h * 32 / 1080)))
     main_h = font.size("Ag")[1]
     small_h = small.size("Ag")[1]
+    gap = max(6, int(round(h * 8 / 1080)))
+    max_left = max(80, w - pad - small.size(stats)[0] - pad) if stats else w - pad * 2
+
+    dest = str(scene.get("image_file") or "").strip()
+    what = str(scene.get("image_what") or "").strip()
+    n = scene.get("image_n")
+    of = scene.get("image_of")
+    try:
+        n_i = int(round(float(n))) if n else 0
+        of_i = int(round(float(of))) if of else 0
+    except (TypeError, ValueError):
+        n_i, of_i = 0, 0
+    if dest and of_i > 1 and n_i > 0:
+        dest = f"{dest}  {n_i}/{of_i}"
 
     def blit(text: str, pos: tuple[int, int], color, use_small: bool = False) -> None:
         face = small if use_small else font
@@ -1024,6 +1066,20 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
     blit(profile, (pad, pad), TEXT)
     blit(mode, (w - small.size(mode)[0] - pad, pad + 4), ACCENT, use_small=True)
+    y = h - pad - main_h
+    extra = 0
+    if dest:
+        extra += 1
+    if what:
+        extra += 1
+    if extra:
+        y -= extra * (small_h + gap)
+    if dest:
+        blit(_hud_fit(small, dest, max_left), (pad, y), TEXT, use_small=True)
+        y += small_h + gap
+    if what:
+        blit(_hud_fit(small, what, max_left), (pad, y), MUTED, use_small=True)
+        y += small_h + gap
     blit(phase, (pad, h - pad - main_h), phase_color)
     if stats:
         blit(stats, (w - small.size(stats)[0] - pad, h - pad - small_h), MUTED, use_small=True)

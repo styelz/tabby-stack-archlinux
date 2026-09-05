@@ -129,6 +129,8 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
         "tokens": _int_ge0(raw.get("tokens")),
         "image_n": _optional_int(raw.get("image_n")),
         "image_of": _optional_int(raw.get("image_of")),
+        "image_file": _safe_image_file(raw.get("image_file")),
+        "image_what": _safe_image_what(raw.get("image_what")),
         "waiters": _int_ge0(
             raw.get("waiters") if raw.get("waiters") is not None else queue.get("waiters")
         ),
@@ -173,12 +175,79 @@ def _flight_weather(flights: list[Any]) -> tuple[int, str]:
     return 0, "idle"
 
 
-def _image_progress(job: Any) -> tuple[int | None, int | None, str]:
+def _safe_image_file(raw: Any) -> str:
+    """Dest basename or images/foo.png — never a home/user path."""
+    text = str(raw or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    text = text.split("?", 1)[0].split("#", 1)[0]
+    parts = [p for p in text.split("/") if p and p not in {".", ".."}]
+    if not parts:
+        return ""
+    name = parts[-1]
+    if len(parts) >= 2 and parts[-2].lower() in {"images", "img", "assets", "static"}:
+        shown = f"{parts[-2]}/{name}"
+    else:
+        shown = name
+    if len(shown) > 48:
+        shown = shown[:45] + "..."
+    return shown
+
+
+def _safe_image_what(raw: Any) -> str:
+    """Short prompt for the wall. No newlines; cap length."""
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return ""
+    if len(text) > 56:
+        text = text[:53].rstrip() + "..."
+    return text
+
+
+def _job_attr(obj: Any, name: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _current_job_item(job: Any) -> Any:
+    items = _job_attr(job, "items")
+    if not items:
+        return None
+    try:
+        idx = int(_job_attr(job, "current_index") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    if idx < 0:
+        idx = 0
+    if idx >= len(items):
+        idx = len(items) - 1
+    return items[idx]
+
+
+def _image_caption(job: Any) -> tuple[str, str]:
     if job is None:
-        return None, None, ""
+        return "", ""
+    item = _current_job_item(job)
+    path = _job_attr(item, "output_path") if item is not None else None
+    prompt = _job_attr(item, "prompt") if item is not None else None
+    path = path or _job_attr(job, "output_path") or ""
+    if not prompt:
+        fallback = str(_job_attr(job, "prompt") or "").strip()
+        bits = fallback.split()
+        if not (len(bits) == 2 and bits[0].isdigit() and bits[1] == "images"):
+            prompt = fallback
+    return _safe_image_file(path), _safe_image_what(prompt or "")
+
+
+def _image_progress(job: Any) -> tuple[int | None, int | None, str, str, str]:
+    if job is None:
+        return None, None, "", "", ""
     status = str(getattr(job, "status", "") or "")
     if status not in ("queued", "running", "coding"):
-        return None, None, ""
+        return None, None, "", "", ""
     phase = str(getattr(job, "phase", "") or status)
     try:
         count = max(1, int(getattr(job, "count", 0) or 1))
@@ -191,7 +260,8 @@ def _image_progress(job: Any) -> tuple[int | None, int | None, str]:
     n = index + 1
     if n > count:
         n = count
-    return n, count, phase
+    image_file, image_what = _image_caption(job)
+    return n, count, phase, image_file, image_what
 
 
 def _compose_weather(
@@ -203,7 +273,7 @@ def _compose_weather(
     job: Any,
     flights: list[Any],
 ) -> dict[str, Any]:
-    image_n, image_of, image_phase = _image_progress(job)
+    image_n, image_of, image_phase, image_file, image_what = _image_progress(job)
     tokens = 0
     stage = "idle"
     kind = queue.get("kind")
@@ -239,6 +309,8 @@ def _compose_weather(
         "stage": stage,
         "image_n": image_n,
         "image_of": image_of,
+        "image_file": image_file,
+        "image_what": image_what,
         "kind": kind,
         "waiters": _int_ge0(queue.get("waiters")),
         "elapsed_s": _int_ge0(queue.get("elapsed_s")),
@@ -300,6 +372,8 @@ async def saver_state() -> dict[str, Any]:
             "stage": weather["stage"],
             "image_n": weather["image_n"],
             "image_of": weather["image_of"],
+            "image_file": weather["image_file"],
+            "image_what": weather["image_what"],
             "waiters": weather["waiters"],
             "elapsed_s": weather["elapsed_s"],
             "gpu": cached_nvidia_stats(),

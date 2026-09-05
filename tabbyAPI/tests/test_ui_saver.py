@@ -121,6 +121,8 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["elapsed_s"], 9)
         self.assertEqual(payload["image_n"], None)
         self.assertEqual(payload["image_of"], None)
+        self.assertEqual(payload["image_file"], "")
+        self.assertEqual(payload["image_what"], "")
         for key in ("occupant", "prompt", "chat_id", "user", "hint", "job", "stack_queue"):
             self.assertNotIn(key, payload)
 
@@ -147,6 +149,8 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["tokens"], 0)
         self.assertEqual(payload["waiters"], 0)
         self.assertIsNone(payload["image_n"])
+        self.assertEqual(payload["image_file"], "")
+        self.assertEqual(payload["image_what"], "")
 
     def test_unknown_stage_becomes_idle(self):
         payload = saver.sanitize_status({"stage": "secret-thoughts", "tokens": -3})
@@ -395,7 +399,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertLess(b["st"] - a["st"], 0.05)
         self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
         self.assertEqual(b["cycle"], "boot")
-        self.assertEqual(b["phase"], "thinking")
+        self.assertEqual(b["phase"], "imagining")
         self.assertGreaterEqual(b["overlay"], 0.85)
         self.assertIsNotNone(self.kiosk.neuron_overlay_state(b))
 
@@ -503,7 +507,7 @@ class SaverKioskSceneTests(unittest.TestCase):
             after += 0.04
             scene = follow.tick(idle, 0.04, after)
         self.assertEqual(scene["cycle"], "halt")
-        self.assertEqual(scene["phase"], "gearing down")
+        self.assertEqual(scene["phase"], "dreaming")
         after += 6.0
         scene = follow.tick(idle, 0.04, after)
         for _step in range(90):
@@ -583,6 +587,26 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), hot)
         phase_blits = sum(1 for item in screen.blits if item and item[0] == "thinking")
         self.assertGreaterEqual(phase_blits, 9)
+
+    def test_hud_shows_image_file_and_what(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "comfy",
+                "kind": "image",
+                "busy": True,
+                "image_file": "images/logo.png",
+                "image_what": "a cafe logo",
+                "image_n": 1,
+                "image_of": 2,
+            },
+            True,
+        )
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertIn("images/logo.png", text)
+        self.assertIn("a cafe logo", text)
+        self.assertIn("1/2", text)
 
     def test_decode_token_ticks_raise_fire(self):
         quiet = self.kiosk.scene_from_state(
@@ -685,7 +709,14 @@ class SaverComposeTests(unittest.TestCase):
         self.assertEqual(weather["tokens"], 1)
 
     def test_image_job_progress(self):
-        job = SimpleNamespace(status="running", phase="generating", count=3, current_index=1)
+        item = SimpleNamespace(prompt="qwen-image: a cafe logo", output_path="images/logo.png")
+        job = SimpleNamespace(
+            status="running",
+            phase="generating",
+            count=3,
+            current_index=1,
+            items=[item, item, item],
+        )
         weather = saver._compose_weather(
             switching=False,
             restarting=False,
@@ -697,6 +728,8 @@ class SaverComposeTests(unittest.TestCase):
         self.assertEqual(weather["stage"], "image")
         self.assertEqual(weather["image_n"], 2)
         self.assertEqual(weather["image_of"], 3)
+        self.assertEqual(weather["image_file"], "images/logo.png")
+        self.assertEqual(weather["image_what"], "qwen-image: a cafe logo")
 
 
 class LiveDecodeTests(unittest.TestCase):
