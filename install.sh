@@ -638,30 +638,26 @@ gauge_step_index() {
 # dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
 # \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
 # width; pad from the plain string, then wrap the codes around it.
+#
+# dialog --gauge keeps the whole text in a 1024-byte buffer and silently
+# drops lines past it, so codes are kept to a minimum: one green span for
+# every finished chip, one span for the current chip, none for the rest.
 gauge_stepper_line() {
   local inner=$1 heading=$2 pct=$3
   local ticks=${4:-0} spin=${5:-'>'}
-  local cur i=0 piece vis="" coded="" mark short minpct match chunk
+  local cur i=0 piece vis="" coded="" mark short minpct match
   cur=$(gauge_step_index "$heading" "$pct")
+  ((cur > 0)) && coded="\Z2"
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
       mark="[x]"
-      piece="$mark $short"
-      chunk="\Z2$piece\Zn"
     elif ((i == cur)); then
       mark="[${spin}]"
-      piece="$mark $short"
-      if ((ticks % 2 == 0)); then
-        chunk="\Zb\Zr\Z3$piece\Zn"
-      else
-        chunk="\Zb\Z3$piece\Zn"
-      fi
     else
       mark="[ ]"
-      piece="$mark $short"
-      chunk="$piece"
     fi
+    piece="$mark $short"
     if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
       break
     fi
@@ -669,13 +665,20 @@ gauge_stepper_line() {
       vis+="  "
       coded+="  "
     fi
+    if ((i == cur)); then
+      ((i > 0)) && coded+="\Zn"
+      if ((ticks % 2 == 0)); then
+        coded+="\Zb\Zr\Z3$piece\Zn"
+      else
+        coded+="\Zb\Z3$piece\Zn"
+      fi
+    else
+      coded+="$piece"
+    fi
     vis+="$piece"
-    coded+="$chunk"
     i=$((i + 1))
   done < <(gauge_steps)
-  local pad=$((inner - ${#vis}))
-  ((pad < 0)) && pad=0
-  printf '%s%*s' "$coded" "$pad" ''
+  printf '%s' "$coded"
 }
 
 gauge_status_line() {
@@ -700,18 +703,18 @@ gauge_heading_line() {
   printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
 }
 
-# Recessed well for the live log: black frame, reverse-video interior so
-# it reads as a sunken pane on the white dialog (same idea as the gauge).
+# Recessed well for the live log: one reverse-video block (frame and
+# interior) so it reads as a sunken pane on the white dialog. dialog keeps
+# the attribute across lines, so one \Zr ... \Zn pair covers the box.
 gauge_log_box() {
   local inner=$1 n=$2
   local text=${3:-}
-  local box=$((inner - 2))
-  local hline i line
+  local box hline i line
   ((inner < 4)) && inner=4
   box=$((inner - 2))
   ((n < 1)) && n=1
   hline=$(printf '%*s' "$box" '' | tr ' ' '-')
-  printf '\Z0+%s+\Zn\n' "$hline"
+  printf '\Z0\Zr+%s+\n' "$hline"
   i=0
   while ((i < n)); do
     line=""
@@ -724,10 +727,10 @@ gauge_log_box() {
         text=""
       fi
     fi
-    printf '\Z0|\Zr%s|\Zn\n' "$(ui_pad "$line" "$box")"
+    printf '|%s|\n' "$(ui_pad "$line" "$box")"
     i=$((i + 1))
   done
-  printf '\Z0+%s+\Zn' "$hline"
+  printf '+%s+\Zn' "$hline"
 }
 
 gauge_chrome() {
@@ -737,6 +740,26 @@ gauge_chrome() {
     "$(gauge_status_line "$inner" "$total_elapsed")" \
     "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
     "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
+}
+
+# dialog --gauge text lives in a fixed 1024-byte buffer; anything past it
+# is dropped without a word (the bottom of the log well vanishes). Pick the
+# number of log rows that keeps a full frame under that, in bytes.
+gauge_bytes() {
+  local s=$1
+  local LC_ALL=C
+  printf '%s' "${#s}"
+}
+
+gauge_log_rows_fit() {
+  local inner=$1 want=$2
+  local budget=1000 chrome n
+  chrome=$(gauge_chrome "Building Code sandbox image and more" 99 "$inner" 3599 35999 '|' 0)
+  budget=$((budget - $(gauge_bytes "$chrome") - 1 - 9))
+  n=$((budget / (inner + 1) - 2))
+  ((n > want)) && n=$want
+  ((n < 3)) && n=3
+  printf '%s' "$n"
 }
 
 # Repaint the work dialog so a long pip / pacman / download stays visibly alive.
@@ -822,6 +845,9 @@ progress_start() {
     # Chrome is 3 lines; the log well adds 2 border rows.
     log_n=$((h - 11))
     ((log_n < 3)) && log_n=3
+    log_n=$(gauge_log_rows_fit "$((w - 6))" "$log_n")
+    # Box rows: 2 border + 3 chrome + well (log_n + 2) + 1 gap + 3 meter.
+    ((log_n + 11 < h)) && h=$((log_n + 11))
     gauge_title="Installing tabby-stack"
     [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"

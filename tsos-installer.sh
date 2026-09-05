@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.49"
+SCRIPT_VERSION="1.0.50"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -551,30 +551,26 @@ gauge_step_index() {
 # dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
 # \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
 # width; pad from the plain string, then wrap the codes around it.
+#
+# dialog --gauge keeps the whole text in a 1024-byte buffer and silently
+# drops lines past it, so codes are kept to a minimum: one green span for
+# every finished chip, one span for the current chip, none for the rest.
 gauge_stepper_line() {
   local inner=$1 heading=$2 pct=$3
   local ticks=${4:-0} spin=${5:-'>'}
-  local cur i=0 piece vis="" coded="" mark short minpct match chunk
+  local cur i=0 piece vis="" coded="" mark short minpct match
   cur=$(gauge_step_index "$heading" "$pct")
+  ((cur > 0)) && coded="\Z2"
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
       mark="[x]"
-      piece="$mark $short"
-      chunk="\Z2$piece\Zn"
     elif ((i == cur)); then
       mark="[${spin}]"
-      piece="$mark $short"
-      if ((ticks % 2 == 0)); then
-        chunk="\Zb\Zr\Z3$piece\Zn"
-      else
-        chunk="\Zb\Z3$piece\Zn"
-      fi
     else
       mark="[ ]"
-      piece="$mark $short"
-      chunk="$piece"
     fi
+    piece="$mark $short"
     if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
       break
     fi
@@ -582,13 +578,20 @@ gauge_stepper_line() {
       vis+="  "
       coded+="  "
     fi
+    if ((i == cur)); then
+      ((i > 0)) && coded+="\Zn"
+      if ((ticks % 2 == 0)); then
+        coded+="\Zb\Zr\Z3$piece\Zn"
+      else
+        coded+="\Zb\Z3$piece\Zn"
+      fi
+    else
+      coded+="$piece"
+    fi
     vis+="$piece"
-    coded+="$chunk"
     i=$((i + 1))
   done < <(gauge_steps)
-  local pad=$((inner - ${#vis}))
-  ((pad < 0)) && pad=0
-  printf '%s%*s' "$coded" "$pad" ''
+  printf '%s' "$coded"
 }
 
 gauge_status_line() {
@@ -614,18 +617,18 @@ gauge_heading_line() {
   printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
 }
 
-# Recessed well for the live log: black frame, reverse-video interior so
-# it reads as a sunken pane on the white dialog (same idea as the gauge).
+# Recessed well for the live log: one reverse-video block (frame and
+# interior) so it reads as a sunken pane on the white dialog. dialog keeps
+# the attribute across lines, so one \Zr ... \Zn pair covers the box.
 gauge_log_box() {
   local inner=$1 n=$2
   local text=${3:-}
-  local box=$((inner - 2))
-  local hline i line
+  local box hline i line
   ((inner < 4)) && inner=4
   box=$((inner - 2))
   ((n < 1)) && n=1
   hline=$(printf '%*s' "$box" '' | tr ' ' '-')
-  printf '\Z0+%s+\Zn\n' "$hline"
+  printf '\Z0\Zr+%s+\n' "$hline"
   i=0
   while ((i < n)); do
     line=""
@@ -638,10 +641,10 @@ gauge_log_box() {
         text=""
       fi
     fi
-    printf '\Z0|\Zr%s|\Zn\n' "$(ui_pad "$line" "$box")"
+    printf '|%s|\n' "$(ui_pad "$line" "$box")"
     i=$((i + 1))
   done
-  printf '\Z0+%s+\Zn' "$hline"
+  printf '+%s+\Zn' "$hline"
 }
 
 # Status, coloured step chips, current heading; live log is a sunken box.
@@ -652,6 +655,28 @@ gauge_chrome() {
     "$(gauge_status_line "$inner" "$total_elapsed")" \
     "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
     "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
+}
+
+# dialog --gauge text lives in a fixed 1024-byte buffer; anything past it
+# is dropped without a word (the bottom of the log well vanishes). Pick the
+# number of log rows that keeps a full frame under that, in bytes.
+gauge_bytes() {
+  local s=$1
+  local LC_ALL=C
+  printf '%s' "${#s}"
+}
+
+gauge_log_rows_fit() {
+  local inner=$1 want=$2
+  local budget=1000 chrome n
+  # Worst case chrome: every chip done but one, a long heading, hh mm times.
+  chrome=$(gauge_chrome "Configuring the new system and more" 99 "$inner" 3599 35999 '|' 0)
+  budget=$((budget - $(gauge_bytes "$chrome") - 1 - 9))
+  # Each well row is inner + newline; two of them are the frame.
+  n=$((budget / (inner + 1) - 2))
+  ((n > want)) && n=$want
+  ((n < 3)) && n=3
+  printf '%s' "$n"
 }
 
 # Repaints so a long pacstrap / pip / download stays visibly alive.
@@ -733,10 +758,16 @@ run_with_gauge() {
   (
     exec </dev/null
     TSOS_WORK_CHILD=1
+    # A signal must not look like success: bash runs the EXIT trap on
+    # HUP/TERM with $? of the last command (usually 0). Exit non-zero first.
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     trap 'rc=$?
           printf "%s\n" "$rc" >"$TSOS_GAUGE_DIR/rc" 2>/dev/null || true
           touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true' EXIT
     "$work_fn"
+    touch "$TSOS_GAUGE_DIR/done" 2>/dev/null || true
   ) &
   TSOS_WORK_PID=$!
   trap '[[ -n "${TSOS_WORK_PID:-}" ]] && kill "$TSOS_WORK_PID" 2>/dev/null || true
@@ -750,15 +781,29 @@ run_with_gauge() {
     # Chrome is 3 lines; the log well adds 2 border rows.
     log_n=$((h - 11))
     ((log_n < 3)) && log_n=3
+    log_n=$(gauge_log_rows_fit "$((w - 6))" "$log_n")
+    # Box rows: 2 border + 3 chrome + well (log_n + 2) + 1 gap + 3 meter.
+    ((log_n + 11 < h)) && h=$((log_n + 11))
+    log "install page: box ${h}x${w} on ${TSOS_UI_ROWS}x${TSOS_UI_COLS}, ${log_n} log rows"
     printf '\033[H\033[J' >/dev/tty 2>/dev/null || true
     set +e
-    (
-      set +e
-      watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
-    ) | dialog --no-collapse --colors \
-      --backtitle "$BACKTITLE" \
-      --title "Installing" \
-      --gauge "Starting the install..." "$h" "$w" 0 >&4 2>&5
+    local drc opens=0
+    while [[ ! -f "$TSOS_GAUGE_DIR/stop" ]] && ((opens < 4)); do
+      opens=$((opens + 1))
+      (
+        set +e
+        watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
+      ) | dialog --no-collapse --colors \
+        --backtitle "$BACKTITLE" \
+        --title "Installing" \
+        --gauge "Starting the install..." "$h" "$w" 0 >&4 2>>"$TSOS_LOG"
+      drc=$?
+      [[ -f "$TSOS_GAUGE_DIR/stop" ]] && break
+      # dialog quit while the work is still running (killed, tty hiccup,
+      # dialog error). Reopen the page rather than leave a dark console.
+      log "install page closed early (dialog exit $drc); reopening"
+      sleep 1
+    done
     set -e
   else
     wait "$TSOS_WORK_PID" || true
@@ -774,6 +819,13 @@ run_with_gauge() {
   [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
   if [[ -f "$TSOS_GAUGE_DIR/error" ]]; then
     err=$(cat "$TSOS_GAUGE_DIR/error" 2>/dev/null || true)
+  fi
+  # rc 0 without the done marker: the work process was interrupted before
+  # the last step (killed, hangup). Never report that as a finished install.
+  if [[ "$rc" == 0 && ! -f "$TSOS_GAUGE_DIR/done" ]]; then
+    rc=1
+    [[ -n "$err" ]] || err="The install was interrupted at $(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null || echo 'an unknown step') ($(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null || echo '?')%)."
+    log "work process stopped early (rc 0, no done marker)"
   fi
 
   if [[ "$rc" != 0 ]]; then
@@ -2521,9 +2573,28 @@ self_test() {
   local box
   box=$(gauge_log_box 20 2 $'hello\nworld')
   case "$box" in
-    *"\Z0+"*"\Zrhello"*"\Zrworld"*"\Z0+"*) printf 'ok   log box\n' ;;
+    "\Z0\Zr+"*"|hello"*"|world"*"+\Zn") printf 'ok   log box\n' ;;
     *) printf 'FAIL log box: %q\n' "$box" >&2; failed=1 ;;
   esac
+  # A full frame must stay under dialog's 1024-byte gauge text buffer.
+  local rows frame
+  rows=$(gauge_log_rows_fit 68 9)
+  frame="$(gauge_chrome "Configuring the new system" 38 68 3599 35999 '|' 0)"$'\n'"$(gauge_log_box 68 "$rows" "$(printf 'x%.0s' {1..66})")"
+  if ((rows >= 3 && rows <= 9 && $(gauge_bytes "$frame") < 1023)); then
+    printf 'ok   gauge frame fits (%s rows, %s bytes)\n' "$rows" "$(gauge_bytes "$frame")"
+  else
+    printf 'FAIL gauge frame: %s rows, %s bytes\n' "$rows" "$(gauge_bytes "$frame")" >&2
+    failed=1
+  fi
+  # The disk-release sweep must never target this installer or its session.
+  local -a TSOS_OWN_PIDS=()
+  mapfile -t TSOS_OWN_PIDS < <(own_process_pids)
+  if is_own_pid "$$" && is_own_pid "$BASHPID" && is_own_pid "$PPID" && is_own_pid 1 && ! is_own_pid 999999; then
+    printf 'ok   own pids protected (%s)\n' "${#TSOS_OWN_PIDS[@]}"
+  else
+    printf 'FAIL own pids: %s\n' "${TSOS_OWN_PIDS[*]}" >&2
+    failed=1
+  fi
   TSOS_GAUGE_DIR=""
   TSOS_SAVED_FD=""
   TSOS_LOG=$saved_log
@@ -3100,9 +3171,37 @@ forget_btrfs_on_disk() {
   fi
 }
 
+# PIDs this installer must never kill: itself, the work child, the gauge
+# pipeline, and every ancestor up to init (login shell, sshd, agetty).
+# $$ is the main script even inside the work subshell; $BASHPID is not.
+own_process_pids() {
+  local p=$BASHPID line
+  printf '%s\n' "$$" "$BASHPID" "$PPID"
+  while [[ "$p" =~ ^[0-9]+$ ]] && ((p > 1)); do
+    line=$(grep -m1 '^PPid:' "/proc/$p/status" 2>/dev/null || true)
+    p=${line##*[[:space:]]}
+    [[ -n "$p" ]] && printf '%s\n' "$p"
+  done
+  # Children of the main script (dialog, the repaint loop, sleep).
+  pgrep -P "$$" 2>/dev/null || true
+  pgrep -P "$BASHPID" 2>/dev/null || true
+}
+
+is_own_pid() {
+  local p=$1 own
+  [[ "$p" == 1 ]] && return 0
+  for own in "${TSOS_OWN_PIDS[@]}"; do
+    [[ "$p" == "$own" ]] && return 0
+  done
+  return 1
+}
+
 kill_disk_users() {
-  local disk=$1 mp name type pid cwd root p mi
+  local disk=$1 mp name type pid cwd root p mi my_ns ns
   local base=${disk##*/}
+  local -a TSOS_OWN_PIDS=()
+  mapfile -t TSOS_OWN_PIDS < <(own_process_pids)
+  my_ns=$(readlink /proc/self/ns/mnt 2>/dev/null || true)
   if command -v fuser >/dev/null 2>&1; then
     # `fuser -m /mnt` when /mnt is only a directory means "the live root
     # filesystem" and kills the installer itself. Use -m only for a real mount.
@@ -3123,21 +3222,30 @@ kill_disk_users() {
   fi
   for pid in /proc/[0-9]*; do
     p=${pid#/proc/}
-    [[ "$p" == "1" || "$p" == "$$" || "$p" == "$PPID" ]] && continue
+    is_own_pid "$p" && continue
     cwd=$(readlink "$pid/cwd" 2>/dev/null || true)
     root=$(readlink "$pid/root" 2>/dev/null || true)
     if [[ "$cwd" == "$TARGET" || "$cwd" == "$TARGET"/* ||
           "$root" == "$TARGET" || "$root" == "$TARGET"/* ]]; then
+      log "killing pid $p (cwd/root inside $TARGET)"
       kill -KILL "$p" 2>/dev/null || true
     fi
   done
+  # Processes that hold the disk in a private mount namespace (arch-chroot
+  # runs under unshare). Only look at foreign namespaces: in our own
+  # namespace every process lists /mnt in mountinfo once it is mounted, and
+  # killing on that match takes down sshd, logind, and the login session
+  # that runs this installer.
   for mi in /proc/[0-9]*/mountinfo; do
     [[ -e "$mi" ]] || continue
+    p=${mi#/proc/}
+    p=${p%/mountinfo}
+    is_own_pid "$p" && continue
+    ns=$(readlink "/proc/$p/ns/mnt" 2>/dev/null || true)
+    [[ -n "$ns" && -n "$my_ns" && "$ns" != "$my_ns" ]] || continue
     if grep -Eq "/dev/${base}(p?[0-9]+)?( |$|\\[)" "$mi" 2>/dev/null || \
        grep -Eq " ${TARGET}(/| )" "$mi" 2>/dev/null; then
-      p=${mi#/proc/}
-      p=${p%/mountinfo}
-      [[ "$p" == "1" || "$p" == "$$" || "$p" == "$PPID" ]] && continue
+      log "killing pid $p (holds $disk in another mount namespace)"
       kill -KILL "$p" 2>/dev/null || true
     fi
   done
