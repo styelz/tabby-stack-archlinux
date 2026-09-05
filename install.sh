@@ -186,8 +186,10 @@ button_key_inactive_color = (RED,WHITE,OFF)
 button_label_active_color = (YELLOW,BLUE,ON)
 button_label_inactive_color = (BLACK,WHITE,ON)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (WHITE,WHITE,ON)
-menubox_border2_color = (BLACK,WHITE,OFF)
+# Shaded top/left, lit bottom/right: the list sits in a sunken well
+# (menuconfig look). The outer box keeps the raised edge above.
+menubox_border_color = (BLACK,WHITE,OFF)
+menubox_border2_color = (WHITE,WHITE,ON)
 item_color = (BLACK,WHITE,OFF)
 item_selected_color = (WHITE,BLUE,ON)
 tag_color = (BLUE,WHITE,ON)
@@ -520,9 +522,7 @@ load_tabby_env_file() {
 }
 
 INSTALL_LOG=""
-GAUGE_PID=""
 GAUGE_WATCH_PID=""
-GAUGE_FIFO=""
 GAUGE_DIR=""
 GAUGE_MODE=""
 GAUGE_SAVED_FD=""
@@ -568,17 +568,6 @@ work_term() {
   fi
   ((UI_ROWS >= 14)) || UI_ROWS=24
   ((UI_COLS >= 50)) || UI_COLS=80
-}
-
-gauge_height() {
-  local h=$((UI_ROWS - 5))
-  ((h > 20)) && h=20
-  ((h < 12)) && h=12
-  printf '%s' "$h"
-}
-
-gauge_width() {
-  box_width
 }
 
 install_log_snippet() {
@@ -635,19 +624,149 @@ gauge_step_index() {
   printf '%s' "$best"
 }
 
-# dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
-# \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
-# width; pad from the plain string, then wrap the codes around it.
-#
-# dialog --gauge keeps the whole text in a 1024-byte buffer and silently
-# drops lines past it, so codes are kept to a minimum: one green span for
-# every finished chip, one span for the current chip, none for the rest.
-gauge_stepper_line() {
-  local inner=$1 heading=$2 pct=$3
-  local ticks=${4:-0} spin=${5:-'>'}
-  local cur i=0 piece vis="" coded="" mark short minpct match
+# ---------------------------------------------------------------------------
+# Installing page. dialog --gauge cannot draw an inner box and drops text
+# past 1024 bytes, so this page is painted straight onto the console in the
+# lxdialog (menuconfig) style the question screens already use: blue screen
+# with the backtitle and its rule, a white box with a light top-left / dark
+# bottom-right edge and a black shadow, coloured step chips, the live log in
+# a sunken well, and a blue meter. Frames are absolute cursor moves, so the
+# page is redrawn in place without flicker.
+# ---------------------------------------------------------------------------
+PAGE_ROWS=24
+PAGE_COLS=80
+PAGE_H=0
+PAGE_W=0
+PAGE_Y=0
+PAGE_X=0
+PAGE_LOG_N=0
+PAGE_TITLE="Installing"
+PAGE_BUF=""
+PAGE_G=""
+PAGE_P=""
+PAGE_V=0
+PAGE_UTF8=""
+
+# Same pairs as the dialogrc above (SGR: attr;fg;bg).
+P_SCREEN=$'\033[0;36;44m'   # screen_color
+P_BACK=$'\033[1;36;44m'     # backtitle text
+P_DLG=$'\033[0;30;47m'      # dialog_color
+P_LT=$'\033[1;37;47m'       # border_color: lit edge
+P_DK=$'\033[0;30;47m'       # border2_color: shaded edge
+P_TITLE=$'\033[1;34;47m'    # title_color
+P_SHADOW=$'\033[0;30;40m'   # shadow_color
+P_DONE=$'\033[0;32;47m'     # finished chips (uarrow green)
+P_CUR=$'\033[1;37;44m'      # current chip (item_selected)
+P_CUR_ALT=$'\033[1;34;47m'  # current chip, off pulse
+P_HEAD=$'\033[1;34;47m'     # step heading
+P_DIM=$'\033[0;34;47m'      # times, spinner
+P_KEY=$'\033[0;31;47m'      # hotkey red (Ctrl+C)
+P_BAR_ON=$'\033[1;37;44m'   # gauge_color, filled
+P_BAR_OFF=$'\033[1;34;47m'  # gauge_color, empty
+
+# A UTF-8 console ignores the VT100 graphics set, so draw the frame with the
+# Unicode box characters there; elsewhere switch G0 to graphics (\e(0), the
+# same thing ncurses does in a C locale).
+page_utf8() {
+  if [[ -z "$PAGE_UTF8" ]]; then
+    local l="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+    PAGE_UTF8=0
+    case "${l,,}" in
+      *utf-8* | *utf8*) PAGE_UTF8=1 ;;
+      *)
+        if [[ "${TERM:-}" == linux* ]] &&
+          [[ "$(cat /sys/module/vt/parameters/default_utf8 2>/dev/null)" == 1 ]]; then
+          PAGE_UTF8=1
+        fi
+        ;;
+    esac
+  fi
+  ((PAGE_UTF8))
+}
+
+# page_glyph tl|tr|bl|br|v -> PAGE_G
+page_glyph() {
+  local u a
+  case $1 in
+    tl) u='┌' a=l ;;
+    tr) u='┐' a=k ;;
+    bl) u='└' a=m ;;
+    br) u='┘' a=j ;;
+    v) u='│' a=x ;;
+    *) u='─' a=q ;;
+  esac
+  if page_utf8; then
+    PAGE_G=$u
+  else
+    PAGE_G=$'\033(0'"$a"$'\033(B'
+  fi
+}
+
+# page_hline n -> PAGE_G (n horizontal line cells)
+page_hline() {
+  local n=$1 s
+  ((n < 0)) && n=0
+  printf -v s '%*s' "$n" ''
+  if page_utf8; then
+    PAGE_G=${s// /─}
+  else
+    PAGE_G=$'\033(0'"${s// /q}"$'\033(B'
+  fi
+}
+
+# page_pad text n -> PAGE_P (exactly n cells, ASCII in, control chars out)
+page_pad() {
+  local s=$1 n=$2
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  ((n > 0 && ${#s} > n)) && s=${s:0:n}
+  printf -v PAGE_P '%-*s' "$n" "$s"
+}
+
+# Box size and place from the console size. Rows 0-1 hold the backtitle and
+# its rule; the box is centred below like dialog does, shadow included.
+page_layout() {
+  PAGE_ROWS=$1
+  PAGE_COLS=$2
+  PAGE_H=$((PAGE_ROWS - 5))
+  ((PAGE_H > 24)) && PAGE_H=24
+  ((PAGE_H < 15)) && PAGE_H=15
+  PAGE_W=$((PAGE_COLS - 6))
+  ((PAGE_W > 96)) && PAGE_W=96
+  ((PAGE_W < 46)) && PAGE_W=46
+  # 2 edges + 2 info + chips + heading + well edges (2) + gap + meter (3).
+  PAGE_LOG_N=$((PAGE_H - 12))
+  PAGE_Y=$(((PAGE_ROWS - PAGE_H - 1) / 2))
+  ((PAGE_Y < 2)) && PAGE_Y=2
+  PAGE_X=$(((PAGE_COLS - PAGE_W - 2) / 2))
+  ((PAGE_X < 0)) && PAGE_X=0
+  return 0
+}
+
+# Append a cursor move to screen row/col (0-based) to the frame.
+page_at() {
+  PAGE_BUF+=$'\033['"$(($1 + 1));$(($2 + 1))H"
+}
+
+# Interior row r of the box: lit left edge, one cell margin, iw cells of
+# content (colour codes allowed, width already exact), margin, shaded edge.
+page_inner() {
+  local r=$1 content=$2
+  page_glyph v
+  page_at $((PAGE_Y + r)) "$PAGE_X"
+  PAGE_BUF+="$P_LT$PAGE_G$P_DLG $content$P_DLG $P_DK$PAGE_G"
+}
+
+# page_chips iw heading pct ticks spin -> PAGE_P (coded), PAGE_V (cells).
+# Finished steps green, the current one highlighted like a selected menu
+# item and pulsing, the rest plain.
+page_chips() {
+  local iw=$1 heading=$2 pct=$3 ticks=$4 spin=$5
+  local cur i=0 piece mark short minpct match
+  PAGE_P=""
+  PAGE_V=0
   cur=$(gauge_step_index "$heading" "$pct")
-  ((cur > 0)) && coded="\Z2"
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
@@ -658,129 +777,209 @@ gauge_stepper_line() {
       mark="[ ]"
     fi
     piece="$mark $short"
-    if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
+    if ((PAGE_V > 0)) && ((PAGE_V + 2 + ${#piece} > iw)); then
       break
     fi
-    if [[ -n "$vis" ]]; then
-      vis+="  "
-      coded+="  "
+    if ((PAGE_V > 0)); then
+      PAGE_P+="$P_DLG  "
+      PAGE_V=$((PAGE_V + 2))
     fi
-    if ((i == cur)); then
-      ((i > 0)) && coded+="\Zn"
+    if ((i < cur)); then
+      PAGE_P+="$P_DONE$piece"
+    elif ((i == cur)); then
       if ((ticks % 2 == 0)); then
-        coded+="\Zb\Zr\Z3$piece\Zn"
+        PAGE_P+="$P_CUR$piece"
       else
-        coded+="\Zb\Z3$piece\Zn"
+        PAGE_P+="$P_CUR_ALT$piece"
       fi
     else
-      coded+="$piece"
+      PAGE_P+="$P_DLG$piece"
     fi
-    vis+="$piece"
+    PAGE_V=$((PAGE_V + ${#piece}))
     i=$((i + 1))
   done < <(gauge_steps)
-  printf '%s' "$coded"
+  PAGE_P+="$P_DLG"
 }
 
-gauge_status_line() {
-  local inner=$1 elapsed=$2
-  local left right room
-  left="${DEST:-tabby-stack}"
-  [[ "${UPDATE_MODE:-0}" -eq 1 ]] && left="update  ·  $left"
-  right=$(fmt_elapsed "$elapsed")
-  room=$((inner - ${#right} - 1))
-  ((room < 8)) && room=8
-  printf '\Z4%s\Zn \Z6%s\Zn' "$(ui_pad "$left" "$room")" "$right"
+# Static parts: blue screen, backtitle with rule, the box shadow. Cursor off,
+# echo off so stray keys do not land on the page.
+page_open() {
+  local backtitle=$1 r s
+  page_layout "${2:-$PAGE_ROWS}" "${3:-$PAGE_COLS}"
+  stty -echo </dev/tty >/dev/null 2>&1 || true
+  PAGE_BUF=$'\033[?25l'"$P_SCREEN"$'\033[H\033[2J'
+  # Paint the blue screen cell by cell: not every terminal erases with the
+  # current background colour.
+  printf -v s '%*s' "$PAGE_COLS" ''
+  for ((r = 0; r < PAGE_ROWS; r++)); do
+    page_at "$r" 0
+    PAGE_BUF+="$s"
+  done
+  page_at 0 1
+  PAGE_BUF+="$P_BACK$backtitle"
+  page_hline $((PAGE_COLS - 2))
+  page_at 1 1
+  PAGE_BUF+="$P_SCREEN$PAGE_G"
+  for ((r = 1; r <= PAGE_H; r++)); do
+    page_at $((PAGE_Y + r)) $((PAGE_X + PAGE_W))
+    PAGE_BUF+="$P_SHADOW  "
+  done
+  printf -v s '%*s' "$PAGE_W" ''
+  page_at $((PAGE_Y + PAGE_H)) $((PAGE_X + 2))
+  PAGE_BUF+="$P_SHADOW$s"
+  printf '%s' "$PAGE_BUF"
 }
 
-gauge_heading_line() {
-  local inner=$1 heading=$2 elapsed=$3 spin=$4
-  local room=$((inner - ${#elapsed} - 4))
+# Swallow keys typed while the page was up so they do not answer the next
+# dialog, then cursor back on. restore_tty puts the terminal right after.
+page_close() {
+  local junk
+  if stty -icanon min 0 time 0 </dev/tty >/dev/null 2>&1; then
+    while IFS= read -r -n 512 -t 0.05 junk </dev/tty 2>/dev/null && [[ -n "$junk" ]]; do :; done
+  fi
+  printf '\033[?25h\033[0m' >/dev/tty 2>/dev/null || true
+}
+
+# page_frame heading pct step_elapsed total_elapsed spin ticks info1 info2 log
+# Builds one full repaint of the box into PAGE_BUF.
+page_frame() {
+  local heading=$1 pct=$2 step_el=$3 total_el=$4 spin=$5 ticks=$6
+  local info1=$7 info2=$8 logtext=${9:-}
+  local iw=$((PAGE_W - 4)) t a b s right room i line r bw pos filled
+  PAGE_BUF=""
+
+  # Top edge with the title: lit corner and rule, shaded far corner.
+  t=" $PAGE_TITLE "
+  a=$(((PAGE_W - 2 - ${#t}) / 2))
+  b=$((PAGE_W - 2 - ${#t} - a))
+  page_glyph tl
+  s="$P_LT$PAGE_G"
+  page_hline "$a"
+  s+="$PAGE_G$P_TITLE$t$P_LT"
+  page_hline "$b"
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_DK$PAGE_G"
+  page_at "$PAGE_Y" "$PAGE_X"
+  PAGE_BUF+="$s"
+
+  # Info: what is being installed, where the log is, total time.
+  page_pad "$info1" "$iw"
+  page_inner 1 "$P_DLG$PAGE_P"
+  right=$total_el
+  page_pad "$info2" $((iw - ${#right} - 1))
+  s=${PAGE_P/Ctrl+C/$P_KEY"Ctrl+C"$P_DLG}
+  page_inner 2 "$P_DLG$s $P_DIM$right"
+
+  # Step chips, then the current step with its own time and a spinner.
+  page_chips "$iw" "$heading" "$pct" "$ticks" "$spin"
+  printf -v s '%*s' $((iw - PAGE_V)) ''
+  page_inner 3 "$PAGE_P$s"
+  right="$step_el  $spin"
+  room=$((iw - ${#right} - 1))
   ((room < 10)) && room=10
-  local htxt="$heading"
-  ((${#htxt} > room)) && htxt=${htxt:0:room}
-  local pad=$((room - ${#htxt}))
-  ((pad < 0)) && pad=0
-  printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
-}
+  page_pad "$heading" "$room"
+  page_inner 4 "$P_HEAD$PAGE_P $P_DIM$right"
 
-# Recessed well for the live log: one reverse-video block (frame and
-# interior) so it reads as a sunken pane on the white dialog. dialog keeps
-# the attribute across lines, so one \Zr ... \Zn pair covers the box.
-gauge_log_box() {
-  local inner=$1 n=$2
-  local text=${3:-}
-  local box hline i line
-  ((inner < 4)) && inner=4
-  box=$((inner - 2))
-  ((n < 1)) && n=1
-  hline=$(printf '%*s' "$box" '' | tr ' ' '-')
-  printf '\Z0\Zr+%s+\n' "$hline"
-  i=0
-  while ((i < n)); do
+  # Sunken well: shaded top/left, lit bottom/right (dialog's menubox).
+  page_glyph tl
+  s="$P_DK$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_LT$PAGE_G"
+  page_inner 5 "$s"
+  page_glyph v
+  t=$PAGE_G
+  for ((i = 0; i < PAGE_LOG_N; i++)); do
     line=""
-    if [[ -n "$text" ]]; then
-      if [[ "$text" == *$'\n'* ]]; then
-        line=${text%%$'\n'*}
-        text=${text#*$'\n'}
+    if [[ -n "$logtext" ]]; then
+      if [[ "$logtext" == *$'\n'* ]]; then
+        line=${logtext%%$'\n'*}
+        logtext=${logtext#*$'\n'}
       else
-        line=$text
-        text=""
+        line=$logtext
+        logtext=""
       fi
     fi
-    printf '|%s|\n' "$(ui_pad "$line" "$box")"
-    i=$((i + 1))
+    page_pad "$line" $((iw - 4))
+    page_inner $((6 + i)) "$P_DK$t$P_DLG $PAGE_P $P_LT$t"
   done
-  printf '+%s+\Zn' "$hline"
+  r=$((6 + PAGE_LOG_N))
+  page_glyph bl
+  s="$P_DK$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$P_LT$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_inner "$r" "$s"
+
+  # Gap, then the meter in a raised box like dialog's gauge.
+  printf -v s '%*s' "$iw" ''
+  page_inner $((r + 1)) "$P_DLG$s"
+  page_glyph tl
+  s="$P_LT$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_DK$PAGE_G"
+  page_inner $((r + 2)) "$s"
+  bw=$((iw - 2))
+  printf -v s '%*s' "$bw" ''
+  printf -v t '%3d%%' "$pct"
+  pos=$((bw / 2 - 2))
+  ((pos < 0)) && pos=0
+  s="${s:0:pos}${t}${s:pos+4}"
+  s=${s:0:bw}
+  filled=$((pct * bw / 100))
+  ((filled > bw)) && filled=$bw
+  page_glyph v
+  page_inner $((r + 3)) "$P_LT$PAGE_G$P_BAR_ON${s:0:filled}$P_BAR_OFF${s:filled}$P_DK$PAGE_G"
+  page_glyph bl
+  s="$P_LT$PAGE_G$P_DK"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_inner $((r + 4)) "$s"
+
+  # Bottom edge: lit corner, shaded rule and far corner.
+  page_glyph bl
+  s="$P_LT$PAGE_G$P_DK"
+  page_hline $((PAGE_W - 2))
+  s+="$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_at $((PAGE_Y + PAGE_H - 1)) "$PAGE_X"
+  PAGE_BUF+="$s"
 }
 
-gauge_chrome() {
-  local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
-  local ticks=${7:-0}
-  printf '%s\n%s\n%s\n' \
-    "$(gauge_status_line "$inner" "$total_elapsed")" \
-    "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
-    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
-}
-
-# dialog --gauge text lives in a fixed 1024-byte buffer; anything past it
-# is dropped without a word (the bottom of the log well vanishes). Pick the
-# number of log rows that keeps a full frame under that, in bytes.
-gauge_bytes() {
-  local s=$1
-  local LC_ALL=C
-  printf '%s' "${#s}"
-}
-
-gauge_log_rows_fit() {
-  local inner=$1 want=$2
-  local budget=1000 chrome n
-  chrome=$(gauge_chrome "Building Code sandbox image and more" 99 "$inner" 3599 35999 '|' 0)
-  budget=$((budget - $(gauge_bytes "$chrome") - 1 - 9))
-  n=$((budget / (inner + 1) - 2))
-  ((n > want)) && n=$want
-  ((n < 3)) && n=3
-  printf '%s' "$n"
-}
-
-# Repaint the work dialog so a long pip / pacman / download stays visibly alive.
+# Repaint the install page so a long pip / pacman / download stays visibly
+# alive. Runs in the background and writes frames straight to /dev/tty.
 watch_progress_ui() {
-  local stop="$1" width="$2" lines="$3"
-  local pct heading last="" step_t=$SECONDS ticks=0 spin='|/-\' ch body
+  local stop="$1"
+  local pct heading last="" step_t=$SECONDS ticks=0 spin='|/-\' ch
+  local info1 info2 t0=$SECONDS
+  info1="Installing tabby-stack in ${DEST:-tabby-stack}."
+  [[ "${UPDATE_MODE:-0}" -eq 1 ]] && info1="Updating tabby-stack in ${DEST:-tabby-stack}."
+  info2="Full log: ${INSTALL_LOG}   Ctrl+C cancels."
   while [[ ! -f "$stop" ]]; do
     pct=0
     heading="Working..."
     [[ -f "$GAUGE_DIR/pct" ]] && pct=$(cat "$GAUGE_DIR/pct" 2>/dev/null)
     [[ -f "$GAUGE_DIR/heading" ]] && heading=$(cat "$GAUGE_DIR/heading" 2>/dev/null)
     [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    ((pct > 100)) && pct=100
     ticks=$((ticks + 1))
     if [[ "$heading" != "$last" ]]; then
       last=$heading
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch" "$ticks")
-    printf 'XXX\n%s\n%s\n%s\nXXX\n' \
-      "$pct" "$body" "$(gauge_log_box "$width" "$lines" "$(install_log_snippet "$lines" "$((width - 2))")")" >&3 2>/dev/null || break
+    page_frame "$heading" "$pct" "$(fmt_elapsed $((SECONDS - step_t)))" "$(fmt_elapsed $((SECONDS - t0)))" \
+      "$ch" "$ticks" "$info1" "$info2" \
+      "$(install_log_snippet "$PAGE_LOG_N" "$((PAGE_W - 8))")"
+    printf '%s' "$PAGE_BUF" >/dev/tty 2>/dev/null || break
     sleep 0.5
   done
 }
@@ -837,43 +1036,19 @@ progress_start() {
   work_term
   redirect_work_output
 
-  if need_cmd dialog && [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
-    clear >/dev/tty 2>/dev/null || true
-    local h w gauge_title log_n
-    h=$(gauge_height)
-    w=$(gauge_width)
-    # Chrome is 3 lines; the log well adds 2 border rows.
-    log_n=$((h - 11))
-    ((log_n < 3)) && log_n=3
-    log_n=$(gauge_log_rows_fit "$((w - 6))" "$log_n")
-    # Box rows: 2 border + 3 chrome + well (log_n + 2) + 1 gap + 3 meter.
-    ((log_n + 11 < h)) && h=$((log_n + 11))
-    gauge_title="Installing tabby-stack"
-    [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
+  # The question screens ran in the TUI, so the work gets the install page:
+  # painted by a background watcher on /dev/tty, same palette as the dialogs.
+  if [[ "${USE_TUI:-0}" -eq 1 && -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    PAGE_TITLE="Installing tabby-stack"
+    [[ "$UPDATE_MODE" -eq 1 ]] && PAGE_TITLE="Updating tabby-stack"
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"
-    GAUGE_FIFO="$GAUGE_DIR/gauge"
-    mkfifo -m 600 "$GAUGE_FIFO"
     printf '%s\n' 0 >"$GAUGE_DIR/pct"
     printf '%s\n' "Starting..." >"$GAUGE_DIR/heading"
-    exec 3<>"$GAUGE_FIFO"
-    [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
-    dialog --no-collapse --colors --backtitle "$BACKTITLE" --title "$gauge_title" \
-      --gauge "Starting..." "$h" "$w" 0 \
-      <"$GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
-    GAUGE_PID=$!
-    sleep 0.4
-    if kill -0 "$GAUGE_PID" 2>/dev/null; then
-      watch_progress_ui "$GAUGE_DIR/stop" "$((w - 6))" "$log_n" &
-      GAUGE_WATCH_PID=$!
-      GAUGE_MODE="dialog"
-      return 0
-    fi
-    exec 3>&- || true
-    wait "$GAUGE_PID" 2>/dev/null || true
-    rm -rf "$GAUGE_DIR"
-    GAUGE_PID=""
-    GAUGE_DIR=""
-    GAUGE_FIFO=""
+    page_open "$BACKTITLE" "$UI_ROWS" "$UI_COLS" >/dev/tty
+    watch_progress_ui "$GAUGE_DIR/stop" &
+    GAUGE_WATCH_PID=$!
+    GAUGE_MODE="page"
+    return 0
   fi
   if [[ -c /dev/tty ]]; then
     GAUGE_MODE="text"
@@ -895,7 +1070,7 @@ progress() {
   fi
   append_update_log "==> [$pct%] $msg"
   case "${GAUGE_MODE:-}" in
-    dialog)
+    page)
       if [[ -n "${GAUGE_DIR:-}" ]]; then
         printf '%s\n' "$pct" >"$GAUGE_DIR/pct"
         printf '%s\n' "$msg" >"$GAUGE_DIR/heading"
@@ -946,15 +1121,8 @@ progress_stop() {
     GAUGE_WATCH_PID=""
   fi
   case "${GAUGE_MODE:-}" in
-    dialog)
-      exec 3>&- || true
-      local i=0
-      while [[ -n "${GAUGE_PID:-}" ]] && kill -0 "$GAUGE_PID" 2>/dev/null && ((i < 30)); do
-        sleep 0.1
-        i=$((i + 1))
-      done
-      kill "$GAUGE_PID" 2>/dev/null || true
-      wait "$GAUGE_PID" 2>/dev/null || true
+    page)
+      page_close
       rm -rf "${GAUGE_DIR:-}"
       ;;
     text)
@@ -964,8 +1132,6 @@ progress_stop() {
   restore_work_output
   restore_tty
   GAUGE_MODE=""
-  GAUGE_PID=""
-  GAUGE_FIFO=""
   GAUGE_DIR=""
 }
 

@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.50"
+SCRIPT_VERSION="1.0.51"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -134,7 +134,7 @@ OPTIONS
                            from the environment instead of prompting
   --dry-run                Print the plan and exit (does not write the disk)
   --self-test              Run built-in helper tests
-  --self-test-gauge        Draw a real dialog --gauge for 2s (needs a tty)
+  --self-test-gauge        Draw the install page for 2s (needs a tty)
   -h, --help               Show this help
 
 ENVIRONMENT
@@ -177,6 +177,7 @@ TSOS_GAUGE_FIFO=""
 TSOS_GAUGE_H=""
 TSOS_GAUGE_W=""
 TSOS_SAVED_FD=""
+TSOS_PAGE_OPEN=0
 TSOS_UI_ROWS=24
 TSOS_UI_COLS=80
 TSOS_PRINTK=""
@@ -281,8 +282,10 @@ button_key_inactive_color = (RED,WHITE,OFF)
 button_label_active_color = (YELLOW,BLUE,ON)
 button_label_inactive_color = (BLACK,WHITE,ON)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (WHITE,WHITE,ON)
-menubox_border2_color = (BLACK,WHITE,OFF)
+# Shaded top/left, lit bottom/right: the list sits in a sunken well
+# (menuconfig look). The outer box keeps the raised edge above.
+menubox_border_color = (BLACK,WHITE,OFF)
+menubox_border2_color = (WHITE,WHITE,ON)
 item_color = (BLACK,WHITE,OFF)
 item_selected_color = (WHITE,BLUE,ON)
 tag_color = (BLUE,WHITE,ON)
@@ -356,9 +359,8 @@ restore_tty() {
   } </dev/tty >/dev/tty 2>/dev/null || true
 }
 
-# Work phase: dialog --gauge in the foreground. Same backtitle, shadow,
-# and box size as the question screens. A 23-row box plus backtitle is
-# "Window too small" on the 24x80 ISO console, so height stays capped.
+# Work phase: the install page is painted by this process on the console.
+# Read the console size first so the page (and every dialog) fits it.
 ensure_work_term() {
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
@@ -373,18 +375,6 @@ ensure_work_term() {
   fi
   ((TSOS_UI_ROWS >= 14)) || TSOS_UI_ROWS=24
   ((TSOS_UI_COLS >= 50)) || TSOS_UI_COLS=80
-}
-
-# Leave rows for backtitle + shadow + a line of screen margin (ISO is 24x80).
-gauge_height() {
-  local h=$((TSOS_UI_ROWS - 5))
-  ((h > 20)) && h=20
-  ((h < 12)) && h=12
-  printf '%s' "$h"
-}
-
-gauge_width() {
-  box_width
 }
 
 fmt_elapsed() {
@@ -548,19 +538,149 @@ gauge_step_index() {
   printf '%s' "$best"
 }
 
-# dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
-# \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
-# width; pad from the plain string, then wrap the codes around it.
-#
-# dialog --gauge keeps the whole text in a 1024-byte buffer and silently
-# drops lines past it, so codes are kept to a minimum: one green span for
-# every finished chip, one span for the current chip, none for the rest.
-gauge_stepper_line() {
-  local inner=$1 heading=$2 pct=$3
-  local ticks=${4:-0} spin=${5:-'>'}
-  local cur i=0 piece vis="" coded="" mark short minpct match
+# ---------------------------------------------------------------------------
+# Installing page. dialog --gauge cannot draw an inner box and drops text
+# past 1024 bytes, so this page is painted straight onto the console in the
+# lxdialog (menuconfig) style the question screens already use: blue screen
+# with the backtitle and its rule, a white box with a light top-left / dark
+# bottom-right edge and a black shadow, coloured step chips, the live log in
+# a sunken well, and a blue meter. Frames are absolute cursor moves, so the
+# page is redrawn in place without flicker.
+# ---------------------------------------------------------------------------
+PAGE_ROWS=24
+PAGE_COLS=80
+PAGE_H=0
+PAGE_W=0
+PAGE_Y=0
+PAGE_X=0
+PAGE_LOG_N=0
+PAGE_TITLE="Installing"
+PAGE_BUF=""
+PAGE_G=""
+PAGE_P=""
+PAGE_V=0
+PAGE_UTF8=""
+
+# Same pairs as the dialogrc above (SGR: attr;fg;bg).
+P_SCREEN=$'\033[0;36;44m'   # screen_color
+P_BACK=$'\033[1;36;44m'     # backtitle text
+P_DLG=$'\033[0;30;47m'      # dialog_color
+P_LT=$'\033[1;37;47m'       # border_color: lit edge
+P_DK=$'\033[0;30;47m'       # border2_color: shaded edge
+P_TITLE=$'\033[1;34;47m'    # title_color
+P_SHADOW=$'\033[0;30;40m'   # shadow_color
+P_DONE=$'\033[0;32;47m'     # finished chips (uarrow green)
+P_CUR=$'\033[1;37;44m'      # current chip (item_selected)
+P_CUR_ALT=$'\033[1;34;47m'  # current chip, off pulse
+P_HEAD=$'\033[1;34;47m'     # step heading
+P_DIM=$'\033[0;34;47m'      # times, spinner
+P_KEY=$'\033[0;31;47m'      # hotkey red (Ctrl+C)
+P_BAR_ON=$'\033[1;37;44m'   # gauge_color, filled
+P_BAR_OFF=$'\033[1;34;47m'  # gauge_color, empty
+
+# A UTF-8 console ignores the VT100 graphics set, so draw the frame with the
+# Unicode box characters there; elsewhere switch G0 to graphics (\e(0), the
+# same thing ncurses does in a C locale).
+page_utf8() {
+  if [[ -z "$PAGE_UTF8" ]]; then
+    local l="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+    PAGE_UTF8=0
+    case "${l,,}" in
+      *utf-8* | *utf8*) PAGE_UTF8=1 ;;
+      *)
+        if [[ "${TERM:-}" == linux* ]] &&
+          [[ "$(cat /sys/module/vt/parameters/default_utf8 2>/dev/null)" == 1 ]]; then
+          PAGE_UTF8=1
+        fi
+        ;;
+    esac
+  fi
+  ((PAGE_UTF8))
+}
+
+# page_glyph tl|tr|bl|br|v -> PAGE_G
+page_glyph() {
+  local u a
+  case $1 in
+    tl) u='┌' a=l ;;
+    tr) u='┐' a=k ;;
+    bl) u='└' a=m ;;
+    br) u='┘' a=j ;;
+    v) u='│' a=x ;;
+    *) u='─' a=q ;;
+  esac
+  if page_utf8; then
+    PAGE_G=$u
+  else
+    PAGE_G=$'\033(0'"$a"$'\033(B'
+  fi
+}
+
+# page_hline n -> PAGE_G (n horizontal line cells)
+page_hline() {
+  local n=$1 s
+  ((n < 0)) && n=0
+  printf -v s '%*s' "$n" ''
+  if page_utf8; then
+    PAGE_G=${s// /─}
+  else
+    PAGE_G=$'\033(0'"${s// /q}"$'\033(B'
+  fi
+}
+
+# page_pad text n -> PAGE_P (exactly n cells, ASCII in, control chars out)
+page_pad() {
+  local s=$1 n=$2
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  ((n > 0 && ${#s} > n)) && s=${s:0:n}
+  printf -v PAGE_P '%-*s' "$n" "$s"
+}
+
+# Box size and place from the console size. Rows 0-1 hold the backtitle and
+# its rule; the box is centred below like dialog does, shadow included.
+page_layout() {
+  PAGE_ROWS=$1
+  PAGE_COLS=$2
+  PAGE_H=$((PAGE_ROWS - 5))
+  ((PAGE_H > 24)) && PAGE_H=24
+  ((PAGE_H < 15)) && PAGE_H=15
+  PAGE_W=$((PAGE_COLS - 6))
+  ((PAGE_W > 96)) && PAGE_W=96
+  ((PAGE_W < 46)) && PAGE_W=46
+  # 2 edges + 2 info + chips + heading + well edges (2) + gap + meter (3).
+  PAGE_LOG_N=$((PAGE_H - 12))
+  PAGE_Y=$(((PAGE_ROWS - PAGE_H - 1) / 2))
+  ((PAGE_Y < 2)) && PAGE_Y=2
+  PAGE_X=$(((PAGE_COLS - PAGE_W - 2) / 2))
+  ((PAGE_X < 0)) && PAGE_X=0
+  return 0
+}
+
+# Append a cursor move to screen row/col (0-based) to the frame.
+page_at() {
+  PAGE_BUF+=$'\033['"$(($1 + 1));$(($2 + 1))H"
+}
+
+# Interior row r of the box: lit left edge, one cell margin, iw cells of
+# content (colour codes allowed, width already exact), margin, shaded edge.
+page_inner() {
+  local r=$1 content=$2
+  page_glyph v
+  page_at $((PAGE_Y + r)) "$PAGE_X"
+  PAGE_BUF+="$P_LT$PAGE_G$P_DLG $content$P_DLG $P_DK$PAGE_G"
+}
+
+# page_chips iw heading pct ticks spin -> PAGE_P (coded), PAGE_V (cells).
+# Finished steps green, the current one highlighted like a selected menu
+# item and pulsing, the rest plain.
+page_chips() {
+  local iw=$1 heading=$2 pct=$3 ticks=$4 spin=$5
+  local cur i=0 piece mark short minpct match
+  PAGE_P=""
+  PAGE_V=0
   cur=$(gauge_step_index "$heading" "$pct")
-  ((cur > 0)) && coded="\Z2"
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
@@ -571,125 +691,203 @@ gauge_stepper_line() {
       mark="[ ]"
     fi
     piece="$mark $short"
-    if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
+    if ((PAGE_V > 0)) && ((PAGE_V + 2 + ${#piece} > iw)); then
       break
     fi
-    if [[ -n "$vis" ]]; then
-      vis+="  "
-      coded+="  "
+    if ((PAGE_V > 0)); then
+      PAGE_P+="$P_DLG  "
+      PAGE_V=$((PAGE_V + 2))
     fi
-    if ((i == cur)); then
-      ((i > 0)) && coded+="\Zn"
+    if ((i < cur)); then
+      PAGE_P+="$P_DONE$piece"
+    elif ((i == cur)); then
       if ((ticks % 2 == 0)); then
-        coded+="\Zb\Zr\Z3$piece\Zn"
+        PAGE_P+="$P_CUR$piece"
       else
-        coded+="\Zb\Z3$piece\Zn"
+        PAGE_P+="$P_CUR_ALT$piece"
       fi
     else
-      coded+="$piece"
+      PAGE_P+="$P_DLG$piece"
     fi
-    vis+="$piece"
+    PAGE_V=$((PAGE_V + ${#piece}))
     i=$((i + 1))
   done < <(gauge_steps)
-  printf '%s' "$coded"
+  PAGE_P+="$P_DLG"
 }
 
-gauge_status_line() {
-  local inner=$1 elapsed=$2
-  local left right room
-  left="${DISK:-}"
-  [[ -n "$left" && -n "${TARGET_HOSTNAME:-}" ]] && left+="  ·  "
-  left+="${TARGET_HOSTNAME:-tsos}"
-  right=$(fmt_elapsed "$elapsed")
-  room=$((inner - ${#right} - 1))
-  ((room < 8)) && room=8
-  printf '\Z4%s\Zn \Z6%s\Zn' "$(ui_pad "$left" "$room")" "$right"
+# Static parts: blue screen, backtitle with rule, the box shadow. Cursor off,
+# echo off so stray keys do not land on the page.
+page_open() {
+  local backtitle=$1 r s
+  page_layout "${2:-$PAGE_ROWS}" "${3:-$PAGE_COLS}"
+  stty -echo </dev/tty >/dev/null 2>&1 || true
+  PAGE_BUF=$'\033[?25l'"$P_SCREEN"$'\033[H\033[2J'
+  # Paint the blue screen cell by cell: not every terminal erases with the
+  # current background colour.
+  printf -v s '%*s' "$PAGE_COLS" ''
+  for ((r = 0; r < PAGE_ROWS; r++)); do
+    page_at "$r" 0
+    PAGE_BUF+="$s"
+  done
+  page_at 0 1
+  PAGE_BUF+="$P_BACK$backtitle"
+  page_hline $((PAGE_COLS - 2))
+  page_at 1 1
+  PAGE_BUF+="$P_SCREEN$PAGE_G"
+  for ((r = 1; r <= PAGE_H; r++)); do
+    page_at $((PAGE_Y + r)) $((PAGE_X + PAGE_W))
+    PAGE_BUF+="$P_SHADOW  "
+  done
+  printf -v s '%*s' "$PAGE_W" ''
+  page_at $((PAGE_Y + PAGE_H)) $((PAGE_X + 2))
+  PAGE_BUF+="$P_SHADOW$s"
+  printf '%s' "$PAGE_BUF"
 }
 
-gauge_heading_line() {
-  local inner=$1 heading=$2 elapsed=$3 spin=$4
-  local room=$((inner - ${#elapsed} - 4))
+# Swallow keys typed while the page was up so they do not answer the next
+# dialog, then cursor back on. restore_tty puts the terminal right after.
+page_close() {
+  local junk
+  if stty -icanon min 0 time 0 </dev/tty >/dev/null 2>&1; then
+    while IFS= read -r -n 512 -t 0.05 junk </dev/tty 2>/dev/null && [[ -n "$junk" ]]; do :; done
+  fi
+  printf '\033[?25h\033[0m' >/dev/tty 2>/dev/null || true
+}
+
+# page_frame heading pct step_elapsed total_elapsed spin ticks info1 info2 log
+# Builds one full repaint of the box into PAGE_BUF.
+page_frame() {
+  local heading=$1 pct=$2 step_el=$3 total_el=$4 spin=$5 ticks=$6
+  local info1=$7 info2=$8 logtext=${9:-}
+  local iw=$((PAGE_W - 4)) t a b s right room i line r bw pos filled
+  PAGE_BUF=""
+
+  # Top edge with the title: lit corner and rule, shaded far corner.
+  t=" $PAGE_TITLE "
+  a=$(((PAGE_W - 2 - ${#t}) / 2))
+  b=$((PAGE_W - 2 - ${#t} - a))
+  page_glyph tl
+  s="$P_LT$PAGE_G"
+  page_hline "$a"
+  s+="$PAGE_G$P_TITLE$t$P_LT"
+  page_hline "$b"
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_DK$PAGE_G"
+  page_at "$PAGE_Y" "$PAGE_X"
+  PAGE_BUF+="$s"
+
+  # Info: what is being installed, where the log is, total time.
+  page_pad "$info1" "$iw"
+  page_inner 1 "$P_DLG$PAGE_P"
+  right=$total_el
+  page_pad "$info2" $((iw - ${#right} - 1))
+  s=${PAGE_P/Ctrl+C/$P_KEY"Ctrl+C"$P_DLG}
+  page_inner 2 "$P_DLG$s $P_DIM$right"
+
+  # Step chips, then the current step with its own time and a spinner.
+  page_chips "$iw" "$heading" "$pct" "$ticks" "$spin"
+  printf -v s '%*s' $((iw - PAGE_V)) ''
+  page_inner 3 "$PAGE_P$s"
+  right="$step_el  $spin"
+  room=$((iw - ${#right} - 1))
   ((room < 10)) && room=10
-  local htxt="$heading"
-  ((${#htxt} > room)) && htxt=${htxt:0:room}
-  local pad=$((room - ${#htxt}))
-  ((pad < 0)) && pad=0
-  printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
-}
+  page_pad "$heading" "$room"
+  page_inner 4 "$P_HEAD$PAGE_P $P_DIM$right"
 
-# Recessed well for the live log: one reverse-video block (frame and
-# interior) so it reads as a sunken pane on the white dialog. dialog keeps
-# the attribute across lines, so one \Zr ... \Zn pair covers the box.
-gauge_log_box() {
-  local inner=$1 n=$2
-  local text=${3:-}
-  local box hline i line
-  ((inner < 4)) && inner=4
-  box=$((inner - 2))
-  ((n < 1)) && n=1
-  hline=$(printf '%*s' "$box" '' | tr ' ' '-')
-  printf '\Z0\Zr+%s+\n' "$hline"
-  i=0
-  while ((i < n)); do
+  # Sunken well: shaded top/left, lit bottom/right (dialog's menubox).
+  page_glyph tl
+  s="$P_DK$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_LT$PAGE_G"
+  page_inner 5 "$s"
+  page_glyph v
+  t=$PAGE_G
+  for ((i = 0; i < PAGE_LOG_N; i++)); do
     line=""
-    if [[ -n "$text" ]]; then
-      if [[ "$text" == *$'\n'* ]]; then
-        line=${text%%$'\n'*}
-        text=${text#*$'\n'}
+    if [[ -n "$logtext" ]]; then
+      if [[ "$logtext" == *$'\n'* ]]; then
+        line=${logtext%%$'\n'*}
+        logtext=${logtext#*$'\n'}
       else
-        line=$text
-        text=""
+        line=$logtext
+        logtext=""
       fi
     fi
-    printf '|%s|\n' "$(ui_pad "$line" "$box")"
-    i=$((i + 1))
+    page_pad "$line" $((iw - 4))
+    page_inner $((6 + i)) "$P_DK$t$P_DLG $PAGE_P $P_LT$t"
   done
-  printf '+%s+\Zn' "$hline"
-}
+  r=$((6 + PAGE_LOG_N))
+  page_glyph bl
+  s="$P_DK$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$P_LT$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_inner "$r" "$s"
 
-# Status, coloured step chips, current heading; live log is a sunken box.
-gauge_chrome() {
-  local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
-  local ticks=${7:-0}
-  printf '%s\n%s\n%s\n' \
-    "$(gauge_status_line "$inner" "$total_elapsed")" \
-    "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
-    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
-}
+  # Gap, then the meter in a raised box like dialog's gauge.
+  printf -v s '%*s' "$iw" ''
+  page_inner $((r + 1)) "$P_DLG$s"
+  page_glyph tl
+  s="$P_LT$PAGE_G"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph tr
+  s+="$P_DK$PAGE_G"
+  page_inner $((r + 2)) "$s"
+  bw=$((iw - 2))
+  printf -v s '%*s' "$bw" ''
+  printf -v t '%3d%%' "$pct"
+  pos=$((bw / 2 - 2))
+  ((pos < 0)) && pos=0
+  s="${s:0:pos}${t}${s:pos+4}"
+  s=${s:0:bw}
+  filled=$((pct * bw / 100))
+  ((filled > bw)) && filled=$bw
+  page_glyph v
+  page_inner $((r + 3)) "$P_LT$PAGE_G$P_BAR_ON${s:0:filled}$P_BAR_OFF${s:filled}$P_DK$PAGE_G"
+  page_glyph bl
+  s="$P_LT$PAGE_G$P_DK"
+  page_hline $((iw - 2))
+  s+="$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_inner $((r + 4)) "$s"
 
-# dialog --gauge text lives in a fixed 1024-byte buffer; anything past it
-# is dropped without a word (the bottom of the log well vanishes). Pick the
-# number of log rows that keeps a full frame under that, in bytes.
-gauge_bytes() {
-  local s=$1
-  local LC_ALL=C
-  printf '%s' "${#s}"
-}
-
-gauge_log_rows_fit() {
-  local inner=$1 want=$2
-  local budget=1000 chrome n
-  # Worst case chrome: every chip done but one, a long heading, hh mm times.
-  chrome=$(gauge_chrome "Configuring the new system and more" 99 "$inner" 3599 35999 '|' 0)
-  budget=$((budget - $(gauge_bytes "$chrome") - 1 - 9))
-  # Each well row is inner + newline; two of them are the frame.
-  n=$((budget / (inner + 1) - 2))
-  ((n > want)) && n=$want
-  ((n < 3)) && n=3
-  printf '%s' "$n"
+  # Bottom edge: lit corner, shaded rule and far corner.
+  page_glyph bl
+  s="$P_LT$PAGE_G$P_DK"
+  page_hline $((PAGE_W - 2))
+  s+="$PAGE_G"
+  page_glyph br
+  s+="$PAGE_G"
+  page_at $((PAGE_Y + PAGE_H - 1)) "$PAGE_X"
+  PAGE_BUF+="$s"
 }
 
 # Repaints so a long pacstrap / pip / download stays visibly alive.
-# Writes the dialog --gauge protocol to stdout (the pipe into dialog).
+# Writes one full frame of the install page to stdout (the saved tty).
 watch_installer_ui() {
-  local stop="$1" width="$2" lines="$3"
-  local pct heading body last="" step_t=$SECONDS ticks=0 nested spin='|/-\' ch
+  local stop="$1"
+  local pct heading last="" step_t=$SECONDS ticks=0 nested spin='|/-\' ch
+  local info1 info2
+  info1="Installing Arch Linux and tabby-stack on ${DISK:-the disk} as ${TARGET_HOSTNAME:-tsos}."
+  info2="Full log: ${TSOS_LOG}   Ctrl+C cancels."
   while [[ ! -f "$stop" ]]; do
+    # A work process that vanished without its EXIT trap (SIGKILL) leaves
+    # no stop marker; do not paint forever over a dead install.
+    if [[ -n "${TSOS_WORK_PID:-}" ]] && ! kill -0 "$TSOS_WORK_PID" 2>/dev/null; then
+      break
+    fi
     pct=0
     heading="Working..."
     [[ -f "$TSOS_GAUGE_DIR/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null)
     [[ -f "$TSOS_GAUGE_DIR/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null)
     [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    ((pct > 100)) && pct=100
     if nested=$(nested_percent); then
       pct=$nested
     fi
@@ -699,9 +897,10 @@ watch_installer_ui() {
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch" "$ticks")
-    printf 'XXX\n%s\n%s\n%s\nXXX\n' \
-      "$pct" "$body" "$(gauge_log_box "$width" "$lines" "$(tsos_log_snippet "$lines" "$((width - 2))")")" || break
+    page_frame "$heading" "$pct" "$(fmt_elapsed $((SECONDS - step_t)))" "$(fmt_elapsed "$SECONDS")" \
+      "$ch" "$ticks" "$info1" "$info2" \
+      "$(tsos_log_snippet "$PAGE_LOG_N" "$((PAGE_W - 8))")"
+    printf '%s' "$PAGE_BUF" || break
     sleep 0.5
   done
 }
@@ -725,6 +924,10 @@ gauge_stop() {
   TSOS_GAUGE_DIR=""
   TSOS_GAUGE_H=""
   TSOS_GAUGE_W=""
+  if [[ "${TSOS_PAGE_OPEN:-0}" == 1 ]]; then
+    page_close
+    TSOS_PAGE_OPEN=0
+  fi
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
     exec 1>&4 2>&5
     exec 4>&- 5>&-
@@ -735,12 +938,12 @@ gauge_stop() {
   printf '\033[?25h\033[0m' >/dev/tty 2>/dev/null || true
 }
 
-# Official dialog pattern, tested in a 24x80 pty: percent protocol on a
-# pipe, widget on the saved tty (fd 4/5). Same flags as the question
-# screens (backtitle, shadow) so this page matches the rest of the installer.
+# Work runs in a background subshell that only writes files; this process
+# keeps the console and paints the install page on the saved tty (fd 4/5)
+# until the work drops the stop marker.
 run_with_gauge() {
   local work_fn=$1
-  local rc=0 err="" h w log_n
+  local rc=0 err=""
 
   ensure_work_term
   quiet_kernel_console
@@ -770,40 +973,19 @@ run_with_gauge() {
     touch "$TSOS_GAUGE_DIR/done" 2>/dev/null || true
   ) &
   TSOS_WORK_PID=$!
+  # Let the work child run its EXIT trap before the state dir goes away.
   trap '[[ -n "${TSOS_WORK_PID:-}" ]] && kill "$TSOS_WORK_PID" 2>/dev/null || true
+        [[ -n "${TSOS_WORK_PID:-}" ]] && wait "$TSOS_WORK_PID" 2>/dev/null || true
         gauge_stop || true
         exit 130' INT TERM
 
-  if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && need_cmd dialog; then
-    [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
-    h=$(gauge_height)
-    w=$(gauge_width)
-    # Chrome is 3 lines; the log well adds 2 border rows.
-    log_n=$((h - 11))
-    ((log_n < 3)) && log_n=3
-    log_n=$(gauge_log_rows_fit "$((w - 6))" "$log_n")
-    # Box rows: 2 border + 3 chrome + well (log_n + 2) + 1 gap + 3 meter.
-    ((log_n + 11 < h)) && h=$((log_n + 11))
-    log "install page: box ${h}x${w} on ${TSOS_UI_ROWS}x${TSOS_UI_COLS}, ${log_n} log rows"
-    printf '\033[H\033[J' >/dev/tty 2>/dev/null || true
+  if [[ "${USE_TUI:-0}" -eq 1 ]] && have_console; then
+    PAGE_TITLE="Installing"
+    page_open "$BACKTITLE" "$TSOS_UI_ROWS" "$TSOS_UI_COLS" >&4
+    TSOS_PAGE_OPEN=1
+    log "install page: box ${PAGE_H}x${PAGE_W} on ${TSOS_UI_ROWS}x${TSOS_UI_COLS}, ${PAGE_LOG_N} log rows"
     set +e
-    local drc opens=0
-    while [[ ! -f "$TSOS_GAUGE_DIR/stop" ]] && ((opens < 4)); do
-      opens=$((opens + 1))
-      (
-        set +e
-        watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
-      ) | dialog --no-collapse --colors \
-        --backtitle "$BACKTITLE" \
-        --title "Installing" \
-        --gauge "Starting the install..." "$h" "$w" 0 >&4 2>>"$TSOS_LOG"
-      drc=$?
-      [[ -f "$TSOS_GAUGE_DIR/stop" ]] && break
-      # dialog quit while the work is still running (killed, tty hiccup,
-      # dialog error). Reopen the page rather than leave a dark console.
-      log "install page closed early (dialog exit $drc); reopening"
-      sleep 1
-    done
+    watch_installer_ui "$TSOS_GAUGE_DIR/stop" >&4
     set -e
   else
     wait "$TSOS_WORK_PID" || true
@@ -2553,39 +2735,43 @@ self_test() {
   check "$(gauge_step_index "Starting the install..." 0)" "0" "start step index"
   check "$(gauge_step_index "Cleaning up" 98)" "6" "done step index"
   check "$(gauge_step_index "Installing tabby-stack" 45)" "5" "app step index"
-  local stepper
-  stepper=$(gauge_stepper_line 70 "Installing Arch packages" 22)
-  case "$stepper" in
-    *"\Z2"*'[x] Disk'*"\Z3"*'[>] Arch'*'[ ] App'*) printf 'ok   stepper chips\n' ;;
-    *) printf 'FAIL stepper chips: %q\n' "$stepper" >&2; failed=1 ;;
+  # Install page: geometry for the 24x80 ISO console, chips, one frame.
+  page_layout 24 80
+  check "$PAGE_H $PAGE_W $PAGE_LOG_N $PAGE_Y $PAGE_X" "19 74 7 2 2" "page layout 24x80"
+  page_layout 67 240
+  check "$PAGE_H $PAGE_W $PAGE_LOG_N" "24 96 12" "page layout 67x240"
+  page_layout 24 80
+  page_chips 70 "Installing Arch packages" 22 3 '|'
+  case "$PAGE_P" in
+    *"$P_DONE"'[x] Disk'*"$P_CUR_ALT"'[|] Arch'*"$P_DLG"'[ ] App'*) printf 'ok   page chips\n' ;;
+    *) printf 'FAIL page chips: %q\n' "$PAGE_P" >&2; failed=1 ;;
   esac
-  stepper=$(gauge_stepper_line 70 "Installing Arch packages" 22 3 '|')
-  case "$stepper" in
-    *'[x] Disk'*'[|] Arch'*'[ ] App'*) printf 'ok   stepper spin\n' ;;
-    *) printf 'FAIL stepper spin: %q\n' "$stepper" >&2; failed=1 ;;
-  esac
-  local chrome
-  chrome=$(gauge_chrome "Installing Arch packages" 22 70 5 90 '|')
-  case "$chrome" in
-    *'/dev/sda'*'studio'*'[|] Arch'*'Installing Arch packages'*) printf 'ok   gauge chrome\n' ;;
-    *) printf 'FAIL gauge chrome: %q\n' "$chrome" >&2; failed=1 ;;
-  esac
-  local box
-  box=$(gauge_log_box 20 2 $'hello\nworld')
-  case "$box" in
-    "\Z0\Zr+"*"|hello"*"|world"*"+\Zn") printf 'ok   log box\n' ;;
-    *) printf 'FAIL log box: %q\n' "$box" >&2; failed=1 ;;
-  esac
-  # A full frame must stay under dialog's 1024-byte gauge text buffer.
-  local rows frame
-  rows=$(gauge_log_rows_fit 68 9)
-  frame="$(gauge_chrome "Configuring the new system" 38 68 3599 35999 '|' 0)"$'\n'"$(gauge_log_box 68 "$rows" "$(printf 'x%.0s' {1..66})")"
-  if ((rows >= 3 && rows <= 9 && $(gauge_bytes "$frame") < 1023)); then
-    printf 'ok   gauge frame fits (%s rows, %s bytes)\n' "$rows" "$(gauge_bytes "$frame")"
+  if ((PAGE_V > 40 && PAGE_V <= 70)); then
+    printf 'ok   page chips width (%s)\n' "$PAGE_V"
   else
-    printf 'FAIL gauge frame: %s rows, %s bytes\n' "$rows" "$(gauge_bytes "$frame")" >&2
+    printf 'FAIL page chips width: %s\n' "$PAGE_V" >&2
     failed=1
   fi
+  page_chips 70 "Installing Arch packages" 22 4 '|'
+  case "$PAGE_P" in
+    *"$P_CUR"'[|] Arch'*) printf 'ok   page chips pulse\n' ;;
+    *) printf 'FAIL page chips pulse: %q\n' "$PAGE_P" >&2; failed=1 ;;
+  esac
+  PAGE_UTF8=1
+  page_frame "Installing Arch packages" 22 "5s" "1m 30s" '|' 1 \
+    "Installing Arch Linux and tabby-stack on /dev/sda as studio." \
+    "Full log: /tmp/tsos-installer.log   Ctrl+C cancels." $'hello\nworld'
+  local moves
+  moves=$(printf '%s' "$PAGE_BUF" | grep -o $'\033\\[[0-9]*;[0-9]*H' | wc -l)
+  check "$moves" "$PAGE_H" "page frame paints every box row"
+  case "$PAGE_BUF" in
+    *' Installing '*'/dev/sda as studio.'*"$P_KEY"'Ctrl+C'*'[|] Arch'*"$P_HEAD"'Installing Arch packages'*'│'*' hello '*'│'*' world '*"$P_BAR_ON"*' 22%'*'┘') printf 'ok   page frame content\n' ;;
+    *) printf 'FAIL page frame content: %q\n' "$PAGE_BUF" >&2; failed=1 ;;
+  esac
+  PAGE_UTF8=0
+  page_glyph tl
+  check "$PAGE_G" $'\033(0l\033(B' "page glyph acs"
+  PAGE_UTF8=""
   # The disk-release sweep must never target this installer or its session.
   local -a TSOS_OWN_PIDS=()
   mapfile -t TSOS_OWN_PIDS < <(own_process_pids)
