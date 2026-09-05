@@ -1,4 +1,5 @@
 import importlib.util
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,6 +255,12 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(scene["palette"], "idle")
         self.assertFalse(scene["live"])
 
+    def test_wall_clock_includes_seconds(self):
+        stamp = time.mktime((2026, 9, 5, 14, 20, 7, 0, 0, -1))
+        clock, date = self.kiosk.wall_clock_parts(stamp)
+        self.assertEqual(clock, "14:20:07")
+        self.assertIn("Sep", date)
+
     def test_kind_without_a_job_is_idle(self):
         scene = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "kind": "chat", "busy": False},
@@ -279,7 +286,7 @@ class SaverKioskSceneTests(unittest.TestCase):
             {"gpu_mode": "llm", "profile": "qwen", "busy": False},
             True,
         )
-        idle["clock"] = "14:20"
+        idle["clock"] = "14:20:07"
         idle["date"] = "Sat 5 Sep"
         idle["idle_fact"] = "this box is a RTX 4070 Ti 12 GB"
         hot = self.kiosk.scene_from_state(
@@ -295,7 +302,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         hot_text = " ".join(str(item) for item in hot_screen.blits)
         self.assertGreater(len(idle_screen.blits), 0)
         self.assertIn("qwen", idle_text)
-        self.assertIn("14:20", idle_text)
+        self.assertIn("14:20:07", idle_text)
         self.assertIn("Sat 5 Sep", idle_text)
         self.assertIn("this box is a RTX 4070 Ti 12 GB", idle_text)
         self.assertNotIn("thinking", idle_text)
@@ -315,7 +322,7 @@ class SaverKioskSceneTests(unittest.TestCase):
             {"gpu_mode": "llm", "profile": "qwen", "busy": False},
             True,
         )
-        idle["clock"] = "14:20"
+        idle["clock"] = "14:20:07"
         idle["date"] = "Sat 5 Sep"
         idle["idle_fact"] = "this box is a RTX 4070 Ti 12 GB"
         idle["hud_alpha"] = 0.0
@@ -716,6 +723,10 @@ class SaverKioskSceneTests(unittest.TestCase):
             action(click, pygame, False, idle_quiet=True, hud_alpha=0.0),
             "dismiss",
         )
+
+    def test_peek_grace_covers_one_second_of_motion(self):
+        self.assertEqual(self.kiosk.apply_peek_grace(0.0, 10.0), 11.0)
+        self.assertEqual(self.kiosk.apply_peek_grace(20.0, 10.0), 20.0)
 
     def test_parse_args_idle_default_is_two_minutes(self):
         args = self.kiosk.parse_args([])

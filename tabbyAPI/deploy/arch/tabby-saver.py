@@ -60,6 +60,7 @@ _DISMISS_EVENT_NAMES = (
 HUD_IDLE_HOLD_S = 300.0
 HUD_IDLE_FADE_S = 12.0
 HUD_IDLE_HIDE_ALPHA = 0.02
+HUD_IDLE_PEEK_GRACE_S = 1.0
 
 SIN_BITS = 12
 SIN_SIZE = 1 << SIN_BITS
@@ -162,7 +163,7 @@ def idle_tod_hue(hour: float) -> float:
 def wall_clock_parts(stamp: float | None = None) -> tuple[str, str]:
     lt = time.localtime(stamp)
     date = f"{time.strftime('%a', lt)} {lt.tm_mday} {time.strftime('%b', lt)}"
-    return time.strftime("%H:%M", lt), date
+    return time.strftime("%H:%M:%S", lt), date
 
 
 def idle_hud_alpha(
@@ -2009,6 +2010,11 @@ def field_input_action(
     return is_dismiss_event(event, pygame_mod, windowed)
 
 
+def apply_peek_grace(grace_until: float, now: float) -> float:
+    """Ignore dismiss for 1s after a peek so leftover mouse motion does not drop the field."""
+    return max(float(grace_until), now + HUD_IDLE_PEEK_GRACE_S)
+
+
 class InputWatch:
     """Global keyboard/mouse timestamps while the field is not on screen."""
 
@@ -2220,6 +2226,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
                     return "quit"
                 if action == "peek":
                     follow.wake_idle_hud(now)
+                    grace_until = apply_peek_grace(grace_until, now)
                     continue
                 if action == "dismiss" and now >= grace_until:
                     return "dismiss"

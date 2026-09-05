@@ -148,7 +148,7 @@ tsctl screensaver status
 # or: Settings → Screensaver in /v1/ui
 ```
 
-- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field while the idle clock is up; after **5 minutes** idle the clock and labels fade out (mouse motion brings them back for another 5 minutes). **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts the field again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`).
+- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field while the idle clock is up; after **5 minutes** idle the clock and labels fade out (mouse motion brings them back for another 5 minutes, with 1 second before dismiss is armed again). **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts the field again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`).
 - Needs `python-pygame`, `python-numpy`, `nvidia-drm.modeset=1`, and a connector on `/dev/dri/card*`.
 - Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
 - Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.
