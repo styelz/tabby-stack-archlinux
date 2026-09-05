@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.45"
+SCRIPT_VERSION="1.0.46"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -252,9 +252,8 @@ tui_cmd() {
   fi
 }
 
-# Dark cyan dialog theme. The default blue-on-grey boxes look like 1998;
-# this is the same widgets with a current TUI palette. Invalid keys are
-# ignored by older dialog.
+# Pastel-style 16-color console theme: light panels, cyan/magenta accents,
+# and an intentionally high-contrast selected row.
 write_dialogrc() {
   local f="${TMPDIR:-/tmp}/tsos-dialogrc"
   cat >"$f" <<'EOF'
@@ -269,43 +268,43 @@ bindkey formfield TAB form_NEXT
 bindkey formbox TAB form_NEXT
 bindkey formfield BTAB form_prev
 bindkey formbox BTAB form_prev
-screen_color = (WHITE,BLACK,OFF)
+screen_color = (WHITE,BLUE,ON)
 shadow_color = (BLACK,BLACK,OFF)
-dialog_color = (WHITE,BLACK,OFF)
-title_color = (CYAN,BLACK,ON)
-border_color = (CYAN,BLACK,ON)
-border2_color = (CYAN,BLACK,OFF)
-gauge_color = (BLACK,CYAN,ON)
-button_active_color = (BLACK,CYAN,OFF)
-button_inactive_color = (WHITE,BLACK,OFF)
-button_key_active_color = (BLACK,CYAN,ON)
-button_key_inactive_color = (CYAN,BLACK,ON)
-button_label_active_color = (BLACK,CYAN,ON)
-button_label_inactive_color = (WHITE,BLACK,OFF)
-menubox_color = (WHITE,BLACK,OFF)
-menubox_border_color = (CYAN,BLACK,ON)
-menubox_border2_color = (CYAN,BLACK,OFF)
-item_color = (WHITE,BLACK,OFF)
-item_selected_color = (BLACK,CYAN,ON)
-tag_color = (CYAN,BLACK,ON)
-tag_selected_color = (BLACK,CYAN,ON)
-tag_key_color = (YELLOW,BLACK,ON)
-tag_key_selected_color = (BLACK,CYAN,ON)
-check_color = (WHITE,BLACK,OFF)
-check_selected_color = (BLACK,CYAN,ON)
-form_active_text_color = (BLACK,CYAN,OFF)
-form_text_color = (WHITE,BLACK,OFF)
-form_item_readonly_color = (WHITE,BLACK,ON)
-inputbox_color = (WHITE,BLACK,OFF)
-inputbox_border_color = (CYAN,BLACK,ON)
-inputbox_border2_color = (CYAN,BLACK,OFF)
-searchbox_color = (WHITE,BLACK,OFF)
-searchbox_title_color = (CYAN,BLACK,ON)
-searchbox_border_color = (CYAN,BLACK,ON)
-position_indicator_color = (CYAN,BLACK,ON)
-uarrow_color = (CYAN,BLACK,ON)
-darrow_color = (CYAN,BLACK,ON)
-itemhelp_color = (WHITE,BLACK,OFF)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (MAGENTA,WHITE,ON)
+border_color = (CYAN,WHITE,ON)
+border2_color = (BLUE,WHITE,ON)
+gauge_color = (WHITE,MAGENTA,ON)
+button_active_color = (WHITE,MAGENTA,ON)
+button_inactive_color = (BLACK,WHITE,OFF)
+button_key_active_color = (YELLOW,MAGENTA,ON)
+button_key_inactive_color = (MAGENTA,WHITE,ON)
+button_label_active_color = (WHITE,MAGENTA,ON)
+button_label_inactive_color = (BLACK,WHITE,OFF)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (CYAN,WHITE,ON)
+menubox_border2_color = (BLUE,WHITE,ON)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (WHITE,MAGENTA,ON)
+tag_color = (BLUE,WHITE,ON)
+tag_selected_color = (WHITE,MAGENTA,ON)
+tag_key_color = (MAGENTA,WHITE,ON)
+tag_key_selected_color = (YELLOW,MAGENTA,ON)
+check_color = (BLACK,WHITE,OFF)
+check_selected_color = (WHITE,MAGENTA,ON)
+form_active_text_color = (BLACK,CYAN,ON)
+form_text_color = (BLACK,WHITE,OFF)
+form_item_readonly_color = (BLUE,WHITE,ON)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (CYAN,WHITE,ON)
+inputbox_border2_color = (BLUE,WHITE,ON)
+searchbox_color = (BLACK,WHITE,OFF)
+searchbox_title_color = (MAGENTA,WHITE,ON)
+searchbox_border_color = (CYAN,WHITE,ON)
+position_indicator_color = (BLUE,WHITE,ON)
+uarrow_color = (MAGENTA,WHITE,ON)
+darrow_color = (MAGENTA,WHITE,ON)
+itemhelp_color = (BLUE,WHITE,ON)
 EOF
   export DIALOGRC="$f"
   # A bad dialogrc makes every widget exit before drawing. Validate it now
