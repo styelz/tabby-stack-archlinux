@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.31"
+SCRIPT_VERSION="1.0.32"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -277,12 +277,10 @@ restore_tty() {
   } </dev/tty >/dev/tty 2>/dev/null || true
 }
 
-# Work phase: do not use dialog --gauge. On the 24x80 ISO console a
-# near-full-screen --gauge with --backtitle exits ("Window too small")
-# without drawing, and a background --gauge cannot init ncurses at all.
-# Either way the installer cleared the password box and printed a raw
-# `[  0%] Wiping...` line on a black screen. The parent paints its own box
-# on /dev/tty; install work runs in the background and only writes the log.
+# Work phase: dialog --gauge in the foreground, sized like the question
+# boxes (not full-screen). A 23-row gauge plus backtitle does not fit the
+# 24x80 ISO console, so dialog exited and left a raw percent line. Install
+# work runs in the background and only writes the log.
 ensure_work_term() {
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
@@ -299,16 +297,18 @@ ensure_work_term() {
   ((TSOS_UI_COLS >= 50)) || TSOS_UI_COLS=80
 }
 
+# Same chrome as the question screens. Do not use LINES-1: --backtitle
+# plus a full-height gauge is "Window too small" on the ISO console.
 gauge_height() {
-  local h=$((TSOS_UI_ROWS - 2))
-  ((h > 22)) && h=22
+  local h=$((TSOS_UI_ROWS - 6))
+  ((h > 18)) && h=18
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((TSOS_UI_COLS - 2))
-  ((w > 98)) && w=98
+  local w=$((TSOS_UI_COLS - 8))
+  ((w > 70)) && w=70
   ((w < 50)) && w=50
   printf '%s' "$w"
 }
@@ -376,13 +376,14 @@ fit_text() {
   printf '%s' "$text"
 }
 
-# Last few log lines, stripped of escape codes and cut to the box width.
+# Last few log lines, printable ASCII only so a box never wraps.
 tsos_log_snippet() {
   local lines=$1 width=$2
   [[ -f "$TSOS_LOG" ]] || return 0
-  tail -n 60 "$TSOS_LOG" 2>/dev/null \
+  tail -n 80 "$TSOS_LOG" 2>/dev/null \
     | tr '\r' '\n' \
     | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' \
+    | tr -cd '\11\12\15\40-\176' \
     | grep -v '^[[:space:]]*$' \
     | tail -n "$lines" \
     | cut -c1-"$width" || true
@@ -412,7 +413,53 @@ ui_pad() {
   printf '%-*s' "$n" "$s"
 }
 
-# Blue dialog-like box on /dev/tty. No ncurses: this cannot "fall out" of a widget.
+# Title centered in a row of dashes, the way dialog draws --title.
+ui_title_bar() {
+  local inner=$1 title=$2
+  local t=" $title "
+  local rest left right
+  ((inner < 1)) && return 0
+  if ((${#t} >= inner)); then
+    printf '%s' "${t:0:inner}"
+    return 0
+  fi
+  rest=$((inner - ${#t}))
+  left=$((rest / 2))
+  right=$((rest - left))
+  printf '%s%s%s' \
+    "$(printf '%*s' "$left" '' | tr ' ' '-')" \
+    "$t" \
+    "$(printf '%*s' "$right" '' | tr ' ' '-')"
+}
+
+# Repaints so a long pacstrap / pip / download stays visibly alive.
+watch_installer_ui() {
+  local stop="$1" width="$2" lines="$3"
+  local pct heading body last="" step_t=$SECONDS ticks=0 nested spin='|/-\' ch
+  while [[ ! -f "$stop" ]]; do
+    pct=0
+    heading="Working..."
+    [[ -f "$TSOS_GAUGE_DIR/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null)
+    [[ -f "$TSOS_GAUGE_DIR/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null)
+    [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    if nested=$(nested_percent); then
+      pct=$nested
+    fi
+    ticks=$((ticks + 1))
+    if [[ "$heading" != "$last" ]]; then
+      last=$heading
+      step_t=$SECONDS
+    fi
+    ch=${spin:$((ticks % 4)):1}
+    body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
+    printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
+      "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
+    sleep 0.5
+  done
+}
+
+# Fallback only if dialog --gauge cannot start. Same layout as dialog:
+# titled top edge, log in the middle, thermometer at the bottom.
 progress_ui_begin() {
   {
     printf '\033[?1049l\033[?25l\033[0m'
@@ -456,25 +503,17 @@ progress_ui_paint() {
 
   fill=$((pct * inner / 100))
   empty=$((inner - fill))
-  log_n=$((h - 7))
+  log_n=$((h - 6))
   ((log_n < 1)) && log_n=1
   mapfile -t log_arr < <(tsos_log_snippet "$log_n" "$inner")
 
   {
     printf '\033[?25l\033[44m'
-    printf '\033[%s;%sH\033[1;37;44m+%s+' "$r" "$c" "$(printf '%*s' "$inner" '' | tr ' ' '-')"
+    printf '\033[%s;%sH\033[1;37;44m+%s+' "$r" "$c" "$(ui_title_bar "$inner" "$title")"
     r=$((r + 1))
-    printf '\033[%s;%sH\033[1;33;44m|%s|' "$r" "$c" "$(ui_pad "$title" "$inner")"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[1;37;44m|%s%3d%%|' "$r" "$c" "$(ui_pad "$heading" "$((inner - 4))")" "$pct"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[0;37;44m|' "$r" "$c"
-    printf '\033[7;37;44m%s' "$(printf '%*s' "$fill" '')"
-    printf '\033[0;37;44m%s|' "$(printf '%*s' "$empty" '')"
+    printf '\033[%s;%sH\033[1;33;44m|%s|' "$r" "$c" "$(ui_pad "$heading" "$inner")"
     r=$((r + 1))
     printf '\033[%s;%sH\033[0;37;44m|%s|' "$r" "$c" "$(ui_pad "${ch}  ${elapsed} on this step" "$inner")"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[0;37;44m|%s|' "$r" "$c" "$(ui_pad "" "$inner")"
     i=0
     while ((i < log_n)); do
       r=$((r + 1))
@@ -482,6 +521,10 @@ progress_ui_paint() {
       printf '\033[%s;%sH\033[0;37;44m|%s|' "$r" "$c" "$(ui_pad "$line" "$inner")"
       i=$((i + 1))
     done
+    r=$((r + 1))
+    printf '\033[%s;%sH\033[0;37;44m|' "$r" "$c"
+    printf '\033[7;37;44m%s' "$(printf '%*s' "$fill" '')"
+    printf '\033[0;37;44m%s|' "$(printf '%*s' "$empty" '')"
     r=$((r + 1))
     printf '\033[%s;%sH\033[1;37;44m+%s+\033[0m' "$r" "$c" "$(printf '%*s' "$inner" '' | tr ' ' '-')"
   } >/dev/tty 2>/dev/null || true
@@ -502,8 +545,15 @@ gauge_stop() {
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true
   fi
+  if [[ -n "${TSOS_WATCH_PID:-}" ]]; then
+    kill "$TSOS_WATCH_PID" 2>/dev/null || true
+    wait "$TSOS_WATCH_PID" 2>/dev/null || true
+    TSOS_WATCH_PID=""
+  fi
+  exec 3>&- || true
   rm -rf "${TSOS_GAUGE_DIR:-}"
   TSOS_GAUGE_DIR=""
+  TSOS_GAUGE_FIFO=""
   TSOS_GAUGE_H=""
   TSOS_GAUGE_W=""
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
@@ -516,8 +566,8 @@ gauge_stop() {
   printf '\033[?25h\033[0m' >/dev/tty 2>/dev/null || true
 }
 
-# Paint a dialog-like box from the parent. Work runs in the background and
-# only writes the log; this loop is the UI.
+# Work in the background. Parent runs dialog --gauge (same look as the
+# question screens). If dialog cannot start, paint a matching box ourselves.
 run_with_gauge() {
   local work_fn=$1
   local rc=0 err=""
@@ -538,8 +588,19 @@ run_with_gauge() {
   TSOS_UI_LAST=""
   TSOS_UI_STEP_T=$SECONDS
 
+  if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && have_console && need_cmd dialog; then
+    TSOS_GAUGE_H=$(gauge_height)
+    TSOS_GAUGE_W=$(gauge_width)
+    TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
+    mkfifo -m 600 "$TSOS_GAUGE_FIFO"
+    exec 3<>"$TSOS_GAUGE_FIFO"
+    watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((TSOS_GAUGE_W - 6))" "$((TSOS_GAUGE_H - 8))" &
+    TSOS_WATCH_PID=$!
+  fi
+
   (
     exec </dev/null
+    exec 3>&- || true
     TSOS_WORK_CHILD=1
     trap 'rc=$?
           printf "%s\n" "$rc" >"$TSOS_GAUGE_DIR/rc" 2>/dev/null || true
@@ -551,7 +612,23 @@ run_with_gauge() {
         gauge_stop || true
         exit 130' INT TERM
 
-  if have_console; then
+  if [[ -n "${TSOS_GAUGE_FIFO:-}" ]]; then
+    exec 3>&- || true
+    dialog --keep-tite --no-shadow --backtitle "$BACKTITLE" \
+      --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
+      --gauge "Starting the install..." "$TSOS_GAUGE_H" "$TSOS_GAUGE_W" 0 \
+      <"$TSOS_GAUGE_FIFO" >/dev/tty 2>"$TSOS_GAUGE_DIR/dialog.err" || true
+    if [[ -s "$TSOS_GAUGE_DIR/dialog.err" ]]; then
+      printf '%s\n' "dialog --gauge: $(tr '\n' ' ' <"$TSOS_GAUGE_DIR/dialog.err")" >>"$TSOS_LOG"
+    fi
+    if [[ -n "${TSOS_WATCH_PID:-}" ]]; then
+      kill "$TSOS_WATCH_PID" 2>/dev/null || true
+      wait "$TSOS_WATCH_PID" 2>/dev/null || true
+      TSOS_WATCH_PID=""
+    fi
+  fi
+
+  if kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; then
     progress_ui_begin
     progress_ui_paint
     while kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; do
@@ -1961,7 +2038,7 @@ self_test() {
   # The percent meter must never be printed by gauge_update (that was the
   # leak under the leftover password box). It writes files; the foreground
   # dialog paints them.
-  local gdir gout saved_log
+  local gdir gout saved_log tb
   gdir=$(mktemp -d "${TMPDIR:-/tmp}/tsos-gauge-test.XXXXXX")
   saved_log=$TSOS_LOG
   TSOS_GAUGE_DIR=$gdir
@@ -1974,6 +2051,8 @@ self_test() {
   check "$(cat "$gdir/heading")" "Installing Arch packages" "gauge heading file"
   check "$(ui_pad "ab" 5)" "ab   " "ui_pad pads"
   check "$(ui_pad "abcdef" 4)" "abcd" "ui_pad truncates"
+  tb=$(ui_title_bar 10 Hi)
+  check "$tb" "--- Hi ---" "ui_title_bar"
   TSOS_GAUGE_DIR=""
   TSOS_SAVED_FD=""
   TSOS_LOG=$saved_log
@@ -2530,7 +2609,7 @@ install_base() {
   fi
 
   log "Installing Arch packages"
-  pacstrap -K "$TARGET" "${packages[@]}"
+  pacstrap -K "$TARGET" --noconfirm "${packages[@]}"
   genfstab -U "$TARGET" >>"$TARGET/etc/fstab"
 }
 
