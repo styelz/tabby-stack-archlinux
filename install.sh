@@ -20,16 +20,24 @@ TUI=""
 USE_TUI=0
 INTERACTIVE=1
 UPDATE_MODE=0
+INSTALL_MODE="${INSTALL_MODE:-}" # simple | advanced | empty (ask)
 
 usage_install() {
   cat <<EOF
-Usage: $(basename "$0") [--update]
+Usage: $(basename "$0") [--update] [--simple|--advanced]
 
-  (no args)   Interactive or env-driven install / re-run
-  --update    Apply code and deps after git pull. Prefer: bash update.sh
-              Reuses tabby.env; does not overwrite config.yml or tabby.env.
-              Does not pacman -Syu; only installs missing OS packages.
-  -h, --help  This text
+  (no args)     Interactive or env-driven install / re-run.
+                Starts with Simple setup (this PC vs LAN; core models).
+                Choose Advanced for cache, extra models, tunnels, screensaver.
+  --simple      Short wizard only (who can connect). Install root is
+                \$HOME/tabby-stack, models core, Hugging Face.
+  --advanced    Full settings wizard
+  --update      Apply code and deps after git pull. Prefer: bash update.sh
+                Reuses tabby.env; does not overwrite config.yml or tabby.env.
+                Does not pacman -Syu; only installs missing OS packages.
+  -h, --help    This text
+
+  INSTALL_MODE=simple|advanced  Same as --simple / --advanced
 
   ISO chroot (from tsos-installer, or a resume): dest, cache, model set,
   and API URLs come from tsos (TABBY_NONINTERACTIVE=1). Resume:
@@ -44,6 +52,8 @@ EOF
 while (($#)); do
   case "$1" in
     --update) UPDATE_MODE=1; TABBY_NONINTERACTIVE=1; shift ;;
+    --simple) INSTALL_MODE=simple; shift ;;
+    --advanced) INSTALL_MODE=advanced; shift ;;
     -h|--help) usage_install; exit 0 ;;
     *)
       echo "Unknown option: $1" >&2
@@ -1400,6 +1410,158 @@ Do not put a public hostname here." \
   printf '%s' "${choice:-127.0.0.1}"
 }
 
+# Simple-mode listen choice: this PC vs LAN.
+ui_listen_access() {
+  local title="$1"
+  local choice
+  choice="$(ui_menu "$title" \
+"Who should be able to open the API and browser UI?
+
+  This PC only — Cursor and the UI on this machine (127.0.0.1).
+  Other computers on my network — laptops and editors on the LAN (0.0.0.0).
+
+You can change this later in Settings." \
+    this-pc "This PC only" \
+    lan "Other computers on my network")"
+  case "$choice" in
+    lan) printf '%s' "0.0.0.0" ;;
+    *) printf '%s' "127.0.0.1" ;;
+  esac
+}
+
+valid_install_mode() {
+  [[ "$1" == simple || "$1" == advanced ]]
+}
+
+pick_install_mode() {
+  if [[ -n "${INSTALL_MODE:-}" ]]; then
+    valid_install_mode "$INSTALL_MODE" || {
+      echo "invalid INSTALL_MODE: $INSTALL_MODE (simple or advanced)" >&2
+      exit 1
+    }
+    return 0
+  fi
+  local choice
+  choice="$(ui_menu "Setup type" \
+"Simple (recommended) installs into \$HOME/tabby-stack with the
+core models from Hugging Face. It asks whether other computers
+on your network can connect.
+
+Advanced asks every setting: install root, weights cache,
+extra models, bind address, public URL, SSH tunnel, and
+screensaver.
+
+You can re-run later and pick Advanced to change those." \
+    simple "Simple — this PC vs LAN, core models" \
+    advanced "Advanced — every setting")"
+  INSTALL_MODE="${choice:-simple}"
+  valid_install_mode "$INSTALL_MODE" || INSTALL_MODE=simple
+}
+
+prompt_simple_install() {
+  ui_msg "Simple setup" \
+"tabby-stack: local OpenAI-compatible API for coding and agents,
+plus ComfyUI image generation on Arch.
+
+Simple setup installs into:
+  ${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}
+
+It fetches the core models (qwen 9B, Flux, Qwen-Image, CPU
+embedder) from Hugging Face.
+
+You will be asked whether other computers on your network
+can connect. Extra models, a USB cache, a public URL, an
+SSH tunnel, and screensaver options are under Advanced.
+
+Needed
+  • Arch Linux, your user (not root), internet
+  • NVIDIA GPU (docs assume 12 GB)
+
+Esc cancels."
+
+  while true; do
+    DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+    DEST="${DEST:-$DEFAULT_DEST}"
+    WIN_ROOT=""
+    MODEL_SET="${TABBY_MODELS:-core}"
+    MODEL_SET="${MODEL_SET:-core}"
+    if [[ -z "${TABBY_NETWORK_HOST:-}" ]]; then
+      TABBY_NETWORK_HOST="$(ui_listen_access "1 / 2  — Who can connect")"
+    fi
+    TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+    TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+    COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
+    TABBY_PUBLIC_BASE=""
+    TABBY_SSH_REMOTE=""
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+    apply_choices
+    apply_network_defaults
+    TABBY_SSH_REMOTE=""
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+    apply_saver_defaults
+    if ! valid_model_set "$MODEL_SET"; then
+      ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
+      MODEL_SET=core
+      continue
+    fi
+    if ! valid_port "$TABBY_NETWORK_PORT"; then
+      ui_msg "Invalid port" "The listen port must be a number from 1 to 65535 (got ${TABBY_NETWORK_PORT})."
+      TABBY_NETWORK_PORT=5000
+      continue
+    fi
+    if ! dest_is_sane; then
+      ui_msg "Invalid install root" \
+"Refusing to install into:
+  ${DEST}
+
+That is your home directory or a system folder. Pick a dedicated
+folder such as ${HOME}/tabby-stack or /data/tabby-stack."
+      return 1
+    fi
+    if cache_on_dest; then
+      ui_msg "Invalid paths" \
+"Arch dest must not be the weights cache mount.
+
+  Cache:     ${WIN_ROOT}
+  Arch dest: ${DEST}"
+      return 1
+    fi
+    API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
+    if [[ "${TABBY_SAVER_ENABLED}" == "1" ]]; then
+      SAVER_CONFIRM="on (auto; idle ${TABBY_SAVER_IDLE_S}s)"
+    else
+      SAVER_CONFIRM="off (auto)"
+    fi
+    local access="this PC only"
+    if [[ "$TABBY_NETWORK_HOST" == "0.0.0.0" ]]; then
+      access="other computers on the network"
+    fi
+    if ui_yesno "2 / 2  — Confirm" \
+"Start the install with these settings?
+
+  Arch dest:     ${DEST}
+  Weights:       Hugging Face
+  Models:        ${MODEL_SET}
+  Access:        ${access}
+  API:           ${API_URL}
+  ComfyUI URL:   ${COMFYUI_URL}
+  Screensaver:   ${SAVER_CONFIRM}
+
+Simple setup skips extra models, a USB cache, a public URL,
+an SSH tunnel, and screensaver questions. Re-run and pick
+Advanced to change those, or use Settings / tsctl later.
+
+This can take a long time (Python 3.12, pip wheels, model files).
+Yes = begin.  No = change who can connect.  Esc = cancel." \
+      1; then
+      break
+    fi
+    TABBY_NETWORK_HOST=""
+  done
+}
+
 # Diagram for the reverse SSH tunnel screens. Always returns 0.
 ssh_tunnel_help() {
   local remote="${1:-${TABBY_SSH_REMOTE:-user@your-vps}}"
@@ -1677,6 +1839,10 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
     exit 1
   fi
 else
+  pick_install_mode
+  if [[ "$INSTALL_MODE" == simple ]]; then
+    prompt_simple_install
+  else
   if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
     ui_msg "tabby-stack" \
 "Arch is on the disk. Dest is already
@@ -2084,6 +2250,7 @@ Yes = begin.  No = change answers.  Esc = cancel." \
       break
     fi
   done
+  fi
 fi
 
 apply_network_defaults

@@ -2,7 +2,7 @@
 
 A self-hosted coding assistant, web workspace, and image generator for an Arch Linux machine with an NVIDIA GPU.
 
-From the official Arch live ISO, the **tsos installer** (`tsos-installer.sh`) asks for disk, user, optional Omarchy, weights cache, model set, and API URLs, then installs Arch and this stack in one pass:
+From the official Arch live ISO, the **tsos installer** (`tsos-installer.sh`) starts with **Simple** setup: disk, username, password, and whether other computers on the LAN can connect. Choose **Advanced** for encryption, Omarchy, a weights cache, extra models, and SSH tunnels. It then installs Arch and this stack in one pass:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
@@ -49,12 +49,9 @@ cd "$HOME/tabby-stack"
 bash install.sh
 ```
 
-The installer asks where to install, whether to reuse a weights cache, which models to fetch, what addresses to listen on, and whether to configure a public URL or reverse SSH tunnel.
+The installer starts with **Simple** setup (this PC vs LAN; core models from Hugging Face into `$HOME/tabby-stack`). Choose **Advanced** for a USB cache, extra models, bind address, public URL, reverse SSH tunnel, and screensaver.
 
-Choose:
-
-- **core** for qwen 9B, Flux, Qwen-Image, and the CPU embedder
-- **all** to add every larger switchable model profile
+Simple uses the **core** set (qwen 9B, Flux, Qwen-Image, CPU embedder). Advanced can add every larger switchable model profile (`all`).
 
 It is safe to run the installer again: existing weights are skipped. For USB caches, unattended installation, network settings, and recovery steps, use the [complete Arch install guide](tabbyAPI/deploy/arch/README.md).
 

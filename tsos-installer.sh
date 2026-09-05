@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.27"
+SCRIPT_VERSION="1.0.29"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -57,6 +57,12 @@ ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 DRY_RUN=0
 CONFIG_PROVIDED=0
 RESUME_TABBY=0
+INSTALL_MODE="${INSTALL_MODE:-}" # simple | advanced | empty (ask)
+ENCRYPT_FROM_CLI=""
+OMARCHY_FROM_CLI=""
+HOST_FROM_CLI=""
+MODELS_FROM_CLI=""
+CACHE_FROM_CLI=""
 DEFAULT_DISK=/dev/sda
 TUI=""
 USE_TUI=0
@@ -81,9 +87,11 @@ USAGE
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash -s -- [options]
 
-With no --config file, the script asks for every setting before it runs.
-It uses the same dialog menus as install.sh when dialog is available
-(installed on the live ISO if needed). Press Enter to keep the default.
+With no --config file, the script starts with Simple setup (disk, user,
+password, this PC vs LAN). Choose Advanced for encryption, Omarchy,
+weights cache, extra models, and SSH tunnels. It uses the same dialog
+menus as install.sh when dialog is available (installed on the live ISO
+if needed). Press Enter to keep the default.
 
 curl | bash needs a real terminal so the questions can be answered. Use
 bash, not sh. Pass flags after bash -s -- .
@@ -97,9 +105,15 @@ OPTIONS
   --locale NAME            Locale, without the leading # (default: en_US.UTF-8)
   --keymap NAME            Console keymap (default: us)
   --esp-size SIZE          EFI partition size (default: 2G)
-  --encrypt                LUKS on the root partition (default)
+  --simple                 Short wizard: disk, user, password, this PC vs LAN.
+                           Skips Omarchy (always). No LUKS unless --encrypt.
+  --advanced               Full settings wizard (encryption, Omarchy, cache,
+                           models, bind address, public URL, SSH tunnel)
+  --encrypt                LUKS on the root partition (Advanced default; Simple
+                           is unencrypted unless you pass this)
   --no-encrypt             Unencrypted btrfs root
-  --with-omarchy           Run the official Omarchy installer in the chroot (requires LUKS)
+  --with-omarchy           Run the official Omarchy installer in the chroot
+                           (requires LUKS; Advanced only — ignored in Simple)
   --skip-omarchy           Do not install Omarchy (default)
   --name "FULL NAME"       Git name passed to Omarchy as OMARCHY_USER_NAME
   --email ADDR             Git email passed to Omarchy as OMARCHY_USER_EMAIL
@@ -124,6 +138,7 @@ ENVIRONMENT
   ENCRYPT                  1 (LUKS) or 0 (plain btrfs)
   PASSWORD                 Used for LUKS + user + root if the split passwords are unset
   LUKS_PASSWORD, USER_PASSWORD, ROOT_PASSWORD
+  INSTALL_MODE             simple | advanced (asked if unset)
   OMARCHY_USER_NAME, OMARCHY_USER_EMAIL, OMARCHY_MODE (now|skip)
   TABBY_REPO, TABBY_LOCAL_SRC, TABBY_MODELS, TABBY_NETWORK_HOST, TABBY_NETWORK_PORT
   TABBY_CACHE, TABBY_PUBLIC_BASE, COMFYUI_URL, HF_TOKEN
@@ -134,9 +149,9 @@ unless you set the split password variables.
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
-weights) and must finish before reboot. This script asks every setting
-(disk, user, cache, model set, API URLs) in one UI, then keeps that same
-dialog up with the live log while Arch and tabby-stack install.
+weights) and must finish before reboot. Simple setup asks disk, user,
+password, and who can connect, then keeps that same dialog up with the
+live log while Arch and tabby-stack install. Advanced asks every setting.
 install.sh is non-interactive from here so it does not open a second
 dialog. The NVIDIA driver loads on the first real boot; linger then
 starts the API.
@@ -234,16 +249,24 @@ enable_tui_if_possible() {
 }
 
 restore_tty() {
-  {
-    command -v tput >/dev/null 2>&1 && {
-      tput rmcup || true
-      tput rmkx || true
-      tput cnorm || true
-      tput sgr0 || true
-    }
-    printf '\033[?1049l\033[?25h\033[m'
-    stty sane
-  } >/dev/tty 2>/dev/null || true
+  # Full terminal reset. stty sane alone does not clear a leftover ncurses
+  # alternate-screen or broken line discipline. The `reset` command (tset -e)
+  # reinitialises the terminal driver and redoes terminfo init, which fixes
+  # dialog gauge failures after a previous ncurses session.
+  if command -v reset >/dev/null 2>&1; then
+    reset </dev/tty >/dev/tty 2>/dev/null || true
+  else
+    {
+      command -v tput >/dev/null 2>&1 && {
+        tput rmcup || true
+        tput rmkx || true
+        tput cnorm || true
+        tput sgr0 || true
+      }
+      printf '\033[?1049l\033[?25h\033[m'
+      stty sane
+    } >/dev/tty 2>/dev/null || true
+  fi
 }
 
 # Work phase: one dialog --gauge in the background for the whole run, fed
@@ -404,14 +427,14 @@ watch_installer_ui() {
 # the redirect and paint a one-line bar on /dev/tty.
 # Background --gauge must ignore SIGTTIN/SIGTTOU: ncurses opens /dev/tty,
 # and a stopped gauge looks like the installer "dropped out" while wipe
-# continues. --keep-tite draws on the visible screen so a leftover rmcup
-# from the password box cannot hide the bar on the alternate buffer.
+# continues. The subprocess opens /dev/tty afresh so ncurses sees a clean fd.
 start_gauge_dialog() {
   local h="$1" w="$2"
   local -a extra=()
   [[ "${3:-}" == keep-tite ]] && extra=(--keep-tite)
   (
     trap '' TTIN TTOU
+    exec </dev/null
     exec dialog --backtitle "$BACKTITLE" "${extra[@]}" \
       --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
       --gauge "Starting the install..." "$h" "$w" 0 \
@@ -432,7 +455,10 @@ gauge_dialog_running() {
 gauge_start() {
   ((USE_TUI)) || return 1
   have_console || [[ -t 1 ]] || return 1
+  # Full terminal reset — the password dialog leaves ncurses state that
+  # prevents a background --gauge from initialising.
   restore_tty
+  sleep 0.3
   set +m 2>/dev/null || true
   ensure_work_term
   quiet_kernel_console
@@ -455,14 +481,17 @@ gauge_start() {
   # O_RDWR: opening the FIFO does not block before dialog is reading it.
   exec 3<>"$TSOS_GAUGE_FIFO"
   # 3>&- is load bearing. Without it dialog holds the write end open.
-  start_gauge_dialog "$h" "$w" keep-tite
-  sleep 0.4
+  # Try plain first (restore_tty already cleaned the terminal). If that fails,
+  # retry with --keep-tite (skips smcup/rmcup entirely).
+  start_gauge_dialog "$h" "$w"
+  sleep 0.6
   if ! gauge_dialog_running; then
     kill -9 "$TSOS_GAUGE_PID" 2>/dev/null || true
     wait "$TSOS_GAUGE_PID" 2>/dev/null || true
     restore_tty
-    start_gauge_dialog "$h" "$w"
-    sleep 0.4
+    sleep 0.3
+    start_gauge_dialog "$h" "$w" keep-tite
+    sleep 0.6
   fi
   if ! gauge_dialog_running; then
     exec 3>&- || true
@@ -910,7 +939,7 @@ $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
       args+=("$path" "${size}  ${model}")
     done < <(list_install_disks)
     ((${#args[@]})) || die "No installable disk found."
-    DISK=$(ui_menu "1 / 10  -  Target disk" \
+    DISK=$(ui_menu "${1:-1 / 10  -  Target disk}" \
 "This disk will be wiped. The live ISO / USB you booted from is hidden.
 
 Choose the machine disk, not a second installer stick." \
@@ -1003,6 +1032,25 @@ Do not put a public hostname here." \
   printf '%s' "${choice:-127.0.0.1}"
 }
 
+# Simple-mode listen choice: this PC vs LAN. Always returns 0.
+ui_listen_access() {
+  local title="$1"
+  local choice
+  choice="$(ui_menu "$title" \
+"Who should be able to open the API and browser UI?
+
+  This PC only — Cursor and the UI on this machine (127.0.0.1).
+  Other computers on my network — laptops and editors on the LAN (0.0.0.0).
+
+You can change this later in Settings." \
+    this-pc "This PC only" \
+    lan "Other computers on my network")"
+  case "$choice" in
+    lan) printf '%s' "0.0.0.0" ;;
+    *) printf '%s' "127.0.0.1" ;;
+  esac
+}
+
 ssh_tunnel_help() {
   local remote="${1:-${TABBY_SSH_REMOTE:-user@your-vps}}"
   local spec="${2:-${TABBY_SSH_FORWARD:-}}"
@@ -1039,12 +1087,150 @@ EOF
 
 # Asked when --config is not passed. Defaults come from the script
 # (or from a flag / env var if you already set one).
-prompt_settings() {
+valid_install_mode() {
+  [[ "$1" == simple || "$1" == advanced ]]
+}
+
+apply_simple_defaults() {
+  INSTALL_MODE=simple
+  TARGET_HOSTNAME="${TARGET_HOSTNAME:-tsos}"
+  TIMEZONE="${TIMEZONE:-UTC}"
+  LOCALE="${LOCALE:-en_US.UTF-8}"
+  KEYMAP="${KEYMAP:-us}"
+  ESP_SIZE="${ESP_SIZE:-2G}"
+  if [[ -z "${ENCRYPT_FROM_CLI:-}" ]]; then
+    ENCRYPT=0
+  fi
+  if [[ -n "${OMARCHY_FROM_CLI:-}" && "${OMARCHY_MODE:-}" == now ]]; then
+    warn "Simple setup does not install Omarchy; ignoring --with-omarchy."
+  fi
+  OMARCHY_MODE=skip
+  OMARCHY_USER_NAME=""
+  OMARCHY_USER_EMAIL=""
+  if [[ -z "${CACHE_FROM_CLI:-}" ]]; then
+    TABBY_CACHE=""
+  fi
+  if [[ -z "${MODELS_FROM_CLI:-}" ]]; then
+    TABBY_MODELS=core
+  fi
+  TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+  COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
+  TABBY_PUBLIC_BASE=""
+  TABBY_SSH_REMOTE=""
+  TABBY_SSH_FORWARD=""
+  TABBY_SSH_KEY=""
+}
+
+simple_plan_notes() {
+  local access="this PC only"
+  if [[ "${TABBY_NETWORK_HOST:-}" == "0.0.0.0" ]]; then
+    access="other computers on the network"
+  fi
+  cat <<EOF
+Simple setup — you can change listen address, models, and
+tunnels later in Settings, or re-run and pick Advanced.
+
+  access:        ${access} (${TABBY_NETWORK_HOST:-127.0.0.1}:${TABBY_NETWORK_PORT:-5000})
+  models:        ${TABBY_MODELS:-core} from Hugging Face
+  encryption:    $(encrypt_label)
+  Omarchy:       not installed
+
+EOF
+}
+
+pick_install_mode() {
+  if [[ -n "${INSTALL_MODE:-}" ]]; then
+    valid_install_mode "$INSTALL_MODE" || die "invalid INSTALL_MODE: $INSTALL_MODE (simple or advanced)"
+    return 0
+  fi
+  local choice
   if ((USE_TUI)); then
+    choice=$(ui_menu "Setup type" \
+"Simple (recommended) asks only for the disk, a username,
+a password, and whether other computers on your network
+can connect.
+
+Advanced asks every setting: encryption, Omarchy desktop,
+weights cache, extra models, bind address, public URL,
+and SSH tunnel.
+
+Omarchy is not installed in Simple." \
+      simple "Simple — disk, user, password, this PC vs LAN" \
+      advanced "Advanced — every setting")
+  else
+    printf '\n' >/dev/tty
+    printf '%s\n' "Simple (recommended): disk, user, password, this PC vs LAN." >/dev/tty
+    printf '%s\n' "Advanced: encryption, Omarchy, cache, models, tunnel." >/dev/tty
+    printf '%s\n' "Omarchy is not installed in Simple." >/dev/tty
+    choice=$(ask_until "Setup type (simple / advanced)" "simple" valid_install_mode)
+  fi
+  INSTALL_MODE="${choice:-simple}"
+  valid_install_mode "$INSTALL_MODE" || INSTALL_MODE=simple
+}
+
+prompt_settings() {
+  pick_install_mode
+  if [[ "$INSTALL_MODE" == simple ]]; then
+    apply_simple_defaults
+    if ((USE_TUI)); then
+      prompt_settings_simple_tui
+    else
+      prompt_settings_simple_text
+    fi
+  elif ((USE_TUI)); then
     prompt_settings_tui
   else
     prompt_settings_text
   fi
+}
+
+prompt_settings_simple_text() {
+  log "Simple setup. Enter settings, or press Enter to keep the default."
+  printf '\n' >/dev/tty
+  show_available_disks
+  printf '\n' >/dev/tty
+
+  ask_install_disk "1 / 4  -  Target disk"
+  TARGET_USER=$(ask_until "Username" "$TARGET_USER" valid_username)
+  if [[ -z "${HOST_FROM_CLI:-}" ]]; then
+    TABBY_NETWORK_HOST=$(ui_listen_access "Who can connect")
+  fi
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+  printf '\n' >/dev/tty
+}
+
+prompt_settings_simple_tui() {
+  ui_msg "Simple setup" \
+"This installs Arch and tabby-stack on the disk you pick.
+
+You will be asked for:
+  • which disk to wipe
+  • a username
+  • whether other computers on your network can connect
+  • a password (login; the disk is not encrypted unless you
+    passed --encrypt)
+
+Omarchy is not installed. Encryption, extra models, a USB
+cache, and SSH tunnels are under Advanced.
+
+After you confirm the wipe, this same dialog stays up with
+a progress bar and the live log. install.sh does not open
+a second dialog.
+
+Esc cancels."
+
+  ask_install_disk "1 / 4  -  Target disk"
+
+  TARGET_USER=$(ui_ask_until "2 / 4  -  Username" \
+"Regular wheel user that runs tabby-stack.
+
+Lowercase, not root. Example: tabby" \
+    "$TARGET_USER" valid_username)
+
+  if [[ -z "${HOST_FROM_CLI:-}" ]]; then
+    TABBY_NETWORK_HOST=$(ui_listen_access "3 / 4  -  Who can connect")
+  fi
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 }
 
 prompt_settings_text() {
@@ -1716,6 +1902,22 @@ self_test() {
   ENCRYPT=0
   check "$(encrypt_label)" no "encrypt label no"
 
+  ENCRYPT=1
+  ENCRYPT_FROM_CLI=""
+  OMARCHY_MODE=now
+  OMARCHY_FROM_CLI=""
+  apply_simple_defaults
+  check "$OMARCHY_MODE" skip "simple skips omarchy"
+  check "$ENCRYPT" 0 "simple encrypt off"
+  check "$TABBY_MODELS" core "simple models core"
+  ENCRYPT=1
+  ENCRYPT_FROM_CLI=1
+  OMARCHY_MODE=now
+  OMARCHY_FROM_CLI=1
+  apply_simple_defaults
+  check "$ENCRYPT" 1 "simple --encrypt kept"
+  check "$OMARCHY_MODE" skip "simple still skips omarchy"
+
   if valid_omarchy_mode now && valid_omarchy_mode skip && ! valid_omarchy_mode later; then
     printf 'ok   omarchy now/skip\n'
   else
@@ -1762,18 +1964,30 @@ parse_args() {
         ;;
       --encrypt)
         ENCRYPT=1
+        ENCRYPT_FROM_CLI=1
         shift
         ;;
       --no-encrypt)
         ENCRYPT=0
+        ENCRYPT_FROM_CLI=1
+        shift
+        ;;
+      --simple)
+        INSTALL_MODE=simple
+        shift
+        ;;
+      --advanced)
+        INSTALL_MODE=advanced
         shift
         ;;
       --with-omarchy)
         OMARCHY_MODE=now
+        OMARCHY_FROM_CLI=1
         shift
         ;;
       --skip-omarchy)
         OMARCHY_MODE=skip
+        OMARCHY_FROM_CLI=1
         shift
         ;;
       --name)
@@ -1786,10 +2000,12 @@ parse_args() {
         ;;
       --models)
         TABBY_MODELS=${2:?}
+        MODELS_FROM_CLI=1
         shift 2
         ;;
       --tabby-host)
         TABBY_NETWORK_HOST=${2:?}
+        HOST_FROM_CLI=1
         shift 2
         ;;
       --tabby-port)
@@ -1798,6 +2014,7 @@ parse_args() {
         ;;
       --tabby-cache)
         TABBY_CACHE=${2:?}
+        CACHE_FROM_CLI=1
         shift 2
         ;;
       --tabby-repo)
@@ -2076,6 +2293,9 @@ disable_live_mkinitcpio_hooks() {
 }
 
 print_plan() {
+  if [[ "${INSTALL_MODE:-}" == simple ]]; then
+    simple_plan_notes
+  fi
   local root_line data_kind
   if ((ENCRYPT)); then
     data_kind="LUKS      btrfs"

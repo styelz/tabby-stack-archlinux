@@ -8,7 +8,9 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-From the official Arch live ISO, `tsos-installer.sh` asks every setting in one UI (disk, user, Omarchy, weights cache, model set, API URLs — cache must be named before `/mnt` is wiped). After the last question it keeps that same dialog up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`. Omarchy is optional: `now` (LUKS required) or `skip`.
+From the official Arch live ISO, `tsos-installer.sh` starts with **Simple** setup (disk, username, password, this PC vs LAN). It does not ask about Omarchy and does not install it. Disk encryption is off unless you pass `--encrypt`. After you confirm the wipe, the same dialog stays up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`.
+
+Choose **Advanced** for encryption, Omarchy (`now` requires LUKS, or `skip`), a weights cache (must be named before `/mnt` is wiped), extra models, bind address, public URL, and SSH tunnel.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
@@ -27,14 +29,25 @@ Clone into `$HOME/tabby-stack` so this folder *is* the git checkout. A leftover 
 
 The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc cancels. After you confirm, the work stays in that same installer: a **progress bar**, elapsed time, and a live tail of `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command on the console instead.
 
-You will be asked:
+**Simple** (recommended) asks:
+
+1. **Setup type** — Simple or Advanced (Simple is the default)
+2. **Who can connect** — this PC only (`127.0.0.1`) or other computers on the network (`0.0.0.0`)
+3. **Confirm** — install root `$HOME/tabby-stack`, models `core`, Hugging Face
+
+From the live ISO, Simple also asks for the **disk**, **username**, and **password** (login only; the disk is not encrypted). Omarchy is not shown and is not installed.
+
+**Advanced** asks:
 
 1. **Arch install root** — Linux disk, default `$HOME/tabby-stack` (TabbyAPI and ComfyUI go underneath). Not a USB or other removable mount.
 2. **Weights cache** — Hugging Face, USB, or a custom path
 3. **Model set** — `core` (qwen 9B + Flux + Qwen-Image + embedder) or `all` (every `switch to …` profile)
 4. **Listen URLs** — TabbyAPI bind address (menu of this machine's IPs: `127.0.0.1`, LAN NICs, or `0.0.0.0`), port, and ComfyUI URL (default `http://127.0.0.1:8188`)
 5. **Public URL / tunnel** — optional public API base, SSH remote, forward spec, and key. The key screen shows the host and the path `https://... -> SSH reverse port -> TabbyAPI`. Upload the matching `.pub` to that host.
-6. **Confirm** — review paths and URLs before anything is installed
+6. **Screensaver** — TTY activity field (skipped if a desktop already owns the GPU)
+7. **Confirm** — review paths and URLs before anything is installed
+
+On the live ISO, Advanced also asks hostname, locale, keymap, EFI size, Omarchy, and LUKS. Flags: `--simple` / `--advanced`, or `INSTALL_MODE=simple|advanced`.
 
 Non-interactive (no menus):
 
@@ -80,7 +93,7 @@ It will:
 - Patch Linux spawn / chat-switch so `switch to …` does not 500 or look like Comfy
 - Set the startup model to **qwen 9B** and `embedding_model_name` to **Qwen3-Embedding-0.6B**
 - Enable **linger** + `tabbyapi` so it **starts at boot with no login**
-- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. `tsos-installer.sh` runs `install.sh` in the live-ISO chroot and will not reboot if that fails. Venv checks require CUDA-built torch wheels, not `torch.cuda.is_available()` (no driver in the chroot). After a successful reboot, linger starts the API. Omarchy is optional (`now` with LUKS, or `skip`).
+- If a newly installed NVIDIA driver does not load on a running system, reboot once and resume automatically. `tsos-installer.sh` runs `install.sh` in the live-ISO chroot and will not reboot if that fails. Venv checks require CUDA-built torch wheels, not `torch.cuda.is_available()` (no driver in the chroot). After a successful reboot, linger starts the API. Simple setup never installs Omarchy. Advanced can choose `now` (LUKS required) or `skip`.
 - Write `$DEST/start.sh` at the install root
 - Write `$DEST/AGENTS.md` (IDE / agent notes for any editor)
 - Write `HOW-TO-ARCH.txt`
