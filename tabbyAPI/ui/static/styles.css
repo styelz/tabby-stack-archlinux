@@ -3718,11 +3718,15 @@ button.chip {
   outline: none;
 }
 .chat-agent-menu button[data-agent="ask"],
-.chat-agent-btn[data-agent="ask"] {
+.chat-agent-btn[data-agent="ask"],
+.chat-mode-hint-now[data-agent="ask"],
+.chat-mode-word[data-agent="ask"] {
   color: var(--ok);
 }
 .chat-agent-menu button[data-agent="plan"],
-.chat-agent-btn[data-agent="plan"] {
+.chat-agent-btn[data-agent="plan"],
+.chat-mode-hint-now[data-agent="plan"],
+.chat-mode-word[data-agent="plan"] {
   color: var(--warn);
 }
 .chat-agent-menu button[data-agent="ask"]:hover,
@@ -3759,21 +3763,61 @@ button.chip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.25rem;
-  margin-top: 0.625rem;
+  gap: 0.4rem 0.35rem;
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.8125rem;
   line-height: 1.4;
   white-space: normal;
 }
-.chat-mode-hint .chat-mode-btn,
-.chat-mode-hint .chat-agent-btn {
+.chat-mode-hint-now {
+  font-weight: 650;
+}
+.chat-mode-hint-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
   width: auto;
-  min-width: 3.75rem;
-  min-height: 1.5rem;
-  padding: 0 0.625rem;
+  min-width: 3.25rem;
+  height: 1.5rem;
+  padding: 0 0.7rem;
+  border: 0;
+  border-radius: 0.4375rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1;
   cursor: pointer;
+}
+.chat-mode-hint-pill[data-mode-hint="agent"] {
+  background: rgba(var(--accent-rgb), 0.2);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.5);
+}
+.chat-mode-hint-pill[data-mode-hint="agent"]:hover {
+  background: rgba(var(--accent-rgb), 0.32);
+  color: var(--text);
+}
+.chat-mode-hint-pill[data-mode-hint="chat"] {
+  background: linear-gradient(
+    90deg,
+    #e78f98 0%,
+    #dbbe70 22%,
+    #5db88c 48%,
+    #98b0e7 74%,
+    #c29ee6 100%
+  );
+  color: var(--mode-on-fg);
+  box-shadow: 0 1px 0.125rem rgba(0, 0, 0, 0.28);
+}
+.chat-mode-hint-pill[data-mode-hint="chat"]:hover {
+  filter: brightness(1.08);
+}
+.chat-mode-hint-pill:focus-visible {
+  outline: 0.125rem solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .chat-send {
   min-width: 4.25rem;

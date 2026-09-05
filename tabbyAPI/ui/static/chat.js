@@ -7558,14 +7558,13 @@ function mountChat(root) {
   function modeHintPill(target) {
     const btn = document.createElement("button");
     btn.type = "button";
+    btn.className = "chat-mode-hint-pill";
     btn.dataset.modeHint = target;
     if (target === "chat") {
-      btn.className = "chat-mode-btn is-active";
       btn.textContent = "Chat";
       btn.title = "Open Chat";
       btn.setAttribute("aria-label", "Switch to Chat");
     } else {
-      btn.className = "btn ghost chat-agent-btn";
       btn.textContent = "Agent";
       btn.title = "Switch to Agent";
       btn.setAttribute("aria-label", "Switch to Agent");
@@ -7585,8 +7584,14 @@ function mountChat(root) {
     const here = agent === "plan" ? "Plan" : "Ask";
     const row = document.createElement("div");
     row.className = "chat-mode-hint";
+    row.dataset.here = agent === "plan" ? "plan" : "ask";
     const lead = document.createElement("span");
-    lead.textContent = `This is ${here}. Switch to `;
+    lead.append("This is ");
+    const now = document.createElement("span");
+    now.className = "chat-mode-hint-now";
+    now.dataset.agent = agent === "plan" ? "plan" : "ask";
+    now.textContent = here;
+    lead.append(now, ". Switch to ");
     row.appendChild(lead);
     targets.forEach((target, i) => {
       if (i) {
@@ -7602,6 +7607,18 @@ function mountChat(root) {
     else tail.textContent = ".";
     row.appendChild(tail);
     host.appendChild(row);
+    const bubble = host.classList && host.classList.contains("bubble")
+      ? host
+      : host.querySelector(".bubble.assistant");
+    if (bubble) {
+      bubble.querySelectorAll("strong, b").forEach((el) => {
+        const word = String(el.textContent || "").trim();
+        if (word === "Ask" || word === "Plan") {
+          el.classList.add("chat-mode-word");
+          el.dataset.agent = word.toLowerCase();
+        }
+      });
+    }
   }
 
   function buildApprovedPlan(idx) {
