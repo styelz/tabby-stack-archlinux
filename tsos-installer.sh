@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.35"
+SCRIPT_VERSION="1.0.36"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -66,7 +66,7 @@ CACHE_FROM_CLI=""
 DEFAULT_DISK=/dev/sda
 TUI=""
 USE_TUI=0
-BACKTITLE="tabby-stack OS installer"
+BACKTITLE="tabby-stack OS installer  (tsos ${SCRIPT_VERSION})"
 
 TARGET="/mnt"
 CRYPT_NAME="$MAPPER_NAME"
