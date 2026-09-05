@@ -549,7 +549,7 @@ class SceneFollow:
         if not self.connected or dest == "down":
             self.phase = str(target.get("phase") or "restarting api")
         elif self.cycle == "boot":
-            self.phase = "imagining"
+            self.phase = "stirring"
         elif self.cycle == "halt":
             self.phase = "settling"
         elif held:
@@ -560,7 +560,7 @@ class SceneFollow:
             self.task_name = self.phase
             self._task_t0 = now
         self.runtime_s = max(0.0, now - self._task_t0) if self._task_t0 else 0.0
-        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "settling"}
+        show_clock = dest == "down" or self.phase not in {"idle", "stirring", "settling"}
         if show_clock:
             clock_s = self.elapsed_s if self.elapsed_s > 0.5 else self.runtime_s
             runtime = _fmt_runtime(clock_s)
@@ -1072,7 +1072,7 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
 
 
 def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
-    """Center bloom + ring: imagining expands, settling contracts. Field stays on."""
+    """Center bloom + ring: stirring expands, settling contracts. Field stays on."""
     cycle = str(scene.get("cycle") or "")
     if cycle not in ("boot", "halt"):
         return

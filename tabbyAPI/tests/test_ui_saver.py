@@ -676,7 +676,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertLess(b["st"] - a["st"], 0.05)
         self.assertLess(abs(b["intensity"] - a["intensity"]), 0.08)
         self.assertEqual(b["cycle"], "boot")
-        self.assertEqual(b["phase"], "imagining")
+        self.assertEqual(b["phase"], "stirring")
         self.assertGreaterEqual(b["overlay"], 0.85)
         self.assertIsNotNone(self.kiosk.neuron_overlay_state(b))
 
