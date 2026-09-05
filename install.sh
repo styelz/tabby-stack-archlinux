@@ -209,9 +209,13 @@ position_indicator_color = (CYAN,BLACK,ON)
 uarrow_color = (CYAN,BLACK,ON)
 darrow_color = (CYAN,BLACK,ON)
 itemhelp_color = (WHITE,BLACK,OFF)
-separator_color = (CYAN,BLACK,OFF)
 EOF
   export DIALOGRC="$f"
+  # A malformed theme must not prevent the installer from opening.
+  if command -v dialog >/dev/null 2>&1 && ! dialog --version >/dev/null 2>&1; then
+    unset DIALOGRC
+    printf 'warning: custom dialog theme was rejected; using the built-in theme\n' >&2
+  fi
 }
 
 ensure_dialog() {

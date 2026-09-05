@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.43"
+SCRIPT_VERSION="1.0.44"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -306,9 +306,14 @@ position_indicator_color = (CYAN,BLACK,ON)
 uarrow_color = (CYAN,BLACK,ON)
 darrow_color = (CYAN,BLACK,ON)
 itemhelp_color = (WHITE,BLACK,OFF)
-separator_color = (CYAN,BLACK,OFF)
 EOF
   export DIALOGRC="$f"
+  # A bad dialogrc makes every widget exit before drawing. Validate it now
+  # and fall back to dialog's built-in theme instead of aborting the installer.
+  if command -v dialog >/dev/null 2>&1 && ! dialog --version >/dev/null 2>&1; then
+    unset DIALOGRC
+    warn "custom dialog theme was rejected; using the built-in theme"
+  fi
 }
 
 ensure_dialog() {
