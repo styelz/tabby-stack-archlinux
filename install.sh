@@ -635,28 +635,47 @@ gauge_step_index() {
   printf '%s' "$best"
 }
 
+# dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
+# \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
+# width; pad from the plain string, then wrap the codes around it.
 gauge_stepper_line() {
   local inner=$1 heading=$2 pct=$3
-  local cur i=0 piece line="" mark short minpct match
+  local ticks=${4:-0} spin=${5:-'>'}
+  local cur i=0 piece vis="" coded="" mark short minpct match chunk
   cur=$(gauge_step_index "$heading" "$pct")
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
       mark="[x]"
+      piece="$mark $short"
+      chunk="\Z2$piece\Zn"
     elif ((i == cur)); then
-      mark="[>]"
+      mark="[${spin}]"
+      piece="$mark $short"
+      if ((ticks % 2 == 0)); then
+        chunk="\Zb\Zr\Z3$piece\Zn"
+      else
+        chunk="\Zb\Z3$piece\Zn"
+      fi
     else
       mark="[ ]"
+      piece="$mark $short"
+      chunk="$piece"
     fi
-    piece="$mark $short"
-    if [[ -n "$line" ]] && ((${#line} + 2 + ${#piece} > inner)); then
+    if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
       break
     fi
-    [[ -n "$line" ]] && line+="  "
-    line+="$piece"
+    if [[ -n "$vis" ]]; then
+      vis+="  "
+      coded+="  "
+    fi
+    vis+="$piece"
+    coded+="$chunk"
     i=$((i + 1))
   done < <(gauge_steps)
-  ui_pad "$line" "$inner"
+  local pad=$((inner - ${#vis}))
+  ((pad < 0)) && pad=0
+  printf '%s%*s' "$coded" "$pad" ''
 }
 
 gauge_status_line() {
@@ -667,24 +686,57 @@ gauge_status_line() {
   right=$(fmt_elapsed "$elapsed")
   room=$((inner - ${#right} - 1))
   ((room < 8)) && room=8
-  printf '%s %s' "$(ui_pad "$left" "$room")" "$right"
+  printf '\Z4%s\Zn \Z6%s\Zn' "$(ui_pad "$left" "$room")" "$right"
 }
 
 gauge_heading_line() {
   local inner=$1 heading=$2 elapsed=$3 spin=$4
-  local right=" ${elapsed}  ${spin}"
-  local room=$((inner - ${#right}))
+  local room=$((inner - ${#elapsed} - 4))
   ((room < 10)) && room=10
-  printf '%s%s' "$(ui_pad "$heading" "$room")" "$right"
+  local htxt="$heading"
+  ((${#htxt} > room)) && htxt=${htxt:0:room}
+  local pad=$((room - ${#htxt}))
+  ((pad < 0)) && pad=0
+  printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
+}
+
+# Recessed well for the live log: black frame, reverse-video interior so
+# it reads as a sunken pane on the white dialog (same idea as the gauge).
+gauge_log_box() {
+  local inner=$1 n=$2
+  local text=${3:-}
+  local box=$((inner - 2))
+  local hline i line
+  ((inner < 4)) && inner=4
+  box=$((inner - 2))
+  ((n < 1)) && n=1
+  hline=$(printf '%*s' "$box" '' | tr ' ' '-')
+  printf '\Z0+%s+\Zn\n' "$hline"
+  i=0
+  while ((i < n)); do
+    line=""
+    if [[ -n "$text" ]]; then
+      if [[ "$text" == *$'\n'* ]]; then
+        line=${text%%$'\n'*}
+        text=${text#*$'\n'}
+      else
+        line=$text
+        text=""
+      fi
+    fi
+    printf '\Z0|\Zr%s|\Zn\n' "$(ui_pad "$line" "$box")"
+    i=$((i + 1))
+  done
+  printf '\Z0+%s+\Zn' "$hline"
 }
 
 gauge_chrome() {
   local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
-  printf '%s\n%s\n%s\n%s\n' \
+  local ticks=${7:-0}
+  printf '%s\n%s\n%s\n' \
     "$(gauge_status_line "$inner" "$total_elapsed")" \
-    "$(gauge_stepper_line "$inner" "$heading" "$pct")" \
-    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")" \
-    "$(printf '%*s' "$inner" '' | tr ' ' '-')"
+    "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
+    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
 }
 
 # Repaint the work dialog so a long pip / pacman / download stays visibly alive.
@@ -703,9 +755,9 @@ watch_progress_ui() {
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch")
+    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch" "$ticks")
     printf 'XXX\n%s\n%s\n%s\nXXX\n' \
-      "$pct" "$body" "$(install_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
+      "$pct" "$body" "$(gauge_log_box "$width" "$lines" "$(install_log_snippet "$lines" "$((width - 2))")")" >&3 2>/dev/null || break
     sleep 0.5
   done
 }
@@ -767,7 +819,8 @@ progress_start() {
     local h w gauge_title log_n
     h=$(gauge_height)
     w=$(gauge_width)
-    log_n=$((h - 10))
+    # Chrome is 3 lines; the log well adds 2 border rows.
+    log_n=$((h - 11))
     ((log_n < 3)) && log_n=3
     gauge_title="Installing tabby-stack"
     [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
@@ -778,7 +831,7 @@ progress_start() {
     printf '%s\n' "Starting..." >"$GAUGE_DIR/heading"
     exec 3<>"$GAUGE_FIFO"
     [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
-    dialog --no-collapse --backtitle "$BACKTITLE" --title "$gauge_title" \
+    dialog --no-collapse --colors --backtitle "$BACKTITLE" --title "$gauge_title" \
       --gauge "Starting..." "$h" "$w" 0 \
       <"$GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
     GAUGE_PID=$!

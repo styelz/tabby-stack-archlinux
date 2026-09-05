@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.48"
+SCRIPT_VERSION="1.0.49"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -548,28 +548,47 @@ gauge_step_index() {
   printf '%s' "$best"
 }
 
+# dialog --colors in the gauge text: \Z2 green, \Z3 yellow, \Z4 blue,
+# \Z6 cyan, \Zb bold, \Zr reverse, \Zn restore. Codes are not visible
+# width; pad from the plain string, then wrap the codes around it.
 gauge_stepper_line() {
   local inner=$1 heading=$2 pct=$3
-  local cur i=0 piece line="" mark short minpct match
+  local ticks=${4:-0} spin=${5:-'>'}
+  local cur i=0 piece vis="" coded="" mark short minpct match chunk
   cur=$(gauge_step_index "$heading" "$pct")
   while IFS='|' read -r minpct short match; do
     [[ -n "$short" ]] || continue
     if ((i < cur)); then
       mark="[x]"
+      piece="$mark $short"
+      chunk="\Z2$piece\Zn"
     elif ((i == cur)); then
-      mark="[>]"
+      mark="[${spin}]"
+      piece="$mark $short"
+      if ((ticks % 2 == 0)); then
+        chunk="\Zb\Zr\Z3$piece\Zn"
+      else
+        chunk="\Zb\Z3$piece\Zn"
+      fi
     else
       mark="[ ]"
+      piece="$mark $short"
+      chunk="$piece"
     fi
-    piece="$mark $short"
-    if [[ -n "$line" ]] && ((${#line} + 2 + ${#piece} > inner)); then
+    if [[ -n "$vis" ]] && ((${#vis} + 2 + ${#piece} > inner)); then
       break
     fi
-    [[ -n "$line" ]] && line+="  "
-    line+="$piece"
+    if [[ -n "$vis" ]]; then
+      vis+="  "
+      coded+="  "
+    fi
+    vis+="$piece"
+    coded+="$chunk"
     i=$((i + 1))
   done < <(gauge_steps)
-  ui_pad "$line" "$inner"
+  local pad=$((inner - ${#vis}))
+  ((pad < 0)) && pad=0
+  printf '%s%*s' "$coded" "$pad" ''
 }
 
 gauge_status_line() {
@@ -581,30 +600,58 @@ gauge_status_line() {
   right=$(fmt_elapsed "$elapsed")
   room=$((inner - ${#right} - 1))
   ((room < 8)) && room=8
-  printf '%s %s' "$(ui_pad "$left" "$room")" "$right"
+  printf '\Z4%s\Zn \Z6%s\Zn' "$(ui_pad "$left" "$room")" "$right"
 }
 
 gauge_heading_line() {
   local inner=$1 heading=$2 elapsed=$3 spin=$4
-  local right=" ${elapsed}  ${spin}"
-  local room=$((inner - ${#right}))
+  local room=$((inner - ${#elapsed} - 4))
   ((room < 10)) && room=10
-  printf '%s%s' "$(ui_pad "$heading" "$room")" "$right"
+  local htxt="$heading"
+  ((${#htxt} > room)) && htxt=${htxt:0:room}
+  local pad=$((room - ${#htxt}))
+  ((pad < 0)) && pad=0
+  printf '\Zb\Z3%s\Zn%*s \Z6%s  \Zb\Z3%s\Zn' "$htxt" "$pad" '' "$elapsed" "$spin"
 }
 
-gauge_rule() {
-  local inner=$1
-  printf '%*s' "$inner" '' | tr ' ' '-'
+# Recessed well for the live log: black frame, reverse-video interior so
+# it reads as a sunken pane on the white dialog (same idea as the gauge).
+gauge_log_box() {
+  local inner=$1 n=$2
+  local text=${3:-}
+  local box=$((inner - 2))
+  local hline i line
+  ((inner < 4)) && inner=4
+  box=$((inner - 2))
+  ((n < 1)) && n=1
+  hline=$(printf '%*s' "$box" '' | tr ' ' '-')
+  printf '\Z0+%s+\Zn\n' "$hline"
+  i=0
+  while ((i < n)); do
+    line=""
+    if [[ -n "$text" ]]; then
+      if [[ "$text" == *$'\n'* ]]; then
+        line=${text%%$'\n'*}
+        text=${text#*$'\n'}
+      else
+        line=$text
+        text=""
+      fi
+    fi
+    printf '\Z0|\Zr%s|\Zn\n' "$(ui_pad "$line" "$box")"
+    i=$((i + 1))
+  done
+  printf '\Z0+%s+\Zn' "$hline"
 }
 
-# Status, step chips, current heading, then the live log under a rule.
+# Status, coloured step chips, current heading; live log is a sunken box.
 gauge_chrome() {
   local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
-  printf '%s\n%s\n%s\n%s\n' \
+  local ticks=${7:-0}
+  printf '%s\n%s\n%s\n' \
     "$(gauge_status_line "$inner" "$total_elapsed")" \
-    "$(gauge_stepper_line "$inner" "$heading" "$pct")" \
-    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")" \
-    "$(gauge_rule "$inner")"
+    "$(gauge_stepper_line "$inner" "$heading" "$pct" "$ticks" "$spin")" \
+    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")"
 }
 
 # Repaints so a long pacstrap / pip / download stays visibly alive.
@@ -627,9 +674,9 @@ watch_installer_ui() {
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch")
+    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch" "$ticks")
     printf 'XXX\n%s\n%s\n%s\nXXX\n' \
-      "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" || break
+      "$pct" "$body" "$(gauge_log_box "$width" "$lines" "$(tsos_log_snippet "$lines" "$((width - 2))")")" || break
     sleep 0.5
   done
 }
@@ -700,14 +747,15 @@ run_with_gauge() {
     [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
     h=$(gauge_height)
     w=$(gauge_width)
-    log_n=$((h - 10))
+    # Chrome is 3 lines; the log well adds 2 border rows.
+    log_n=$((h - 11))
     ((log_n < 3)) && log_n=3
     printf '\033[H\033[J' >/dev/tty 2>/dev/null || true
     set +e
     (
       set +e
       watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
-    ) | dialog --no-collapse \
+    ) | dialog --no-collapse --colors \
       --backtitle "$BACKTITLE" \
       --title "Installing" \
       --gauge "Starting the install..." "$h" "$w" 0 >&4 2>&5
@@ -2456,14 +2504,25 @@ self_test() {
   local stepper
   stepper=$(gauge_stepper_line 70 "Installing Arch packages" 22)
   case "$stepper" in
-    *'[x] Disk'*'[>] Arch'*'[ ] App'*) printf 'ok   stepper chips\n' ;;
+    *"\Z2"*'[x] Disk'*"\Z3"*'[>] Arch'*'[ ] App'*) printf 'ok   stepper chips\n' ;;
     *) printf 'FAIL stepper chips: %q\n' "$stepper" >&2; failed=1 ;;
+  esac
+  stepper=$(gauge_stepper_line 70 "Installing Arch packages" 22 3 '|')
+  case "$stepper" in
+    *'[x] Disk'*'[|] Arch'*'[ ] App'*) printf 'ok   stepper spin\n' ;;
+    *) printf 'FAIL stepper spin: %q\n' "$stepper" >&2; failed=1 ;;
   esac
   local chrome
   chrome=$(gauge_chrome "Installing Arch packages" 22 70 5 90 '|')
   case "$chrome" in
-    *'/dev/sda'*'studio'*'[>] Arch'*'Installing Arch packages'*) printf 'ok   gauge chrome\n' ;;
+    *'/dev/sda'*'studio'*'[|] Arch'*'Installing Arch packages'*) printf 'ok   gauge chrome\n' ;;
     *) printf 'FAIL gauge chrome: %q\n' "$chrome" >&2; failed=1 ;;
+  esac
+  local box
+  box=$(gauge_log_box 20 2 $'hello\nworld')
+  case "$box" in
+    *"\Z0+"*"\Zrhello"*"\Zrworld"*"\Z0+"*) printf 'ok   log box\n' ;;
+    *) printf 'FAIL log box: %q\n' "$box" >&2; failed=1 ;;
   esac
   TSOS_GAUGE_DIR=""
   TSOS_SAVED_FD=""
