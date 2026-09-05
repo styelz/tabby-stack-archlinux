@@ -123,7 +123,6 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         blob = repr(payload)
         self.assertNotIn("alice", blob)
         self.assertNotIn("secret", blob)
-        self.assertNotIn("hack", blob)
         self.assertNotIn("abc123", blob)
         self.assertNotIn("example.invalid", blob)
         self.assertEqual(payload["gpu_mode"], "llm")
@@ -142,7 +141,7 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["image_n"], None)
         self.assertEqual(payload["image_of"], None)
         self.assertEqual(payload["image_file"], "")
-        self.assertEqual(payload["image_what"], "")
+        self.assertEqual(payload["image_what"], "how do I hack")
         for key in ("occupant", "prompt", "chat_id", "user", "hint", "job", "stack_queue"):
             self.assertNotIn(key, payload)
 
@@ -419,6 +418,10 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertAlmostEqual(alpha(306.0), 0.5)
         self.assertEqual(alpha(312.0), 0.0)
         self.assertEqual(alpha(400.0), 0.0)
+        self.assertEqual(alpha(0.0, hold_s=0), 0.0)
+        self.assertEqual(alpha(12.0, hold_s=0), 0.0)
+        self.assertEqual(alpha(5.0, hold_s=60), 1.0)
+        self.assertEqual(alpha(72.0, hold_s=60), 0.0)
 
     def test_hud_idle_hidden_after_fade_draws_nothing(self):
         idle = self.kiosk.scene_from_state(
@@ -460,6 +463,18 @@ class SaverKioskSceneTests(unittest.TestCase):
         follow.wake_idle_hud(10.0 + 320.0)
         woken = follow.tick(idle, 0.04, 10.0 + 320.04)
         self.assertEqual(woken["hud_alpha"], 1.0)
+
+    def test_hud_timeout_zero_stays_hidden(self):
+        follow = self.kiosk.SceneFollow(hud_hold_s=0)
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        shown = follow.tick(idle, 0.04, 10.0)
+        self.assertEqual(shown["hud_alpha"], 0.0)
+        follow.wake_idle_hud(10.0)
+        woken = follow.tick(idle, 0.04, 10.04)
+        self.assertEqual(woken["hud_alpha"], 0.0)
 
     def test_hud_only_when_live(self):
         idle = self.kiosk.scene_from_state(
@@ -839,6 +854,10 @@ class SaverKioskSceneTests(unittest.TestCase):
             action(click, pygame, False, idle_quiet=True, hud_alpha=0.0),
             "dismiss",
         )
+        self.assertEqual(
+            action(mouse, pygame, False, idle_quiet=True, hud_alpha=0.0, hud_hold_s=0),
+            "dismiss",
+        )
 
     def test_peek_grace_covers_one_second_of_motion(self):
         self.assertEqual(self.kiosk.apply_peek_grace(0.0, 10.0), 11.0)
@@ -848,6 +867,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         args = self.kiosk.parse_args([])
         self.assertEqual(args.idle, 120.0)
         self.assertEqual(args.logout_idle, 10.0)
+        self.assertEqual(args.hud_idle, 300.0)
         self.assertEqual(args.poll, 0.1)
         self.assertEqual(args.width, 480)
         self.assertEqual(args.height, 270)
@@ -873,10 +893,12 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertIn("Thinking", text)
 
     def test_hud_type_is_large_with_a_halo(self):
-        large, small = self.kiosk.hud_font_sizes(1080)
+        large, small, info = self.kiosk.hud_font_sizes(1080)
         self.assertGreaterEqual(large, 60)
-        self.assertGreaterEqual(small, 44)
+        self.assertGreaterEqual(small, 26)
+        self.assertGreaterEqual(info, 20)
         self.assertGreater(large, small)
+        self.assertGreater(small, info)
         halo = self.kiosk.hud_halo_offsets(3)
         self.assertGreaterEqual(len(halo), 8)
         self.assertNotIn((0, 0), halo)
@@ -908,6 +930,38 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertIn("images/logo.png", text)
         self.assertIn("a cafe logo", text)
         self.assertIn("1/2", text)
+
+    def test_hud_shows_chat_prompt(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "profile": "qwen",
+                "stage": "decode",
+                "image_what": "explain the occupancy queue",
+            },
+            True,
+        )
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertIn("explain the occupancy queue", text)
+        self.assertIn("Thinking", text)
+
+    def test_hud_wraps_long_task(self):
+        class WideFont(_FakeFont):
+            def size(self, text: str) -> tuple[int, int]:
+                return (len(text) * 20, 16)
+
+        lines = self.kiosk._hud_wrap(
+            WideFont(),
+            "one two three four five six seven eight nine ten",
+            80,
+            4,
+        )
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertLessEqual(len(lines), 4)
 
     def test_hud_restarting_shows_clock_and_api_down(self):
         scene = self.kiosk.scene_from_state(
@@ -1123,7 +1177,35 @@ class SaverComposeTests(unittest.TestCase):
         )
         self.assertEqual(weather["stage"], "decode")
         self.assertEqual(weather["tokens"], len("hello world"))
-        self.assertNotIn("hello", repr(weather))
+        self.assertEqual(weather["image_what"], "")
+
+    def test_chat_prompt_from_queue_and_flight(self):
+        from_queue = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "chat", "prompt": "explain the occupancy queue"},
+            decode={"tokens": 4, "stage": "decode"},
+            job=None,
+            flights=[],
+        )
+        self.assertEqual(from_queue["image_what"], "explain the occupancy queue")
+        flight = SimpleNamespace(
+            done=False,
+            assembled="x",
+            reasoning="",
+            kind="chat",
+            steps=[],
+            prompt="rewrite the screensaver hud",
+        )
+        from_flight = saver._compose_weather(
+            switching=False,
+            restarting=False,
+            queue={"busy": True, "kind": "code"},
+            decode={"tokens": 0, "stage": "idle"},
+            job=None,
+            flights=[flight],
+        )
+        self.assertEqual(from_flight["image_what"], "rewrite the screensaver hud")
 
     def test_tool_step_without_result(self):
         flight = SimpleNamespace(

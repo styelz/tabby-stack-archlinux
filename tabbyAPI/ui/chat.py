@@ -309,7 +309,9 @@ async def run_console_chat(request: Request, body: dict[str, Any], username: str
         return switched
 
     kind = "code" if code else "chat"
-    gate = StackGate(username, kind=kind, chat_id=conversation_id)
+    gate = StackGate(
+        username, kind=kind, chat_id=conversation_id, prompt=last_user_text(data)
+    )
     if data.stream:
         flight = ConsoleFlight(
             username, conversation_id, kind, last_user_text(data), agent=agent

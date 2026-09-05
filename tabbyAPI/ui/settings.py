@@ -113,6 +113,15 @@ SAVER_FIELDS = (
         "optional": False,
         "default": 10,
     },
+    {
+        "name": "hud_timeout",
+        "env": "TABBY_SAVER_HUD_S",
+        "label": "Idle text (seconds)",
+        "description": "Seconds the clock and labels stay on the idle field. 0 hides them. Mouse motion shows them again after they fade.",
+        "kind": "int",
+        "optional": False,
+        "default": 300,
+    },
 )
 
 SAVER_ALIASES = {
@@ -124,6 +133,13 @@ SAVER_ALIASES = {
     "logout_timeout": "logout_timeout",
     "logout_idle": "logout_timeout",
     "logout-idle": "logout_timeout",
+    "hud_timeout": "hud_timeout",
+    "hud-timeout": "hud_timeout",
+    "hud": "hud_timeout",
+    "hud_s": "hud_timeout",
+    "hud-idle": "hud_timeout",
+    "idle-text": "hud_timeout",
+    "idle_text": "hud_timeout",
     "enabled": "enabled",
     "enable": "enabled",
 }

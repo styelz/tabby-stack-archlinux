@@ -39,7 +39,7 @@ class ScreensaverSettingsTests(unittest.TestCase):
         data = settings.load_settings()
         self.assertIn("screensaver", data)
         names = [field["name"] for field in data["screensaver"]["fields"]]
-        self.assertEqual(names, ["enabled", "timeout", "logout_timeout"])
+        self.assertEqual(names, ["enabled", "timeout", "logout_timeout", "hud_timeout"])
 
     def test_screensaver_save_writes_env(self):
         import tempfile
@@ -51,17 +51,26 @@ class ScreensaverSettingsTests(unittest.TestCase):
                 with mock.patch.object(settings, "apply_saver_unit", return_value="") as apply_unit:
                     with mock.patch.object(settings, "_reload_live"):
                         settings.save_settings(
-                            {"screensaver": {"timeout": 90, "logout_timeout": 8}}
+                            {
+                                "screensaver": {
+                                    "timeout": 90,
+                                    "logout_timeout": 8,
+                                    "hud_timeout": 0,
+                                }
+                            }
                         )
             text = env.read_text(encoding="utf-8")
             self.assertIn("TABBY_SAVER_IDLE_S=90", text)
             self.assertIn("TABBY_SAVER_LOGOUT_IDLE_S=8", text)
+            self.assertIn("TABBY_SAVER_HUD_S=0", text)
             apply_unit.assert_called()
 
     def test_normalize_saver_aliases(self):
         self.assertEqual(settings.normalize_saver_key("timeout"), "timeout")
         self.assertEqual(settings.normalize_saver_key("logout-timeout"), "logout_timeout")
         self.assertEqual(settings.normalize_saver_key("TABBY_SAVER_IDLE_S"), "timeout")
+        self.assertEqual(settings.normalize_saver_key("hud-timeout"), "hud_timeout")
+        self.assertEqual(settings.normalize_saver_key("TABBY_SAVER_HUD_S"), "hud_timeout")
 
 
 class SettingsJsTests(unittest.TestCase):

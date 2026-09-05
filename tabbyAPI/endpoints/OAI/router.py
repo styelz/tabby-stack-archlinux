@@ -24,7 +24,7 @@ from endpoints.OAI.types.embedding import EmbeddingsRequest, EmbeddingsResponse
 from common.agent_loop import inject_loop_break, inject_zero_change_hint
 from common.gpu_mode import public_api_base
 from common.pasted_images import latest_turn_image, materialize_pasted_images
-from common.phrase_switch import handle_if_requested, inject_clipboard_save_hint
+from common.phrase_switch import handle_if_requested, inject_clipboard_save_hint, last_user_text
 from endpoints.OAI.utils.common_ import load_inline_model
 from endpoints.OAI.utils.pipeline import load_lock, run_chat_completion_turn
 from endpoints.OAI.utils.completion import (
@@ -132,7 +132,11 @@ async def chat_completion_request(
     disconnect_handler = DisconnectHandler(request, "/v1/chat/completions")
     from ui.occupancy import StackGate, stream_and_release
 
-    gate = StackGate(str(getattr(data, "user", None) or "api"), kind="chat")
+    gate = StackGate(
+        str(getattr(data, "user", None) or "api"),
+        kind="chat",
+        prompt=last_user_text(data),
+    )
     # On the streaming path the returned generator owns the lease, so this
     # request must not release it on the way out.
     handed_off = False

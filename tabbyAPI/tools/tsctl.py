@@ -34,6 +34,7 @@ tsctl — tabby-stack settings
   tsctl <section> <key>=<value>
   tsctl <section> <key> <value>
   tsctl screensaver enable|disable|status
+  tsctl screensaver hud-timeout=300   idle clock seconds; 0 hides it
   tsctl gpu                     settings plus live sensors
   tsctl gpu status              temperature, fan, power
   tsctl gpu auto|quiet|balanced|performance|custom

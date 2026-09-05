@@ -1,6 +1,7 @@
 """Localhost-only snapshot for the TTY kiosk screensaver.
 
-The payload is GPU/occupancy weather only: no prompts, usernames, or chat ids.
+No usernames or chat ids. The current Comfy prompt or LLM ask is included
+as image_what for the idle-field HUD.
 """
 
 from __future__ import annotations
@@ -159,7 +160,8 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
         "image_n": _optional_int(raw.get("image_n")),
         "image_of": _optional_int(raw.get("image_of")),
         "image_file": _safe_image_file(raw.get("image_file")),
-        "image_what": _safe_image_what(raw.get("image_what")),
+        "image_what": _safe_image_what(raw.get("image_what"))
+        or _safe_image_what(queue.get("prompt")),
         "waiters": _int_ge0(
             raw.get("waiters") if raw.get("waiters") is not None else queue.get("waiters")
         ),
@@ -184,8 +186,18 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _flight_prompt(flights: list[Any]) -> str:
+    for flight in flights:
+        if getattr(flight, "done", False):
+            continue
+        text = str(getattr(flight, "prompt", "") or "").strip()
+        if text:
+            return _safe_image_what(text)
+    return ""
+
+
 def _flight_weather(flights: list[Any]) -> tuple[int, str]:
-    """Character counts only — never the assembled text."""
+    """Character counts from assembled output — not the text itself."""
     for flight in flights:
         if getattr(flight, "done", False):
             continue
@@ -225,12 +237,12 @@ def _safe_image_file(raw: Any) -> str:
 
 
 def _safe_image_what(raw: Any) -> str:
-    """Short prompt for the wall. No newlines; cap length."""
+    """Task / prompt for the wall. No newlines; cap length."""
     text = " ".join(str(raw or "").split())
     if not text:
         return ""
-    if len(text) > 56:
-        text = text[:53].rstrip() + "..."
+    if len(text) > 360:
+        text = text[:357].rstrip() + "..."
     return text
 
 
@@ -304,6 +316,8 @@ def _compose_weather(
     flights: list[Any],
 ) -> dict[str, Any]:
     image_n, image_of, image_phase, image_file, image_what = _image_progress(job)
+    if not image_what:
+        image_what = _safe_image_what(queue.get("prompt")) or _flight_prompt(flights)
     tokens = 0
     stage = "idle"
     kind = queue.get("kind")
@@ -378,7 +392,7 @@ def _lock_age_s() -> int:
 async def saver_state() -> dict[str, Any]:
     """Occupancy weather only — never wait on nvidia-smi or HealthManager.
 
-    The kiosk needs to see a prompt the moment StackGate is taken. Full
+    The kiosk needs to see thinking the moment StackGate is taken. Full
     stack_status blocks the event loop on nvidia-smi (up to 5s), which is why
     the field used to sit idle for several seconds after a chat started.
     """

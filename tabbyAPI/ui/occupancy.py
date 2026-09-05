@@ -37,6 +37,7 @@ class Occupant:
     started_at: float
     kind: str = "chat"
     chat_id: str = ""
+    prompt: str = ""
     task: Optional[asyncio.Task] = None
 
 
@@ -47,6 +48,7 @@ class Waiter:
     queued_at: float
     kind: str = "chat"
     chat_id: str = ""
+    prompt: str = ""
 
 
 def _image_job():
@@ -182,6 +184,17 @@ def snapshot(username: str = "") -> dict[str, Any]:
         chat_id = str(info.get("chat_id") or chat_id or "")
         prompt = str(info.get("prompt") or "")
         kind = str(info.get("kind") or kind or "") or kind
+    if not prompt:
+        mine_holder = bool(occupant and who and occupant.username == who)
+        wall = not who
+        if occupant is not None and (mine_holder or wall):
+            prompt = str(occupant.prompt or "")
+        if not prompt and wall:
+            for flight in live_flights:
+                text = str(getattr(flight, "prompt", "") or "").strip()
+                if text:
+                    prompt = text
+                    break
     return {
         "busy": busy,
         "queued": queued,
@@ -251,7 +264,7 @@ def queue_comment(info: Optional[dict[str, Any]] = None) -> str:
 
 
 async def try_acquire(
-    username: str, *, kind: str = "chat", chat_id: str = ""
+    username: str, *, kind: str = "chat", chat_id: str = "", prompt: str = ""
 ) -> Optional[str]:
     """Take the slot if nothing else is waiting or running."""
     global _occupant
@@ -265,13 +278,16 @@ async def try_acquire(
             started_at=time.time(),
             kind=kind,
             chat_id=chat_id or "",
+            prompt=str(prompt or "").strip(),
             task=asyncio.current_task(),
         )
         _occupant = occupant
         return occupant.id
 
 
-async def enqueue(username: str, *, kind: str = "chat", chat_id: str = "") -> Waiter:
+async def enqueue(
+    username: str, *, kind: str = "chat", chat_id: str = "", prompt: str = ""
+) -> Waiter:
     async with _cond:
         waiter = Waiter(
             id=uuid4().hex,
@@ -279,6 +295,7 @@ async def enqueue(username: str, *, kind: str = "chat", chat_id: str = "") -> Wa
             queued_at=time.time(),
             kind=kind,
             chat_id=chat_id or "",
+            prompt=str(prompt or "").strip(),
         )
         _waiters.append(waiter)
         return waiter
@@ -301,6 +318,7 @@ async def promote(waiter: Waiter) -> Optional[str]:
             started_at=time.time(),
             kind=waiter.kind,
             chat_id=waiter.chat_id,
+            prompt=str(waiter.prompt or ""),
             task=asyncio.current_task(),
         )
         _occupant = occupant
@@ -349,10 +367,13 @@ def reset_for_tests() -> None:
 class StackGate:
     """One UI chat or GPU request: take the GPU slot or wait in line."""
 
-    def __init__(self, username: str, *, kind: str = "chat", chat_id: str = ""):
+    def __init__(
+        self, username: str, *, kind: str = "chat", chat_id: str = "", prompt: str = ""
+    ):
         self.username = username or ""
         self.kind = kind
         self.chat_id = chat_id or ""
+        self.prompt = str(prompt or "").strip()
         self.occupant_id: Optional[str] = None
         self.waiter: Optional[Waiter] = None
 
@@ -362,12 +383,12 @@ class StackGate:
             return None
         if self.waiter is None:
             self.occupant_id = await try_acquire(
-                self.username, kind=self.kind, chat_id=self.chat_id
+                self.username, kind=self.kind, chat_id=self.chat_id, prompt=self.prompt
             )
             if self.occupant_id:
                 return None
             self.waiter = await enqueue(
-                self.username, kind=self.kind, chat_id=self.chat_id
+                self.username, kind=self.kind, chat_id=self.chat_id, prompt=self.prompt
             )
         await disconnect_handler.poll()
         occupant_id = await promote(self.waiter)

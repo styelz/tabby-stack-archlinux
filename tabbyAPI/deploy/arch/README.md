@@ -144,14 +144,15 @@ A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal
 tsctl screensaver enable
 tsctl screensaver timeout=120
 tsctl screensaver logout-timeout=10
+tsctl screensaver hud-timeout=300
 tsctl screensaver status
 # or: Settings → Screensaver in /v1/ui
 ```
 
-- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field while the idle clock is up; after **5 minutes** idle the clock and labels fade out (mouse motion brings them back for another 5 minutes, with 1 second before dismiss is armed again). **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts the field again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`).
+- Runs on **tty8** by default so **tty1** stays a login prompt. A key or mouse drops the field while the idle clock is up; after the idle-text timeout (default **5 minutes**) the clock and labels fade out (mouse motion brings them back for that same hold, with 1 second before dismiss is armed again). **0** hides the idle text. **2 minutes** idle while logged in, or **10 seconds** after logout / at getty, starts the field again. Timeouts live in `tabby.env` (`TABBY_SAVER_IDLE_S`, `TABBY_SAVER_LOGOUT_IDLE_S`, `TABBY_SAVER_HUD_S`).
 - Needs `python-pygame`, `python-numpy`, `nvidia-drm.modeset=1`, and a connector on `/dev/dri/card*`.
 - Software SDL only (`SDL_VIDEODRIVER=kmsdrm`, `SDL_RENDER_DRIVER=software`) so it does not steal LLM VRAM.
-- Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no prompts or usernames.
+- Feed: `GET http://127.0.0.1:5000/v1/ui/saver/state` — localhost only; no usernames. The current LLM ask or Comfy prompt is included for the HUD.
 - Windowed probe: `/usr/bin/python "$HOME/tabby-stack/tabbyAPI/deploy/arch/tabby-saver.py" --window`
 - Stop: `tsctl screensaver disable`
 

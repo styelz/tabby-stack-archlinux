@@ -100,7 +100,7 @@ class ConsoleFlight:
         self.chat_id = str(chat_id or "").strip()
         self.kind = str(kind or "chat")
         self.agent = str(agent or "").strip()
-        self.prompt = str(prompt or "").replace("\n", " ").strip()[:200]
+        self.prompt = str(prompt or "").replace("\n", " ").strip()[:360]
         self.started_at = time.time()
         self.abort_event = asyncio.Event()
         self.chunks: list[bytes] = []

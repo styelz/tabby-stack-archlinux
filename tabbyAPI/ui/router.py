@@ -241,7 +241,7 @@ async def ui_status(request: Request, _user: str = Depends(require_ui_user)):
 
 @router.get("/saver/state", include_in_schema=False)
 async def ui_saver_state(request: Request):
-    """Kiosk feed: loopback only, no session, no prompts or usernames."""
+    """Kiosk feed: loopback only, no session, no usernames."""
     from ui.saver import require_loopback, saver_state
 
     require_loopback(request)

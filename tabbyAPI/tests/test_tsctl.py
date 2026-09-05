@@ -33,6 +33,7 @@ class TsctlTests(unittest.TestCase):
                     {"name": "enabled", "kind": "bool", "value": False},
                     {"name": "timeout", "kind": "int", "value": 120},
                     {"name": "logout_timeout", "kind": "int", "value": 10},
+                    {"name": "hud_timeout", "kind": "int", "value": 300},
                 ],
             },
             "system": {"name": "system", "fields": []},

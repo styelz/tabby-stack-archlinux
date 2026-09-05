@@ -171,10 +171,15 @@ def idle_hud_alpha(
     hold_s: float = HUD_IDLE_HOLD_S,
     fade_s: float = HUD_IDLE_FADE_S,
 ) -> float:
-    """1 while the idle clock is up, then linear fade to 0 after hold_s."""
+    """1 while the idle clock is up, then linear fade to 0 after hold_s.
+
+    hold_s of 0 hides the idle text (no clock, no peek).
+    """
     s = max(0.0, float(idle_s or 0.0))
     hold = max(0.0, float(hold_s))
     fade = max(0.0, float(fade_s))
+    if hold <= 0.0:
+        return 0.0
     if s <= hold:
         return 1.0
     if fade <= 0.0:
@@ -357,7 +362,8 @@ class SceneFollow:
     _HALT_S = 5.0
     _TAU_S = 2.4
 
-    def __init__(self) -> None:
+    def __init__(self, hud_hold_s: float = HUD_IDLE_HOLD_S) -> None:
+        self.hud_hold_s = max(0.0, float(hud_hold_s))
         self.intensity = 0.52
         self.speed = 0.34
         self.heat = 0.18
@@ -533,7 +539,11 @@ class SceneFollow:
             self._idle_t0 = 0.0
             self.idle_s = 0.0
         self.idle_fact = pick_idle_fact(idle_fact_lines(load_idle_times(), self.idle_s), wall)
-        hud_alpha = idle_hud_alpha(self.idle_s) if self.cycle == "idle" and not held else 1.0
+        hud_alpha = (
+            idle_hud_alpha(self.idle_s, hold_s=self.hud_hold_s)
+            if self.cycle == "idle" and not held
+            else 1.0
+        )
         if not self.connected or dest == "down":
             self.phase = str(target.get("phase") or "restarting api")
         elif self.cycle == "boot":
@@ -593,6 +603,7 @@ class SceneFollow:
             "date": self.date,
             "idle_fact": self.idle_fact,
             "hud_alpha": hud_alpha,
+            "hud_hold_s": self.hud_hold_s,
         }
 
 
@@ -1764,10 +1775,14 @@ HUD_WHISPER_SLOT = "VRAM 100%   100°C"
 HUD_STATS_SLOT = "GPU 100%   VRAM 100%   100°C"
 
 
-def hud_font_sizes(height: int) -> tuple[int, int]:
-    """pygame.Font sizes. 64/48 at 1080p, not smaller than 48/36."""
+def hud_font_sizes(height: int) -> tuple[int, int, int]:
+    """pygame.Font sizes at 1080p: phase 60, chrome 32, info 22."""
     h = max(1, int(height or 0))
-    return max(48, round(h * 64 / 1080)), max(36, round(h * 48 / 1080))
+    return (
+        max(48, round(h * 60 / 1080)),
+        max(26, round(h * 32 / 1080)),
+        max(20, round(h * 22 / 1080)),
+    )
 
 
 def hud_anchor_center(face: Any, template: str, width: int, pad: int) -> int:
@@ -1857,7 +1872,43 @@ def _hud_fit(face: Any, text: str, max_w: int) -> str:
     return (keep + ell) if keep else ell
 
 
-def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
+def _hud_wrap(face: Any, text: str, max_w: int, max_lines: int = 6) -> list[str]:
+    raw = " ".join(str(text or "").split())
+    if not raw or max_w <= 0 or max_lines <= 0:
+        return []
+    if face.size(raw)[0] <= max_w:
+        return [raw]
+    words = raw.split(" ")
+    lines: list[str] = []
+    cur = ""
+    idx = 0
+    while idx < len(words) and len(lines) < max_lines:
+        word = words[idx]
+        trial = word if not cur else f"{cur} {word}"
+        if face.size(trial)[0] <= max_w:
+            cur = trial
+            idx += 1
+            continue
+        if cur:
+            last = len(lines) == max_lines - 1
+            rest = " ".join([cur] + words[idx:])
+            lines.append(_hud_fit(face, rest, max_w) if last else cur)
+            cur = ""
+            if last:
+                break
+            continue
+        lines.append(_hud_fit(face, word, max_w))
+        idx += 1
+    if cur and len(lines) < max_lines:
+        last = len(lines) == max_lines - 1
+        rest = " ".join([cur] + words[idx:])
+        lines.append(_hud_fit(face, rest, max_w) if last else cur)
+    return [line for line in lines if line]
+
+
+def draw_hud(
+    screen: Any, font, small, scene: dict[str, Any], info: Any | None = None
+) -> None:
     cycle = str(scene.get("cycle") or "")
     down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
     active = bool(scene.get("live")) or cycle in ("boot", "halt")
@@ -1873,14 +1924,22 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     pad = max(32, int(round(h * 32 / 1080)))
     main_h = font.size("Ag")[1]
     small_h = small.size("Ag")[1]
+    info_font = info or small
+    info_h = info_font.size("Ag")[1]
     gap = max(6, int(round(h * 8 / 1080)))
     fade_amt = 1.0
 
-    def blit(text: str, pos: tuple[int, int], color, use_small: bool = False) -> None:
-        face = small if use_small else font
+    def blit(
+        text: str,
+        pos: tuple[int, int],
+        color,
+        use_small: bool = False,
+        face: Any | None = None,
+    ) -> None:
+        used = face or (small if use_small else font)
         x, y = pos
-        img = face.render(text, True, shadow)
-        fg = face.render(text, True, color)
+        img = used.render(text, True, shadow)
+        fg = used.render(text, True, color)
         if fade_amt < 0.999:
             layer = _hud_fade_layer(fg, img, halo, 3)
             if layer is not None:
@@ -1897,7 +1956,12 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         try:
             hud_alpha = float(scene.get("hud_alpha"))
         except (TypeError, ValueError):
-            hud_alpha = idle_hud_alpha(float(scene.get("idle_s") or 0.0))
+            hold_raw = scene.get("hud_hold_s")
+            try:
+                hold_s = HUD_IDLE_HOLD_S if hold_raw is None else float(hold_raw)
+            except (TypeError, ValueError):
+                hold_s = HUD_IDLE_HOLD_S
+            hud_alpha = idle_hud_alpha(float(scene.get("idle_s") or 0.0), hold_s=hold_s)
         if hud_alpha <= HUD_IDLE_HIDE_ALPHA:
             return
         fade_amt = hud_alpha
@@ -1984,21 +2048,23 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     blit(mode, (hud_anchor_right(small, mode, w - pad), pad + 4), ACCENT, use_small=True)
     if clock:
         blit(clock, (hud_anchor_right(small, HUD_CLOCK_SLOT, w - pad), pad + 4 + small_h + gap), MUTED, use_small=True)
-    extras = [line for line in (dest, what, note, tok_line, wait_line) if line]
+    extras: list[tuple[str, Any, Any]] = []
+    if dest:
+        extras.append((dest, TEXT, info_font))
+    for line in _hud_wrap(info_font, what, max_left, 6):
+        extras.append((line, MUTED, info_font))
+    if note:
+        extras.append((hud_caption(note), MUTED, info_font))
+    if tok_line:
+        extras.append((tok_line, MUTED, info_font))
+    if wait_line:
+        extras.append((wait_line, MUTED, info_font))
     y = h - pad - main_h
     if extras:
-        y -= len(extras) * (small_h + gap)
-    for line, color in (
-        (dest, TEXT),
-        (what, MUTED),
-        (note and hud_caption(note), MUTED),
-        (tok_line, MUTED),
-        (wait_line, MUTED),
-    ):
-        if not line:
-            continue
-        blit(_hud_fit(small, line, max_left), (pad, y), color, use_small=True)
-        y += small_h + gap
+        y -= sum((info_h if item[2] is info_font else small_h) + gap for item in extras)
+    for line, color, face in extras:
+        blit(_hud_fit(face, line, max_left), (pad, y), color, face=face)
+        y += (info_h if face is info_font else small_h) + gap
     blit(hud_caption(phase), (pad, h - pad - main_h), phase_color)
     if stats:
         blit(stats, (hud_anchor_right(small, HUD_STATS_SLOT, w - pad), h - pad - small_h), MUTED, use_small=True)
@@ -2109,11 +2175,13 @@ def field_input_action(
     *,
     idle_quiet: bool = False,
     hud_alpha: float = 1.0,
+    hud_hold_s: float = HUD_IDLE_HOLD_S,
 ) -> str | None:
     """Peek the idle clock on mouse move when it has faded; otherwise dismiss."""
     if (
         not windowed
         and idle_quiet
+        and float(hud_hold_s) > 0.0
         and hud_alpha <= HUD_IDLE_HIDE_ALPHA
         and event.type == getattr(pygame_mod, "MOUSEMOTION", None)
     ):
@@ -2237,6 +2305,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Seconds without input after logout / at the login prompt (default 10)",
     )
     parser.add_argument(
+        "--hud-idle",
+        type=float,
+        default=float(os.environ.get("TABBY_SAVER_HUD_S", str(int(HUD_IDLE_HOLD_S)))),
+        help="Seconds the idle clock stays up; 0 hides it (default 300)",
+    )
+    parser.add_argument(
         "--user-tty",
         default=os.environ.get("TABBY_SAVER_USER_TTY", "tty1"),
         help="Login/getty TTY to show when the saver dismisses",
@@ -2311,7 +2385,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
         pass
     pygame.event.clear()
     font_h = -1
-    font = small = None
+    font = small = info = None
     clock = pygame.time.Clock()
     prev = time.monotonic()
     grace_until = prev if args.window else prev + 0.6
@@ -2332,6 +2406,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
                     args.window,
                     idle_quiet=quiet,
                     hud_alpha=hud_alpha,
+                    hud_hold_s=follow.hud_hold_s,
                 )
                 if action == "quit":
                     return "quit"
@@ -2353,12 +2428,13 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             draw_neurons(pygame, screen, scene)
             draw_cycle_fx(pygame, screen, scene)
             height = screen.get_size()[1]
-            if height != font_h or font is None or small is None:
-                large_n, small_n = hud_font_sizes(height)
+            if height != font_h or font is None or small is None or info is None:
+                large_n, small_n, info_n = hud_font_sizes(height)
                 font = pygame.font.Font(None, large_n)
                 small = pygame.font.Font(None, small_n)
+                info = pygame.font.Font(None, info_n)
                 font_h = height
-            draw_hud(screen, font, small, scene)
+            draw_hud(screen, font, small, scene, info)
             pygame.display.flip()
             clock.tick(max(8, min(30, args.fps)))
     finally:
@@ -2371,7 +2447,7 @@ def main(argv: list[str] | None = None) -> int:
     bus = StateBus()
     thread = threading.Thread(target=bus.run, args=(url, max(0.08, args.poll)), daemon=True)
     thread.start()
-    follow = SceneFollow()
+    follow = SceneFollow(hud_hold_s=args.hud_idle)
     watch: InputWatch | None = None
     try:
         if args.window:
