@@ -34,6 +34,9 @@ OK = (61, 214, 140)
 NAVY = (18, 24, 38)
 AMBER_DIM = (48, 34, 12)
 GREEN_DIM = (12, 42, 32)
+DOWN = (48, 10, 14)
+DOWN_HOT = (168, 36, 42)
+DOWN_TEXT = (232, 96, 90)
 
 VT_ACTIVATE = 0x5606
 VT_WAITACTIVE = 0x5607
@@ -96,6 +99,7 @@ PALETTES = {
     ),
     "image": _palette([(0.0, BG), (0.38, AMBER_DIM), (1.0, WARN)]),
     "switch": _palette([(0.0, BG), (0.4, GREEN_DIM), (1.0, OK)]),
+    "down": _palette([(0.0, (8, 4, 6)), (0.42, DOWN), (1.0, DOWN_HOT)]),
 }
 
 
@@ -124,6 +128,15 @@ def _chat_hue_rate(speed: float, token_rate: float, chatty: bool) -> float:
     if not chatty:
         return 0.004
     return 0.016 + 0.030 * max(0.0, speed) + min(0.038, max(0.0, token_rate) * 0.0015)
+
+
+def _fmt_runtime(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -207,6 +220,10 @@ class SceneFollow:
         self.image_of = 0.0
         self.image_file = ""
         self.image_what = ""
+        self.note = ""
+        self.task_name = ""
+        self._task_t0 = 0.0
+        self.runtime_s = 0.0
 
     def _hold_live(self, want: bool, now: float) -> bool:
         if want:
@@ -279,10 +296,15 @@ class SceneFollow:
         dest = str(target.get("palette") or "idle")
         if dest not in self.weights:
             dest = "idle"
-        blend_tau = 0.12 if (want_live or held) else 1.8
-        for name in self.weights:
-            goal = 1.0 if name == dest else 0.0
-            self.weights[name] = _exp_approach(self.weights[name], goal, dt, blend_tau)
+        down = dest == "down" or not bool(target.get("connected"))
+        if dest == "down":
+            for name in self.weights:
+                self.weights[name] = 1.0 if name == dest else 0.0
+        else:
+            blend_tau = 0.12 if (want_live or held) else 1.8
+            for name in self.weights:
+                goal = 1.0 if name == dest else 0.0
+                self.weights[name] = _exp_approach(self.weights[name], goal, dt, blend_tau)
         self.palette = max(self.weights, key=lambda name: self.weights[name])
         self.mode = str(target.get("mode") or self.mode)
         self.profile = str(target.get("profile") or self.profile)
@@ -313,8 +335,9 @@ class SceneFollow:
         if self.cycle == "idle" and not held:
             self.image_file = dest_file
             self.image_what = dest_what
-        if not self.connected:
-            self.phase = "waiting for api"
+        self.note = str(target.get("note") or "")
+        if not self.connected or dest == "down":
+            self.phase = str(target.get("phase") or "restarting api")
         elif self.cycle == "boot":
             self.phase = "imagining"
         elif self.cycle == "halt":
@@ -323,6 +346,12 @@ class SceneFollow:
             self.phase = str(target.get("phase") or self.phase)
         elif self.weights.get("idle", 0.0) > 0.65:
             self.phase = "idle"
+        if self.phase != self.task_name:
+            self.task_name = self.phase
+            self._task_t0 = now
+        self.runtime_s = max(0.0, now - self._task_t0) if self._task_t0 else 0.0
+        show_clock = self.phase not in {"idle"} or dest == "down"
+        runtime = _fmt_runtime(self.runtime_s) if show_clock else ""
         return {
             "phase": self.phase,
             "palette": self.palette,
@@ -350,6 +379,9 @@ class SceneFollow:
             "image_of": self.image_of,
             "image_file": self.image_file,
             "image_what": self.image_what,
+            "note": self.note,
+            "runtime": runtime,
+            "runtime_s": self.runtime_s,
         }
 
 
@@ -379,8 +411,22 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     live = working or stage in {"prefill", "decode", "tool"}
 
     image_job = kind == "image" or mode == "comfy" or stage == "image"
-    if restarting:
-        phase, palette = "restarting", "switch"
+    down = (not connected) or restarting
+    note = ""
+    if down:
+        if restarting and connected:
+            phase, palette = "restarting api", "down"
+            note = "reloading python / weights"
+        elif data:
+            phase, palette = "restarting api", "down"
+            note = "waiting for /health"
+        else:
+            phase, palette = "waiting for api", "down"
+            note = "waiting for /health"
+        live = True
+        intensity = 0.30
+        speed = 0.20
+        heat = 0.42
     elif stage == "switch" or switching or (working and kind == "gpu"):
         if image_job:
             phase, palette = "reloading", "switch"
@@ -405,10 +451,9 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
     else:
         phase, palette = "idle", "idle"
 
-    if not connected:
-        phase = "waiting for api"
-
-    if not live:
+    if down:
+        pass
+    elif not live:
         # Idle still has to drift: a nearly-static navy field reads as frozen.
         intensity = min(0.52 + 0.18 * (vram / 100.0), 0.70)
         speed = 0.36 + 0.10 * (vram / 100.0)
@@ -451,6 +496,7 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         "image_of": image_of,
         "image_file": str(data.get("image_file") or "").strip(),
         "image_what": str(data.get("image_what") or "").strip(),
+        "note": note,
         "waiters": _num(data.get("waiters")),
         "elapsed_s": _num(data.get("elapsed_s")),
     }
@@ -474,6 +520,8 @@ class StateBus:
                 if payload is not None:
                     self.data = payload
                     self.ok = True
+                else:
+                    self.ok = False
             self.stop.wait(interval)
 
 
@@ -483,7 +531,7 @@ def _warm_palette(
     base = PALETTES.get(name) or PALETTES["idle"]
     if name == "chat":
         base = _shift_ramp(base, hue)
-    if heat <= 0.02:
+    if name == "down" or heat <= 0.02:
         return base
     return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
 
@@ -555,12 +603,14 @@ NEURON_SPARK = {
     "chat": ((90, 160, 255), (255, 210, 240)),
     "image": ((180, 110, 40), (255, 220, 120)),
     "switch": ((40, 160, 110), (180, 255, 210)),
+    "down": ((140, 28, 36), (255, 92, 78)),
 }
 NEURON_RAMPS: dict[str, list[tuple[int, int, int]]] = {
     "idle": [(90, 130, 210), (140, 175, 235), (190, 215, 250), (220, 235, 255)],
     "chat": [(40, 220, 255), (80, 150, 255), (139, 92, 246), (220, 70, 210), (255, 90, 170)],
     "image": [(255, 196, 64), (255, 140, 48), (255, 88, 72), (255, 110, 160), (255, 190, 140)],
     "switch": [(20, 200, 190), (48, 230, 130), (140, 255, 170), (200, 255, 210)],
+    "down": [(80, 16, 20), (140, 28, 36), (200, 48, 48), (255, 96, 80)],
 }
 # GPU °C outline: gold → ember → red-orange → white-hot.
 HOT_GLOW = [(255, 210, 96), (255, 158, 48), (255, 86, 32), (255, 236, 210)]
@@ -806,6 +856,150 @@ def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
             pygame_mod.draw.circle(screen, _mix(BG, color, 0.18), (cx, cy), inner, 1)
 
 
+# Idle-only: faint sleepers on staggered cadences. period is field-time (st).
+# At idle speed ~0.36 that is roughly 25–55s between appearances, ~6s visible.
+_SLEEP_ACTORS = (
+    ("sleeper", 8.6, 0.15, 0.20, 0.42, 1.00),
+    ("zzz", 11.4, 0.62, 0.72, 0.30, 0.90),
+    ("sleeper", 14.1, 0.33, 0.58, 0.66, 0.78),
+    ("moon", 17.5, 0.08, 0.84, 0.20, 1.15),
+    ("zzz", 9.8, 0.81, 0.38, 0.76, 0.85),
+    ("sleeper", 19.2, 0.47, 0.12, 0.58, 0.70),
+)
+_SLEEP_LIFE = 0.24
+
+
+def idle_sleeper_items(scene: dict[str, Any], width: int, height: int) -> list[dict[str, Any]]:
+    """Unit sprites that fade in while the field is fully idle. Empty otherwise."""
+    if overlay_amount(scene) > 0.04:
+        return []
+    if str(scene.get("cycle") or "idle") != "idle":
+        return []
+    if scene.get("live"):
+        return []
+    if str(scene.get("palette") or "") == "down" or not scene.get("connected", True):
+        return []
+    st = float(scene.get("st") or 0.0)
+    hue = float(scene.get("hue") or 0.0)
+    w = max(1, int(width))
+    h = max(1, int(height))
+    out: list[dict[str, Any]] = []
+    for i, (kind, period, phase, x0, y0, scale) in enumerate(_SLEEP_ACTORS):
+        period = max(1.0, float(period))
+        u = (st / period + phase + hue) % 1.0
+        if u > _SLEEP_LIFE:
+            continue
+        fade = _smoothstep(u / 0.06) * _smoothstep((_SLEEP_LIFE - u) / 0.07)
+        if fade <= 0.02:
+            continue
+        drift = u / _SLEEP_LIFE
+        x = x0 + 0.035 * lsin(st * 0.41 + i * 1.7)
+        y = y0 + 0.025 * lsin(st * 0.33 + i * 2.1) - 0.055 * drift
+        x = 0.06 if x < 0.06 else 0.94 if x > 0.94 else x
+        y = 0.08 if y < 0.08 else 0.90 if y > 0.90 else y
+        out.append(
+            {
+                "kind": kind,
+                "x": int(round(x * (w - 1))),
+                "y": int(round(y * (h - 1))),
+                "size": max(14, int(round(h * 0.042 * scale))),
+                "amt": fade,
+                "flip": _u01(i + 3, int(hue * 97) + i) > 0.5,
+            }
+        )
+    return out
+
+
+def _draw_z_glyph(
+    pygame_mod: Any,
+    screen: Any,
+    x: int,
+    y: int,
+    size: int,
+    color: tuple[int, int, int],
+    thick: int = 2,
+) -> None:
+    s = max(4, int(size))
+    t = max(1, int(thick))
+    pygame_mod.draw.line(screen, color, (x, y), (x + s, y), t)
+    pygame_mod.draw.line(screen, color, (x + s, y), (x, y + s), t)
+    pygame_mod.draw.line(screen, color, (x, y + s), (x + s, y + s), t)
+
+
+def _draw_sleeping_creature(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    flip: bool,
+) -> None:
+    ink = _mix(BG, ACCENT, 0.30 * amt)
+    eye = _mix(BG, MUTED, 0.42 * amt)
+    zc = _mix(BG, (190, 205, 240), 0.28 * amt)
+    bw = max(10, int(size * 1.65))
+    bh = max(6, int(size * 0.92))
+    facing = -1 if flip else 1
+    _draw_glow(pygame_mod, screen, (cx, cy), ACCENT, 0.12 * amt, scale=max(1.2, size / 10.0))
+    pygame_mod.draw.ellipse(screen, ink, (cx - bw // 2, cy - bh // 2, bw, bh))
+    hx = cx + facing * (bw // 2 - max(3, size // 6))
+    hy = cy - bh // 5
+    hr = max(4, size // 2)
+    pygame_mod.draw.circle(screen, ink, (hx, hy), hr)
+    ear = max(2, hr // 3)
+    pygame_mod.draw.circle(screen, ink, (hx - facing * ear // 2, hy - hr + ear // 2), ear)
+    ew = max(3, hr // 3)
+    pygame_mod.draw.line(
+        screen, eye, (hx - ew, hy + 1), (hx + ew, hy), max(1, size // 16)
+    )
+    zs = max(5, size // 4)
+    zx = hx + facing * (hr + zs // 2)
+    zy = hy - hr - zs
+    _draw_z_glyph(pygame_mod, screen, zx, zy, zs, zc, max(1, zs // 6))
+    _draw_z_glyph(
+        pygame_mod, screen, zx + facing * (zs // 2), zy - zs, max(4, int(zs * 0.7)), zc, 1
+    )
+
+
+def _draw_sleeping_zzz(
+    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
+) -> None:
+    zc = _mix(BG, (186, 200, 236), 0.30 * amt)
+    s0 = max(6, int(size * 0.55))
+    _draw_z_glyph(pygame_mod, screen, cx - s0, cy + s0 // 3, s0, zc, max(1, s0 // 6))
+    s1 = max(7, int(size * 0.75))
+    _draw_z_glyph(pygame_mod, screen, cx, cy - s1 // 4, s1, zc, max(1, s1 // 6))
+    s2 = max(8, int(size))
+    _draw_z_glyph(pygame_mod, screen, cx + s1 // 2, cy - s2, s2, zc, max(1, s2 // 6))
+
+
+def _draw_sleeping_moon(
+    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
+) -> None:
+    ink = _mix(BG, (210, 218, 242), 0.26 * amt)
+    eye = _mix(BG, MUTED, 0.38 * amt)
+    r = max(8, int(size * 0.85))
+    _draw_glow(pygame_mod, screen, (cx, cy), (180, 190, 230), 0.14 * amt, scale=max(1.4, r / 7.0))
+    pygame_mod.draw.circle(screen, ink, (cx, cy), r)
+    pygame_mod.draw.circle(screen, _mix(BG, ink, 0.55), (cx - r // 6, cy + r // 7), max(3, r // 3))
+    ew = max(3, r // 4)
+    pygame_mod.draw.line(screen, eye, (cx - ew, cy + 1), (cx + ew // 2, cy), max(1, r // 10))
+
+
+def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
+    w, h = screen.get_size()
+    for item in idle_sleeper_items(scene, w, h):
+        kind = item["kind"]
+        x, y, size, amt = item["x"], item["y"], item["size"], item["amt"]
+        if kind == "sleeper":
+            _draw_sleeping_creature(pygame_mod, screen, x, y, size, amt, item["flip"])
+        elif kind == "moon":
+            _draw_sleeping_moon(pygame_mod, screen, x, y, size, amt)
+        else:
+            _draw_sleeping_zzz(pygame_mod, screen, x, y, size, amt)
+
+
 def _blended_palette(
     weights: dict[str, float], heat: float, hue: float = 0.0
 ) -> list[tuple[int, int, int]]:
@@ -827,7 +1021,10 @@ def _blended_palette(
             g += cg * w
             b += cb * w
         color = (int(r), int(g), int(b))
-        if heat > 0.02:
+        down_w = weights.get("down", 0.0) / total
+        if down_w > 0.45:
+            pass
+        elif heat > 0.02:
             color = _mix(color, WARN, heat * 0.28 * (i / 255.0))
         out.append(color)
     return out
@@ -1019,13 +1216,20 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     showing = bool(scene.get("live")) or overlay_amount(scene) > 0.02
     if str(scene.get("cycle") or "") in ("boot", "halt"):
         showing = True
+    if str(scene.get("palette") or "") == "down" or not scene.get("connected"):
+        showing = True
     if not showing:
         return
     w, h = screen.get_size()
     profile = str(scene["profile"])
     mode = str(scene["mode"]).upper()
     phase = str(scene["phase"])
-    if scene["connected"] and scene.get("has_gpu"):
+    runtime = str(scene.get("runtime") or "").strip()
+    if runtime:
+        phase = f"{phase}   {runtime}"
+    note = str(scene.get("note") or "").strip()
+    down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
+    if scene["connected"] and scene.get("has_gpu") and not down:
         util = int(round(scene["util"]))
         vram = int(round(scene["vram"]))
         temp = int(round(scene["temp"]))
@@ -1033,7 +1237,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     elif scene["connected"]:
         stats = ""
     else:
-        stats = "no telemetry"
+        stats = "api down"
     shadow = (0, 0, 0)
     halo = hud_halo_offsets(3)
     pad = max(32, int(round(h * 32 / 1080)))
@@ -1063,7 +1267,10 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         screen.blit(face.render(text, True, color), pos)
 
     active = bool(scene.get("live")) or str(scene.get("cycle") or "") in ("boot", "halt")
-    phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
+    if down:
+        phase_color = DOWN_TEXT
+    else:
+        phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
     blit(profile, (pad, pad), TEXT)
     blit(mode, (w - small.size(mode)[0] - pad, pad + 4), ACCENT, use_small=True)
     y = h - pad - main_h
@@ -1072,6 +1279,8 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         extra += 1
     if what:
         extra += 1
+    if note:
+        extra += 1
     if extra:
         y -= extra * (small_h + gap)
     if dest:
@@ -1079,6 +1288,9 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         y += small_h + gap
     if what:
         blit(_hud_fit(small, what, max_left), (pad, y), MUTED, use_small=True)
+        y += small_h + gap
+    if note:
+        blit(_hud_fit(small, note, max_left), (pad, y), MUTED, use_small=True)
         y += small_h + gap
     blit(phase, (pad, h - pad - main_h), phase_color)
     if stats:
@@ -1389,6 +1601,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
             draw_neurons(pygame, screen, scene)
             draw_cycle_fx(pygame, screen, scene)
+            draw_sleepers(pygame, screen, scene)
             height = screen.get_size()[1]
             if height != font_h or font is None or small is None:
                 large_n, small_n = hud_font_sizes(height)
