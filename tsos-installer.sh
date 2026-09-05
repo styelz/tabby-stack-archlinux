@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.36"
+SCRIPT_VERSION="1.0.39"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -87,11 +87,11 @@ USAGE
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash -s -- [options]
 
-With no --config file, the script starts with Simple setup (disk, hostname,
-user, password, weights source, this PC vs LAN). Choose Advanced for
-encryption, Omarchy, extra models, and SSH tunnels. It uses the same
-dialog menus as install.sh when dialog is available (installed on the live
-ISO if needed). Press Enter to keep the default.
+With no --config file, the script starts with Simple setup. A review menu
+lists disk, hostname, user, weights, and who can connect — open a row to
+change it, then start the install. Choose Advanced for encryption, Omarchy,
+extra models, and SSH tunnels. It uses the same dialog menus as install.sh
+when dialog is available (installed on the live ISO if needed).
 
 curl | bash needs a real terminal so the questions can be answered. Use
 bash, not sh. Pass flags after bash -s -- .
@@ -105,12 +105,13 @@ OPTIONS
   --locale NAME            Locale, without the leading # (default: en_US.UTF-8)
   --keymap NAME            Console keymap (default: us)
   --esp-size SIZE          EFI partition size (default: 2G)
-  --simple                 Short wizard: disk, hostname, user, password,
-                           weights source (Hugging Face / USB / path),
-                           this PC vs LAN. Skips Omarchy (always). No LUKS
-                           unless --encrypt.
-  --advanced               Full settings wizard (encryption, Omarchy, cache,
-                           models, bind address, public URL, SSH tunnel)
+  --simple                 Review menu: disk, hostname, user, weights
+                           source (Hugging Face / USB / path), this PC vs
+                           LAN. Skips Omarchy (always). No LUKS unless
+                           --encrypt.
+  --advanced               Review menu for every setting (encryption,
+                           Omarchy, cache, models, bind address, public
+                           URL, SSH tunnel)
   --encrypt                LUKS on the root partition (Advanced default; Simple
                            is unencrypted unless you pass this)
   --no-encrypt             Unencrypted btrfs root
@@ -152,10 +153,10 @@ unless you set the split password variables.
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
-weights) and must finish before reboot. Simple setup asks disk, hostname,
-user, password, weights source, and who can connect, then keeps that same
-dialog up with the live log while Arch and tabby-stack install. Advanced
-asks every setting.
+weights) and must finish before reboot. Simple setup opens a review menu
+(disk, hostname, user, weights, this PC vs LAN). Advanced adds locale,
+encryption, Omarchy, models, and tunnels. After you confirm the wipe, the
+same dialog stays up with the live log while Arch and tabby-stack install.
 install.sh is non-interactive from here so it does not open a second
 dialog. The NVIDIA driver loads on the first real boot; linger then
 starts the API.
@@ -248,13 +249,19 @@ tui_cmd() {
 
 ensure_dialog() {
   tui_cmd
-  [[ -n "$TUI" ]] && return 0
+  # whiptail has only a one-field passwordbox, so accepting it here makes
+  # password and verification appear on separate pages. The interactive ISO
+  # installer requires dialog's two-field --passwordform.
+  [[ "$TUI" == dialog ]] && return 0
   ((DRY_RUN)) && return 0
   have_console || [[ -t 0 ]] || return 0
-  log "Installing dialog (ncurses menus)"
+  log "Installing dialog (ncurses forms)"
   disable_live_mkinitcpio_hooks
-  pacman -Sy --noconfirm --needed dialog || true
+  pacman -Sy --noconfirm --needed dialog || \
+    die "could not install dialog; it is required for the one-page password form"
   tui_cmd
+  [[ "$TUI" == dialog ]] || \
+    die "dialog was installed but is not available in PATH"
 }
 
 enable_tui_if_possible() {
@@ -369,14 +376,19 @@ box_rows_max() {
   printf '%s' "$m"
 }
 
-# Drop trailing lines until the text fits, so a long prompt degrades into a
-# shorter one instead of killing the installer.
+# Keep the start of the prompt (warnings live there). Drop trailing lines,
+# then cap a leftover long paragraph so dialog never exits "Window too small".
 fit_text() {
-  local text=$1 width=$2 avail=$3
+  local text=$1 width=$2 avail=$3 inner
   ((avail < 1)) && avail=1
+  inner=$((width - 4))
+  ((inner < 8)) && inner=8
   while (($(text_rows "$text" "$width") > avail)) && [[ "$text" == *$'\n'* ]]; do
     text=${text%$'\n'*}
   done
+  if (($(text_rows "$text" "$width") > avail)); then
+    text=$(printf '%s' "$text" | head -c $((inner * avail)))
+  fi
   printf '%s' "$text"
 }
 
@@ -571,6 +583,16 @@ ui_cancel() {
   die "Installer cancelled."
 }
 
+# Widgets abort the installer on Esc unless a review-hub editor set this.
+UI_ALLOW_BACK=0
+
+_ui_fail() {
+  if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+    return 1
+  fi
+  ui_cancel
+}
+
 # dialog draws the widget on stdout and returns the typed value on stderr.
 # The widget must go to /dev/tty (not a pipe). --stdout is not an option: it
 # needs /dev/tty too and fails in some chroots.
@@ -598,7 +620,9 @@ dialog_read() {
     rm -f "$tmp"
     return "$rc"
   fi
-  IFS= read -r DIALOG_OUT <"$tmp" || true
+  # Command substitution strips a trailing newline; do not trim spaces
+  # (a passwordbox can end with one).
+  DIALOG_OUT=$(cat "$tmp")
   rm -f "$tmp"
   return 0
 }
@@ -627,9 +651,9 @@ ui_msg() {
     height=$need
   fi
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || { _ui_fail; return 1; }
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || { _ui_fail; return 1; }
   else
     printf '\n=== %s ===\n%s\n\n' "$title" "$text" >/dev/tty
   fi
@@ -646,10 +670,10 @@ ui_input() {
   text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
   height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default" || ui_cancel
+    dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default" || { _ui_fail; return 1; }
     out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
     out=$(ask "$title" "$default")
   fi
@@ -665,7 +689,7 @@ ui_menu() {
   width=$(box_width)
   max=$(box_rows_max)
   list=$(($# / 2))
-  ((list > 6)) && list=6
+  ((list > 12)) && list=12
   # menu chrome: borders, separator, button row, list frame, padding.
   local avail=$((max - list - 7))
   if ((avail < 2)); then
@@ -677,10 +701,10 @@ ui_menu() {
   height=$(($(text_rows "$text" "$width") + list + 7))
   ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@" || ui_cancel
+    dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@" || { _ui_fail; return 1; }
     out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
     local i=1 tag
     local tags=()
@@ -726,10 +750,10 @@ ui_checklist() {
   height=$(($(text_rows "$text" "$width") + list + 7))
   ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" || ui_cancel
+    dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" || { _ui_fail; return 1; }
     out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
     local i=1 tag state
     local defaults=()
@@ -772,12 +796,27 @@ ui_yesno() {
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
     dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
-    return $?
+    local rc=$?
+    # dialog: Yes=0, No=1, Esc=255. Esc used to look like No.
+    if [[ "$rc" -eq 255 ]]; then
+      if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+        return 2
+      fi
+      ui_cancel
+    fi
+    return "$rc"
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
     whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
-    return $?
+    local rc=$?
+    if [[ "$rc" -eq 255 ]]; then
+      if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+        return 2
+      fi
+      ui_cancel
+    fi
+    return "$rc"
   else
     local yn="Y/n"
     [[ "$default_yes" -eq 0 ]] && yn="y/N"
@@ -801,10 +840,10 @@ ui_password() {
   text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
   height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_read --title "$title" --insecure --passwordbox "$text" "$height" "$width" || ui_cancel
+    dialog_read --title "$title" --insecure --passwordbox "$text" "$height" "$width" || { _ui_fail; return 1; }
     out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" "$height" "$width" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" "$height" "$width" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
     out=$(read_secret "$title: ")
   fi
@@ -847,7 +886,7 @@ ui_password_pair() {
     set -e
     if [[ "$rc" -ne 0 ]]; then
       rm -f "$tmp"
-      ui_cancel
+      _ui_fail || return 1
     fi
     mapfile -t lines < "$tmp"
     rm -f "$tmp"
@@ -874,12 +913,12 @@ ui_ask_until() {
   local validator=$4
   local value
   while true; do
-    value=$(ui_input "$title" "$text" "$default")
+    value=$(ui_input "$title" "$text" "$default") || return 1
     if "$validator" "$value"; then
       printf '%s' "$value"
       return 0
     fi
-    ui_msg "Invalid value" "Not accepted: ${value}"
+    ui_msg "Invalid value" "Not accepted: ${value}" || return 1
   done
 }
 
@@ -1008,11 +1047,11 @@ $(lsblk -d -o NAME,SIZE,TYPE,MODEL)"
       args+=("$path" "${size}  ${model}")
     done < <(list_install_disks)
     ((${#args[@]})) || die "No installable disk found."
-    DISK=$(ui_menu "${1:-1 / 10  -  Target disk}" \
+    DISK=$(ui_menu "Target disk" \
 "This disk will be wiped. The live ISO / USB you booted from is hidden.
 
 Choose the machine disk, not a second installer stick." \
-      "${args[@]}")
+      "${args[@]}") || return 1
     return 0
   fi
 
@@ -1089,14 +1128,14 @@ ui_listen_host() {
 Do not pick a public hostname. The TCP port is the next screen.
 On the live ISO these IPs are the installer NIC; 0.0.0.0 still
 means “all interfaces” after reboot." \
-    "${items[@]}")"
+    "${items[@]}")" || return 1
   if [[ "$choice" == "other" ]]; then
     choice="$(ui_input "$title" \
 "Address TabbyAPI binds on.
 
 Examples: 127.0.0.1 (this machine), 0.0.0.0 (all NICs), or a LAN IPv4.
 Do not put a public hostname here." \
-      "${current:-127.0.0.1}")"
+      "${current:-127.0.0.1}")" || return 1
   fi
   printf '%s' "${choice:-127.0.0.1}"
 }
@@ -1113,7 +1152,7 @@ ui_listen_access() {
 
 You can change this later in Settings." \
     this-pc "This PC only" \
-    lan "Other computers on my network")"
+    lan "Other computers on my network")" || return 1
   case "$choice" in
     lan) printf '%s' "0.0.0.0" ;;
     *) printf '%s' "127.0.0.1" ;;
@@ -1225,7 +1264,7 @@ or model dirs). Name it now; the new root mounts at /mnt next.
 Mount the USB first if you want that option (not under /mnt)." \
         hf "Hugging Face (models that fit this GPU)" \
         usb "Use /run/media/usb/tabby-stack" \
-        custom "Type another path")
+        custom "Type another path") || return 1
       case "$cache_choice" in
         hf|none) TABBY_CACHE="" ;;
         usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
@@ -1238,7 +1277,7 @@ Mount the USB first if you want that option (not under /mnt)." \
   /tmp/tabby-weights
 
 The installer lists what it finds next. Blank = Hugging Face." \
-            "$TABBY_CACHE")
+            "$TABBY_CACHE") || return 1
           ;;
         *) TABBY_CACHE="$cache_choice" ;;
       esac
@@ -1279,12 +1318,12 @@ pick_install_mode() {
   local choice
   if ((USE_TUI)); then
     choice=$(ui_menu "Setup type" \
-"Simple (recommended) asks for the disk, hostname, username,
-password, where model weights come from, and whether other
-computers on your network can connect.
+"Simple (recommended) opens a review menu: disk, hostname,
+username, weights source, and whether other computers on
+your network can connect. Open a row to change it.
 
-Advanced asks every setting: encryption, Omarchy desktop,
-extra models, bind address, public URL, and SSH tunnel.
+Advanced adds locale, encryption, Omarchy, extra models,
+bind address, public URL, and SSH tunnel.
 
 Omarchy is not installed in Simple." \
       simple "Simple — disk, hostname, user, weights, this PC vs LAN" \
@@ -1322,7 +1361,7 @@ prompt_settings_simple_text() {
   show_available_disks
   printf '\n' >/dev/tty
 
-  ask_install_disk "1 / 5  -  Target disk"
+  ask_install_disk "Target disk"
   TARGET_HOSTNAME=$(ask_until "Hostname" "$TARGET_HOSTNAME" valid_hostname)
   TARGET_USER=$(ask_until "Username" "$TARGET_USER" valid_username)
   prompt_weights_source "Weights source"
@@ -1333,48 +1372,433 @@ prompt_settings_simple_text() {
   printf '\n' >/dev/tty
 }
 
+hub_desc() {
+  local s=$1 n=${2:-48}
+  s=${s//$'\n'/ }
+  s=${s//$'\t'/ }
+  if ((${#s} > n)); then
+    s="${s:0:$((n - 3))}..."
+  fi
+  printf '%s' "$s"
+}
+
+weights_label() {
+  if [[ -n "${TABBY_CACHE:-}" ]]; then
+    printf '%s' "$TABBY_CACHE"
+  else
+    printf 'Hugging Face'
+  fi
+}
+
+access_label() {
+  if [[ "${TABBY_NETWORK_HOST:-127.0.0.1}" == "0.0.0.0" ]]; then
+    printf 'LAN (0.0.0.0:%s)' "${TABBY_NETWORK_PORT:-5000}"
+  else
+    printf 'this PC (%s:%s)' "${TABBY_NETWORK_HOST:-127.0.0.1}" "${TABBY_NETWORK_PORT:-5000}"
+  fi
+}
+
+tunnel_label() {
+  if [[ -n "${TABBY_SSH_REMOTE:-}" ]]; then
+    printf '%s' "$TABBY_SSH_REMOTE"
+  else
+    printf '(none)'
+  fi
+}
+
+encrypt_hub_label() {
+  local d e
+  if [[ "$OMARCHY_MODE" == now ]]; then
+    d="Omarchy"
+  else
+    d="no desktop"
+  fi
+  if ((ENCRYPT)); then
+    e="LUKS"
+  else
+    e="unencrypted"
+  fi
+  printf '%s, %s' "$d" "$e"
+}
+
+locale_hub_label() {
+  printf '%s, %s, %s, EFI %s' "$TIMEZONE" "$LOCALE" "$KEYMAP" "$ESP_SIZE"
+}
+
+disk_hub_label() {
+  if [[ -z "${DISK:-}" ]]; then
+    printf '(not set)'
+    return 0
+  fi
+  if [[ -b "$DISK" ]]; then
+    printf '%s  %s' "$DISK" "$(lsblk -dn -o SIZE,MODEL "$DISK" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g; s/[[:space:]]*$//')"
+  else
+    printf '%s' "$DISK"
+  fi
+}
+
+# Esc in an editor returns here instead of aborting the installer.
+hub_edit_hostname() {
+  local v
+  v=$(ui_ask_until "Hostname" \
+"Name of the installed system (not the live ISO hostname).
+
+Letters, digits, and hyphens. Example: tsos" \
+    "$TARGET_HOSTNAME" valid_hostname) || return 0
+  TARGET_HOSTNAME=$v
+}
+
+hub_edit_user() {
+  local v
+  v=$(ui_ask_until "Username" \
+"Regular wheel user that runs tabby-stack.
+
+Lowercase, not root. Example: tabby" \
+    "$TARGET_USER" valid_username) || return 0
+  TARGET_USER=$v
+}
+
+hub_edit_locale() {
+  local v
+  v=$(ui_input "Timezone" \
+"Timezone from /usr/share/zoneinfo.
+
+Examples: UTC  Australia/Sydney  America/New_York" \
+    "$TIMEZONE") || return 0
+  TIMEZONE="${v:-UTC}"
+  if [[ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]]; then
+    ui_msg "Timezone not found" \
+"No file at /usr/share/zoneinfo/${TIMEZONE}.
+Continuing anyway — fix it after boot if the clock is wrong." || true
+  fi
+  v=$(ui_input "Locale" \
+"Locale name without a leading #.
+
+Example: en_US.UTF-8" \
+    "$LOCALE") || return 0
+  LOCALE="${v:-en_US.UTF-8}"
+  v=$(ui_input "Console keymap" \
+"Keyboard map for the console (and LUKS prompt).
+
+Example: us" \
+    "$KEYMAP") || return 0
+  KEYMAP="${v:-us}"
+  v=$(ui_ask_until "EFI partition size" \
+"FAT32 /boot size. 2G is enough for the kernel and Limine.
+
+Examples: 2G  512M" \
+    "$ESP_SIZE" valid_esp_size) || return 0
+  ESP_SIZE=$v
+}
+
+hub_edit_desktop() {
+  local rc
+  ui_yesno "Omarchy desktop" \
+"Install the official Omarchy desktop in the chroot?
+
+Yes requires LUKS on the root disk (encryption will be turned on).
+No skips Omarchy; you can still encrypt on the next screen.
+
+Default is no." \
+    0
+  rc=$?
+  case "$rc" in
+    2) return 0 ;;
+    0)
+      OMARCHY_MODE=now
+      ENCRYPT=1
+      ui_msg "Encryption required" \
+"Omarchy is selected, so the disk will be encrypted with LUKS." || true
+      OMARCHY_USER_NAME=$(ui_input "Git name" \
+"Optional name passed to Omarchy as OMARCHY_USER_NAME.
+
+Blank is fine." \
+        "$OMARCHY_USER_NAME") || return 0
+      OMARCHY_USER_EMAIL=$(ui_input "Git email" \
+"Optional email passed to Omarchy as OMARCHY_USER_EMAIL.
+
+Blank is fine." \
+        "$OMARCHY_USER_EMAIL") || return 0
+      ;;
+    *)
+      OMARCHY_MODE=skip
+      ui_yesno "Disk encryption" \
+"Encrypt the root disk with LUKS?
+
+Yes = unlock password at boot (recommended).
+No = unencrypted btrfs.
+
+Default follows the current setting ($(encrypt_label))." \
+        "$([[ "$(encrypt_label)" == yes ]] && echo 1 || echo 0)"
+      rc=$?
+      case "$rc" in
+        2) return 0 ;;
+        0) ENCRYPT=1 ;;
+        *) ENCRYPT=0 ;;
+      esac
+      ;;
+  esac
+}
+
+hub_edit_models() {
+  local gpu_label vram prev picked rc
+  prev=${TABBY_MODELS:-core}
+  vram=$(gpu_vram_mib)
+  gpu_label=$(gpu_prompt_label "$vram")
+  picked=""
+  if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE" ]]; then
+    picked=$(pick_models_ui "Models found" \
+"Weights found under:
+  ${TABBY_CACHE}
+
+Space toggles a row. Enter confirms. Selected models are copied
+into the install; anything incomplete still downloads.
+
+GPU: ${gpu_label}" \
+      cache "$TABBY_CACHE")
+    rc=$?
+    case "$rc" in
+      1) return 0 ;;
+      0)
+        if [[ -z "$picked" ]]; then
+          ui_msg "Select at least one model" "Check at least one row, then press Enter." || true
+          return 0
+        fi
+        TABBY_MODELS=$picked
+        ;;
+      *)
+        ui_yesno "No catalog models in that folder" \
+"Nothing matching the installer catalog was found in:
+  ${TABBY_CACHE}
+
+Yes = show Hugging Face models that fit this GPU instead.
+No = keep the path and use the core preset." 1
+        rc=$?
+        case "$rc" in
+          2) return 0 ;;
+          0) TABBY_CACHE="" ;;
+          *) TABBY_MODELS=core; return 0 ;;
+        esac
+        ;;
+    esac
+  fi
+  if [[ -z "${picked:-}" && -z "$TABBY_CACHE" ]]; then
+    picked=$(pick_models_ui "Hugging Face models" \
+"Hugging Face models that fit this GPU:
+  ${gpu_label}
+
+Space toggles a row. Enter confirms. Checked rows are the usual
+first-install set.
+
+If VRAM could not be read, every catalog model is listed." \
+      hf "")
+    rc=$?
+    case "$rc" in
+      1) return 0 ;;
+      0) TABBY_MODELS=${picked:-core} ;;
+      *)
+        picked=$(ui_menu "Model set" \
+"Could not list individual models. Pick a preset.
+
+core - qwen 9B, Flux, Qwen-Image, CPU embedder
+all  - every switch-to profile" \
+          core "qwen 9B + Flux + Qwen-Image + embedder" \
+          all "every switch-to profile") || return 0
+        TABBY_MODELS="${picked:-core}"
+        ;;
+    esac
+  fi
+  if [[ "$TABBY_MODELS" == *gemma* ]]; then
+    ui_msg "Gemma / Hugging Face" \
+"Gemma weights may be gated on Hugging Face.
+
+If a later download returns 401 or 403:
+  huggingface-cli login
+  or:  export HF_TOKEN=...
+  then re-run this installer (finished files are skipped).
+
+You do not need a token for qwen / Flux / Qwen-Image." || true
+  fi
+}
+
+hub_edit_network() {
+  local host port comfy public
+  host=$(ui_listen_host "API listen address" \
+    "${TABBY_NETWORK_HOST:-127.0.0.1}") || return 0
+  host="${host:-127.0.0.1}"
+  port=$(ui_ask_until "API listen port" \
+"TCP port for the API. Default 5000.
+
+Health:  http://${host}:PORT/health
+Cursor:  http://${host}:PORT/v1" \
+    "${TABBY_NETWORK_PORT:-5000}" valid_port) || return 0
+  comfy=$(ui_input "ComfyUI URL" \
+"HTTP URL for ComfyUI after “switch to comfy”.
+
+Usual value:  http://127.0.0.1:8188
+Change this only if ComfyUI will listen somewhere else." \
+    "${COMFYUI_URL:-http://127.0.0.1:8188}") || return 0
+  public=$(ui_input "Public URL" \
+"Optional URL written into image links and the public gallery.
+
+Examples
+  https://api.example.com/v1
+  https://chat.example.com/api/v1
+
+Blank = local only (http://${host}:${port}/v1).
+Leave blank if you do not have a reverse proxy or tunnel." \
+    "${TABBY_PUBLIC_BASE}") || return 0
+  TABBY_NETWORK_HOST=$host
+  TABBY_NETWORK_PORT=$port
+  COMFYUI_URL="${comfy:-http://127.0.0.1:8188}"
+  TABBY_PUBLIC_BASE=$public
+}
+
+hub_edit_tunnel() {
+  local remote spec key
+  remote=$(ui_input "SSH tunnel" \
+"Optional SSH login for a reverse tunnel (user@host).
+
+Leave blank if the API should stay on this machine only.
+
+If you set a host, the next screens ask how traffic reaches
+TabbyAPI, then which key this box uses to log in. You will
+need to put the matching public key in authorized_keys on
+that host." \
+    "${TABBY_SSH_REMOTE}") || return 0
+  if [[ -z "$remote" ]]; then
+    TABBY_SSH_REMOTE=""
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+    return 0
+  fi
+  spec=$(ui_input "SSH forward" \
+"ssh -R spec: where ${remote} listens, and where
+that lands on this GPU box.
+
+  bind:remote_port:local_host:local_port
+
+Default 127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT} means:
+  On ${remote}, listen on 127.0.0.1:12345
+  Forward to TabbyAPI here on 127.0.0.1:${TABBY_NETWORK_PORT}
+
+If HTTPS sits in front of that remote port, that is the
+Public URL from the previous screen." \
+    "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}") || return 0
+  spec="${spec:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
+  ui_msg "SSH key" \
+"Private key this GPU box uses to log in to ${remote}.
+
+$(ssh_tunnel_help "$remote" "$spec" "$TABBY_PUBLIC_BASE")
+
+The installer copies that key from a weights cache if present,
+otherwise it creates a new ed25519 key. After install, copy the
+matching .pub onto ${remote}." || return 0
+  key=$(ui_input "SSH key" \
+"Path to that private key for ${remote}.
+
+Default is fine unless your key has another name." \
+    "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}") || return 0
+  TABBY_SSH_REMOTE=$remote
+  TABBY_SSH_FORWARD=$spec
+  TABBY_SSH_KEY="${key:-/home/${TARGET_USER}/.ssh/id_ed25519}"
+}
+
+hub_edit_access() {
+  local host
+  host=$(ui_listen_access "Who can connect") || return 0
+  TABBY_NETWORK_HOST="${host:-127.0.0.1}"
+}
+
+# Review menu: every setting is a row. Esc on a row returns here.
+# Esc on this menu aborts. Start install leaves the loop.
+prompt_review_hub() {
+  local kind=$1 choice v
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+  TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+  TABBY_MODELS="${TABBY_MODELS:-core}"
+  if [[ -z "${DISK:-}" ]]; then
+    DISK=$(first_install_disk || true)
+  fi
+  while true; do
+    local -a items=()
+    items+=(disk "$(hub_desc "$(disk_hub_label)")")
+    items+=(hostname "$(hub_desc "$TARGET_HOSTNAME")")
+    items+=(user "$(hub_desc "$TARGET_USER")")
+    if [[ "$kind" == advanced ]]; then
+      items+=(locale "$(hub_desc "$(locale_hub_label)")")
+      items+=(desktop "$(hub_desc "$(encrypt_hub_label)")")
+    fi
+    items+=(weights "$(hub_desc "$(weights_label)")")
+    if [[ "$kind" == advanced ]]; then
+      items+=(models "$(hub_desc "${TABBY_MODELS:-core}")")
+      items+=(network "$(hub_desc "$(access_label)")")
+      items+=(tunnel "$(hub_desc "$(tunnel_label)")")
+    else
+      items+=(access "$(hub_desc "$(access_label)")")
+    fi
+    items+=(go "Start install")
+    choice=$(ui_menu "Review install plan" \
+"Open a row to change it. Choose Start install when the plan
+looks right.
+
+Esc aborts. Next you type the disk path to confirm the wipe.
+After that, this same dialog stays up with the live log." \
+      "${items[@]}") || ui_cancel
+    UI_ALLOW_BACK=1
+    case "$choice" in
+      disk) ask_install_disk "Target disk" || true ;;
+      hostname) hub_edit_hostname ;;
+      user) hub_edit_user ;;
+      locale) hub_edit_locale ;;
+      desktop) hub_edit_desktop ;;
+      weights) prompt_weights_source "Weights source" || true ;;
+      models) hub_edit_models ;;
+      network) hub_edit_network ;;
+      tunnel) hub_edit_tunnel ;;
+      access)
+        if [[ -z "${HOST_FROM_CLI:-}" ]]; then
+          hub_edit_access
+        else
+          ui_msg "Listen address" "Already set on the command line (--tabby-host)." || true
+        fi
+        ;;
+      go)
+        if [[ -z "${DISK:-}" ]]; then
+          ui_msg "Pick a disk" "Choose the disk to wipe before starting." || true
+          continue
+        fi
+        UI_ALLOW_BACK=0
+        break
+        ;;
+    esac
+    UI_ALLOW_BACK=0
+  done
+}
+
 prompt_settings_simple_tui() {
   ui_msg "Simple setup" \
 "This installs Arch and tabby-stack on the disk you pick.
 
-You will be asked for:
-  • which disk to wipe
-  • a hostname
-  • a username
-  • where model weights come from (Hugging Face, USB, or a path)
-  • whether other computers on your network can connect
-  • a password (login; the disk is not encrypted unless you
-    passed --encrypt)
+A review menu lists every setting. Open a row to change it,
+then Start install.
+
+  • disk to wipe (type the path to confirm)
+  • hostname and username
+  • model weights (Hugging Face, USB, or a path)
+  • this PC vs other computers on the LAN
+  • password after you confirm (login only; the disk is not
+    encrypted unless you passed --encrypt)
 
 Omarchy is not installed. Encryption, extra models, and SSH
 tunnels are under Advanced.
 
-After you confirm the wipe, this same dialog stays up with
-a progress bar and the live log. install.sh does not open
-a second dialog.
+After the wipe confirm, this same dialog stays up with a
+progress bar and the live log.
 
-Esc cancels."
+Esc on the review menu cancels. Esc on a setting goes back."
 
-  ask_install_disk "1 / 5  -  Target disk"
-
-  TARGET_HOSTNAME=$(ui_ask_until "2 / 5  -  Hostname" \
-"Name of the installed system (not the live ISO hostname).
-
-Letters, digits, and hyphens. Example: tsos" \
-    "$TARGET_HOSTNAME" valid_hostname)
-
-  TARGET_USER=$(ui_ask_until "3 / 5  -  Username" \
-"Regular wheel user that runs tabby-stack.
-
-Lowercase, not root. Example: tabby" \
-    "$TARGET_USER" valid_username)
-
-  prompt_weights_source "4 / 5  -  Weights source"
-
-  if [[ -z "${HOST_FROM_CLI:-}" ]]; then
-    TABBY_NETWORK_HOST=$(ui_listen_access "5 / 5  -  Who can connect")
-  fi
-  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+  prompt_review_hub simple
 }
 
 prompt_settings_text() {
@@ -1459,246 +1883,15 @@ Needed
   • NVIDIA GPU (Turing / RTX 20-series or newer)
   • Secure Boot off
 
-Next screens ask for the disk, system name, Omarchy, cache,
-model set, and API URLs. After you confirm the wipe, this
-same dialog stays up: a progress bar, elapsed time, and the
-live install log (pacman, Python, weight files) inside the
-box. install.sh does not open a second dialog.
+A review menu lists every setting. Open a row to change it,
+then Start install. You type the disk path to confirm the
+wipe. After that, this same dialog stays up: a progress bar,
+elapsed time, and the live install log. install.sh does not
+open a second dialog.
 
-Esc cancels."
+Esc on the review menu cancels. Esc on a setting goes back."
 
-  ask_install_disk
-
-  TARGET_HOSTNAME=$(ui_ask_until "2 / 10  -  Hostname" \
-"Name of the installed system (not the live ISO hostname).
-
-Letters, digits, and hyphens. Example: tsos" \
-    "$TARGET_HOSTNAME" valid_hostname)
-
-  TARGET_USER=$(ui_ask_until "2 / 10  -  Username" \
-"Regular wheel user that runs tabby-stack.
-
-Lowercase, not root. Example: tabby" \
-    "$TARGET_USER" valid_username)
-
-  TIMEZONE=$(ui_input "3 / 10  -  Timezone" \
-"Timezone from /usr/share/zoneinfo.
-
-Examples: UTC  Australia/Sydney  America/New_York" \
-    "$TIMEZONE")
-  TIMEZONE="${TIMEZONE:-UTC}"
-  if [[ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]]; then
-    ui_msg "Timezone not found" \
-"No file at /usr/share/zoneinfo/${TIMEZONE}.
-Continuing anyway — fix it after boot if the clock is wrong."
-  fi
-
-  LOCALE=$(ui_input "3 / 10  -  Locale" \
-"Locale name without a leading #.
-
-Example: en_US.UTF-8" \
-    "$LOCALE")
-  LOCALE="${LOCALE:-en_US.UTF-8}"
-
-  KEYMAP=$(ui_input "3 / 10  -  Console keymap" \
-"Keyboard map for the console (and LUKS prompt).
-
-Example: us" \
-    "$KEYMAP")
-  KEYMAP="${KEYMAP:-us}"
-
-  ESP_SIZE=$(ui_ask_until "3 / 10  -  EFI partition size" \
-"FAT32 /boot size. 2G is enough for the kernel and Limine.
-
-Examples: 2G  512M" \
-    "$ESP_SIZE" valid_esp_size)
-
-  if ui_yesno "4 / 10  -  Omarchy desktop" \
-"Install the official Omarchy desktop in the chroot?
-
-Yes requires LUKS on the root disk (encryption will be turned on).
-No skips Omarchy; you can still encrypt on the next screen.
-
-Default is no." \
-    0; then
-    OMARCHY_MODE=now
-    ENCRYPT=1
-    ui_msg "Encryption required" \
-"Omarchy is selected, so the disk will be encrypted with LUKS."
-    OMARCHY_USER_NAME=$(ui_input "4 / 10  -  Git name" \
-"Optional name passed to Omarchy as OMARCHY_USER_NAME.
-
-Blank is fine." \
-      "$OMARCHY_USER_NAME")
-    OMARCHY_USER_EMAIL=$(ui_input "4 / 10  -  Git email" \
-"Optional email passed to Omarchy as OMARCHY_USER_EMAIL.
-
-Blank is fine." \
-      "$OMARCHY_USER_EMAIL")
-  else
-    OMARCHY_MODE=skip
-    if ui_yesno "5 / 10  -  Disk encryption" \
-"Encrypt the root disk with LUKS?
-
-Yes = unlock password at boot (recommended).
-No = unencrypted btrfs.
-
-Default follows the current setting ($(encrypt_label))." \
-      "$([[ "$(encrypt_label)" == yes ]] && echo 1 || echo 0)"; then
-      ENCRYPT=1
-    else
-      ENCRYPT=0
-    fi
-  fi
-
-  prompt_weights_source "6 / 10  -  Weights source"
-
-  prompt_tabby_settings_tui
-}
-
-prompt_tabby_settings_tui() {
-  local gpu_label vram
-  vram=$(gpu_vram_mib)
-  gpu_label=$(gpu_prompt_label "$vram")
-
-  TABBY_MODELS=""
-  if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE" ]]; then
-    if TABBY_MODELS=$(pick_models_ui "7 / 10  -  Models found" \
-"Weights found under:
-  ${TABBY_CACHE}
-
-Space toggles a row. Enter confirms. Selected models are copied
-into the install; anything incomplete still downloads.
-
-GPU: ${gpu_label}" \
-      cache "$TABBY_CACHE"); then
-      if [[ -z "$TABBY_MODELS" ]]; then
-        ui_msg "Select at least one model" "Check at least one row, then press Enter."
-        TABBY_MODELS=""
-      fi
-    else
-      if ui_yesno "No catalog models in that folder" \
-"Nothing matching the installer catalog was found in:
-  ${TABBY_CACHE}
-
-Yes = show Hugging Face models that fit this GPU instead.
-No = keep the path and use the core preset." 1; then
-        TABBY_CACHE=""
-      else
-        TABBY_MODELS=core
-      fi
-    fi
-  fi
-  if [[ -z "$TABBY_MODELS" ]]; then
-    if TABBY_MODELS=$(pick_models_ui "7 / 10  -  Hugging Face models" \
-"Hugging Face models that fit this GPU:
-  ${gpu_label}
-
-Space toggles a row. Enter confirms. Checked rows are the usual
-first-install set.
-
-If VRAM could not be read, every catalog model is listed." \
-      hf ""); then
-      if [[ -z "$TABBY_MODELS" ]]; then
-        TABBY_MODELS=core
-      fi
-    else
-      TABBY_MODELS=$(ui_menu "7 / 10  -  Model set" \
-"Could not list individual models. Pick a preset.
-
-core - qwen 9B, Flux, Qwen-Image, CPU embedder
-all  - every switch-to profile" \
-        core "qwen 9B + Flux + Qwen-Image + embedder" \
-        all "every switch-to profile")
-      TABBY_MODELS="${TABBY_MODELS:-core}"
-    fi
-  fi
-
-  if [[ "$TABBY_MODELS" == *gemma* ]]; then
-    ui_msg "Gemma / Hugging Face" \
-"Gemma weights may be gated on Hugging Face.
-
-If a later download returns 401 or 403:
-  huggingface-cli login
-  or:  export HF_TOKEN=...
-  then re-run this installer (finished files are skipped).
-
-You do not need a token for qwen / Flux / Qwen-Image."
-  fi
-
-  TABBY_NETWORK_HOST=$(ui_listen_host "8 / 10  -  API listen address" \
-    "${TABBY_NETWORK_HOST:-127.0.0.1}")
-  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
-
-  TABBY_NETWORK_PORT=$(ui_ask_until "8 / 10  -  API listen port" \
-"TCP port for the API. Default 5000.
-
-Health:  http://${TABBY_NETWORK_HOST}:PORT/health
-Cursor:  http://${TABBY_NETWORK_HOST}:PORT/v1" \
-    "${TABBY_NETWORK_PORT:-5000}" valid_port)
-
-  COMFYUI_URL=$(ui_input "9 / 10  -  ComfyUI URL" \
-"HTTP URL for ComfyUI after “switch to comfy”.
-
-Usual value:  http://127.0.0.1:8188
-Change this only if ComfyUI will listen somewhere else." \
-    "${COMFYUI_URL:-http://127.0.0.1:8188}")
-  COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
-
-  TABBY_PUBLIC_BASE=$(ui_input "9 / 10  -  Public URL" \
-"Optional URL written into image links and the public gallery.
-
-Examples
-  https://api.example.com/v1
-  https://chat.example.com/api/v1
-
-Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
-Leave blank if you do not have a reverse proxy or tunnel." \
-    "${TABBY_PUBLIC_BASE}")
-
-  TABBY_SSH_REMOTE=$(ui_input "10 / 10  -  SSH tunnel" \
-"Optional SSH login for a reverse tunnel (user@host).
-
-Leave blank if the API should stay on this machine only.
-
-If you set a host, the next screens ask how traffic reaches
-TabbyAPI, then which key this box uses to log in. You will
-need to put the matching public key in authorized_keys on
-that host." \
-    "${TABBY_SSH_REMOTE}")
-  if [[ -n "$TABBY_SSH_REMOTE" ]]; then
-    TABBY_SSH_FORWARD=$(ui_input "10 / 10  -  SSH forward" \
-"ssh -R spec: where ${TABBY_SSH_REMOTE} listens, and where
-that lands on this GPU box.
-
-  bind:remote_port:local_host:local_port
-
-Default 127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT} means:
-  On ${TABBY_SSH_REMOTE}, listen on 127.0.0.1:12345
-  Forward to TabbyAPI here on 127.0.0.1:${TABBY_NETWORK_PORT}
-
-If HTTPS sits in front of that remote port, that is the
-Public URL from the previous screen." \
-      "${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}")
-    TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
-    ui_msg "10 / 10  -  SSH key" \
-"Private key this GPU box uses to log in to ${TABBY_SSH_REMOTE}.
-
-$(ssh_tunnel_help "$TABBY_SSH_REMOTE" "$TABBY_SSH_FORWARD" "$TABBY_PUBLIC_BASE")
-
-The installer copies that key from a weights cache if present,
-otherwise it creates a new ed25519 key. After install, copy the
-matching .pub onto ${TABBY_SSH_REMOTE}."
-    TABBY_SSH_KEY=$(ui_input "10 / 10  -  SSH key" \
-"Path to that private key for ${TABBY_SSH_REMOTE}.
-
-Default is fine unless your key has another name." \
-      "${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}")
-    TABBY_SSH_KEY="${TABBY_SSH_KEY:-/home/${TARGET_USER}/.ssh/id_ed25519}"
-  else
-    TABBY_SSH_FORWARD=""
-    TABBY_SSH_KEY=""
-  fi
+  prompt_review_hub advanced
 }
 
 encrypt_label() {
@@ -1947,9 +2140,9 @@ pick_models_ui() {
   local cache="${4:-}"
   local vram rows id state label
   local args=()
-  ensure_fetch_tools || return 1
+  ensure_fetch_tools || return 2
   if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$TSOS_FETCH" ]]; then
-    return 1
+    return 2
   fi
   vram="$(gpu_vram_mib)"
   local py=(python3 -u "$TSOS_FETCH" --catalog "$TSOS_CATALOG" --list-picks --source "$source" --vram-mib "$vram")
@@ -1957,12 +2150,12 @@ pick_models_ui() {
     py+=(--cache "$cache")
   fi
   rows="$("${py[@]}" 2>/dev/null || true)"
-  [[ -n "$rows" ]] || return 1
+  [[ -n "$rows" ]] || return 2
   while IFS=$'\t' read -r id state label; do
     [[ -n "${id:-}" ]] || continue
     args+=("$id" "$label" "$state")
   done <<< "$rows"
-  ((${#args[@]} >= 3)) || return 1
+  ((${#args[@]} >= 3)) || return 2
   ui_checklist "$title" "$text" "${args[@]}"
 }
 
@@ -2034,6 +2227,19 @@ self_test() {
     failed=1
   fi
 
+  ENCRYPT=1
+  PASSWORD=test-password
+  LUKS_PASSWORD=""
+  USER_PASSWORD=""
+  ROOT_PASSWORD=""
+  if collect_passwords; then
+    printf 'ok   encrypted password collection returns success\n'
+  else
+    printf 'FAIL encrypted password collection returned failure\n' >&2
+    failed=1
+  fi
+  check "$LUKS_PASSWORD" test-password "encrypted password assigned"
+
   # The percent meter must never be printed by gauge_update (that was the
   # leak under the leftover password box). It writes files; the foreground
   # dialog paints them.
@@ -2050,6 +2256,8 @@ self_test() {
   check "$(cat "$gdir/heading")" "Installing Arch packages" "gauge heading file"
   check "$(ui_pad "ab" 5)" "ab   " "ui_pad pads"
   check "$(ui_pad "abcdef" 4)" "abcd" "ui_pad truncates"
+  check "$(hub_desc "short")" "short" "hub_desc short"
+  check "$(hub_desc "$(printf 'a%.0s' {1..60})" 20)" "aaaaaaaaaaaaaaaaa..." "hub_desc truncates"
   tb=$(ui_title_bar 10 Hi)
   check "$tb" "--- Hi ---" "ui_title_bar"
   TSOS_GAUGE_DIR=""
@@ -2313,17 +2521,17 @@ confirm_wipe() {
   fi
   local answer
   if ((USE_TUI)); then
-    ui_msg "Install plan" \
-"$(print_plan)
+    # Warning first so fit_text cannot drop it. One box: plan + type-to-confirm.
+    answer=$(ui_input "Confirm wipe" \
+"Type this path exactly to erase the disk:
+
+    ${DISK}
+
+THIS ERASES EVERYTHING ON ${DISK}.
 
 ${disk_tree}
 
-THIS ERASES EVERYTHING ON ${DISK}." \
-      22 74
-    answer=$(ui_input "Confirm wipe" \
-"Type the disk path exactly to erase it:
-
-    ${DISK}
+$(print_plan)
 
 Anything else aborts." \
       "")
@@ -2392,6 +2600,10 @@ collect_passwords() {
   if ((ENCRYPT == 0)); then
     LUKS_PASSWORD=""
   fi
+  # A false final arithmetic test becomes the function's return status.
+  # Without an explicit success here, encrypted installs return 1 and the
+  # script's `set -e` exits immediately after the password form.
+  return 0
 }
 
 have_network() {
@@ -2690,7 +2902,8 @@ EOF
 ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
 hwclock --systohc
 
-sed -i "s/^#${LOCALE}/${LOCALE}/" /etc/locale.gen
+loc_esc=$(printf '%s' "$LOCALE" | sed 's/[.[\*^$\\]/\\&/g')
+sed -i "s/^#${loc_esc}/${LOCALE}/" /etc/locale.gen
 sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
 locale-gen
 printf 'LANG=%s\n' "$LOCALE" >/etc/locale.conf

@@ -8,9 +8,9 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-From the official Arch live ISO, `tsos-installer.sh` starts with **Simple** setup (disk, hostname, username, password, weights source, this PC vs LAN). It does not ask about Omarchy and does not install it. Disk encryption is off unless you pass `--encrypt`. After you confirm the wipe, the same dialog stays up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`.
+From the official Arch live ISO, `tsos-installer.sh` starts with **Simple** setup. A review menu lists disk, hostname, username, weights source, and this PC vs LAN — open a row to change it, then start the install. It does not ask about Omarchy and does not install it. Disk encryption is off unless you pass `--encrypt`. After you type the disk path to confirm the wipe, the same dialog stays up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`.
 
-Choose **Advanced** for encryption, Omarchy (`now` requires LUKS, or `skip`), extra models, bind address, public URL, and SSH tunnel.
+Choose **Advanced** for a review menu that also covers encryption, Omarchy (`now` requires LUKS, or `skip`), extra models, bind address, public URL, and SSH tunnel.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
@@ -27,27 +27,17 @@ bash install.sh
 
 Clone into `$HOME/tabby-stack` so this folder *is* the git checkout. A leftover `tabby-stack-archlinux` clone is optional; if you still clone elsewhere, the installer copies the tree (including `.git`) into the dest you pick.
 
-The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc cancels. After you confirm, the work stays in that same installer: a **progress bar**, elapsed time, and a live tail of `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command on the console instead.
+The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc on the review menu cancels; Esc on a setting goes back. After you confirm, the work stays in that same installer: a **progress bar**, elapsed time, and a live tail of `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command on the console instead.
 
-**Simple** (recommended) asks:
+**Simple** (recommended) opens a review menu:
 
 1. **Setup type** — Simple or Advanced (Simple is the default)
-2. **Who can connect** — this PC only (`127.0.0.1`) or other computers on the network (`0.0.0.0`)
-3. **Confirm** — install root `$HOME/tabby-stack`, models `core`, Hugging Face
+2. **Review** — disk, hostname, username, weights source, this PC vs LAN. Open a row to change it, then Start install.
+3. **Confirm wipe** — type the disk path. Password is next (login only; the disk is not encrypted).
 
-From the live ISO, Simple also asks for the **disk**, **hostname**, **username**, **weights source** (Hugging Face, USB, or a path), and **password** (login only; the disk is not encrypted). Omarchy is not shown and is not installed.
+From the live ISO, Simple does not show Omarchy and does not install it.
 
-**Advanced** asks:
-
-1. **Arch install root** — Linux disk, default `$HOME/tabby-stack` (TabbyAPI and ComfyUI go underneath). Not a USB or other removable mount.
-2. **Weights cache** — Hugging Face, USB, or a custom path
-3. **Model set** — `core` (qwen 9B + Flux + Qwen-Image + embedder) or `all` (every `switch to …` profile)
-4. **Listen URLs** — TabbyAPI bind address (menu of this machine's IPs: `127.0.0.1`, LAN NICs, or `0.0.0.0`), port, and ComfyUI URL (default `http://127.0.0.1:8188`)
-5. **Public URL / tunnel** — optional public API base, SSH remote, forward spec, and key. The key screen shows the host and the path `https://... -> SSH reverse port -> TabbyAPI`. Upload the matching `.pub` to that host.
-6. **Screensaver** — TTY activity field (skipped if a desktop already owns the GPU)
-7. **Confirm** — review paths and URLs before anything is installed
-
-On the live ISO, Advanced also asks hostname, locale, keymap, EFI size, Omarchy, and LUKS. Flags: `--simple` / `--advanced`, or `INSTALL_MODE=simple|advanced`.
+**Advanced** uses the same review menu plus locale, encryption, Omarchy, models, bind address, public URL, and SSH tunnel. Flags: `--simple` / `--advanced`, or `INSTALL_MODE=simple|advanced`.
 
 Non-interactive (no menus):
 

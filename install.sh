@@ -27,11 +27,12 @@ usage_install() {
 Usage: $(basename "$0") [--update] [--simple|--advanced]
 
   (no args)     Interactive or env-driven install / re-run.
-                Starts with Simple setup (this PC vs LAN; core models).
-                Choose Advanced for cache, extra models, tunnels, screensaver.
-  --simple      Short wizard only (who can connect). Install root is
+                Starts with Simple setup (review menu: this PC vs LAN;
+                core models). Choose Advanced for cache, extra models,
+                tunnels, screensaver.
+  --simple      Review menu: this PC vs LAN. Install root is
                 \$HOME/tabby-stack, models core, Hugging Face.
-  --advanced    Full settings wizard
+  --advanced    Review menu for every setting
   --update      Apply code and deps after git pull. Prefer: bash update.sh
                 Reuses tabby.env; does not overwrite config.yml or tabby.env.
                 Does not pacman -Syu; only installs missing OS packages.
@@ -77,6 +78,74 @@ ui_cancel() {
   exit 1
 }
 
+UI_ALLOW_BACK=0
+UI_ROWS=24
+UI_COLS=80
+
+_ui_fail() {
+  if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+    return 1
+  fi
+  ui_cancel
+}
+
+box_width() {
+  local w=$((UI_COLS - 4))
+  ((w > 74)) && w=74
+  ((w < 46)) && w=46
+  printf '%s' "$w"
+}
+
+text_rows() {
+  local text=$1 width=$2
+  printf '%s\n' "$text" | awk -v w="$((width - 4))" '
+    { n = length($0); total += (n == 0 ? 1 : int((n + w - 1) / w)) }
+    END { print (total ? total : 1) }'
+}
+
+box_rows_max() {
+  local m=$((UI_ROWS - 2))
+  ((m < 9)) && m=9
+  printf '%s' "$m"
+}
+
+fit_text() {
+  local text=$1 width=$2 avail=$3 inner
+  ((avail < 1)) && avail=1
+  inner=$((width - 4))
+  ((inner < 8)) && inner=8
+  while (($(text_rows "$text" "$width") > avail)) && [[ "$text" == *$'\n'* ]]; do
+    text=${text%$'\n'*}
+  done
+  if (($(text_rows "$text" "$width") > avail)); then
+    text=$(printf '%s' "$text" | head -c $((inner * avail)))
+  fi
+  printf '%s' "$text"
+}
+
+# dialog draws the widget on stdout and returns the typed value on stderr.
+# Callers use DIALOG_OUT. The widget must go to /dev/tty (not a pipe).
+dialog_read() {
+  local tmp rc
+  DIALOG_OUT=""
+  tmp=$(mktemp "${TMPDIR:-/tmp}/tabby-dialog.XXXXXX") || return 1
+  set +e
+  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp" >/dev/tty
+  else
+    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
+  fi
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  DIALOG_OUT=$(cat "$tmp")
+  rm -f "$tmp"
+  return 0
+}
+
 # dialog (ncurses) if available, else whiptail, else printed how-to + read.
 tui_cmd() {
   if need_cmd dialog; then
@@ -101,33 +170,6 @@ ensure_dialog() {
   tui_cmd
 }
 
-# dialog draws the widget on stdout and returns the typed value on stderr.
-# Callers use $(dialog_read ...), so stdout here is a capture pipe: the widget
-# has to go to /dev/tty or nothing is drawn and the console just sits there
-# waiting for a keypress. --stdout is not an option: that node exists in
-# arch-chroot after su/runuser but cannot be opened ("cannot open tty output").
-dialog_read() {
-  local tmp rc
-  tmp=$(mktemp "${TMPDIR:-/tmp}/tabby-dialog.XXXXXX") || return 1
-  set +e
-  if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
-    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp" >/dev/tty
-  else
-    dialog --backtitle "$BACKTITLE" "$@" 2> "$tmp"
-  fi
-  rc=$?
-  set -e
-  if [[ "$rc" -ne 0 ]]; then
-    rm -f "$tmp"
-    return "$rc"
-  fi
-  cat "$tmp"
-  rm -f "$tmp"
-  return 0
-}
-
-# Same reason as dialog_read: ui_msg and ui_yesno also run inside $( ) via
-# ui_ask_until, so the widget must go to the terminal, not to stdout.
 dialog_tty() {
   if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
     dialog "$@" >/dev/tty
@@ -139,12 +181,19 @@ dialog_tty() {
 ui_msg() {
   local title="$1"
   local text="$2"
-  local height="${3:-20}"
-  local width="${4:-74}"
+  local height="${3:-}"
+  local width="${4:-}"
+  [[ -n "$width" ]] || width=$(box_width)
+  local max=$(($(box_rows_max) - 6))
+  text=$(fit_text "$text" "$width" "$max")
+  local need=$(($(text_rows "$text" "$width") + 6))
+  if [[ -z "$height" ]] || ((height > need)); then
+    height=$need
+  fi
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || { _ui_fail; return 1; }
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || ui_cancel
+    whiptail --backtitle "$BACKTITLE" --title "$title" --msgbox "$text" "$height" "$width" || { _ui_fail; return 1; }
   else
     echo
     echo "=== $title ==="
@@ -157,15 +206,17 @@ ui_input() {
   local title="$1"
   local text="$2"
   local default="$3"
-  local height="${4:-18}"
-  local width="${5:-74}"
   local out=""
+  local width height
+  width=$(box_width)
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
+  height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default")" || ui_cancel
+    dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default" || { _ui_fail; return 1; }
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
-    # stdout is captured by the caller; the screen text must go to stderr.
     {
       echo
       echo "=== $title ==="
@@ -183,12 +234,26 @@ ui_menu() {
   local text="$2"
   shift 2
   local out=""
+  local width height list max
+  width=$(box_width)
+  max=$(box_rows_max)
+  list=$(($# / 2))
+  ((list > 12)) && list=12
+  local avail=$((max - list - 7))
+  if ((avail < 2)); then
+    list=$((max - 9))
+    ((list < 2)) && list=2
+    avail=$((max - list - 7))
+  fi
+  text=$(fit_text "$text" "$width" "$avail")
+  height=$(($(text_rows "$text" "$width") + list + 7))
+  ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --menu "$text" 22 74 10 "$@")" || ui_cancel
+    dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@" || { _ui_fail; return 1; }
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" 22 74 10 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
-    # stdout is captured by the caller; the screen text must go to stderr.
     {
       echo
       echo "=== $title ==="
@@ -221,10 +286,25 @@ ui_checklist() {
   local text="$2"
   shift 2
   local out=""
+  local width height list max
+  width=$(box_width)
+  max=$(box_rows_max)
+  list=$(($# / 3))
+  ((list > 10)) && list=10
+  local avail=$((max - list - 7))
+  if ((avail < 2)); then
+    list=$((max - 9))
+    ((list < 2)) && list=2
+    avail=$((max - list - 7))
+  fi
+  text=$(fit_text "$text" "$width" "$avail")
+  height=$(($(text_rows "$text" "$width") + list + 7))
+  ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --checklist "$text" 22 74 10 "$@")" || ui_cancel
+    dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" || { _ui_fail; return 1; }
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
-    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" 22 74 10 "$@" 3>&1 1>&2 2>&3)" || ui_cancel
+    out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || { _ui_fail; return 1; }
   else
     {
       echo
@@ -255,7 +335,6 @@ ui_checklist() {
     fi
   fi
   local -a chosen=()
-  # dialog prints quoted tags; ids are [A-Za-z0-9._-]+ so eval is safe.
   eval "chosen=(${out})"
   local IFS=,
   printf '%s' "${chosen[*]}"
@@ -265,16 +344,34 @@ ui_yesno() {
   local title="$1"
   local text="$2"
   local default_yes="${3:-1}"
+  local width height rc
+  width=$(box_width)
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 6))")
+  height=$(($(text_rows "$text" "$width") + 6))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
-    return $?
+    dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
+    rc=$?
+    if [[ "$rc" -eq 255 ]]; then
+      if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+        return 2
+      fi
+      ui_cancel
+    fi
+    return "$rc"
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
-    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" 16 74
-    return $?
+    whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
+    rc=$?
+    if [[ "$rc" -eq 255 ]]; then
+      if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
+        return 2
+      fi
+      ui_cancel
+    fi
+    return "$rc"
   else
     local yn="Y/n"
     [[ "$default_yes" -eq 0 ]] && yn="y/N"
@@ -288,6 +385,7 @@ ui_yesno() {
     [[ "$ans" =~ ^[Yy] ]]
   fi
 }
+
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -360,8 +458,6 @@ GAUGE_FIFO=""
 GAUGE_DIR=""
 GAUGE_MODE=""
 GAUGE_SAVED_FD=""
-UI_ROWS=24
-UI_COLS=80
 SUDO_KEEPALIVE_PID=""
 INSTALL_FAILED=0
 
@@ -407,15 +503,15 @@ work_term() {
 }
 
 gauge_height() {
-  local h=$((UI_ROWS - 1))
-  ((h > 24)) && h=24
+  local h=$((UI_ROWS - 6))
+  ((h > 18)) && h=18
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((UI_COLS - 2))
-  ((w > 98)) && w=98
+  local w=$((UI_COLS - 8))
+  ((w > 70)) && w=70
   ((w < 50)) && w=50
   printf '%s' "$w"
 }
@@ -1258,6 +1354,7 @@ if [[ "$INTERACTIVE" -eq 1 ]]; then
   esac
   if [[ -n "$TUI" && -t 0 && -t 1 ]]; then
     USE_TUI=1
+    work_term
   fi
 fi
 
@@ -1398,14 +1495,14 @@ ui_listen_host() {
   0.0.0.0    — other devices on the LAN can connect
 
 Do not pick a public hostname. The TCP port is the next screen." \
-    "${items[@]}")"
+    "${items[@]}")" || return 1
   if [[ "$choice" == "other" ]]; then
     choice="$(ui_input "$title" \
 "Address TabbyAPI binds on.
 
 Examples: 127.0.0.1 (this machine), 0.0.0.0 (all NICs), or a LAN IPv4.
 Do not put a public hostname here." \
-      "${current:-127.0.0.1}")"
+      "${current:-127.0.0.1}")" || return 1
   fi
   printf '%s' "${choice:-127.0.0.1}"
 }
@@ -1422,7 +1519,7 @@ ui_listen_access() {
 
 You can change this later in Settings." \
     this-pc "This PC only" \
-    lan "Other computers on my network")"
+    lan "Other computers on my network")" || return 1
   case "$choice" in
     lan) printf '%s' "0.0.0.0" ;;
     *) printf '%s' "127.0.0.1" ;;
@@ -1443,13 +1540,12 @@ pick_install_mode() {
   fi
   local choice
   choice="$(ui_menu "Setup type" \
-"Simple (recommended) installs into \$HOME/tabby-stack with the
-core models from Hugging Face. It asks whether other computers
-on your network can connect.
+"Simple (recommended) opens a review menu: this PC vs LAN,
+core models from Hugging Face into \$HOME/tabby-stack.
 
-Advanced asks every setting: install root, weights cache,
-extra models, bind address, public URL, SSH tunnel, and
-screensaver.
+Advanced lists every setting as a row you can open: install
+root, weights cache, models, bind address, public URL, SSH
+tunnel, and screensaver.
 
 You can re-run later and pick Advanced to change those." \
     simple "Simple — this PC vs LAN, core models" \
@@ -1466,99 +1562,87 @@ plus ComfyUI image generation on Arch.
 Simple setup installs into:
   ${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}
 
-It fetches the core models (qwen 9B, Flux, Qwen-Image, CPU
-embedder) from Hugging Face.
-
-You will be asked whether other computers on your network
-can connect. Extra models, a USB cache, a public URL, an
-SSH tunnel, and screensaver options are under Advanced.
+A review menu lists who can connect. Open that row to change
+it, then Start install. Extra models, a USB cache, a public
+URL, an SSH tunnel, and screensaver options are under Advanced.
 
 Needed
   • Arch Linux, your user (not root), internet
   • NVIDIA GPU (docs assume 12 GB)
 
-Esc cancels."
+Esc on the review menu cancels. Esc on a setting goes back."
 
+  DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+  DEST="${DEST:-$DEFAULT_DEST}"
+  WIN_ROOT=""
+  MODEL_SET="${TABBY_MODELS:-core}"
+  MODEL_SET="${MODEL_SET:-core}"
+  TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
+  COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
+  TABBY_PUBLIC_BASE=""
+  TABBY_SSH_REMOTE=""
+  TABBY_SSH_FORWARD=""
+  TABBY_SSH_KEY=""
+  TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
+  apply_saver_defaults
+  local choice host access
   while true; do
-    DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
-    DEST="${DEST:-$DEFAULT_DEST}"
-    WIN_ROOT=""
-    MODEL_SET="${TABBY_MODELS:-core}"
-    MODEL_SET="${MODEL_SET:-core}"
-    if [[ -z "${TABBY_NETWORK_HOST:-}" ]]; then
-      TABBY_NETWORK_HOST="$(ui_listen_access "1 / 2  — Who can connect")"
-    fi
-    TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
-    TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
-    COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
-    TABBY_PUBLIC_BASE=""
-    TABBY_SSH_REMOTE=""
-    TABBY_SSH_FORWARD=""
-    TABBY_SSH_KEY=""
     apply_choices
     apply_network_defaults
     TABBY_SSH_REMOTE=""
     TABBY_SSH_FORWARD=""
     TABBY_SSH_KEY=""
-    apply_saver_defaults
-    if ! valid_model_set "$MODEL_SET"; then
-      ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
-      MODEL_SET=core
-      continue
-    fi
-    if ! valid_port "$TABBY_NETWORK_PORT"; then
-      ui_msg "Invalid port" "The listen port must be a number from 1 to 65535 (got ${TABBY_NETWORK_PORT})."
-      TABBY_NETWORK_PORT=5000
-      continue
-    fi
-    if ! dest_is_sane; then
-      ui_msg "Invalid install root" \
-"Refusing to install into:
-  ${DEST}
-
-That is your home directory or a system folder. Pick a dedicated
-folder such as ${HOME}/tabby-stack or /data/tabby-stack."
-      return 1
-    fi
-    if cache_on_dest; then
-      ui_msg "Invalid paths" \
-"Arch dest must not be the weights cache mount.
-
-  Cache:     ${WIN_ROOT}
-  Arch dest: ${DEST}"
-      return 1
-    fi
-    API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
     if [[ "${TABBY_SAVER_ENABLED}" == "1" ]]; then
       SAVER_CONFIRM="on (auto; idle ${TABBY_SAVER_IDLE_S}s)"
     else
       SAVER_CONFIRM="off (auto)"
     fi
-    local access="this PC only"
     if [[ "$TABBY_NETWORK_HOST" == "0.0.0.0" ]]; then
-      access="other computers on the network"
+      access="LAN (0.0.0.0:${TABBY_NETWORK_PORT})"
+    else
+      access="this PC (${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT})"
     fi
-    if ui_yesno "2 / 2  — Confirm" \
-"Start the install with these settings?
+    choice=$(ui_menu "Review install plan" \
+"Open a row to change it. Start install when the plan looks right.
 
-  Arch dest:     ${DEST}
-  Weights:       Hugging Face
-  Models:        ${MODEL_SET}
-  Access:        ${access}
-  API:           ${API_URL}
-  ComfyUI URL:   ${COMFYUI_URL}
-  Screensaver:   ${SAVER_CONFIRM}
+  Dest:     ${DEST}
+  Weights:  Hugging Face
+  Models:   ${MODEL_SET}
+  Screensaver: ${SAVER_CONFIRM}
 
-Simple setup skips extra models, a USB cache, a public URL,
-an SSH tunnel, and screensaver questions. Re-run and pick
-Advanced to change those, or use Settings / tsctl later.
+Esc aborts." \
+      access "$(printf '%s' "$access" | cut -c1-48)" \
+      go "Start install") || ui_cancel
+    case "$choice" in
+      access)
+        UI_ALLOW_BACK=1
+        host=$(ui_listen_access "Who can connect") && TABBY_NETWORK_HOST="${host:-127.0.0.1}"
+        UI_ALLOW_BACK=0
+        ;;
+      go)
+        if ! valid_model_set "$MODEL_SET"; then
+          ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
+          MODEL_SET=core
+          continue
+        fi
+        if ! valid_port "$TABBY_NETWORK_PORT"; then
+          ui_msg "Invalid port" "The listen port must be a number from 1 to 65535 (got ${TABBY_NETWORK_PORT})."
+          TABBY_NETWORK_PORT=5000
+          continue
+        fi
+        if ! dest_is_sane; then
+          ui_msg "Invalid install root" \
+"Refusing to install into:
+  ${DEST}
 
-This can take a long time (Python 3.12, pip wheels, model files).
-Yes = begin.  No = change who can connect.  Esc = cancel." \
-      1; then
-      break
-    fi
-    TABBY_NETWORK_HOST=""
+That is your home directory or a system folder. Pick a dedicated
+folder such as ${HOME}/tabby-stack or /data/tabby-stack."
+          return 1
+        fi
+        API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
+        break
+        ;;
+    esac
   done
 }
 
@@ -1774,7 +1858,7 @@ pick_models_ui() {
   local vram rows id state label
   local args=()
   if ! need_cmd python3 || [[ ! -f "$FETCH_MODELS" ]]; then
-    return 1
+    return 2
   fi
   vram="$(gpu_vram_mib)"
   local py=(python3 -u "$FETCH_MODELS" --catalog "$CATALOG" --list-picks --source "$source" --vram-mib "$vram")
@@ -1782,13 +1866,446 @@ pick_models_ui() {
     py+=(--cache "$cache")
   fi
   rows="$("${py[@]}" 2>/dev/null || true)"
-  [[ -n "$rows" ]] || return 1
+  [[ -n "$rows" ]] || return 2
   while IFS=$'\t' read -r id state label; do
     [[ -n "${id:-}" ]] || continue
     args+=("$id" "$label" "$state")
   done <<< "$rows"
-  ((${#args[@]} >= 3)) || return 1
+  ((${#args[@]} >= 3)) || return 2
   ui_checklist "$title" "$text" "${args[@]}"
+}
+
+hub_desc() {
+  local s=$1 n=${2:-48}
+  s=${s//$'\n'/ }
+  s=${s//$'\t'/ }
+  if ((${#s} > n)); then
+    s="${s:0:$((n - 3))}..."
+  fi
+  printf '%s' "$s"
+}
+
+inst_edit_dest() {
+  local v
+  v=$(ui_input "Arch install root" \
+"Linux disk folder that will contain tabbyAPI/ and ComfyUI/.
+
+Examples
+  ${HOME}/tabby-stack  →  ${HOME}/tabby-stack/tabbyAPI  and  ${HOME}/tabby-stack/ComfyUI
+  /data/tabby-stack    →  /data/tabby-stack/tabbyAPI   and  /data/tabby-stack/ComfyUI
+
+Do NOT use a USB or other removable mount as the install root.
+Those mounts are only a weights cache on a later row.
+
+Default is \$HOME/tabby-stack." \
+"${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}") || return 0
+  DEST="${v:-$DEFAULT_DEST}"
+}
+
+inst_edit_weights() {
+  local cache_choice v
+  cache_choice=$(ui_menu "Weights source" \
+"Where should the installer get model weights?
+
+Hugging Face — download models that fit this NVIDIA GPU.
+A local path — search that folder for weights you already have
+(USB copy, old tabby-stack, or a folder of model dirs). Missing
+pieces still download.
+
+Mount a USB first if you want that option:
+  sudo pacman -S --needed ntfs-3g
+  sudo mkdir -p /mnt/usb
+  sudo mount /dev/sdXN /mnt/usb" \
+      hf "Hugging Face (models that fit this GPU)" \
+      usb "Use /mnt/usb/tabby-stack (USB copy)" \
+      custom "Type another path") || return 0
+  case "$cache_choice" in
+    hf|none) WIN_ROOT="" ;;
+    usb) WIN_ROOT="/mnt/usb/tabby-stack" ;;
+    custom)
+      v=$(ui_input "Weights cache path" \
+"Folder to search for existing weights. Any of these work:
+
+  /mnt/usb/tabby-stack          (full tree: tabbyAPI/ + ComfyUI/)
+  /mnt/usb/tabby-stack/tabbyAPI/models
+  /data/weights                 (model dirs / .safetensors / .gguf)
+
+The installer lists what it finds next. Blank = Hugging Face." \
+"${TABBY_CACHE:-$DEFAULT_CACHE}") || return 0
+      WIN_ROOT=$v
+      ;;
+    *) WIN_ROOT="$cache_choice" ;;
+  esac
+  if [[ -n "$WIN_ROOT" && ! -d "$WIN_ROOT" ]]; then
+    if ui_yesno "Cache not found" \
+"That path is not a directory:
+  ${WIN_ROOT}
+
+Typical cause: the USB is not mounted, or the path is wrong.
+
+Yes = continue with Hugging Face for anything missing.
+No = keep the path." 0; then
+      WIN_ROOT=""
+    fi
+  elif [[ -n "$WIN_ROOT" ]] && ! cache_has_any_weights "$WIN_ROOT"; then
+    if ui_yesno "No weights seen in cache" \
+"Opened:
+  ${WIN_ROOT}
+
+Did not find tabbyAPI/, ComfyUI/, models/, or weight files there.
+Yes = pick Hugging Face models that fit this GPU instead.
+No = keep the path." 0; then
+      WIN_ROOT=""
+    fi
+  fi
+}
+
+inst_edit_models() {
+  local gpu_label picked rc
+  GPU_VRAM_MIB="$(gpu_vram_mib)"
+  gpu_label="$(gpu_prompt_label "$GPU_VRAM_MIB")"
+  picked=""
+  if [[ -n "$WIN_ROOT" ]]; then
+    picked=$(pick_models_ui "Models found" \
+"Weights found under:
+  ${WIN_ROOT}
+
+Space toggles a row. Enter confirms. Selected models are copied
+into the install; anything incomplete still downloads.
+
+GPU: ${gpu_label}" \
+      cache "$WIN_ROOT")
+    rc=$?
+    case "$rc" in
+      1) return 0 ;;
+      0)
+        if [[ -z "$picked" ]]; then
+          ui_msg "Select at least one model" "Check at least one row, then press Enter." || true
+          return 0
+        fi
+        MODEL_SET=$picked
+        ;;
+      *)
+        if ui_yesno "No catalog models in that folder" \
+"Nothing matching the installer catalog was found in:
+  ${WIN_ROOT}
+
+Yes = show Hugging Face models that fit this GPU instead.
+No = keep core." 1; then
+          WIN_ROOT=""
+        else
+          MODEL_SET=core
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  if [[ -z "${picked:-}" && -z "$WIN_ROOT" ]]; then
+    picked=$(pick_models_ui "Hugging Face models" \
+"Hugging Face models that fit this GPU:
+  ${gpu_label}
+
+Space toggles a row. Enter confirms. Checked rows are the usual
+first-install set. Re-run later to add more; finished files are skipped.
+
+If VRAM could not be read, every catalog model is listed." \
+      hf "")
+    rc=$?
+    case "$rc" in
+      1) return 0 ;;
+      0) MODEL_SET=${picked:-core} ;;
+      *)
+        picked=$(ui_menu "Model set" \
+"Could not list individual models. Pick a preset.
+
+core  — qwen 9B, Flux, Qwen-Image, CPU embedder
+all   — every switch-to profile (needs more disk and VRAM)" \
+          core "qwen 9B + Flux + Qwen-Image + embedder" \
+          all "every switch-to profile") || return 0
+        MODEL_SET="${picked:-core}"
+        ;;
+    esac
+  fi
+  if [[ "$MODEL_SET" == *gemma* ]]; then
+    ui_msg "Gemma / Hugging Face" \
+"Gemma weights may be gated on Hugging Face.
+
+If a later download returns 401 or 403:
+  huggingface-cli login
+  or:  export HF_TOKEN=...
+  then re-run this installer (finished files are skipped).
+
+You do not need a token for qwen / Flux / Qwen-Image." || true
+  fi
+}
+
+inst_edit_network() {
+  local host port comfy
+  host=$(ui_listen_host "TabbyAPI listen host" "${TABBY_NETWORK_HOST:-127.0.0.1}") || return 0
+  host="${host:-127.0.0.1}"
+  port=$(ui_input "TabbyAPI listen port" \
+"TCP port for the API. Default 5000.
+
+Health:  http://${host}:PORT/health
+Cursor:  http://${host}:PORT/v1" \
+"${TABBY_NETWORK_PORT:-5000}") || return 0
+  port="${port:-5000}"
+  if ! valid_port "$port"; then
+    ui_msg "Invalid port" "The listen port must be a number from 1 to 65535 (got ${port})." || true
+    return 0
+  fi
+  local lan_hint="" lan_ip lan_extras
+  lan_ip="$(lan_ipv4)"
+  if [[ -n "$lan_ip" ]]; then
+    lan_hint="
+This machine:  http://${lan_ip}:8188"
+    lan_extras="$(lan_ipv4_extras "$lan_ip")"
+    if [[ -n "$lan_extras" ]]; then
+      lan_hint+="  (also ${lan_extras})"
+    fi
+  fi
+  comfy=$(ui_input "ComfyUI URL" \
+"HTTP URL for ComfyUI after “switch to comfy”.
+
+Usual value:  http://127.0.0.1:8188${lan_hint}
+Change this only if ComfyUI will listen somewhere else." \
+"${COMFYUI_URL:-http://127.0.0.1:8188}") || return 0
+  TABBY_NETWORK_HOST=$host
+  TABBY_NETWORK_PORT=$port
+  COMFYUI_URL="${comfy:-http://127.0.0.1:8188}"
+}
+
+inst_edit_public() {
+  local v
+  v=$(ui_input "Public API base URL" \
+"Optional URL written into image links and the public gallery.
+
+Examples
+  https://api.example.com/v1
+  https://chat.example.com/api/v1
+
+Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
+Leave blank if you do not have a reverse proxy or tunnel." \
+"${TABBY_PUBLIC_BASE}") || return 0
+  TABBY_PUBLIC_BASE=$v
+}
+
+inst_edit_tunnel() {
+  local remote spec key
+  remote=$(ui_input "Reverse SSH tunnel" \
+"Optional SSH login for a reverse tunnel (user@host).
+
+Leave blank if the API should stay on this machine only.
+
+If you set a host, the next screens ask how traffic reaches
+TabbyAPI, then which key this box uses to log in. You will
+need to put the matching public key in authorized_keys on
+that host." \
+"${TABBY_SSH_REMOTE}") || return 0
+  if [[ -z "$remote" ]]; then
+    TABBY_SSH_REMOTE=""
+    TABBY_SSH_FORWARD=""
+    TABBY_SSH_KEY=""
+    return 0
+  fi
+  spec=$(ui_input "SSH forward spec" \
+"ssh -R spec: where ${remote} listens, and where
+that lands on this GPU box.
+
+  bind:remote_port:local_host:local_port
+
+Default 127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT} means:
+  On ${remote}, listen on 127.0.0.1:12345
+  Forward to TabbyAPI here on 127.0.0.1:${TABBY_NETWORK_PORT}
+
+If HTTPS sits in front of that remote port, that is the
+Public URL from the previous screen." \
+"${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}") || return 0
+  spec="${spec:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
+  ui_msg "SSH private key" \
+"Private key this GPU box uses to log in to ${remote}.
+
+$(ssh_tunnel_help "$remote" "$spec" "$TABBY_PUBLIC_BASE")
+
+The installer copies that key from a weights cache if present,
+otherwise it creates a new ed25519 key. After install, copy the
+matching .pub onto ${remote}." || return 0
+  key=$(ui_input "SSH private key" \
+"Path to that private key for ${remote}.
+
+Default is fine unless your key has another name." \
+"${TABBY_SSH_KEY:-$HOME/.ssh/id_ed25519}") || return 0
+  TABBY_SSH_REMOTE=$remote
+  TABBY_SSH_FORWARD=$spec
+  TABBY_SSH_KEY="${key:-$HOME/.ssh/id_ed25519}"
+}
+
+inst_edit_saver() {
+  local rc v
+  apply_saver_defaults
+  local yn=0
+  [[ "${TABBY_SAVER_ENABLED}" == "1" ]] && yn=1
+  ui_yesno "Screensaver" \
+"Enable the TTY activity screensaver?
+
+A CPU-rendered field on a spare VT (default tty8). tty1 stays a
+login prompt. A key or mouse hides it. While logged in it waits
+${TABBY_SAVER_IDLE_S}s with no input; after logout it waits
+${TABBY_SAVER_LOGOUT_IDLE_S}s.
+
+Do not enable if Omarchy or another desktop already owns the GPU." \
+    "$yn"
+  rc=$?
+  case "$rc" in
+    2) return 0 ;;
+    0)
+      TABBY_SAVER_ENABLED=1
+      v=$(ui_input "Screensaver" \
+"Seconds of no keyboard/mouse while logged in on the console
+before the screensaver returns. Default 120 (2 minutes)." \
+"${TABBY_SAVER_IDLE_S}") || return 0
+      TABBY_SAVER_IDLE_S="${v:-120}"
+      if ! valid_seconds "$TABBY_SAVER_IDLE_S"; then
+        ui_msg "Invalid idle timeout" "Use a number of seconds from 0 to 86400." || true
+        TABBY_SAVER_IDLE_S=120
+      fi
+      v=$(ui_input "Screensaver" \
+"Seconds after logging out of the console (or idle at the login
+prompt) before the screensaver returns. Default 10." \
+"${TABBY_SAVER_LOGOUT_IDLE_S}") || return 0
+      TABBY_SAVER_LOGOUT_IDLE_S="${v:-10}"
+      if ! valid_seconds "$TABBY_SAVER_LOGOUT_IDLE_S"; then
+        ui_msg "Invalid logout timeout" "Use a number of seconds from 0 to 86400." || true
+        TABBY_SAVER_LOGOUT_IDLE_S=10
+      fi
+      ;;
+    *) TABBY_SAVER_ENABLED=0 ;;
+  esac
+}
+
+prompt_advanced_install() {
+  if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
+    ui_msg "tabby-stack" \
+"Arch is on the disk. Dest is already
+  ${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}
+The weights cache was set before the wipe (or Hugging Face).
+
+A review menu lists models, listen address, optional public
+URL / SSH, and screensaver. Open a row to change it."
+    DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+    DEST="${DEST:-$DEFAULT_DEST}"
+    WIN_ROOT="${TABBY_CACHE:-}"
+  else
+    ui_msg "What this installer does" \
+"tabby-stack: local OpenAI-compatible API for coding and agents,
+plus ComfyUI image generation on Arch. Any client that speaks /v1
+works — Cursor is one example.
+
+Use gpt-4o as the model name in your editor, and leave it.
+That is not ChatGPT — it is only a name. Many editors sandbox
+or block tools unless they see a known OpenAI name. The GPU
+still runs the local model you switched to.
+
+Needed
+  • Arch Linux, your user (not root), internet
+  • NVIDIA GPU (docs assume 12 GB)
+  • Python 3.12 — this script installs it (pyenv ${PYENV_VER} if needed)
+  • sudo — installed if missing (root password once); passwordless for this user
+
+A review menu lists every setting. Open a row to change it,
+then Start install.
+
+Source: ${TABBY_SRC}
+More detail: ${SCRIPT_DIR}/README.md
+
+Esc on the review menu cancels. Esc on a setting goes back."
+    DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
+    WIN_ROOT="${TABBY_CACHE:-}"
+  fi
+  MODEL_SET="${TABBY_MODELS:-core}"
+  apply_network_defaults
+  apply_saver_defaults
+  local choice wlabel slabel
+  while true; do
+    apply_choices
+    if [[ -z "$TABBY_SSH_REMOTE" ]]; then
+      TABBY_SSH_FORWARD=""
+      TABBY_SSH_KEY=""
+    fi
+    if [[ -n "$WIN_ROOT" ]]; then
+      wlabel=$WIN_ROOT
+    else
+      wlabel="Hugging Face"
+    fi
+    if [[ "${TABBY_SAVER_ENABLED}" == "1" ]]; then
+      slabel="on (idle ${TABBY_SAVER_IDLE_S}s)"
+    else
+      slabel="off"
+    fi
+    local -a items=()
+    if [[ "${TABBY_ISO_CHROOT:-}" != 1 ]]; then
+      items+=(dest "$(hub_desc "$DEST")")
+      items+=(weights "$(hub_desc "$wlabel")")
+    fi
+    items+=(models "$(hub_desc "${MODEL_SET:-core}")")
+    items+=(network "$(hub_desc "${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}")")
+    items+=(public "$(hub_desc "${TABBY_PUBLIC_BASE:- (local only)}")")
+    items+=(tunnel "$(hub_desc "${TABBY_SSH_REMOTE:- (none)}")")
+    items+=(saver "$(hub_desc "$slabel")")
+    items+=(go "Start install")
+    choice=$(ui_menu "Review install plan" \
+"Open a row to change it. Choose Start install when the plan
+looks right.
+
+Esc aborts. The next screen is a progress bar and the live log." \
+      "${items[@]}") || ui_cancel
+    UI_ALLOW_BACK=1
+    case "$choice" in
+      dest) inst_edit_dest ;;
+      weights) inst_edit_weights ;;
+      models) inst_edit_models ;;
+      network) inst_edit_network ;;
+      public) inst_edit_public ;;
+      tunnel) inst_edit_tunnel ;;
+      saver) inst_edit_saver ;;
+      go)
+        UI_ALLOW_BACK=0
+        apply_choices
+        apply_network_defaults
+        if [[ -z "$TABBY_SSH_REMOTE" ]]; then
+          TABBY_SSH_FORWARD=""
+          TABBY_SSH_KEY=""
+        fi
+        apply_saver_defaults
+        if ! valid_model_set "$MODEL_SET"; then
+          ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
+          continue
+        fi
+        if ! dest_is_sane; then
+          ui_msg "Invalid install root" \
+"Refusing to install into:
+  ${DEST}
+
+That is your home directory or a system folder. Pick a dedicated
+folder such as ${HOME}/tabby-stack or /data/tabby-stack."
+          continue
+        fi
+        if cache_on_dest; then
+          ui_msg "Invalid paths" \
+"Arch dest must not be the weights cache mount.
+
+  Cache:     ${WIN_ROOT}
+  Arch dest: ${DEST}
+
+Use the Linux disk, for example ${HOME}/tabby-stack or /data/tabby-stack."
+          continue
+        fi
+        API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
+        break
+        ;;
+    esac
+    UI_ALLOW_BACK=0
+  done
 }
 
 DEFAULT_DEST="$HOME/tabby-stack"
@@ -1843,415 +2360,10 @@ else
   if [[ "$INSTALL_MODE" == simple ]]; then
     prompt_simple_install
   else
-  if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
-    ui_msg "tabby-stack" \
-"Arch is on the disk. Dest is already
-  ${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}
-The weights cache was set before the wipe (or Hugging Face).
-
-Next screens: model set, listen address, optional public URL / SSH."
-  else
-  ui_msg "What this installer does" \
-"tabby-stack: local OpenAI-compatible API for coding and agents,
-plus ComfyUI image generation on Arch. Any client that speaks /v1
-works — Cursor is one example.
-
-Use gpt-4o as the model name in your editor, and leave it.
-That is not ChatGPT — it is only a name. Many editors sandbox
-or block tools unless they see a known OpenAI name. The GPU
-still runs the local model you switched to.
-
-Needed
-  • Arch Linux, your user (not root), internet
-  • NVIDIA GPU (docs assume 12 GB)
-  • Python 3.12 — this script installs it (pyenv ${PYENV_VER} if needed)
-  • sudo — installed if missing (root password once); passwordless for this user
-
-What you get
-  • TabbyAPI on http://127.0.0.1:5000/v1  (model name: gpt-4o — leave it)
-  • ComfyUI on http://127.0.0.1:8188 after “switch to comfy”
-  • linger so Tabby starts at boot with no login
-  • if the NVIDIA driver needs a reboot, this script reboots and resumes
-
-Models are not in git. They are copied from an optional local cache
-or downloaded from Hugging Face.
-
-Prefer cloning this repo into the install root (default \$HOME/tabby-stack)
-so later you can run update.sh there instead of a second clone.
-
-Source: ${TABBY_SRC}
-More detail: ${SCRIPT_DIR}/README.md
-
-Next screens ask where to install, where weights come from
-(Hugging Face or a local folder), which models to fetch, and the
-API / tunnel URLs."
-  fi
-
-  while true; do
-    if [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
-      DEST="${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}"
-      DEST="${DEST:-$DEFAULT_DEST}"
-      WIN_ROOT="${TABBY_CACHE:-}"
-      step_models="1 / 4  — Models"
-      step_host="2 / 4  — TabbyAPI listen host"
-      step_port="2 / 4  — TabbyAPI listen port"
-      step_comfy="2 / 4  — ComfyUI URL"
-      step_public="3 / 4  — Public API base URL"
-      step_ssh="3 / 4  — Reverse SSH tunnel"
-      step_fwd="3 / 4  — SSH forward spec"
-      step_key="3 / 4  — SSH private key"
-      step_saver="3 / 4  — Screensaver"
-      step_confirm="4 / 4  — Confirm"
-    else
-    DEST="$(ui_input "1 / 6  — Arch install root" \
-"Linux disk folder that will contain tabbyAPI/ and ComfyUI/.
-
-Examples
-  ${HOME}/tabby-stack  →  ${HOME}/tabby-stack/tabbyAPI  and  ${HOME}/tabby-stack/ComfyUI
-  /data/tabby-stack    →  /data/tabby-stack/tabbyAPI   and  /data/tabby-stack/ComfyUI
-
-Do NOT use a USB or other removable mount as the install root.
-Those mounts are only a weights cache on a later screen.
-
-Default is \$HOME/tabby-stack." \
-"${TABBY_INSTALL_ROOT:-$DEFAULT_DEST}")"
-    DEST="${DEST:-$DEFAULT_DEST}"
-
-    cache_choice="$(ui_menu "2 / 6  — Weights source" \
-"Where should the installer get model weights?
-
-Hugging Face — download models that fit this NVIDIA GPU.
-A local path — search that folder for weights you already have
-(USB copy, old tabby-stack, or a folder of model dirs). Missing
-pieces still download.
-
-Mount a USB first if you want that option:
-  sudo pacman -S --needed ntfs-3g
-  sudo mkdir -p /mnt/usb
-  sudo mount /dev/sdXN /mnt/usb" \
-      hf "Hugging Face (models that fit this GPU)" \
-      usb "Use /mnt/usb/tabby-stack (USB copy)" \
-      custom "Type another path")"
-
-    case "$cache_choice" in
-      hf|none) WIN_ROOT="" ;;
-      usb) WIN_ROOT="/mnt/usb/tabby-stack" ;;
-      custom)
-        WIN_ROOT="$(ui_input "Weights cache path" \
-"Folder to search for existing weights. Any of these work:
-
-  /mnt/usb/tabby-stack          (full tree: tabbyAPI/ + ComfyUI/)
-  /mnt/usb/tabby-stack/tabbyAPI/models
-  /data/weights                 (model dirs / .safetensors / .gguf)
-
-The installer lists what it finds next. Blank = Hugging Face." \
-"${TABBY_CACHE:-$DEFAULT_CACHE}")"
-        ;;
-      *) WIN_ROOT="$cache_choice" ;;
-    esac
-
-      step_models="3 / 6  — Models"
-      step_host="4 / 6  — TabbyAPI listen host"
-      step_port="4 / 6  — TabbyAPI listen port"
-      step_comfy="4 / 6  — ComfyUI URL"
-      step_public="5 / 6  — Public API base URL"
-      step_ssh="5 / 6  — Reverse SSH tunnel"
-      step_fwd="5 / 6  — SSH forward spec"
-      step_key="5 / 6  — SSH private key"
-      step_saver="5 / 6  — Screensaver"
-      step_confirm="6 / 6  — Confirm"
-    fi
-
-    if [[ -n "$WIN_ROOT" && ! -d "$WIN_ROOT" ]]; then
-      if ! ui_yesno "Cache not found" \
-"That path is not a directory:
-  ${WIN_ROOT}
-
-Typical cause: the USB is not mounted, or the path is wrong.
-
-Yes = continue with Hugging Face for anything missing.
-No = go back and pick another cache." 0; then
-        continue
-      fi
-      WIN_ROOT=""
-    elif [[ -n "$WIN_ROOT" ]] && ! cache_has_any_weights "$WIN_ROOT"; then
-      if ! ui_yesno "No weights seen in cache" \
-"Opened:
-  ${WIN_ROOT}
-
-Did not find tabbyAPI/, ComfyUI/, models/, or weight files there.
-Yes = pick Hugging Face models that fit this GPU instead.
-No = go back and pick another cache." 0; then
-        continue
-      fi
-      WIN_ROOT=""
-    fi
-
-    GPU_VRAM_MIB="$(gpu_vram_mib)"
-    GPU_LABEL="$(gpu_prompt_label "$GPU_VRAM_MIB")"
-    MODEL_SET=""
-    if [[ -n "$WIN_ROOT" ]]; then
-      if MODEL_SET="$(pick_models_ui "$step_models" \
-"Weights found under:
-  ${WIN_ROOT}
-
-Space toggles a row. Enter confirms. Selected models are copied
-into the install; anything incomplete still downloads.
-
-GPU: ${GPU_LABEL}" \
-        cache "$WIN_ROOT")"; then
-        if [[ -z "$MODEL_SET" ]]; then
-          ui_msg "Select at least one model" \
-"Nothing was checked. Go back and select the weights to copy, or
-choose Hugging Face."
-          continue
-        fi
-      else
-        if ! ui_yesno "No catalog models in that folder" \
-"Nothing matching the installer catalog was found in:
-  ${WIN_ROOT}
-
-Yes = show Hugging Face models that fit this GPU instead.
-No = go back." 1; then
-          continue
-        fi
-        WIN_ROOT=""
-        MODEL_SET=""
-      fi
-    fi
-    if [[ -z "$MODEL_SET" ]]; then
-      if MODEL_SET="$(pick_models_ui "$step_models" \
-"Hugging Face models that fit this GPU:
-  ${GPU_LABEL}
-
-Space toggles a row. Enter confirms. Checked rows are the usual
-first-install set. Re-run later to add more; finished files are skipped.
-
-If VRAM could not be read, every catalog model is listed." \
-        hf "")"; then
-        if [[ -z "$MODEL_SET" ]]; then
-          ui_msg "Select at least one model" "Check at least one row, then press Enter."
-          continue
-        fi
-      else
-        MODEL_SET=""
-      fi
-    fi
-    if [[ -z "$MODEL_SET" ]]; then
-      MODEL_SET="$(ui_menu "$step_models" \
-"Could not list individual models. Pick a preset.
-
-core  — qwen 9B, Flux, Qwen-Image, CPU embedder
-all   — every switch-to profile (needs more disk and VRAM)" \
-        core "qwen 9B + Flux + Qwen-Image + embedder" \
-        all "every switch-to profile")"
-      MODEL_SET="${MODEL_SET:-core}"
-    fi
-
-    if [[ "$MODEL_SET" == *gemma* ]]; then
-      ui_msg "Gemma / Hugging Face" \
-"Gemma weights may be gated on Hugging Face.
-
-If a later download returns 401 or 403:
-  huggingface-cli login
-  or:  export HF_TOKEN=...
-  then re-run this installer (finished files are skipped).
-
-You do not need a token for qwen / Flux / Qwen-Image."
-    fi
-
-    apply_choices
-    apply_network_defaults
-    if ! valid_model_set "$MODEL_SET"; then
-      ui_msg "Invalid model set" "Pick at least one model (got ${MODEL_SET:-empty})."
-      continue
-    fi
-    if ! dest_is_sane; then
-      ui_msg "Invalid install root" \
-"Refusing to install into:
-  ${DEST}
-
-That is your home directory or a system folder. Pick a dedicated
-folder such as ${HOME}/tabby-stack or /data/tabby-stack."
-      continue
-    fi
-    if cache_on_dest; then
-      ui_msg "Invalid paths" \
-"Arch dest must not be the weights cache mount.
-
-  Cache:     ${WIN_ROOT}
-  Arch dest: ${DEST}
-
-Use the Linux disk, for example ${HOME}/tabby-stack or /data/tabby-stack."
-      continue
-    fi
-
-    TABBY_NETWORK_HOST="$(ui_listen_host "$step_host" "${TABBY_NETWORK_HOST:-127.0.0.1}")"
-    TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
-
-    TABBY_NETWORK_PORT="$(ui_input "$step_port" \
-"TCP port for the API. Default 5000.
-
-Health:  http://${TABBY_NETWORK_HOST}:PORT/health
-Cursor:  http://${TABBY_NETWORK_HOST}:PORT/v1" \
-"${TABBY_NETWORK_PORT}")"
-    TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
-    if ! valid_port "$TABBY_NETWORK_PORT"; then
-      ui_msg "Invalid port" "The listen port must be a number from 1 to 65535 (got ${TABBY_NETWORK_PORT})."
-      TABBY_NETWORK_PORT=5000
-      continue
-    fi
-
-    LAN_IP="$(lan_ipv4)"
-    LAN_HINT=""
-    if [[ -n "$LAN_IP" ]]; then
-      LAN_HINT="
-This machine:  http://${LAN_IP}:8188"
-      LAN_EXTRAS="$(lan_ipv4_extras "$LAN_IP")"
-      if [[ -n "$LAN_EXTRAS" ]]; then
-        LAN_HINT+="  (also ${LAN_EXTRAS})"
-      fi
-    fi
-    COMFYUI_URL="$(ui_input "$step_comfy" \
-"HTTP URL for ComfyUI after “switch to comfy”.
-
-Usual value:  http://127.0.0.1:8188${LAN_HINT}
-Change this only if ComfyUI will listen somewhere else." \
-"${COMFYUI_URL}")"
-    COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
-
-    TABBY_PUBLIC_BASE="$(ui_input "$step_public" \
-"Optional URL written into image links and the public gallery.
-
-Examples
-  https://api.example.com/v1
-  https://chat.example.com/api/v1
-
-Blank = local only (http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}/v1).
-Leave blank if you do not have a reverse proxy or tunnel." \
-"${TABBY_PUBLIC_BASE}")"
-
-    TABBY_SSH_REMOTE="$(ui_input "$step_ssh" \
-"Optional SSH login for a reverse tunnel (user@host).
-
-Leave blank if the API should stay on this machine only.
-
-If you set a host, the next screens ask how traffic reaches
-TabbyAPI, then which key this box uses to log in. You will
-need to put the matching public key in authorized_keys on
-that host." \
-"${TABBY_SSH_REMOTE}" 20)"
-    if [[ -n "$TABBY_SSH_REMOTE" ]]; then
-      TABBY_SSH_FORWARD="$(ui_input "$step_fwd" \
-"ssh -R spec: where ${TABBY_SSH_REMOTE} listens, and where
-that lands on this GPU box.
-
-  bind:remote_port:local_host:local_port
-
-Default 127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT} means:
-  On ${TABBY_SSH_REMOTE}, listen on 127.0.0.1:12345
-  Forward to TabbyAPI here on 127.0.0.1:${TABBY_NETWORK_PORT}
-
-If HTTPS sits in front of that remote port, that is the
-Public URL from the previous screen." \
-"${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}" 22)"
-      TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-127.0.0.1:12345:127.0.0.1:${TABBY_NETWORK_PORT}}"
-      ui_msg "$step_key" \
-"Private key this GPU box uses to log in to ${TABBY_SSH_REMOTE}.
-
-$(ssh_tunnel_help "$TABBY_SSH_REMOTE" "$TABBY_SSH_FORWARD" "$TABBY_PUBLIC_BASE")
-
-The installer copies that key from a weights cache if present,
-otherwise it creates a new ed25519 key. After install, copy the
-matching .pub onto ${TABBY_SSH_REMOTE}." \
-        22
-      TABBY_SSH_KEY="$(ui_input "$step_key" \
-"Path to that private key for ${TABBY_SSH_REMOTE}.
-
-Default is fine unless your key has another name." \
-"${TABBY_SSH_KEY:-$HOME/.ssh/id_ed25519}")"
-      TABBY_SSH_KEY="${TABBY_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-    else
-      TABBY_SSH_FORWARD=""
-      TABBY_SSH_KEY=""
-    fi
-    apply_network_defaults
-    # apply_network_defaults fills empty SSH defaults; keep tunnel off if remote is blank
-    if [[ -z "$TABBY_SSH_REMOTE" ]]; then
-      TABBY_SSH_FORWARD=""
-      TABBY_SSH_KEY=""
-    fi
-    apply_saver_defaults
-    SAVER_DEFAULT_YN=0
-    [[ "${TABBY_SAVER_ENABLED}" == "1" ]] && SAVER_DEFAULT_YN=1
-    if ui_yesno "${step_saver:-Screensaver}" \
-"Enable the TTY activity screensaver?
-
-A CPU-rendered field on a spare VT (default tty8). tty1 stays a
-login prompt. A key or mouse hides it. While logged in it waits
-${TABBY_SAVER_IDLE_S}s with no input; after logout it waits
-${TABBY_SAVER_LOGOUT_IDLE_S}s.
-
-Do not enable if Omarchy or another desktop already owns the GPU." \
-      "$SAVER_DEFAULT_YN"; then
-      TABBY_SAVER_ENABLED=1
-      TABBY_SAVER_IDLE_S="$(ui_input "${step_saver:-Screensaver}" \
-"Seconds of no keyboard/mouse while logged in on the console
-before the screensaver returns. Default 120 (2 minutes)." \
-"${TABBY_SAVER_IDLE_S}")"
-      TABBY_SAVER_IDLE_S="${TABBY_SAVER_IDLE_S:-120}"
-      if ! valid_seconds "$TABBY_SAVER_IDLE_S"; then
-        ui_msg "Invalid idle timeout" "Use a number of seconds from 0 to 86400."
-        TABBY_SAVER_IDLE_S=120
-        continue
-      fi
-      TABBY_SAVER_LOGOUT_IDLE_S="$(ui_input "${step_saver:-Screensaver}" \
-"Seconds after logging out of the console (or idle at the login
-prompt) before the screensaver returns. Default 10." \
-"${TABBY_SAVER_LOGOUT_IDLE_S}")"
-      TABBY_SAVER_LOGOUT_IDLE_S="${TABBY_SAVER_LOGOUT_IDLE_S:-10}"
-      if ! valid_seconds "$TABBY_SAVER_LOGOUT_IDLE_S"; then
-        ui_msg "Invalid logout timeout" "Use a number of seconds from 0 to 86400."
-        TABBY_SAVER_LOGOUT_IDLE_S=10
-        continue
-      fi
-    else
-      TABBY_SAVER_ENABLED=0
-    fi
-    API_URL="http://${TABBY_NETWORK_HOST}:${TABBY_NETWORK_PORT}"
-    if [[ "${TABBY_SAVER_ENABLED}" == "1" ]]; then
-      SAVER_CONFIRM="on (idle ${TABBY_SAVER_IDLE_S}s, logout ${TABBY_SAVER_LOGOUT_IDLE_S}s)"
-    else
-      SAVER_CONFIRM="off"
-    fi
-
-    if ui_yesno "$step_confirm" \
-"Start the install with these settings?
-
-  Arch dest:     ${DEST}
-  TabbyAPI:      ${DEST_TABBY}
-  ComfyUI:       ${DEST_COMFY}
-  Weights cache: ${WIN_ROOT:- (Hugging Face)}
-  Models:        ${MODEL_SET}
-  API:           ${API_URL}
-  ComfyUI URL:   ${COMFYUI_URL}
-  Public base:   ${TABBY_PUBLIC_BASE:- (none — local only)}
-  SSH remote:    ${TABBY_SSH_REMOTE:- (none — no tunnel)}
-  SSH forward:   ${TABBY_SSH_FORWARD:- (n/a)}
-  SSH key:       ${TABBY_SSH_KEY:- (n/a)}
-  Screensaver:   ${SAVER_CONFIRM}
-
-This can take a long time (Python 3.12, pip wheels, model files).
-The next screen stays in this installer: a progress bar and the
-live log. Re-run is safe: a good venv and existing weights are skipped.
-
-Yes = begin.  No = change answers.  Esc = cancel." \
-      1; then
-      break
-    fi
-  done
+    prompt_advanced_install
   fi
 fi
+
 
 apply_network_defaults
 apply_saver_defaults
