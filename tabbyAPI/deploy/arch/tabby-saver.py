@@ -297,6 +297,39 @@ def fetch_state(url: str, timeout: float = 0.8) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_LIVE_PATH = Path(__file__).resolve().parents[2] / "saver-live.json"
+
+
+def read_saver_live() -> dict[str, Any] | None:
+    try:
+        data = json.loads(_LIVE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError, TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def overlay_saver_live(
+    payload: dict[str, Any] | None, live: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Apply the API sidecar when HTTP is idle or hung mid-prompt."""
+    if not live or not live.get("busy"):
+        return payload
+    out = dict(payload or {})
+    out["busy"] = True
+    stage = str(live.get("stage") or "prefill").strip().lower()
+    if stage in {"prefill", "decode", "tool"}:
+        out["stage"] = stage
+    if not out.get("kind"):
+        out["kind"] = "chat"
+    try:
+        tokens = int(live.get("tokens") or 0)
+    except (TypeError, ValueError):
+        tokens = 0
+    if tokens > 0:
+        out["tokens"] = tokens
+    return out
+
+
 def _exp_approach(current: float, target: float, dt: float, tau: float) -> float:
     if tau <= 0.0:
         return target
@@ -708,11 +741,18 @@ class StateBus:
     def run(self, url: str, interval: float) -> None:
         host, port = origin_peer(url)
         while not self.stop.is_set():
+            live = read_saver_live()
+            hung = bool(live and live.get("busy"))
             reachable = tcp_up(host, port)
-            payload = fetch_state(url) if reachable else None
+            timeout = 0.12 if hung else 0.8
+            payload = fetch_state(url, timeout=timeout) if reachable else None
             if payload is None:
                 reachable = tcp_up(host, port)
-            self.ingest(payload, reachable)
+            if payload is None and hung:
+                with self.lock:
+                    payload = dict(self.data) if self.data else {}
+            payload = overlay_saver_live(payload, live)
+            self.ingest(payload, reachable or bool(payload and payload.get("busy")))
             self.stop.wait(interval)
 
 

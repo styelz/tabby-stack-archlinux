@@ -279,6 +279,15 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(clock, "14:20:07")
         self.assertIn("Sep", date)
 
+    def test_overlay_live_file_makes_idle_http_live(self):
+        idle = {"gpu_mode": "llm", "profile": "qwen", "busy": False, "stage": "idle"}
+        live = {"busy": True, "stage": "prefill", "tokens": 0}
+        merged = self.kiosk.overlay_saver_live(idle, live)
+        scene = self.kiosk.scene_from_state(merged, True)
+        self.assertTrue(scene["live"])
+        self.assertEqual(scene["phase"], "thinking")
+        self.assertEqual(scene["palette"], "chat")
+
     def test_kind_without_a_job_is_idle(self):
         scene = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "kind": "chat", "busy": False},
@@ -1157,7 +1166,7 @@ class LiveDecodeTests(unittest.TestCase):
         live_decode.note_prefill("a")
         self.assertEqual(live_decode.snapshot()["stage"], "prefill")
         live_decode.note_decode("a", 7)
-        self.assertEqual(live_decode.snapshot(), {"tokens": 7, "stage": "decode"})
+        self.assertEqual(live_decode.snapshot(), {"busy": True, "tokens": 7, "stage": "decode"})
         live_decode.clear("b")
         self.assertEqual(live_decode.snapshot()["tokens"], 7)
         live_decode.clear("a")
@@ -1180,3 +1189,19 @@ class LiveDecodeTests(unittest.TestCase):
         self.assertEqual(live_decode.snapshot()["stage"], "prefill")
         live_decode.release("http:1")
         self.assertEqual(live_decode.snapshot()["stage"], "idle")
+
+    def test_overlay_live_file_marks_idle_http_busy(self):
+        idle = {"busy": False, "stage": "idle", "kind": None, "profile": "qwen"}
+        live = {"busy": True, "stage": "prefill", "tokens": 0}
+        out = live_decode.overlay_live_file(idle, live)
+        self.assertTrue(out["busy"])
+        self.assertEqual(out["stage"], "prefill")
+        self.assertEqual(out["kind"], "chat")
+        self.assertEqual(out["profile"], "qwen")
+
+    def test_hold_writes_live_sidecar(self):
+        live_decode.hold("http:1")
+        data = live_decode.read_live_file()
+        self.assertIsNotNone(data)
+        self.assertTrue(data["busy"])
+        self.assertEqual(data["stage"], "prefill")

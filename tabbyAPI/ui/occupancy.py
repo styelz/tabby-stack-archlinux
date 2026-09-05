@@ -338,6 +338,12 @@ def reset_for_tests() -> None:
     from ui.flight import reset_for_tests as reset_flights
 
     reset_flights()
+    try:
+        from common.live_decode import reset_for_tests as reset_decode
+
+        reset_decode()
+    except Exception:
+        pass
 
 
 class StackGate:

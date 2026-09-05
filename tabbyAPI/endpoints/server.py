@@ -82,10 +82,24 @@ def setup_app(host: Optional[str] = None, port: Optional[int] = None):
         if is_generate_post(getattr(request, "method", ""), str(request.url.path)):
             key = f"http:{id(request)}"
             hold(key)
+        streamed = False
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            iterator = getattr(response, "body_iterator", None)
+            if key and iterator is not None:
+                streamed = True
+
+                async def wrapped():
+                    try:
+                        async for chunk in iterator:
+                            yield chunk
+                    finally:
+                        release(key)
+
+                response.body_iterator = wrapped()
+            return response
         finally:
-            if key:
+            if key and not streamed:
                 release(key)
 
     return app

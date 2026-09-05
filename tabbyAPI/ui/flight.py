@@ -275,6 +275,12 @@ def register_flight(flight: ConsoleFlight) -> ConsoleFlight:
         next_id = str(getattr(flight, "chat_id", "") or "")
         if not prev_id or not next_id or prev_id == next_id:
             previous.abort_event.set()
+    try:
+        from common.live_decode import hold
+
+        hold(f"flight:{flight.id}")
+    except Exception:
+        pass
     return flight
 
 
@@ -288,6 +294,12 @@ async def _drop_later(flight: ConsoleFlight) -> None:
 
 
 async def close_flight(flight: ConsoleFlight) -> None:
+    try:
+        from common.live_decode import release
+
+        release(f"flight:{flight.id}")
+    except Exception:
+        pass
     await flight.finish()
     asyncio.create_task(_drop_later(flight))
 
