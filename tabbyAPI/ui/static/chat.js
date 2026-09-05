@@ -113,7 +113,7 @@ function mountChat(root) {
               <button type="button" data-more="rename">Rename</button>
               <button type="button" data-more="pin">Pin</button>
               <button type="button" data-more="export">Export markdown</button>
-              <button type="button" data-more="copy">Copy conversation</button>
+              <button type="button" data-more="copy">Copy entire chat</button>
               <button type="button" data-more="regen">Regenerate last reply</button>
               <button type="button" data-more="settings">Sampling</button>
               <button type="button" data-more="instructions" hidden>Workspace instructions</button>
@@ -8287,7 +8287,7 @@ function mountChat(root) {
     });
   }
 
-  function conversationMarkdown(id) {
+  function threadMarkdown(id) {
     return chatMessages(id)
       .filter((item) => {
         if (item.role === "assistant") return true;
@@ -8301,6 +8301,25 @@ function mountChat(root) {
         return `## ${who}\n\n${String(body || "").trim()}\n`;
       })
       .join("\n");
+  }
+
+  function conversationMarkdown(id) {
+    const want = id || store.activeId;
+    const chat = store.chats.find((item) => item.id === want);
+    if (chat && isWorkspaceRoot(chat)) {
+      const chunks = nestedChats(chat.id)
+        .slice()
+        .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))
+        .map((kid) => {
+          const body = threadMarkdown(kid.id).trim();
+          if (!body) return "";
+          const title = String(kid.title || "Chat").trim() || "Chat";
+          return `# ${title}\n\n${body}\n`;
+        })
+        .filter(Boolean);
+      return chunks.join("\n---\n\n");
+    }
+    return threadMarkdown(want);
   }
 
   function saveUrl(url, filename) {
@@ -12949,13 +12968,11 @@ function mountChat(root) {
         chatFolderName(chat) ? { label: "Remove from folder", run: () => setChatFolder(id, "") } : null
       );
     }
-    if (!root) {
-      items.push(
-        { sep: true },
-        { label: "Copy conversation", run: () => copyText(conversationMarkdown(id)) },
-        { label: "Export markdown", run: () => exportChat(id) }
-      );
-    }
+    items.push(
+      { sep: true },
+      { label: "Copy entire chat", run: () => copyText(conversationMarkdown(id)) },
+      { label: "Export markdown", run: () => exportChat(id) }
+    );
     items.push(
       { sep: true },
       { label: root ? "Delete workspace" : "Delete chat", danger: true, run: () => deleteChat(id) }
@@ -12971,6 +12988,7 @@ function mountChat(root) {
     const picked = extra && extra.picked;
     if (picked) items.push({ label: "Copy selection", run: () => copyText(picked) });
     items.push({ label: picked ? "Copy message" : "Copy", run: () => copyText(text) });
+    items.push({ label: "Copy entire chat", run: () => copyText(conversationMarkdown()) });
     if (text) items.push({ label: "Quote in compose", run: () => quoteCompose(text) });
     if (item.role === "user") {
       items.push(
@@ -13393,6 +13411,7 @@ function mountChat(root) {
       openCtx(event, [
         { label: "Stop", danger: true, run: () => abortSession("stop") },
         text ? { label: "Copy", run: () => copyText(text) } : null,
+        { label: "Copy entire chat", run: () => copyText(conversationMarkdown()) },
       ]);
       return;
     }
@@ -13419,7 +13438,7 @@ function mountChat(root) {
           }
           : null,
         activeMode() === "code" ? { label: "New chat in this workspace", run: () => startNestedChat(workspaceId(chat)) } : null,
-        { label: "Copy conversation", run: () => copyText(conversationMarkdown()) },
+        { label: "Copy entire chat", run: () => copyText(conversationMarkdown()) },
         { label: "Export markdown", run: () => exportChat() },
         { sep: true },
         { label: isWorkspaceRoot(chat) ? "Delete this workspace" : "Delete this chat", danger: true, run: () => deleteChat(store.activeId) },
@@ -13473,6 +13492,7 @@ function mountChat(root) {
       const picked = TabbyUI.selectedText();
       openCtx(event, [
         picked ? { label: "Copy selection", run: () => copyText(picked) } : null,
+        { label: "Copy entire chat", run: () => copyText(conversationMarkdown()) },
         { label: "Paste into compose", run: () => pasteCompose() },
         { label: activeMode() === "code" ? "New workspace" : "New chat", kbd: "Ctrl+Shift+O", run: () => startNewChat() },
         { label: "Keyboard shortcuts", run: () => showShortcuts() },
