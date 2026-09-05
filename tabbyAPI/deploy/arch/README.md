@@ -8,7 +8,7 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-From the official Arch live ISO, `tsos-installer.sh` asks every setting in one UI (disk, user, Omarchy, weights cache, model set, API URLs — cache must be named before `/mnt` is wiped). It then keeps a progress bar while Arch and `install.sh` run; `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`. Omarchy is optional: `now` (LUKS required) or `skip`.
+From the official Arch live ISO, `tsos-installer.sh` asks every setting in one UI (disk, user, Omarchy, weights cache, model set, API URLs — cache must be named before `/mnt` is wiped). After the last question it keeps that same dialog up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`. Omarchy is optional: `now` (LUKS required) or `skip`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
@@ -25,7 +25,7 @@ bash install.sh
 
 Clone into `$HOME/tabby-stack` so this folder *is* the git checkout. A leftover `tabby-stack-archlinux` clone is optional; if you still clone elsewhere, the installer copies the tree (including `.git`) into the dest you pick.
 
-The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc cancels. After you confirm, the work phase shows a **progress bar** only; full output goes to `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command.
+The installer is a how-to as well as a script. On a terminal it uses **dialog** (ncurses menus). If `dialog` is missing it installs it, or falls back to printed questions. Each screen explains what is needed and gives examples. Esc cancels. After you confirm, the work stays in that same installer: a **progress bar**, elapsed time, and a live tail of `$DEST/tabby-install.log`. Set `TABBY_INSTALL_VERBOSE=1` to print every command on the console instead.
 
 You will be asked:
 

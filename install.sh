@@ -345,9 +345,13 @@ load_tabby_env_file() {
 
 INSTALL_LOG=""
 GAUGE_PID=""
+GAUGE_WATCH_PID=""
 GAUGE_FIFO=""
 GAUGE_DIR=""
 GAUGE_MODE=""
+GAUGE_SAVED_FD=""
+UI_ROWS=24
+UI_COLS=80
 SUDO_KEEPALIVE_PID=""
 INSTALL_FAILED=0
 
@@ -364,6 +368,95 @@ adopt_install_log() {
   fi
   mkdir -p "$(dirname "$dest")" 2>/dev/null || true
   touch "$dest" 2>/dev/null
+}
+
+fmt_elapsed() {
+  local s=$1
+  if ((s < 60)); then
+    printf '%ss' "$s"
+  elif ((s < 3600)); then
+    printf '%dm %02ds' $((s / 60)) $((s % 60))
+  else
+    printf '%dh %02dm' $((s / 3600)) $(((s % 3600) / 60))
+  fi
+}
+
+work_term() {
+  case "${TERM:-}" in
+    "" | dumb | unknown) export TERM=linux ;;
+  esac
+  stty -tostop </dev/tty >/dev/null 2>&1 || true
+  local size
+  size=$(stty size </dev/tty 2>/dev/null || true)
+  if [[ "$size" =~ ^[0-9]+[[:space:]]+[0-9]+$ ]]; then
+    UI_ROWS=${size%%[[:space:]]*}
+    UI_COLS=${size##*[[:space:]]}
+  fi
+  ((UI_ROWS >= 14)) || UI_ROWS=24
+  ((UI_COLS >= 50)) || UI_COLS=80
+}
+
+gauge_height() {
+  local h=$((UI_ROWS - 1))
+  ((h > 24)) && h=24
+  ((h < 12)) && h=12
+  printf '%s' "$h"
+}
+
+gauge_width() {
+  local w=$((UI_COLS - 2))
+  ((w > 98)) && w=98
+  ((w < 50)) && w=50
+  printf '%s' "$w"
+}
+
+install_log_snippet() {
+  local lines=$1 width=$2
+  [[ -f "$INSTALL_LOG" ]] || return 0
+  tail -n 80 "$INSTALL_LOG" 2>/dev/null \
+    | tr '\r' '\n' \
+    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' \
+    | grep -v '^[[:space:]]*$' \
+    | tail -n "$lines" \
+    | cut -c1-"$width" || true
+}
+
+# Repaint the work dialog so a long pip / pacman / download stays visibly alive.
+watch_progress_ui() {
+  local stop="$1" width="$2" lines="$3"
+  local pct heading last="" step_t=$SECONDS ticks=0 spin='|/-\' ch body
+  while [[ ! -f "$stop" ]]; do
+    pct=0
+    heading="Working..."
+    [[ -f "$GAUGE_DIR/pct" ]] && pct=$(cat "$GAUGE_DIR/pct" 2>/dev/null)
+    [[ -f "$GAUGE_DIR/heading" ]] && heading=$(cat "$GAUGE_DIR/heading" 2>/dev/null)
+    [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+    ticks=$((ticks + 1))
+    if [[ "$heading" != "$last" ]]; then
+      last=$heading
+      step_t=$SECONDS
+    fi
+    ch=${spin:$((ticks % 4)):1}
+    body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
+    printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
+      "$pct" "$body" "$(install_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
+    sleep 0.5
+  done
+}
+
+redirect_work_output() {
+  [[ -z "${GAUGE_SAVED_FD:-}" ]] || return 0
+  [[ -n "$INSTALL_LOG" && "$INSTALL_LOG" != /dev/null ]] || return 0
+  exec 4>&1 5>&2
+  GAUGE_SAVED_FD=1
+  exec >>"$INSTALL_LOG" 2>&1
+}
+
+restore_work_output() {
+  [[ -n "${GAUGE_SAVED_FD:-}" ]] || return 0
+  exec 1>&4 2>&5
+  exec 4>&- 5>&-
+  GAUGE_SAVED_FD=""
 }
 
 progress_start() {
@@ -397,22 +490,44 @@ progress_start() {
     GAUGE_MODE="log"
     return 0
   fi
-  if [[ -t 1 ]] && need_cmd dialog; then
-    # mktemp -d, not a file we delete and re-create: /tmp is world-writable and
-    # the gap between rm and mkfifo is a symlink race.
+
+  # After the question screens, keep every command inside this UI (or the
+  # log). Do not drop back to a raw pacman/pip dump on the console.
+  work_term
+  redirect_work_output
+
+  if need_cmd dialog && [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+    clear >/dev/tty 2>/dev/null || true
+    local h w gauge_title
+    h=$(gauge_height)
+    w=$(gauge_width)
+    gauge_title="Installing tabby-stack"
+    [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"
     GAUGE_FIFO="$GAUGE_DIR/gauge"
     mkfifo -m 600 "$GAUGE_FIFO"
-    local gauge_title="Installing tabby-stack"
-    [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
-    dialog --backtitle "$BACKTITLE" --title "$gauge_title" \
-      --gauge "Starting..." 8 70 0 < "$GAUGE_FIFO" &
-    GAUGE_PID=$!
+    printf '%s\n' 0 >"$GAUGE_DIR/pct"
+    printf '%s\n' "Starting..." >"$GAUGE_DIR/heading"
     exec 3<>"$GAUGE_FIFO"
-    GAUGE_MODE="dialog"
-    return 0
+    dialog --backtitle "$BACKTITLE" --title "$gauge_title" \
+      --gauge "Starting..." "$h" "$w" 0 \
+      <"$GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
+    GAUGE_PID=$!
+    sleep 0.4
+    if kill -0 "$GAUGE_PID" 2>/dev/null; then
+      watch_progress_ui "$GAUGE_DIR/stop" "$((w - 6))" "$((h - 9))" &
+      GAUGE_WATCH_PID=$!
+      GAUGE_MODE="dialog"
+      return 0
+    fi
+    exec 3>&- || true
+    wait "$GAUGE_PID" 2>/dev/null || true
+    rm -rf "$GAUGE_DIR"
+    GAUGE_PID=""
+    GAUGE_DIR=""
+    GAUGE_FIFO=""
   fi
-  if [[ -t 1 ]]; then
+  if [[ -c /dev/tty ]]; then
     GAUGE_MODE="text"
     return 0
   fi
@@ -433,14 +548,17 @@ progress() {
   append_update_log "==> [$pct%] $msg"
   case "${GAUGE_MODE:-}" in
     dialog)
-      printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg" >&3 || true
+      if [[ -n "${GAUGE_DIR:-}" ]]; then
+        printf '%s\n' "$pct" >"$GAUGE_DIR/pct"
+        printf '%s\n' "$msg" >"$GAUGE_DIR/heading"
+      fi
       ;;
     text)
       local fill=$((pct / 2))
       printf '\r\033[K[%s%s] %3d%%  %s' \
         "$(printf '%*s' "$fill" '' | tr ' ' '#')" \
         "$(printf '%*s' $((50 - fill)) '')" \
-        "$pct" "$msg"
+        "$pct" "$msg" >/dev/tty
       ;;
     verbose)
       echo "==> [$pct%] $msg"
@@ -471,19 +589,32 @@ progress_stop() {
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     SUDO_KEEPALIVE_PID=""
   fi
+  if [[ -n "${GAUGE_DIR:-}" ]]; then
+    touch "$GAUGE_DIR/stop" 2>/dev/null || true
+  fi
+  if [[ -n "${GAUGE_WATCH_PID:-}" ]]; then
+    kill "$GAUGE_WATCH_PID" 2>/dev/null || true
+    wait "$GAUGE_WATCH_PID" 2>/dev/null || true
+    GAUGE_WATCH_PID=""
+  fi
   case "${GAUGE_MODE:-}" in
     dialog)
       exec 3>&- || true
+      local i=0
+      while [[ -n "${GAUGE_PID:-}" ]] && kill -0 "$GAUGE_PID" 2>/dev/null && ((i < 30)); do
+        sleep 0.1
+        i=$((i + 1))
+      done
+      kill "$GAUGE_PID" 2>/dev/null || true
       wait "$GAUGE_PID" 2>/dev/null || true
-      if [[ -n "$GAUGE_DIR" ]]; then
-        rm -rf "$GAUGE_DIR"
-      fi
-      restore_tty
+      rm -rf "${GAUGE_DIR:-}"
       ;;
     text)
-      printf '\n'
+      printf '\n' >/dev/tty 2>/dev/null || true
       ;;
   esac
+  restore_work_output
+  restore_tty
   GAUGE_MODE=""
   GAUGE_PID=""
   GAUGE_FIFO=""
@@ -492,11 +623,23 @@ progress_stop() {
 
 progress_fail() {
   local rc="${1:-1}"
+  local tail_txt=""
   INSTALL_FAILED=1
   progress_stop
+  [[ -n "$INSTALL_LOG" && -f "$INSTALL_LOG" ]] && tail_txt=$(tail -n 24 "$INSTALL_LOG")
+  if [[ "${USE_TUI:-0}" -eq 1 && "$TUI" == dialog ]]; then
+    dialog_tty --backtitle "$BACKTITLE" --title "Install failed" \
+      --msgbox "The install stopped (exit ${rc}).
+
+${tail_txt}
+
+Full log:
+  ${INSTALL_LOG}" \
+      22 74 || true
+  fi
   echo
   echo "Install failed. Last lines of ${INSTALL_LOG:-the log}:"
-  [[ -n "$INSTALL_LOG" && -f "$INSTALL_LOG" ]] && tail -n 40 "$INSTALL_LOG"
+  [[ -n "$tail_txt" ]] && printf '%s\n' "$tail_txt"
   echo
   echo "Full log: ${INSTALL_LOG:-}"
   append_update_log "Install failed. Full log: ${INSTALL_LOG:-}"
@@ -1930,7 +2073,8 @@ prompt) before the screensaver returns. Default 10." \
   Screensaver:   ${SAVER_CONFIRM}
 
 This can take a long time (Python 3.12, pip wheels, model files).
-Re-run is safe: a good venv and existing weights are skipped.
+The next screen stays in this installer: a progress bar and the
+live log. Re-run is safe: a good venv and existing weights are skipped.
 
 Yes = begin.  No = change answers.  Esc = cancel." \
       1; then
@@ -2797,19 +2941,8 @@ A code update uses update.sh, not a fresh clone.
 EOF
 
 if [[ "$UPDATE_MODE" -eq 1 ]]; then
-  echo "Update finished."
   append_update_log "Update finished."
-else
-  echo "Install finished."
 fi
-[[ -n "$START_NOTE" ]] && echo "  NOTE: $START_NOTE"
-echo "  API:  $API_URL"
-echo "  Start: $DEST/start.sh"
-echo "  Agents: $DEST/AGENTS.md"
-echo "  Update: $DEST/update.sh"
-echo "  Uninstall: $DEST/uninstall.sh"
-echo "  Log:  $INSTALL_LOG"
-echo "  How-to: $HOWTO"
 
 if [[ "$INTERACTIVE" -eq 1 && -n "${TABBY_SSH_REMOTE:-}" ]]; then
   SSH_PUB="$HOME/.ssh/${SSH_KEY_NAME}.pub"
@@ -2865,4 +2998,16 @@ The same how-to is in:
 
 Linger starts TabbyAPI at boot (no login)."
 fi
+
+if [[ "$UPDATE_MODE" -eq 1 ]]; then
+  echo "Update finished."
+else
+  echo "Install finished."
+fi
+[[ -n "$START_NOTE" ]] && echo "  NOTE: $START_NOTE"
+echo "  API:     $API_URL"
+echo "  UI:      $API_URL/v1/ui"
+echo "  Log:     $INSTALL_LOG"
+echo "  How-to:  $HOWTO"
+echo "  Update:  $DEST/update.sh"
 

@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.25"
+SCRIPT_VERSION="1.0.26"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -159,9 +159,11 @@ TSOS_PRINTK=""
 
 log() {
   printf '==> %s\n' "$*" >>"$TSOS_LOG"
-  if [[ -z "${TSOS_SAVED_FD:-}" ]]; then
-    printf '==> %s\n' "$*"
+  # Work-phase stdout is already the log; do not duplicate into it.
+  if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
+    return 0
   fi
+  printf '==> %s\n' "$*"
 }
 warn() {
   printf 'warning: %s\n' "$*" >>"$TSOS_LOG"
@@ -267,17 +269,28 @@ ensure_work_term() {
 }
 
 gauge_height() {
-  local h=$((TSOS_UI_ROWS - 2))
-  ((h > 22)) && h=22
+  local h=$((TSOS_UI_ROWS - 1))
+  ((h > 24)) && h=24
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((TSOS_UI_COLS - 4))
-  ((w > 96)) && w=96
+  local w=$((TSOS_UI_COLS - 2))
+  ((w > 98)) && w=98
   ((w < 50)) && w=50
   printf '%s' "$w"
+}
+
+fmt_elapsed() {
+  local s=$1
+  if ((s < 60)); then
+    printf '%ss' "$s"
+  elif ((s < 3600)); then
+    printf '%dm %02ds' $((s / 60)) $((s % 60))
+  else
+    printf '%dh %02dm' $((s / 3600)) $(((s % 3600) / 60))
+  fi
 }
 
 # Redirecting a command cannot stop the kernel: printk writes to the console
@@ -357,10 +370,10 @@ nested_percent() {
   printf '%s' "$pct"
 }
 
-# Repaints once a second so a long pacstrap / pip / download is visibly alive.
+# Repaints so a long pacstrap / pip / download stays visibly alive.
 watch_installer_ui() {
   local stop="$1" width="$2" lines="$3"
-  local pct heading body last="" elapsed=0 nested
+  local pct heading body last="" step_t=$SECONDS ticks=0 nested spin='|/-\' ch
   while [[ ! -f "$stop" ]]; do
     pct=0
     heading="Working..."
@@ -370,27 +383,35 @@ watch_installer_ui() {
     if nested=$(nested_percent); then
       pct=$nested
     fi
-    body="$heading"
-    if [[ "$body" == "$last" ]]; then
-      elapsed=$((elapsed + 1))
-      body="$heading  (${elapsed}s)"
-    else
+    ticks=$((ticks + 1))
+    if [[ "$heading" != "$last" ]]; then
       last=$heading
-      elapsed=0
+      step_t=$SECONDS
     fi
+    ch=${spin:$((ticks % 4)):1}
+    body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
     printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
       "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
-    sleep 1
+    sleep 0.5
   done
 }
 
+# After the questions, never dump pacstrap/pip onto the raw console. Redirect
+# first; the dialog box is the view of that log. If dialog cannot start, keep
+# the redirect and paint a one-line bar on /dev/tty.
 gauge_start() {
   ((USE_TUI)) || return 1
-  [[ "$TUI" == dialog ]] || return 1
   have_console || [[ -t 1 ]] || return 1
   ensure_work_term
   quiet_kernel_console
   touch "$TSOS_LOG"
+  if [[ -z "${TSOS_SAVED_FD:-}" ]]; then
+    exec 4>&1 5>&2
+    TSOS_SAVED_FD=1
+    exec >>"$TSOS_LOG" 2>&1
+  fi
+  [[ "$TUI" == dialog ]] || return 0
+  clear >/dev/tty 2>/dev/null || true
   local h w
   h=$(gauge_height)
   w=$(gauge_width)
@@ -414,12 +435,8 @@ gauge_start() {
     TSOS_GAUGE_PID=""
     TSOS_GAUGE_DIR=""
     TSOS_GAUGE_FIFO=""
-    restore_kernel_console
-    return 1
+    return 0
   fi
-  exec 4>&1 5>&2
-  TSOS_SAVED_FD=1
-  exec >>"$TSOS_LOG" 2>&1
   watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$((h - 9))" &
   TSOS_WATCH_PID=$!
   return 0
@@ -430,6 +447,8 @@ gauge_update() {
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     printf '%s\n' "$pct" >"$TSOS_GAUGE_DIR/pct"
     printf '%s\n' "$msg" >"$TSOS_GAUGE_DIR/heading"
+  elif [[ -n "${TSOS_SAVED_FD:-}" ]]; then
+    printf '\r\033[K  [%3s%%] %s' "$pct" "$msg" >/dev/tty 2>/dev/null || true
   fi
   log "[${pct}%] $msg"
 }
@@ -466,6 +485,7 @@ gauge_stop() {
     restore_tty
   fi
   restore_kernel_console
+  printf '\n' >/dev/tty 2>/dev/null || true
 }
 
 ui_cancel() {
@@ -1066,9 +1086,9 @@ Needed
 
 Next screens ask for the disk, system name, Omarchy, cache,
 model set, and API URLs. After you confirm the wipe, this
-same dialog stays up and shows the install log (pacman, Python,
-weight files) inside the box. install.sh does not open a second
-dialog.
+same dialog stays up: a progress bar, elapsed time, and the
+live install log (pacman, Python, weight files) inside the
+box. install.sh does not open a second dialog.
 
 Esc cancels."
 
@@ -1861,7 +1881,8 @@ require_disk() {
 
 confirm_wipe() {
   log "THIS WILL ERASE EVERYTHING ON $DISK"
-  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" || true
+  local disk_tree
+  disk_tree=$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" 2>/dev/null || true)
   if [[ -n "$CONFIRM_WIPE" ]]; then
     [[ "$CONFIRM_WIPE" == "$DISK" ]] || die "--confirm-wipe must match --disk exactly (got $CONFIRM_WIPE)"
     return 0
@@ -1871,7 +1892,7 @@ confirm_wipe() {
     ui_msg "Install plan" \
 "$(print_plan)
 
-$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" 2>/dev/null || true)
+${disk_tree}
 
 THIS ERASES EVERYTHING ON ${DISK}." \
       22 74
@@ -1885,6 +1906,7 @@ Anything else aborts." \
   else
     printf '\n' >/dev/tty
     printf '%s\n' "Settings are done. The installer is waiting for a wipe confirmation." >/dev/tty
+    printf '%s\n' "$disk_tree" >/dev/tty
     printf '%s\n' "Type the disk path exactly, then press Enter:" >/dev/tty
     printf '    %s\n' "$DISK" >/dev/tty
     answer=$(read_tty "Confirm wipe: ")
@@ -3007,8 +3029,10 @@ EOF
 
   local status=0
   set +e
-  arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- /bin/bash "/home/${TARGET_USER}/run-omarchy.sh"
-  status=$?
+  {
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- /bin/bash "/home/${TARGET_USER}/run-omarchy.sh"
+    status=$?
+  } >>"$TSOS_LOG" 2>&1 3>&-
   set -e
   rm -f "$runner" "$TARGET/usr/local/bin/gum"
 
@@ -3162,7 +3186,7 @@ resume_tabby_install() {
   gauge_update 40 "Resuming tabby-stack"
   run_tabby_install_chroot
   if [[ "$OMARCHY_MODE" == "now" ]]; then
-    gauge_stop
+    gauge_update 96 "Installing Omarchy"
   fi
   install_omarchy_chroot
   cleanup
@@ -3206,12 +3230,12 @@ main() {
     log "dry-run: no changes made"
     exit 0
   fi
-  preflight
   confirm_wipe
   collect_passwords
   gauge_start || true
   log "Starting the install..."
   gauge_update 2 "Preparing disk"
+  preflight
   disable_live_mkinitcpio_hooks
   timedatectl set-ntp true || true
   preserve_tabby_cache
@@ -3227,7 +3251,7 @@ main() {
   write_tabby_bootstrap
   run_tabby_install_chroot
   if [[ "$OMARCHY_MODE" == "now" ]]; then
-    gauge_stop
+    gauge_update 96 "Installing Omarchy"
   fi
   install_omarchy_chroot
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
