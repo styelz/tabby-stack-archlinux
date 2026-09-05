@@ -1735,6 +1735,31 @@ def hud_anchor_right(face: Any, template: str, right: int) -> int:
     return int(right) - int(face.size(template)[0])
 
 
+def _hud_apply_alpha(surf: Any, amt: float) -> None:
+    setter = getattr(surf, "set_alpha", None)
+    if setter is None:
+        return
+    setter(max(1, min(255, int(round(255 * amt)))))
+
+
+def _hud_fade_layer(fg: Any, shadow_img: Any, halo: list[tuple[int, int]], radius: int) -> Any | None:
+    """One surface so the halo and fill share the same fade, over the field."""
+    get_size = getattr(fg, "get_size", None)
+    if get_size is None:
+        return None
+    try:
+        import pygame as pg
+    except ImportError:
+        return None
+    tw, th = get_size()
+    r = max(1, int(radius))
+    layer = pg.Surface((tw + 2 * r, th + 2 * r), pg.SRCALPHA)
+    for dx, dy in halo:
+        layer.blit(shadow_img, (r + dx, r + dy))
+    layer.blit(fg, (r, r))
+    return layer
+
+
 def hud_halo_offsets(radius: int = 3) -> list[tuple[int, int]]:
     """Dark ring around glyphs so they stay readable on amber/white bloom."""
     r = max(1, int(radius))
@@ -1779,14 +1804,24 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     main_h = font.size("Ag")[1]
     small_h = small.size("Ag")[1]
     gap = max(6, int(round(h * 8 / 1080)))
+    fade_amt = 1.0
 
     def blit(text: str, pos: tuple[int, int], color, use_small: bool = False) -> None:
         face = small if use_small else font
         x, y = pos
         img = face.render(text, True, shadow)
+        fg = face.render(text, True, color)
+        if fade_amt < 0.999:
+            layer = _hud_fade_layer(fg, img, halo, 3)
+            if layer is not None:
+                _hud_apply_alpha(layer, fade_amt)
+                screen.blit(layer, (x - 3, y - 3))
+                return
+            _hud_apply_alpha(img, fade_amt)
+            _hud_apply_alpha(fg, fade_amt)
         for dx, dy in halo:
             screen.blit(img, (x + dx, y + dy))
-        screen.blit(face.render(text, True, color), pos)
+        screen.blit(fg, pos)
 
     if idle_quiet:
         try:
@@ -1795,13 +1830,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
             hud_alpha = idle_hud_alpha(float(scene.get("idle_s") or 0.0))
         if hud_alpha <= HUD_IDLE_HIDE_ALPHA:
             return
-        if hud_alpha < 0.999:
-            shadow = _mix(BG, shadow, hud_alpha)
-            TEXT_FADE = _mix(BG, TEXT, hud_alpha)
-            MUTED_FADE = _mix(BG, MUTED, hud_alpha)
-        else:
-            TEXT_FADE = TEXT
-            MUTED_FADE = MUTED
+        fade_amt = hud_alpha
         whisper = ""
         if scene.get("has_gpu"):
             vram = int(round(scene["vram"]))
@@ -1810,19 +1839,19 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         fact = str(scene.get("idle_fact") or "").strip()
         if not fact:
             fact = pick_idle_fact(idle_fact_lines(load_idle_times(), float(scene.get("idle_s") or 0.0)), time.time())
-        blit(profile, (pad, pad), MUTED_FADE)
-        blit(mode, (hud_anchor_right(small, mode, w - pad), pad + 4), MUTED_FADE, use_small=True)
+        blit(profile, (pad, pad), MUTED)
+        blit(mode, (hud_anchor_right(small, mode, w - pad), pad + 4), MUTED, use_small=True)
         cx = hud_anchor_center(font, HUD_CLOCK_SLOT, w, pad)
         cy = (h - main_h - small_h - gap) // 2
-        blit(clock, (cx, cy), TEXT_FADE)
+        blit(clock, (cx, cy), TEXT)
         if date:
-            blit(date, (cx, cy + main_h + gap), MUTED_FADE, use_small=True)
+            blit(date, (cx, cy + main_h + gap), MUTED, use_small=True)
         whisper_w = small.size(HUD_WHISPER_SLOT)[0] if whisper else 0
         fact_max = max(80, w - pad * 2 - (whisper_w + pad if whisper else 0))
         if fact:
-            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED_FADE, use_small=True)
+            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED, use_small=True)
         if whisper:
-            blit(whisper, (hud_anchor_right(small, HUD_WHISPER_SLOT, w - pad), h - pad - small_h), MUTED_FADE, use_small=True)
+            blit(whisper, (hud_anchor_right(small, HUD_WHISPER_SLOT, w - pad), h - pad - small_h), MUTED, use_small=True)
         return
 
     phase = str(scene["phase"])

@@ -412,6 +412,19 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.kiosk.draw_hud(screen, font, font, idle)
         self.assertEqual(len(screen.blits), 0)
 
+    def test_hud_mid_fade_still_draws_clock(self):
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        idle["clock"] = "14:20:07"
+        idle["date"] = "Sat 5 Sep"
+        idle["hud_alpha"] = 0.5
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), idle)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertIn("14:20:07", text)
+
     def test_wake_idle_hud_restores_alpha(self):
         follow = self.kiosk.SceneFollow()
         idle = self.kiosk.scene_from_state(
