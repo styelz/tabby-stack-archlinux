@@ -777,6 +777,7 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
         attach_build_user_contract,
         attach_layout_fix_contract,
         attach_plan_user_contract,
+        attach_readonly_mode_hint,
         code_system_for,
         code_tool_specs,
         normalize_agent,
@@ -798,6 +799,8 @@ def sanitize_code_payload(body: dict[str, Any], username: str = "") -> dict[str,
     elif agent != "ask":
         attach_build_user_contract(messages)
         attach_layout_fix_contract(messages, username, chat_id)
+    if agent in ("ask", "plan"):
+        attach_readonly_mode_hint(messages, agent)
     payload["messages"] = messages
     payload["chat_id"] = chat_id
     payload["mode"] = "code"

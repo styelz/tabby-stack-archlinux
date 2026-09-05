@@ -192,6 +192,30 @@ _READONLY_REFUSE = (
     "This prompt mode is read-only. Use Grep, Glob, Read, or List, or switch "
     "to Agent to change files."
 )
+MODE_HINT_MARK = "<mode_hint>"
+_HOWTO_PROMPT = re.compile(
+    r"(?is)^\s*(?:how\s+(?:do|can|would)|what(?:'s| is)|why\b|explain)\b"
+)
+_PICTURE_PROMPT = re.compile(
+    r"(?is)(?:qwen-image:|^(?:generate an image)|(?:^/\s*image\b)|"
+    r"\b(?:generate|draw|paint|render|create|make|replace)\b[\s\S]{0,80}"
+    r"\b(?:images?|pictures?|photos?|logos?|posters?|icons?)\b)"
+)
+_FILE_WORK_PROMPT = re.compile(
+    r"(?is)\b(?:write|implement|scaffold)\b|"
+    r"\b(?:create|make|build|add)\b[\s\S]{0,80}\b"
+    r"(?:files?|pages?|sites?|websites?|apps?|html|css|javascript|components?)\b|"
+    r"\b(?:edit|fix|change|update|delete|rename)\b[\s\S]{0,80}\b"
+    r"(?:files?|html|css|js|code|folder)\b|"
+    r"\b(?:index\.html|styles\.css|app\.js)\b|"
+    r"\b(?:run|execute)\b[\s\S]{0,40}\b(?:command|shell|tests?|npm|pip)\b"
+)
+_REFUSES_IMAGES = re.compile(
+    r"(?is)\b(?:do(?:\s+not|n't)\s+(?:generate|draw|create|render|make)\s+"
+    r"(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)\b|"
+    r"\bno\s+new\s+(?:images?|pictures?|photos?)\b|"
+    r"\bwithout\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?)\b)"
+)
 BUILD_PROMPT = "Implement the approved plan above. Do not wait for more confirmation."
 BUILD_CONTRACT_MARK = "<build_mode>"
 BUILD_USER_SUFFIX = (
@@ -272,6 +296,65 @@ def is_build_prompt(text: Any) -> bool:
     return _plain_content(text).strip().startswith(BUILD_PROMPT)
 
 
+def prompt_wants_pictures(text: Any) -> bool:
+    blob = _plain_content(text)
+    if _HOWTO_PROMPT.match(blob) or _REFUSES_IMAGES.search(blob):
+        return False
+    return bool(_PICTURE_PROMPT.search(blob))
+
+
+def prompt_wants_file_work(text: Any) -> bool:
+    blob = _plain_content(text)
+    if _HOWTO_PROMPT.match(blob):
+        return False
+    return bool(_FILE_WORK_PROMPT.search(blob))
+
+
+def readonly_mode_targets(agent: str, text: Any) -> tuple[str, ...]:
+    """Modes the user needs when Ask/Plan cannot do the asked work."""
+    kind = normalize_agent(agent)
+    if kind not in ("ask", "plan"):
+        return ()
+    pics = prompt_wants_pictures(text)
+    files = prompt_wants_file_work(text)
+    if kind == "plan":
+        return ("chat",) if pics and not files else ()
+    if files:
+        return ("agent",)
+    if pics:
+        return ("agent", "chat")
+    return ()
+
+
+def attach_readonly_mode_hint(messages: list, agent: str) -> None:
+    """Tell Ask/Plan to name Agent or Chat when the user asked for work."""
+    kind = normalize_agent(agent)
+    if kind not in ("ask", "plan"):
+        return
+    label = "Ask" if kind == "ask" else "Plan"
+    names = {"agent": "Agent", "chat": "Chat"}
+    for item in reversed(messages):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if is_build_prompt(content) or _content_has_mark(content, MODE_HINT_MARK):
+            return
+        targets = readonly_mode_targets(kind, content)
+        if not targets:
+            return
+        listed = " or ".join(names[name] for name in targets)
+        extra = (
+            f"\n\n{MODE_HINT_MARK}\n"
+            f"This prompt is {label} (read-only). The user wants work that "
+            f"needs {listed}. Say that plainly. Name those modes. Do not say "
+            "the product cannot generate images or write files. Do not "
+            "implement.\n"
+            "</mode_hint>"
+        )
+        item["content"] = _append_text_content(content, extra)
+        return
+
+
 def attach_plan_user_contract(messages: list) -> None:
     """Pin the plan-mode contract on the last user turn (server-only)."""
     for item in reversed(messages):
@@ -279,6 +362,8 @@ def attach_plan_user_contract(messages: list) -> None:
             continue
         content = item.get("content")
         if is_build_prompt(content):
+            return
+        if readonly_mode_targets("plan", content) == ("chat",):
             return
         if _content_has_mark(content, PLAN_CONTRACT_MARK):
             return

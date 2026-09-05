@@ -182,6 +182,48 @@ class UiManagerTests(unittest.TestCase):
         self.assertNotIn(code_agent.BUILD_CONTRACT_MARK, payload["messages"][-1]["content"])
         self.assertEqual(payload["messages"][-1]["content"], "what files are here?")
 
+    def test_sanitize_code_ask_images_injects_mode_hint(self):
+        from ui import code_agent
+
+        payload = manager.sanitize_code_payload(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "create 2 images of varying width and height",
+                    }
+                ],
+                "chat_id": "w1",
+                "agent": "ask",
+            }
+        )
+        blob = payload["messages"][-1]["content"]
+        self.assertIn(code_agent.MODE_HINT_MARK, blob)
+        self.assertIn("needs Agent or Chat", blob)
+        self.assertTrue(blob.startswith("create 2 images"))
+
+    def test_readonly_mode_targets(self):
+        from ui import code_agent
+
+        self.assertEqual(
+            code_agent.readonly_mode_targets(
+                "ask", "create 2 images of varying width and height"
+            ),
+            ("agent", "chat"),
+        )
+        self.assertEqual(
+            code_agent.readonly_mode_targets("ask", "what files are here?"),
+            (),
+        )
+        self.assertEqual(
+            code_agent.readonly_mode_targets("plan", "design a site"),
+            (),
+        )
+        self.assertEqual(
+            code_agent.readonly_mode_targets("plan", "generate an image of a harbor"),
+            ("chat",),
+        )
+
     def test_code_tool_round_cap_drops_inspect_before_writes(self):
         def write_round(idx):
             return [

@@ -598,6 +598,63 @@ function mountChat(root) {
     );
   }
 
+  function promptLooksLikeHowto(text) {
+    return /^\s*(how\s+(?:do|can|would)|what(?:'s| is)|why\b|explain)\b/i.test(String(text || ""));
+  }
+
+  function promptWantsPictures(text) {
+    const raw = String(text || "").trim();
+    const lower = raw.toLowerCase();
+    if (promptLooksLikeHowto(raw)) return false;
+    if (
+      /\bdo(?:\s+not|n't)\s+(?:generate|draw|create|render|make)\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)\b/i.test(lower)
+      || /\bno\s+new\s+(?:images?|pictures?|photos?)\b/i.test(lower)
+      || /\bwithout\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?)\b/i.test(lower)
+    ) {
+      return false;
+    }
+    return (
+      /qwen-image:/i.test(raw)
+      || /^(generate an image)/i.test(raw)
+      || /^\/image\b/i.test(raw)
+      || /\b(generate|draw|paint|render|create|make|replace)\b[\s\S]{0,80}\b(images?|pictures?|photos?|logos?|posters?|icons?)\b/i.test(lower)
+    );
+  }
+
+  function promptWantsFileWork(text) {
+    const raw = String(text || "");
+    const lower = raw.toLowerCase();
+    if (promptLooksLikeHowto(raw)) return false;
+    return (
+      looksLikeCodeProjectPrompt(raw)
+      || /\b(write|implement|scaffold)\b/i.test(lower)
+      || /\b(create|make|build|add)\b[\s\S]{0,80}\b(files?|pages?|sites?|websites?|apps?|html|css|javascript|components?)\b/i.test(lower)
+      || /\b(edit|fix|change|update|delete|rename)\b[\s\S]{0,80}\b(files?|html|css|js|code|folder)\b/i.test(lower)
+      || /\b(run|execute)\b[\s\S]{0,40}\b(command|shell|tests?|npm|pip)\b/i.test(lower)
+    );
+  }
+
+  function readonlyModeHint(agent, text) {
+    const kind = normalizeAgent(agent);
+    if (kind !== "ask" && kind !== "plan") return [];
+    const pics = promptWantsPictures(text);
+    const files = promptWantsFileWork(text);
+    if (kind === "plan") return pics && !files ? ["chat"] : [];
+    if (files) return ["agent"];
+    if (pics) return ["agent", "chat"];
+    return [];
+  }
+
+  function precedingUserText(idx) {
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const item = messages[i];
+      if (item && item.role === "user" && !isHiddenUserTurn(item)) {
+        return String(item.content || "");
+      }
+    }
+    return "";
+  }
+
   function readCodeAgent() {
     return normalizeAgent(uiPrefs().codeAgent);
   }
@@ -7498,6 +7555,55 @@ function mountChat(root) {
     host.appendChild(bar);
   }
 
+  function modeHintPill(target) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.modeHint = target;
+    if (target === "chat") {
+      btn.className = "chat-mode-btn is-active";
+      btn.textContent = "Chat";
+      btn.title = "Open Chat";
+      btn.setAttribute("aria-label", "Switch to Chat");
+    } else {
+      btn.className = "btn ghost chat-agent-btn";
+      btn.textContent = "Agent";
+      btn.title = "Switch to Agent";
+      btn.setAttribute("aria-label", "Switch to Agent");
+    }
+    return btn;
+  }
+
+  function attachModeHint(host, idx) {
+    if (!host) return;
+    host.querySelectorAll(".chat-mode-hint").forEach((node) => node.remove());
+    if (activeMode() !== "code") return;
+    if (!Number.isInteger(idx) || idx < 0) return;
+    const item = messages[idx];
+    const agent = normalizeAgent(item && item.agent);
+    const targets = readonlyModeHint(agent, precedingUserText(idx));
+    if (!targets.length) return;
+    const here = agent === "plan" ? "Plan" : "Ask";
+    const row = document.createElement("div");
+    row.className = "chat-mode-hint";
+    const lead = document.createElement("span");
+    lead.textContent = `This is ${here}. Switch to `;
+    row.appendChild(lead);
+    targets.forEach((target, i) => {
+      if (i) {
+        const sep = document.createElement("span");
+        sep.textContent = " or ";
+        row.appendChild(sep);
+      }
+      row.appendChild(modeHintPill(target));
+    });
+    const tail = document.createElement("span");
+    if (targets.length === 1 && targets[0] === "chat") tail.textContent = " for pictures.";
+    else if (targets.length === 1 && targets[0] === "agent") tail.textContent = " to write files.";
+    else tail.textContent = ".";
+    row.appendChild(tail);
+    host.appendChild(row);
+  }
+
   function buildApprovedPlan(idx) {
     if (inFlight || modelLoading) return;
     const planIdx = Number.isInteger(idx) && idx >= 0 ? idx : lastUnbuiltPlanIndex();
@@ -9486,6 +9592,7 @@ function mountChat(root) {
       attachSwitchLlm(turn.bubble || turn.node, text);
       attachMsgActions(turn.node, "assistant", idx, text);
       attachPlanBuild(turn.node, idx);
+      attachModeHint(turn.bubble || turn.node, idx);
       watchLogChild(turn.node);
       if (stick !== false) stickLog(true);
       return turn.node;
@@ -12499,6 +12606,7 @@ function mountChat(root) {
           item.content || (userStopped ? STOPPED_NOTE : "")
         );
         attachPlanBuild(working.node, messages.length - 1);
+        attachModeHint(working.bubble || working.node, messages.length - 1);
         paintPlanChecklist();
         stickLog();
       }
@@ -13370,6 +13478,18 @@ function mountChat(root) {
     if (imageLink && log.contains(imageLink)) {
       event.preventDefault();
       openImageFromLink(imageLink);
+      return;
+    }
+    const modeHint = event.target.closest("[data-mode-hint]");
+    if (modeHint && log.contains(modeHint)) {
+      event.preventDefault();
+      const target = modeHint.dataset.modeHint;
+      if (target === "agent") {
+        setCodeAgent("agent");
+        if (input) input.focus();
+      } else if (target === "chat") {
+        setChatMode("chat");
+      }
       return;
     }
     const actBtn = event.target.closest("[data-act]");

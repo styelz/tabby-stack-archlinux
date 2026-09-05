@@ -198,6 +198,7 @@
     let out = String(text || "");
     out = out.replace(/[ \t]*tabby-image-job:\s*[0-9a-fA-F-]{8,}[ \t]*/gi, "");
     out = out.replace(/^[ \t]*tabby-switch-llm[ \t]*\n?/gim, "");
+    out = out.replace(/<mode_hint\b[^>]*>[\s\S]*?<\/mode_hint>/gi, "");
     out = out.replace(/^\d+\s+image\(s\) from this turn:\s*$/gim, "");
     out = out.replace(/^\d+\.\s+generated-\d{8}-\d{6}-\d+\.png\s*$/gim, "");
     out = out.replace(/^These URLs are on this API host\.[^\n]*$/gim, "");
