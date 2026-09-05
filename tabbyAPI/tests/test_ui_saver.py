@@ -279,6 +279,13 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(clock, "14:20:07")
         self.assertIn("Sep", date)
 
+    def test_hud_caption_title_cases_status_words(self):
+        cap = self.kiosk.hud_caption
+        self.assertEqual(cap("thinking"), "Thinking")
+        self.assertEqual(cap("planning"), "Planning")
+        self.assertEqual(cap("loading llm"), "Loading LLM")
+        self.assertEqual(cap("restarting api"), "Restarting API")
+
     def test_overlay_live_file_makes_idle_http_live(self):
         idle = {"gpu_mode": "llm", "profile": "qwen", "busy": False, "stage": "idle"}
         live = {"busy": True, "stage": "prefill", "tokens": 0}
@@ -287,6 +294,12 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertTrue(scene["live"])
         self.assertEqual(scene["phase"], "thinking")
         self.assertEqual(scene["palette"], "chat")
+
+    def test_overlay_live_file_without_http_payload(self):
+        merged = self.kiosk.overlay_saver_live(None, {"busy": True, "stage": "prefill"})
+        scene = self.kiosk.scene_from_state(merged, True)
+        self.assertTrue(scene["live"])
+        self.assertEqual(scene["phase"], "thinking")
 
     def test_kind_without_a_job_is_idle(self):
         scene = self.kiosk.scene_from_state(
@@ -331,10 +344,10 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertIn("qwen", idle_text)
         self.assertIn("14:20:07", idle_text)
         self.assertIn("Sat 5 Sep", idle_text)
-        self.assertIn("this box is a RTX 4070 Ti 12 GB", idle_text)
+        self.assertIn("This Box Is A RTX 4070 Ti 12 GB", idle_text)
         self.assertNotIn("thinking", idle_text)
         self.assertGreater(len(hot_screen.blits), 0)
-        self.assertIn("thinking", hot_text)
+        self.assertIn("Thinking", hot_text)
 
     def test_hud_clock_and_stats_keep_anchor(self):
         font = _PropFont()
@@ -756,7 +769,7 @@ class SaverKioskSceneTests(unittest.TestCase):
             after += 0.04
             scene = follow.tick(idle, 0.04, after)
         self.assertEqual(scene["cycle"], "halt")
-        self.assertEqual(scene["phase"], "dreaming")
+        self.assertEqual(scene["phase"], "planning")
         after += 6.0
         scene = follow.tick(idle, 0.04, after)
         for _step in range(90):
@@ -857,7 +870,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         text = " ".join(str(item) for item in screen.blits)
         self.assertNotIn("GPU 0%", text)
         self.assertNotIn("VRAM 0%", text)
-        self.assertIn("thinking", text)
+        self.assertIn("Thinking", text)
 
     def test_hud_type_is_large_with_a_halo(self):
         large, small = self.kiosk.hud_font_sizes(1080)
@@ -873,7 +886,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         )
         screen = _FakeScreen()
         self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), hot)
-        phase_blits = sum(1 for item in screen.blits if item and item[0] == "thinking")
+        phase_blits = sum(1 for item in screen.blits if item and item[0] == "Thinking")
         self.assertGreaterEqual(phase_blits, 9)
 
     def test_hud_shows_image_file_and_what(self):
@@ -905,10 +918,10 @@ class SaverKioskSceneTests(unittest.TestCase):
         screen = _FakeScreen()
         self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
         text = " ".join(str(item) for item in screen.blits)
-        self.assertIn("restarting api", text)
+        self.assertIn("Restarting API", text)
         self.assertIn("0:08", text)
-        self.assertIn("api down", text)
-        self.assertIn("waiting for /health", text)
+        self.assertIn("API Down", text)
+        self.assertIn("Waiting For /health", text)
 
     def test_hud_shows_waiters_and_toks(self):
         scene = self.kiosk.scene_from_state(
@@ -929,7 +942,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         text = " ".join(str(item) for item in screen.blits)
         self.assertIn("1842 tok", text)
         self.assertIn("12/s", text)
-        self.assertIn("2 waiting", text)
+        self.assertIn("2 Waiting", text)
 
     def test_hud_shows_typical_switch(self):
         scene = self.kiosk.scene_from_state(
@@ -949,9 +962,9 @@ class SaverKioskSceneTests(unittest.TestCase):
         screen = _FakeScreen()
         self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
         text = " ".join(str(item) for item in screen.blits)
-        self.assertIn("loading llm", text)
+        self.assertIn("Loading LLM", text)
         self.assertIn("0:42", text)
-        self.assertIn("~1:06 typical", text)
+        self.assertIn("~1:06 Typical", text)
 
     def test_idle_facts_from_switch_times(self):
         facts = self.kiosk.idle_fact_lines(

@@ -539,7 +539,7 @@ class SceneFollow:
         elif self.cycle == "boot":
             self.phase = "imagining"
         elif self.cycle == "halt":
-            self.phase = "dreaming"
+            self.phase = "planning"
         elif held:
             self.phase = str(target.get("phase") or self.phase)
         elif self.weights.get("idle", 0.0) > 0.65:
@@ -548,7 +548,7 @@ class SceneFollow:
             self.task_name = self.phase
             self._task_t0 = now
         self.runtime_s = max(0.0, now - self._task_t0) if self._task_t0 else 0.0
-        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "dreaming"}
+        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "planning"}
         if show_clock:
             clock_s = self.elapsed_s if self.elapsed_s > 0.5 else self.runtime_s
             runtime = _fmt_runtime(clock_s)
@@ -742,13 +742,16 @@ class StateBus:
         host, port = origin_peer(url)
         while not self.stop.is_set():
             live = read_saver_live()
-            hung = bool(live and live.get("busy"))
+            if live and live.get("busy"):
+                with self.lock:
+                    cached = dict(self.data) if self.data else {}
+                self.ingest(overlay_saver_live(cached, live), True)
             reachable = tcp_up(host, port)
-            timeout = 0.12 if hung else 0.8
-            payload = fetch_state(url, timeout=timeout) if reachable else None
+            payload = fetch_state(url, timeout=0.15) if reachable else None
             if payload is None:
                 reachable = tcp_up(host, port)
-            if payload is None and hung:
+            live = read_saver_live()
+            if payload is None and live and live.get("busy"):
                 with self.lock:
                     payload = dict(self.data) if self.data else {}
             payload = overlay_saver_live(payload, live)
@@ -1056,7 +1059,7 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
 
 
 def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
-    """Center bloom + ring: imagining expands, dreaming contracts. Field stays on."""
+    """Center bloom + ring: imagining expands, planning contracts. Field stays on."""
     cycle = str(scene.get("cycle") or "")
     if cycle not in ("boot", "halt"):
         return
@@ -1775,6 +1778,33 @@ def hud_anchor_right(face: Any, template: str, right: int) -> int:
     return int(right) - int(face.size(template)[0])
 
 
+def hud_caption(text: str) -> str:
+    """Title-case HUD words. Keep times and API/LLM/GPU as acronyms."""
+    special = {
+        "api": "API",
+        "llm": "LLM",
+        "gpu": "GPU",
+        "vram": "VRAM",
+        "comfy": "Comfy",
+        "gb": "GB",
+        "rtx": "RTX",
+    }
+    bits: list[str] = []
+    for word in str(text or "").split(" "):
+        if not word:
+            bits.append(word)
+            continue
+        key = word.lower()
+        if key in special:
+            bits.append(special[key])
+            continue
+        if word[:1].isdigit() or word.startswith("~") or word.startswith("%"):
+            bits.append(word)
+            continue
+        bits.append(word[:1].upper() + word[1:] if word else word)
+    return " ".join(bits)
+
+
 def _hud_apply_alpha(surf: Any, amt: float) -> None:
     setter = getattr(surf, "set_alpha", None)
     if setter is None:
@@ -1889,7 +1919,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         whisper_w = small.size(HUD_WHISPER_SLOT)[0] if whisper else 0
         fact_max = max(80, w - pad * 2 - (whisper_w + pad if whisper else 0))
         if fact:
-            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED, use_small=True)
+            blit(_hud_fit(small, hud_caption(fact), fact_max), (pad, h - pad - small_h), MUTED, use_small=True)
         if whisper:
             blit(whisper, (hud_anchor_right(small, HUD_WHISPER_SLOT, w - pad), h - pad - small_h), MUTED, use_small=True)
         return
@@ -1914,7 +1944,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     elif scene["connected"]:
         stats = ""
     else:
-        stats = "api down"
+        stats = "API Down"
     max_left = max(80, w - pad - small.size(HUD_STATS_SLOT)[0] - pad) if stats else w - pad * 2
 
     dest = str(scene.get("image_file") or "").strip()
@@ -1932,7 +1962,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         waiters = int(round(float(scene.get("waiters") or 0)))
     except (TypeError, ValueError):
         waiters = 0
-    wait_line = f"{waiters} waiting" if waiters > 0 else ""
+    wait_line = f"{waiters} Waiting" if waiters > 0 else ""
     tok_line = ""
     try:
         tokens = int(round(float(scene.get("tokens") or 0)))
@@ -1961,7 +1991,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     for line, color in (
         (dest, TEXT),
         (what, MUTED),
-        (note, MUTED),
+        (note and hud_caption(note), MUTED),
         (tok_line, MUTED),
         (wait_line, MUTED),
     ):
@@ -1969,7 +1999,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
             continue
         blit(_hud_fit(small, line, max_left), (pad, y), color, use_small=True)
         y += small_h + gap
-    blit(phase, (pad, h - pad - main_h), phase_color)
+    blit(hud_caption(phase), (pad, h - pad - main_h), phase_color)
     if stats:
         blit(stats, (hud_anchor_right(small, HUD_STATS_SLOT, w - pad), h - pad - small_h), MUTED, use_small=True)
 
@@ -2314,6 +2344,8 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             dt = now - prev
             prev = now
             data, ok = bus.snapshot()
+            data = overlay_saver_live(data, read_saver_live())
+            ok = bool(ok or (data and data.get("busy")))
             scene = follow.tick(scene_from_state(data, ok), dt, now)
             field = draw_field(max(64, args.width), max(36, args.height), scene)
             draw_sleepers(pygame, field, scene)
