@@ -520,8 +520,10 @@ class StateBus:
                 if payload is not None:
                     self.data = payload
                     self.ok = True
-                else:
-                    self.ok = False
+                # A timeout is not "API restarting". Decode blocks the event
+                # loop, so /saver/state often misses while the LLM is thinking.
+                # Keep the last snapshot; real restarts set restarting=True
+                # on a successful poll before the process dies.
             self.stop.wait(interval)
 
 
@@ -856,17 +858,19 @@ def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
             pygame_mod.draw.circle(screen, _mix(BG, color, 0.18), (cx, cy), inner, 1)
 
 
-# Idle-only: faint sleepers on staggered cadences. period is field-time (st).
+# Idle-only: faint geometric outlines on staggered cadences.
 # At idle speed ~0.36 that is roughly 25–55s between appearances, ~6s visible.
 _SLEEP_ACTORS = (
-    ("sleeper", 8.6, 0.15, 0.20, 0.42, 1.00),
-    ("zzz", 11.4, 0.62, 0.72, 0.30, 0.90),
-    ("sleeper", 14.1, 0.33, 0.58, 0.66, 0.78),
-    ("moon", 17.5, 0.08, 0.84, 0.20, 1.15),
-    ("zzz", 9.8, 0.81, 0.38, 0.76, 0.85),
-    ("sleeper", 19.2, 0.47, 0.12, 0.58, 0.70),
+    ("diamond", 8.6, 0.15, 0.20, 0.42, 1.00),
+    ("zzz", 11.4, 0.62, 0.72, 0.30, 0.85),
+    ("hex", 14.1, 0.33, 0.58, 0.66, 0.92),
+    ("ring", 17.5, 0.08, 0.84, 0.20, 1.10),
+    ("tri", 9.8, 0.81, 0.38, 0.76, 0.88),
+    ("diamond", 19.2, 0.47, 0.12, 0.58, 0.78),
 )
 _SLEEP_LIFE = 0.24
+_SLEEP_LO = (72, 90, 132)
+_SLEEP_HI = (176, 196, 236)
 
 
 def idle_sleeper_items(scene: dict[str, Any], width: int, height: int) -> list[dict[str, Any]]:
@@ -902,12 +906,21 @@ def idle_sleeper_items(scene: dict[str, Any], width: int, height: int) -> list[d
                 "kind": kind,
                 "x": int(round(x * (w - 1))),
                 "y": int(round(y * (h - 1))),
-                "size": max(14, int(round(h * 0.042 * scale))),
+                "size": max(18, int(round(h * 0.050 * scale))),
                 "amt": fade,
                 "flip": _u01(i + 3, int(hue * 97) + i) > 0.5,
             }
         )
     return out
+
+
+def _sleep_ink(amt: float) -> tuple[int, int, int]:
+    """Stay in idle navy-blue. Never mix toward black or the field will stamp."""
+    return _mix(_SLEEP_LO, _SLEEP_HI, 0.22 + 0.55 * _clamp01(amt))
+
+
+def _sleep_thick(size: int) -> int:
+    return 1 if size < 36 else 2
 
 
 def _draw_z_glyph(
@@ -917,7 +930,7 @@ def _draw_z_glyph(
     y: int,
     size: int,
     color: tuple[int, int, int],
-    thick: int = 2,
+    thick: int = 1,
 ) -> None:
     s = max(4, int(size))
     t = max(1, int(thick))
@@ -926,65 +939,83 @@ def _draw_z_glyph(
     pygame_mod.draw.line(screen, color, (x, y + s), (x + s, y + s), t)
 
 
-def _draw_sleeping_creature(
+def _outline_poly(
     pygame_mod: Any,
     screen: Any,
-    cx: int,
-    cy: int,
-    size: int,
-    amt: float,
-    flip: bool,
+    pts: list[tuple[int, int]],
+    color: tuple[int, int, int],
+    width: int,
 ) -> None:
-    ink = _mix(BG, ACCENT, 0.30 * amt)
-    eye = _mix(BG, MUTED, 0.42 * amt)
-    zc = _mix(BG, (190, 205, 240), 0.28 * amt)
-    bw = max(10, int(size * 1.65))
-    bh = max(6, int(size * 0.92))
-    facing = -1 if flip else 1
-    _draw_glow(pygame_mod, screen, (cx, cy), ACCENT, 0.12 * amt, scale=max(1.2, size / 10.0))
-    pygame_mod.draw.ellipse(screen, ink, (cx - bw // 2, cy - bh // 2, bw, bh))
-    hx = cx + facing * (bw // 2 - max(3, size // 6))
-    hy = cy - bh // 5
-    hr = max(4, size // 2)
-    pygame_mod.draw.circle(screen, ink, (hx, hy), hr)
-    ear = max(2, hr // 3)
-    pygame_mod.draw.circle(screen, ink, (hx - facing * ear // 2, hy - hr + ear // 2), ear)
-    ew = max(3, hr // 3)
-    pygame_mod.draw.line(
-        screen, eye, (hx - ew, hy + 1), (hx + ew, hy), max(1, size // 16)
-    )
-    zs = max(5, size // 4)
-    zx = hx + facing * (hr + zs // 2)
-    zy = hy - hr - zs
-    _draw_z_glyph(pygame_mod, screen, zx, zy, zs, zc, max(1, zs // 6))
-    _draw_z_glyph(
-        pygame_mod, screen, zx + facing * (zs // 2), zy - zs, max(4, int(zs * 0.7)), zc, 1
-    )
+    if len(pts) < 3:
+        return
+    pygame_mod.draw.polygon(screen, color, pts, max(1, width))
+
+
+def _draw_sleeping_diamond(
+    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+) -> None:
+    ink = _sleep_ink(amt)
+    w = _sleep_thick(size)
+    rx = max(8, int(size * 0.72))
+    ry = max(7, int(size * 0.58))
+    if flip:
+        rx, ry = ry, rx
+    pts = [(cx, cy - ry), (cx + rx, cy), (cx, cy + ry), (cx - rx, cy)]
+    _outline_poly(pygame_mod, screen, pts, ink, w)
+    zs = max(5, size // 5)
+    _draw_z_glyph(pygame_mod, screen, cx + rx + 2, cy - ry - zs, zs, ink, 1)
+
+
+def _draw_sleeping_hex(
+    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+) -> None:
+    ink = _sleep_ink(amt)
+    w = _sleep_thick(size)
+    r = max(8, int(size * 0.70))
+    twist = 0.52 if flip else 0.0
+    pts = []
+    for i in range(6):
+        a = twist + i * (math.pi / 3.0)
+        pts.append((int(round(cx + r * math.cos(a))), int(round(cy + r * math.sin(a)))))
+    _outline_poly(pygame_mod, screen, pts, ink, w)
+
+
+def _draw_sleeping_tri(
+    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+) -> None:
+    ink = _sleep_ink(amt)
+    w = _sleep_thick(size)
+    h = max(8, int(size * 0.78))
+    b = max(8, int(size * 0.82))
+    if flip:
+        pts = [(cx, cy + h), (cx + b, cy - h // 2), (cx - b, cy - h // 2)]
+    else:
+        pts = [(cx, cy - h), (cx + b, cy + h // 2), (cx - b, cy + h // 2)]
+    _outline_poly(pygame_mod, screen, pts, ink, w)
 
 
 def _draw_sleeping_zzz(
     pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
 ) -> None:
-    zc = _mix(BG, (186, 200, 236), 0.30 * amt)
-    s0 = max(6, int(size * 0.55))
-    _draw_z_glyph(pygame_mod, screen, cx - s0, cy + s0 // 3, s0, zc, max(1, s0 // 6))
-    s1 = max(7, int(size * 0.75))
-    _draw_z_glyph(pygame_mod, screen, cx, cy - s1 // 4, s1, zc, max(1, s1 // 6))
-    s2 = max(8, int(size))
-    _draw_z_glyph(pygame_mod, screen, cx + s1 // 2, cy - s2, s2, zc, max(1, s2 // 6))
+    ink = _sleep_ink(amt)
+    s0 = max(6, int(size * 0.42))
+    _draw_z_glyph(pygame_mod, screen, cx - s0, cy + s0 // 4, s0, ink, 1)
+    s1 = max(7, int(size * 0.58))
+    _draw_z_glyph(pygame_mod, screen, cx, cy - s1 // 5, s1, ink, 1)
+    s2 = max(8, int(size * 0.74))
+    _draw_z_glyph(pygame_mod, screen, cx + s1 // 2, cy - s2, s2, ink, 1)
 
 
-def _draw_sleeping_moon(
+def _draw_sleeping_ring(
     pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
 ) -> None:
-    ink = _mix(BG, (210, 218, 242), 0.26 * amt)
-    eye = _mix(BG, MUTED, 0.38 * amt)
-    r = max(8, int(size * 0.85))
-    _draw_glow(pygame_mod, screen, (cx, cy), (180, 190, 230), 0.14 * amt, scale=max(1.4, r / 7.0))
-    pygame_mod.draw.circle(screen, ink, (cx, cy), r)
-    pygame_mod.draw.circle(screen, _mix(BG, ink, 0.55), (cx - r // 6, cy + r // 7), max(3, r // 3))
-    ew = max(3, r // 4)
-    pygame_mod.draw.line(screen, eye, (cx - ew, cy + 1), (cx + ew // 2, cy), max(1, r // 10))
+    ink = _sleep_ink(amt)
+    w = _sleep_thick(size)
+    r = max(8, int(size * 0.70))
+    pygame_mod.draw.circle(screen, ink, (cx, cy), r, w)
+    inner = max(3, r // 2)
+    if inner + w < r:
+        pygame_mod.draw.circle(screen, ink, (cx, cy), inner, 1)
 
 
 def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
@@ -992,12 +1023,16 @@ def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     for item in idle_sleeper_items(scene, w, h):
         kind = item["kind"]
         x, y, size, amt = item["x"], item["y"], item["size"], item["amt"]
-        if kind == "sleeper":
-            _draw_sleeping_creature(pygame_mod, screen, x, y, size, amt, item["flip"])
-        elif kind == "moon":
-            _draw_sleeping_moon(pygame_mod, screen, x, y, size, amt)
-        else:
+        if kind == "hex":
+            _draw_sleeping_hex(pygame_mod, screen, x, y, size, amt, item["flip"])
+        elif kind == "tri":
+            _draw_sleeping_tri(pygame_mod, screen, x, y, size, amt, item["flip"])
+        elif kind == "ring":
+            _draw_sleeping_ring(pygame_mod, screen, x, y, size, amt)
+        elif kind == "zzz":
             _draw_sleeping_zzz(pygame_mod, screen, x, y, size, amt)
+        else:
+            _draw_sleeping_diamond(pygame_mod, screen, x, y, size, amt, item["flip"])
 
 
 def _blended_palette(
