@@ -157,11 +157,11 @@ tui_cmd() {
   fi
 }
 
-# Pastel-style 16-color console theme. Same palette as tsos-installer.sh.
+# Standard dialog colours. Same palette as tsos-installer.sh.
 write_dialogrc() {
   local f="${TMPDIR:-/tmp}/tabby-dialogrc"
   cat >"$f" <<'EOF'
-use_shadow = OFF
+use_shadow = ON
 use_colors = ON
 use_scrollbar = ON
 visit_items = OFF
@@ -172,43 +172,43 @@ bindkey formfield TAB form_NEXT
 bindkey formbox TAB form_NEXT
 bindkey formfield BTAB form_prev
 bindkey formbox BTAB form_prev
-screen_color = (WHITE,BLUE,ON)
-shadow_color = (BLACK,BLACK,OFF)
+screen_color = (CYAN,BLUE,ON)
+shadow_color = (BLACK,BLACK,ON)
 dialog_color = (BLACK,WHITE,OFF)
-title_color = (MAGENTA,WHITE,ON)
-border_color = (CYAN,WHITE,ON)
-border2_color = (BLUE,WHITE,ON)
-gauge_color = (WHITE,MAGENTA,ON)
-button_active_color = (WHITE,MAGENTA,ON)
+title_color = (BLUE,WHITE,ON)
+border_color = (WHITE,WHITE,ON)
+border2_color = (BLACK,WHITE,OFF)
+gauge_color = (BLUE,WHITE,ON)
+button_active_color = (WHITE,BLUE,ON)
 button_inactive_color = (BLACK,WHITE,OFF)
-button_key_active_color = (YELLOW,MAGENTA,ON)
-button_key_inactive_color = (MAGENTA,WHITE,ON)
-button_label_active_color = (WHITE,MAGENTA,ON)
-button_label_inactive_color = (BLACK,WHITE,OFF)
+button_key_active_color = (WHITE,BLUE,ON)
+button_key_inactive_color = (RED,WHITE,OFF)
+button_label_active_color = (YELLOW,BLUE,ON)
+button_label_inactive_color = (BLACK,WHITE,ON)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (CYAN,WHITE,ON)
-menubox_border2_color = (BLUE,WHITE,ON)
+menubox_border_color = (WHITE,WHITE,ON)
+menubox_border2_color = (BLACK,WHITE,OFF)
 item_color = (BLACK,WHITE,OFF)
-item_selected_color = (WHITE,MAGENTA,ON)
+item_selected_color = (WHITE,BLUE,ON)
 tag_color = (BLUE,WHITE,ON)
-tag_selected_color = (WHITE,MAGENTA,ON)
-tag_key_color = (MAGENTA,WHITE,ON)
-tag_key_selected_color = (YELLOW,MAGENTA,ON)
+tag_selected_color = (YELLOW,BLUE,ON)
+tag_key_color = (RED,WHITE,OFF)
+tag_key_selected_color = (RED,BLUE,ON)
 check_color = (BLACK,WHITE,OFF)
-check_selected_color = (WHITE,MAGENTA,ON)
-form_active_text_color = (BLACK,CYAN,ON)
-form_text_color = (BLACK,WHITE,OFF)
-form_item_readonly_color = (BLUE,WHITE,ON)
+check_selected_color = (WHITE,BLUE,ON)
+form_active_text_color = (WHITE,BLUE,ON)
+form_text_color = (WHITE,CYAN,ON)
+form_item_readonly_color = (CYAN,WHITE,ON)
 inputbox_color = (BLACK,WHITE,OFF)
-inputbox_border_color = (CYAN,WHITE,ON)
-inputbox_border2_color = (BLUE,WHITE,ON)
+inputbox_border_color = (BLACK,WHITE,OFF)
+inputbox_border2_color = (BLACK,WHITE,OFF)
 searchbox_color = (BLACK,WHITE,OFF)
-searchbox_title_color = (MAGENTA,WHITE,ON)
-searchbox_border_color = (CYAN,WHITE,ON)
+searchbox_title_color = (BLUE,WHITE,ON)
+searchbox_border_color = (WHITE,WHITE,ON)
 position_indicator_color = (BLUE,WHITE,ON)
-uarrow_color = (MAGENTA,WHITE,ON)
-darrow_color = (MAGENTA,WHITE,ON)
-itemhelp_color = (BLUE,WHITE,ON)
+uarrow_color = (GREEN,WHITE,ON)
+darrow_color = (GREEN,WHITE,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
 EOF
   export DIALOGRC="$f"
   # A malformed theme must not prevent the installer from opening.
@@ -414,8 +414,11 @@ ui_yesno() {
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    # Yes=0, No=1. Capture under set +e so No is not an installer crash.
+    set +e
     dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
     rc=$?
+    set -e
     if [[ "$rc" -eq 255 ]]; then
       if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
         return 2
@@ -426,8 +429,10 @@ ui_yesno() {
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    set +e
     whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
     rc=$?
+    set -e
     if [[ "$rc" -eq 255 ]]; then
       if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
         return 2
@@ -2302,7 +2307,7 @@ Default is fine unless your key has another name." \
 }
 
 inst_edit_saver() {
-  local rc v
+  local rc=0 v
   apply_saver_defaults
   local yn=0
   [[ "${TABBY_SAVER_ENABLED}" == "1" ]] && yn=1
@@ -2315,8 +2320,7 @@ ${TABBY_SAVER_IDLE_S}s with no input; after logout it waits
 ${TABBY_SAVER_LOGOUT_IDLE_S}s.
 
 Do not enable if Omarchy or another desktop already owns the GPU." \
-    "$yn"
-  rc=$?
+    "$yn" || rc=$?
   case "$rc" in
     2) return 0 ;;
     0)

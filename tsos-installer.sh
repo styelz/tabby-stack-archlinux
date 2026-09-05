@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.46"
+SCRIPT_VERSION="1.0.48"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -252,12 +252,11 @@ tui_cmd() {
   fi
 }
 
-# Pastel-style 16-color console theme: light panels, cyan/magenta accents,
-# and an intentionally high-contrast selected row.
+# Standard dialog colours (same palette as `dialog --create-rc`).
 write_dialogrc() {
   local f="${TMPDIR:-/tmp}/tsos-dialogrc"
   cat >"$f" <<'EOF'
-use_shadow = OFF
+use_shadow = ON
 use_colors = ON
 use_scrollbar = ON
 visit_items = OFF
@@ -268,43 +267,43 @@ bindkey formfield TAB form_NEXT
 bindkey formbox TAB form_NEXT
 bindkey formfield BTAB form_prev
 bindkey formbox BTAB form_prev
-screen_color = (WHITE,BLUE,ON)
-shadow_color = (BLACK,BLACK,OFF)
+screen_color = (CYAN,BLUE,ON)
+shadow_color = (BLACK,BLACK,ON)
 dialog_color = (BLACK,WHITE,OFF)
-title_color = (MAGENTA,WHITE,ON)
-border_color = (CYAN,WHITE,ON)
-border2_color = (BLUE,WHITE,ON)
-gauge_color = (WHITE,MAGENTA,ON)
-button_active_color = (WHITE,MAGENTA,ON)
+title_color = (BLUE,WHITE,ON)
+border_color = (WHITE,WHITE,ON)
+border2_color = (BLACK,WHITE,OFF)
+gauge_color = (BLUE,WHITE,ON)
+button_active_color = (WHITE,BLUE,ON)
 button_inactive_color = (BLACK,WHITE,OFF)
-button_key_active_color = (YELLOW,MAGENTA,ON)
-button_key_inactive_color = (MAGENTA,WHITE,ON)
-button_label_active_color = (WHITE,MAGENTA,ON)
-button_label_inactive_color = (BLACK,WHITE,OFF)
+button_key_active_color = (WHITE,BLUE,ON)
+button_key_inactive_color = (RED,WHITE,OFF)
+button_label_active_color = (YELLOW,BLUE,ON)
+button_label_inactive_color = (BLACK,WHITE,ON)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (CYAN,WHITE,ON)
-menubox_border2_color = (BLUE,WHITE,ON)
+menubox_border_color = (WHITE,WHITE,ON)
+menubox_border2_color = (BLACK,WHITE,OFF)
 item_color = (BLACK,WHITE,OFF)
-item_selected_color = (WHITE,MAGENTA,ON)
+item_selected_color = (WHITE,BLUE,ON)
 tag_color = (BLUE,WHITE,ON)
-tag_selected_color = (WHITE,MAGENTA,ON)
-tag_key_color = (MAGENTA,WHITE,ON)
-tag_key_selected_color = (YELLOW,MAGENTA,ON)
+tag_selected_color = (YELLOW,BLUE,ON)
+tag_key_color = (RED,WHITE,OFF)
+tag_key_selected_color = (RED,BLUE,ON)
 check_color = (BLACK,WHITE,OFF)
-check_selected_color = (WHITE,MAGENTA,ON)
-form_active_text_color = (BLACK,CYAN,ON)
-form_text_color = (BLACK,WHITE,OFF)
-form_item_readonly_color = (BLUE,WHITE,ON)
+check_selected_color = (WHITE,BLUE,ON)
+form_active_text_color = (WHITE,BLUE,ON)
+form_text_color = (WHITE,CYAN,ON)
+form_item_readonly_color = (CYAN,WHITE,ON)
 inputbox_color = (BLACK,WHITE,OFF)
-inputbox_border_color = (CYAN,WHITE,ON)
-inputbox_border2_color = (BLUE,WHITE,ON)
+inputbox_border_color = (BLACK,WHITE,OFF)
+inputbox_border2_color = (BLACK,WHITE,OFF)
 searchbox_color = (BLACK,WHITE,OFF)
-searchbox_title_color = (MAGENTA,WHITE,ON)
-searchbox_border_color = (CYAN,WHITE,ON)
+searchbox_title_color = (BLUE,WHITE,ON)
+searchbox_border_color = (WHITE,WHITE,ON)
 position_indicator_color = (BLUE,WHITE,ON)
-uarrow_color = (MAGENTA,WHITE,ON)
-darrow_color = (MAGENTA,WHITE,ON)
-itemhelp_color = (BLUE,WHITE,ON)
+uarrow_color = (GREEN,WHITE,ON)
+darrow_color = (GREEN,WHITE,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
 EOF
   export DIALOGRC="$f"
   # A bad dialogrc makes every widget exit before drawing. Validate it now
@@ -957,15 +956,18 @@ ui_yesno() {
   local title="$1"
   local text="$2"
   local default_yes="${3:-1}"
-  local width height
+  local width height rc
   width=$(box_width)
   text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 6))")
   height=$(($(text_rows "$text" "$width") + 6))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    # Yes=0, No=1. Capture under set +e so No is not an installer crash.
+    set +e
     dialog_tty --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
-    local rc=$?
+    rc=$?
+    set -e
     # dialog: Yes=0, No=1, Esc=255. Esc used to look like No.
     if [[ "$rc" -eq 255 ]]; then
       if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
@@ -977,8 +979,10 @@ ui_yesno() {
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     local extra=()
     [[ "$default_yes" -eq 0 ]] && extra=(--defaultno)
+    set +e
     whiptail --backtitle "$BACKTITLE" --title "$title" "${extra[@]}" --yesno "$text" "$height" "$width"
-    local rc=$?
+    rc=$?
+    set -e
     if [[ "$rc" -eq 255 ]]; then
       if [[ "${UI_ALLOW_BACK:-0}" == 1 ]]; then
         return 2
@@ -1661,7 +1665,9 @@ Examples: 2G  512M" \
 }
 
 hub_edit_desktop() {
-  local rc
+  local rc=0
+  # --yesno returns 1 for No. `|| rc=$?` keeps set -e from aborting the
+  # installer before the LUKS question.
   ui_yesno "Omarchy desktop" \
 "Install the official Omarchy desktop in the chroot?
 
@@ -1669,8 +1675,7 @@ Yes requires LUKS on the root disk (encryption will be turned on).
 No skips Omarchy; you can still encrypt on the next screen.
 
 Default is no." \
-    0
-  rc=$?
+    0 || rc=$?
   case "$rc" in
     2) return 0 ;;
     0)
@@ -1691,6 +1696,7 @@ Blank is fine." \
       ;;
     *)
       OMARCHY_MODE=skip
+      rc=0
       ui_yesno "Disk encryption" \
 "Encrypt the root disk with LUKS?
 
@@ -1698,8 +1704,7 @@ Yes = unlock password at boot (recommended).
 No = unencrypted btrfs.
 
 Default follows the current setting ($(encrypt_label))." \
-        "$([[ "$(encrypt_label)" == yes ]] && echo 1 || echo 0)"
-      rc=$?
+        "$([[ "$(encrypt_label)" == yes ]] && echo 1 || echo 0)" || rc=$?
       case "$rc" in
         2) return 0 ;;
         0) ENCRYPT=1 ;;
@@ -1736,13 +1741,13 @@ GPU: ${gpu_label}" \
         TABBY_MODELS=$picked
         ;;
       *)
+        rc=0
         ui_yesno "No catalog models in that folder" \
 "Nothing matching the installer catalog was found in:
   ${TABBY_CACHE}
 
 Yes = show Hugging Face models that fit this GPU instead.
-No = keep the path and use the core preset." 1
-        rc=$?
+No = keep the path and use the core preset." 1 || rc=$?
         case "$rc" in
           2) return 0 ;;
           0) TABBY_CACHE="" ;;
