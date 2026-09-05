@@ -1,0 +1,97 @@
+name: Build frozen TSOS ISO
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "iso-*"
+
+permissions:
+  contents: write
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache
+          sudo docker system prune --all --force --volumes
+          df -h
+
+      - name: Build and save Code sandbox images
+        run: |
+          mkdir -p "$RUNNER_TEMP/tsos-docker"
+          docker pull debian:bookworm-slim
+          docker build -t tabby-stack-code:local tabbyAPI/ui/codebox
+          docker save -o "$RUNNER_TEMP/tsos-docker/codebox-images.tar" \
+            debian:bookworm-slim tabby-stack-code:local
+          df -h
+
+      - name: Build TSOS Arch Linux ISO
+        run: |
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE:/src" \
+            -v "$RUNNER_TEMP/tsos-docker/codebox-images.tar:/codebox-images.tar:ro" \
+            archlinux:latest \
+            bash -lc 'TSOS_DOCKER_TAR=/codebox-images.tar TSOS_ISO_OUT=/src/out /src/iso/build.sh'
+          sudo chown -R "$USER:$USER" out
+          df -h
+
+      - name: Prepare release assets
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd out
+          size=$(stat -c %s tsos-archlinux.iso)
+          if (( size > 1900 * 1024 * 1024 )); then
+            split -b 1900M -d -a 3 tsos-archlinux.iso tsos-archlinux.iso.part-
+            sha256sum tsos-archlinux.iso.part-* >> SHA256SUMS
+            rm tsos-archlinux.iso
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="iso-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          fi
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          ls -lh
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          Bootable frozen-package TSOS Arch Linux installer.
+
+          If the ISO is split, reassemble it before writing it to USB:
+
+              cat tsos-archlinux.iso.part-* > tsos-archlinux.iso
+              sha256sum -c SHA256SUMS --ignore-missing
+
+          Write directly (replace `/dev/sdX` with the whole USB device):
+
+              sudo dd if=tsos-archlinux.iso of=/dev/sdX bs=4M status=progress oflag=sync
+
+          Ventoy also works; use exFAT when the ISO exceeds 4 GiB. Arch,
+          installer dependencies, Python wheels, source repositories, Monaco,
+          and the Code sandbox image are frozen in the ISO. Model weights are
+          not included: provide the existing TSOS weights cache on another
+          drive or connect to Hugging Face. Omarchy also requires a network.
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" out/* --clobber
+          else
+            gh release create "$RELEASE_TAG" out/* \
+              --title "TSOS Arch Linux ISO $RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi

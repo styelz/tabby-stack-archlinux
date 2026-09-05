@@ -14,6 +14,13 @@ FETCH_MODELS="$SCRIPT_DIR/fetch_models.py"
 EMBED_NAME="Qwen3-Embedding-0.6B"
 # Official Arch python is 3.14; python312 is AUR-only. Match the first-boot workaround.
 PYENV_VER="3.12.5"
+TSOS_OFFLINE_ROOT="${TSOS_OFFLINE_ROOT:-}"
+PIP_OFFLINE_ARGS=()
+if [[ -n "$TSOS_OFFLINE_ROOT" && -d "$TSOS_OFFLINE_ROOT/wheels" ]]; then
+  PIP_OFFLINE_ARGS=(--no-index --find-links "$TSOS_OFFLINE_ROOT/wheels")
+  export PIP_NO_INDEX=1
+  export PIP_FIND_LINKS="$TSOS_OFFLINE_ROOT/wheels"
+fi
 
 BACKTITLE="tabby-stack"
 TUI=""
@@ -1493,6 +1500,15 @@ install_pyenv() {
     rm -rf "$PYENV_ROOT"
   fi
 
+  if [[ -n "$TSOS_OFFLINE_ROOT" && -f "$TSOS_OFFLINE_ROOT/bundles/pyenv.bundle" ]]; then
+    echo "    Cloning pyenv from the TSOS ISO..."
+    git clone "$TSOS_OFFLINE_ROOT/bundles/pyenv.bundle" "$PYENV_ROOT"
+    pyenv_tree_ok "$PYENV_ROOT" && return 0
+    rm -rf "$PYENV_ROOT"
+    echo "The pyenv bundle on the TSOS ISO is invalid."
+    return 1
+  fi
+
   echo "    Cloning pyenv from GitHub..."
   local i
   for ((i = 1; i <= 3; i++)); do
@@ -1690,6 +1706,9 @@ ensure_python312() {
   maybe_copy_cached_python312
   if [[ ! -x "$PYENV_ROOT/versions/$PYENV_VER/bin/python" ]]; then
     echo "    Compiling Python $PYENV_VER (several minutes)..."
+    if [[ -n "$TSOS_OFFLINE_ROOT" && -f "$TSOS_OFFLINE_ROOT/python/Python-${PYENV_VER}.tar.xz" ]]; then
+      export PYTHON_BUILD_CACHE_PATH="$TSOS_OFFLINE_ROOT/python"
+    fi
     pyenv install -s "$PYENV_VER"
   fi
   # Deliberately no `pyenv global`: the venvs below use the absolute path, and
@@ -2899,7 +2918,11 @@ NVIDIA_DRIVER_INSTALLED_NOW=0
 NVIDIA_SMI_OK=0
 if [[ "$UPDATE_MODE" -eq 0 ]]; then
   progress 4 "Syncing packages"
-  run_quiet sudo -n pacman -Sy --noconfirm
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    echo "Using frozen TSOS package repository at $TSOS_OFFLINE_ROOT/pacman" >>"$INSTALL_LOG"
+  else
+    run_quiet sudo -n pacman -Sy --noconfirm
+  fi
 fi
 
 if nvidia_smi_ok; then
@@ -3011,6 +3034,10 @@ build_codebox_image() {
   local df="$DEST_TABBY/ui/codebox/Dockerfile"
   local dir="$DEST_TABBY/ui/codebox"
   [[ -f "$df" ]] || return 0
+  [[ -f /var/lib/tsos/offline-docker-loaded ]] && return 0
+  if sudo -n docker image inspect tabby-stack-code:local >/dev/null 2>&1; then
+    return 0
+  fi
   if sudo -n docker build -t tabby-stack-code:local -f "$df" "$dir" >>"$INSTALL_LOG" 2>&1; then
     drop_codebox_containers
     return 0
@@ -3023,6 +3050,36 @@ build_codebox_image() {
 }
 
 enable_docker
+
+load_offline_docker_images() {
+  local archive="${TSOS_OFFLINE_ROOT:-}/docker/codebox-images.tar"
+  [[ -f "$archive" ]] || return 0
+  if sudo -n docker load -i "$archive" >>"$INSTALL_LOG" 2>&1; then
+    sudo -n install -D -m 0644 /dev/null /var/lib/tsos/offline-docker-loaded
+    return 0
+  fi
+  # systemd is not running in the installer chroot. Start a private daemon
+  # long enough to import the image into /var/lib/docker for first boot.
+  local socket=/run/tsos-offline-docker.sock pid i
+  sudo -n rm -f "$socket" /run/tsos-offline-docker.pid
+  sudo -n dockerd --host "unix://$socket" --pidfile /run/tsos-offline-docker.pid \
+    >>"$INSTALL_LOG" 2>&1 &
+  pid=$!
+  for i in $(seq 1 45); do
+    [[ -S "$socket" ]] && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if [[ -S "$socket" ]]; then
+    if sudo -n env DOCKER_HOST="unix://$socket" docker load -i "$archive" >>"$INSTALL_LOG" 2>&1; then
+      sudo -n install -D -m 0644 /dev/null /var/lib/tsos/offline-docker-loaded
+    fi
+  fi
+  sudo -n kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+load_offline_docker_images
 
 progress 16 "Checking Python 3.12"
 run_quiet ensure_python312
@@ -3089,7 +3146,12 @@ fi
 
 progress 28 "Installing ComfyUI"
 if [[ ! -f "$DEST_COMFY/main.py" ]]; then
-  run_quiet git clone https://github.com/comfyanonymous/ComfyUI.git "$DEST_COMFY"
+  if [[ -n "$TSOS_OFFLINE_ROOT" && -f "$TSOS_OFFLINE_ROOT/bundles/ComfyUI.bundle" ]]; then
+    run_quiet git clone "$TSOS_OFFLINE_ROOT/bundles/ComfyUI.bundle" "$DEST_COMFY"
+    run_quiet git -C "$DEST_COMFY" remote set-url origin https://github.com/comfyanonymous/ComfyUI.git
+  else
+    run_quiet git clone https://github.com/comfyanonymous/ComfyUI.git "$DEST_COMFY"
+  fi
 fi
 mkdir -p "$DEST_COMFY/models/checkpoints"
 if [[ -d "$DEST_COMFY/venv/Scripts" ]]; then
@@ -3159,12 +3221,28 @@ tabby_venv_ok() {
   venv_cuda_ok "$DEST_TABBY/venv/bin/python" "torch, exllamav3"
 }
 
+install_tabby_cu12() {
+  local py="$DEST_TABBY/venv/bin/python"
+  if ((${#PIP_OFFLINE_ARGS[@]})); then
+    # cu12 uses direct HTTPS wheel references in pyproject.toml. Direct URLs
+    # bypass --find-links, so install their frozen equivalents first and then
+    # install the base project without evaluating that extra.
+    run_quiet "$py" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U \
+      'torch==2.9.0+cu128' \
+      'exllamav3==1.4.6+cu128.torch2.9.0' \
+      triton 'flash-linear-attention>=0.5.0'
+    run_quiet env -C "$DEST_TABBY" "$py" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U .
+  else
+    run_quiet env -C "$DEST_TABBY" "$py" -m pip install -U ".[cu12]"
+  fi
+}
+
 progress 40 "TabbyAPI Python environment"
 if ! tabby_venv_ok; then
   rm -rf "$DEST_TABBY/venv"
   run_quiet "$PY" -m venv "$DEST_TABBY/venv"
-  run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U pip setuptools wheel packaging
-  run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[cu12]"
+  run_quiet "$DEST_TABBY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U pip setuptools wheel packaging
+  install_tabby_cu12
   if ! tabby_venv_ok; then
     echo "TabbyAPI venv check failed (torch/exllamav3 import or CUDA-built torch)." >> "$INSTALL_LOG"
     if [[ "${NVIDIA_SMI_OK:-0}" -eq 0 ]]; then
@@ -3174,14 +3252,15 @@ if ! tabby_venv_ok; then
   fi
 elif [[ "$UPDATE_MODE" -eq 1 ]]; then
   progress 45 "Updating TabbyAPI Python packages"
-  run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[cu12]"
+  install_tabby_cu12
 fi
 if [[ "$UPDATE_MODE" -eq 1 ]] || ! "$DEST_TABBY/venv/bin/python" -c "import infinity_emb, sentence_transformers" >/dev/null 2>&1; then
   progress 55 "TabbyAPI extras"
-  run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install -U ".[extras]"
+  run_quiet env -C "$DEST_TABBY" "$DEST_TABBY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U ".[extras]"
 fi
-run_quiet "$DEST_TABBY/venv/bin/python" -m pip install -U 'numpy>=2.1.0'
-if [[ -f "$DEST_TABBY/ui/fetch_monaco.py" ]]; then
+run_quiet "$DEST_TABBY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U 'numpy>=2.1.0'
+if [[ -f "$DEST_TABBY/ui/fetch_monaco.py" &&
+      ! -f "$DEST_TABBY/ui/static/vs/loader.js" ]]; then
   progress 56 "Monaco editor"
   run_quiet "$DEST_TABBY/venv/bin/python" "$DEST_TABBY/ui/fetch_monaco.py"
 fi
@@ -3202,8 +3281,13 @@ comfy_torch_cu13() {
 install_comfy_torch() {
   # cu130 torch first: requirements.txt would otherwise pull the PyPI build and
   # this would download ~2.5 GB of wheels twice.
-  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu130
+  if ((${#PIP_OFFLINE_ARGS[@]})); then
+    run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" \
+      -U torch torchvision torchaudio
+  else
+    run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U torch torchvision torchaudio \
+      --index-url https://download.pytorch.org/whl/cu130
+  fi
   # Drop leftover CUDA 12 NVIDIA wheels so start.sh does not prepend their lib dirs.
   # Those packages share nvidia/{cudnn,nccl,...} paths with the cu13 builds, so
   # uninstall can delete the CUDA 13 .so files; put the same cu13 pins back.
@@ -3212,8 +3296,13 @@ install_comfy_torch() {
   if ((${#oldcuda[@]})); then
     run_quiet "$DEST_COMFY/venv/bin/python" -m pip uninstall -y "${oldcuda[@]}"
     if ((${#cu13nvidia[@]})); then
-      run_quiet "$DEST_COMFY/venv/bin/python" -m pip install --force-reinstall --no-deps \
-        "${cu13nvidia[@]}" --index-url https://download.pytorch.org/whl/cu130
+      if ((${#PIP_OFFLINE_ARGS[@]})); then
+        run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" \
+          --force-reinstall --no-deps "${cu13nvidia[@]}"
+      else
+        run_quiet "$DEST_COMFY/venv/bin/python" -m pip install --force-reinstall --no-deps \
+          "${cu13nvidia[@]}" --index-url https://download.pytorch.org/whl/cu130
+      fi
     fi
   fi
 }
@@ -3222,10 +3311,10 @@ progress 62 "ComfyUI Python environment"
 if ! comfy_venv_ok; then
   rm -rf "$DEST_COMFY/venv"
   run_quiet "$PY" -m venv "$DEST_COMFY/venv"
-  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U pip setuptools wheel
+  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U pip setuptools wheel
   install_comfy_torch
   if [[ -f "$DEST_COMFY/requirements.txt" ]]; then
-    run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -r "$DEST_COMFY/requirements.txt"
+    run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -r "$DEST_COMFY/requirements.txt"
   fi
   if ! comfy_venv_ok || ! comfy_torch_cu13; then
     echo "ComfyUI venv check failed (import or CUDA 13 torch build)." >> "$INSTALL_LOG"
@@ -3242,7 +3331,7 @@ elif ! comfy_torch_cu13; then
   fi
 elif [[ "${TABBY_UPDATE_COMFY:-}" == 1 && -f "$DEST_COMFY/requirements.txt" ]]; then
   progress 65 "Updating ComfyUI Python packages"
-  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U -r "$DEST_COMFY/requirements.txt"
+  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U -r "$DEST_COMFY/requirements.txt"
 fi
 
 cat > "$DEST_COMFY/start.sh" <<'EOF'
@@ -3265,10 +3354,15 @@ chmod +x "$DEST_COMFY/start.sh"
 progress 78 "ComfyUI-GGUF"
 mkdir -p "$DEST_COMFY/custom_nodes"
 if [[ ! -f "$DEST_COMFY/custom_nodes/ComfyUI-GGUF/nodes.py" ]]; then
-  run_quiet git clone --depth 1 https://github.com/city96/ComfyUI-GGUF "$DEST_COMFY/custom_nodes/ComfyUI-GGUF"
+  if [[ -n "$TSOS_OFFLINE_ROOT" && -f "$TSOS_OFFLINE_ROOT/bundles/ComfyUI-GGUF.bundle" ]]; then
+    run_quiet git clone "$TSOS_OFFLINE_ROOT/bundles/ComfyUI-GGUF.bundle" "$DEST_COMFY/custom_nodes/ComfyUI-GGUF"
+    run_quiet git -C "$DEST_COMFY/custom_nodes/ComfyUI-GGUF" remote set-url origin https://github.com/city96/ComfyUI-GGUF.git
+  else
+    run_quiet git clone --depth 1 https://github.com/city96/ComfyUI-GGUF "$DEST_COMFY/custom_nodes/ComfyUI-GGUF"
+  fi
 fi
 if [[ -f "$DEST_COMFY/custom_nodes/ComfyUI-GGUF/requirements.txt" ]]; then
-  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install -U -r "$DEST_COMFY/custom_nodes/ComfyUI-GGUF/requirements.txt"
+  run_quiet "$DEST_COMFY/venv/bin/python" -m pip install "${PIP_OFFLINE_ARGS[@]}" -U -r "$DEST_COMFY/custom_nodes/ComfyUI-GGUF/requirements.txt"
 fi
 
 progress 84 "Copying model weights"

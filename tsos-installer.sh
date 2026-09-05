@@ -73,6 +73,17 @@ CRYPT_NAME="$MAPPER_NAME"
 CACHE_STAGING=/run/tsos-weight-cache
 CACHE_CHROOT_PATH=/mnt/tsos-cache
 TABBY_CACHE_CHROOT=""
+TSOS_OFFLINE_ROOT="${TSOS_OFFLINE_ROOT:-}"
+TSOS_OFFLINE_CHROOT=/opt/tsos
+TSOS_PACMAN_CONFIG=""
+
+if [[ -z "$TSOS_OFFLINE_ROOT" && -f /opt/tsos/pacman/tsos.db ]]; then
+  TSOS_OFFLINE_ROOT=/opt/tsos
+fi
+if [[ -n "$TSOS_OFFLINE_ROOT" && -z "$TABBY_LOCAL_SRC" &&
+      -f "$TSOS_OFFLINE_ROOT/tabby-stack/install.sh" ]]; then
+  TABBY_LOCAL_SRC="$TSOS_OFFLINE_ROOT/tabby-stack"
+fi
 
 usage() {
   cat <<EOF
@@ -2452,13 +2463,38 @@ cpu_ucode_pkg() {
 # provide the name `nvidia`, so pacman -S nvidia is "target not found".
 # An outdated live ISO database may not list nvidia-open until after -Sy.
 pacman_pkg_available() {
-  pacman -Si "$1" >/dev/null 2>&1
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    pacman --config "$(offline_pacman_config)" -Si "$1" >/dev/null 2>&1
+  else
+    pacman -Si "$1" >/dev/null 2>&1
+  fi
 }
 
 sync_live_pacman() {
   disable_live_mkinitcpio_hooks
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    log "Using frozen TSOS package repository"
+    offline_pacman_config >/dev/null
+    return 0
+  fi
   log "Refreshing package databases"
   pacman -Sy --noconfirm
+}
+
+offline_pacman_config() {
+  [[ -n "$TSOS_OFFLINE_ROOT" && -f "$TSOS_OFFLINE_ROOT/pacman/tsos.db" ]] || return 1
+  if [[ -n "$TSOS_PACMAN_CONFIG" && -f "$TSOS_PACMAN_CONFIG" ]]; then
+    printf '%s\n' "$TSOS_PACMAN_CONFIG"
+    return 0
+  fi
+  TSOS_PACMAN_CONFIG=/tmp/tsos-pacman.conf
+  {
+    printf '[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\n'
+    printf 'LocalFileSigLevel = Optional\n\n'
+    printf '[tsos]\nSigLevel = Optional TrustAll\nServer = file://%s/pacman\n\n' "$TSOS_OFFLINE_ROOT"
+    awk 'BEGIN { keep=0 } /^\[[^]]+\]/ { keep=($0 != "[options]") } keep { print }' /etc/pacman.conf
+  } >"$TSOS_PACMAN_CONFIG"
+  printf '%s\n' "$TSOS_PACMAN_CONFIG"
 }
 
 nvidia_pkg() {
@@ -2632,6 +2668,18 @@ self_test() {
   check "$(part_dev /dev/nvme0n1 2)" /dev/nvme0n1p2 "nvme p2"
   check "$(part_dev /dev/mmcblk0 1)" /dev/mmcblk0p1 "mmc p1"
   check "$(part_dev /dev/loop0 1)" /dev/loop0p1 "loop p1"
+  local offline_test
+  offline_test=$(mktemp -d)
+  mkdir -p "$offline_test"/{pacman,wheels,tabby-stack}
+  touch "$offline_test/pacman/tsos.db" "$offline_test/tabby-stack/install.sh"
+  on=0
+  offline_payload_available "$offline_test" || on=1
+  check "$on" 0 "complete offline payload"
+  rm -f "$offline_test/pacman/tsos.db"
+  on=0
+  offline_payload_available "$offline_test" || on=1
+  check "$on" 1 "incomplete offline payload rejected"
+  rm -rf "$offline_test"
   on=0
   is_on_disk /dev/sda /dev/sda || on=1
   check "$on" 0 "disk matches itself"
@@ -3137,6 +3185,14 @@ have_network() {
   ping -c1 -W5 geo.mirror.pkgbuild.com >/dev/null 2>&1 || ping -c1 -W5 archlinux.org >/dev/null 2>&1
 }
 
+offline_payload_available() {
+  local root="${1:-}"
+  [[ -n "$root" &&
+     -f "$root/pacman/tsos.db" &&
+     -f "$root/tabby-stack/install.sh" &&
+     -d "$root/wheels" ]]
+}
+
 secure_boot_enabled() {
   command -v bootctl >/dev/null || return 1
   local status=""
@@ -3151,13 +3207,18 @@ secure_boot_enabled() {
 # Cheap checks before the questionnaire so a missing ISO/network fails immediately.
 early_preflight() {
   ((DRY_RUN)) && return 0
-  log "Checking this is an Arch live ISO with network..."
+  log "Checking this is an Arch live ISO..."
   [[ $(id -u) -eq 0 ]] || die "run as root from the Arch live ISO"
   [[ $(uname -m) == x86_64 ]] || die "this installer requires x86_64"
   command -v pacstrap >/dev/null || die "pacstrap not found. Boot the official Arch Linux ISO, then run this script again."
   command -v sgdisk >/dev/null || die "sgdisk not found (install gptfdisk on the live ISO)"
-  if ! have_network; then
+  if [[ -z "$TSOS_OFFLINE_ROOT" ]] && ! have_network; then
     die "no network. On Wi-Fi run: iwctl station wlan0 connect 'SSID'"
+  fi
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    offline_payload_available "$TSOS_OFFLINE_ROOT" ||
+      die "offline payload is incomplete under $TSOS_OFFLINE_ROOT (need pacman repo, wheels, and tabby-stack)"
+    log "Offline payload: $TSOS_OFFLINE_ROOT"
   fi
   if secure_boot_enabled; then
     die "Secure Boot is enabled. Turn it off in firmware before installing (NVIDIA + Limine)."
@@ -3169,7 +3230,12 @@ preflight() {
   command -v cryptsetup >/dev/null || {
     log "Installing disk tools on the live ISO"
     disable_live_mkinitcpio_hooks
-    pacman -Sy --noconfirm --needed cryptsetup btrfs-progs gptfdisk parted dosfstools
+    if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+      pacman --config "$(offline_pacman_config)" -S --noconfirm --needed \
+        cryptsetup btrfs-progs gptfdisk parted dosfstools
+    else
+      pacman -Sy --noconfirm --needed cryptsetup btrfs-progs gptfdisk parted dosfstools
+    fi
   }
   if [[ -d /sys/firmware/efi ]]; then
     log "Firmware: UEFI"
@@ -3681,6 +3747,38 @@ setup_storage() {
   mount -t vfat "$BOOT_PART" "$TARGET/boot"
 }
 
+bind_offline_payload_into_target() {
+  [[ -n "$TSOS_OFFLINE_ROOT" ]] || return 0
+  mkdir -p "$TARGET$TSOS_OFFLINE_CHROOT"
+  if ! mountpoint -q "$TARGET$TSOS_OFFLINE_CHROOT"; then
+    log "Binding offline payload into the new system"
+    mount --bind "$TSOS_OFFLINE_ROOT" "$TARGET$TSOS_OFFLINE_CHROOT"
+    mount -o remount,bind,ro "$TARGET$TSOS_OFFLINE_CHROOT" 2>/dev/null || true
+  fi
+}
+
+enable_target_offline_repo() {
+  [[ -n "$TSOS_OFFLINE_ROOT" ]] || return 0
+  local conf="$TARGET/etc/pacman.conf"
+  grep -q '^# BEGIN TSOS OFFLINE$' "$conf" 2>/dev/null && return 0
+  local tmp
+  tmp=$(mktemp)
+  awk '
+    /^\[[^]]+\]/ && $0 != "[options]" && !inserted {
+      print "# BEGIN TSOS OFFLINE"
+      print "[tsos]"
+      print "SigLevel = Optional TrustAll"
+      print "Server = file:///opt/tsos/pacman"
+      print "# END TSOS OFFLINE"
+      print ""
+      inserted=1
+    }
+    { print }
+  ' "$conf" >"$tmp"
+  cat "$tmp" >"$conf"
+  rm -f "$tmp"
+}
+
 install_base() {
   sync_live_pacman
 
@@ -3709,8 +3807,13 @@ install_base() {
   fi
 
   log "Installing Arch packages"
-  pacstrap -K "$TARGET" --noconfirm "${packages[@]}"
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    pacstrap -C "$(offline_pacman_config)" -K "$TARGET" --noconfirm "${packages[@]}"
+  else
+    pacstrap -K "$TARGET" --noconfirm "${packages[@]}"
+  fi
   genfstab -U "$TARGET" >>"$TARGET/etc/fstab"
+  enable_target_offline_repo
 }
 
 write_chroot_files() {
@@ -4258,7 +4361,15 @@ PROFILE
   chmod 0644 "$TARGET/etc/profile.d/tsos-motd.sh"
 
   log "Cloning tabby-stack for the chroot install"
-  if ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+  if [[ -n "$TSOS_OFFLINE_ROOT" &&
+        -f "$TARGET$TSOS_OFFLINE_CHROOT/bundles/tabby-stack.bundle" ]]; then
+    if ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+      git clone "$TSOS_OFFLINE_CHROOT/bundles/tabby-stack.bundle" "$stack_home"; then
+      die "local tabby-stack bundle could not be cloned"
+    fi
+    arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
+      git -C "$stack_home" remote set-url origin "$TABBY_REPO"
+  elif ! arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
     git clone "$TABBY_REPO" "$stack_home"; then
     die "git clone failed. Check network, then re-run. Repo: $TABBY_REPO"
   fi
@@ -4336,7 +4447,7 @@ ensure_target_user_file() {
 refresh_tabby_stack_in_target() {
   local stack_home="/home/${TARGET_USER}/tabby-stack"
   [[ -d "$TARGET$stack_home" ]] || die "missing $stack_home on the new system"
-  if [[ -d "$TARGET$stack_home/.git" ]]; then
+  if [[ -d "$TARGET$stack_home/.git" && -z "$TSOS_OFFLINE_ROOT" ]]; then
     log "Updating tabby-stack in the chroot from origin"
     arch-chroot "$TARGET" /usr/bin/runuser -u "$TARGET_USER" -- \
       git -C "$stack_home" fetch --prune origin || \
@@ -4347,6 +4458,8 @@ refresh_tabby_stack_in_target() {
         git -C "$stack_home" pull --ff-only || \
         warn "git pull failed; using the tree already on disk"
     fi
+  elif [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    log "Using tabby-stack sources from the offline ISO"
   fi
   overlay_local_tabby_sources "$TARGET$stack_home"
   install_tsos_motd_from_tree
@@ -4402,6 +4515,8 @@ run_tabby_install_chroot() {
   local stack_home="/home/${TARGET_USER}/tabby-stack"
   [[ -f "$TARGET$stack_home/install.sh" ]] || die "missing $stack_home/install.sh on the new system"
 
+  bind_offline_payload_into_target
+  enable_target_offline_repo
   bind_tabby_cache_into_target
   write_nopasswd_sudoers "$TARGET"
 
@@ -4426,6 +4541,7 @@ run_tabby_install_chroot() {
     TABBY_INSTALL_VERBOSE=1
     PYTHONUNBUFFERED=1
     TABBY_ISO_CHROOT=1
+    TSOS_OFFLINE_ROOT="$([[ -n "$TSOS_OFFLINE_ROOT" ]] && printf '%s' "$TSOS_OFFLINE_CHROOT")"
     TABBY_MODELS="${TABBY_MODELS:-core}"
     TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
     TABBY_NETWORK_PORT="${TABBY_NETWORK_PORT:-5000}"
@@ -4612,6 +4728,13 @@ cleanup() {
   if mountpoint -q "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null; then
     umount "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || umount -l "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || true
   fi
+  if [[ -n "$TSOS_OFFLINE_ROOT" ]]; then
+    sed -i '/^# BEGIN TSOS OFFLINE$/,/^# END TSOS OFFLINE$/d' "$TARGET/etc/pacman.conf" 2>/dev/null || true
+    if mountpoint -q "$TARGET$TSOS_OFFLINE_CHROOT" 2>/dev/null; then
+      umount "$TARGET$TSOS_OFFLINE_CHROOT" 2>/dev/null ||
+        umount -l "$TARGET$TSOS_OFFLINE_CHROOT" 2>/dev/null || true
+    fi
+  fi
   # Chroot leftover processes keep btrfs busy after a successful install.
   # Lazy umount hides that from lsblk, so the next wipe gets EBUSY on sda2.
   kill_disk_users "$DISK"
@@ -4765,6 +4888,9 @@ install_os_work() {
   setup_storage
   gauge_update 22 "Installing Arch packages"
   install_base
+  # Bind only after genfstab so the live ISO payload is never persisted as a
+  # target mount. pacstrap reads the same file:// repository from the host.
+  bind_offline_payload_into_target
   gauge_update 38 "Configuring the new system"
   write_chroot_files
   configure_chroot

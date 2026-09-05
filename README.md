@@ -55,6 +55,11 @@ Simple uses the **core** set (qwen 9B, Flux, Qwen-Image, CPU embedder). Advanced
 
 It is safe to run the installer again: existing weights are skipped. For USB caches, unattended installation, network settings, and recovery steps, use the [complete Arch install guide](tabbyAPI/deploy/arch/README.md).
 
+For a bootable USB image that freezes the Arch packages, Python wheels, source
+repositories, Monaco, and Code sandbox image used by the installers, build or
+download the [frozen TSOS Arch Linux ISO](iso/README.md). Model weights remain a
+separate USB cache or Hugging Face download.
+
 ## Start and sign in
 
 The installer enables a user service that starts at boot, even before login.

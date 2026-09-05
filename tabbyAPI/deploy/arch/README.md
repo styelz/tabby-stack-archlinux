@@ -4,6 +4,12 @@ The git tree is **code only**. It does not ship LLMs, Flux, or Qwen-Image weight
 
 Stack overview lives in the [repository root README](../../../README.md).
 
+To preserve installer dependencies against disappearing upstream downloads,
+the repository can build a [frozen bootable TSOS ISO](../../../iso/README.md).
+It includes Arch packages, Python wheels, source bundles, Monaco, and the Code
+sandbox image. Model weights remain a separate USB cache; Omarchy remains
+network-only.
+
 After install you do not need this chat. The same how-to is written to `HOW-TO-ARCH.txt` next to TabbyAPI. Command output from the work phase is in `$DEST/tabby-install.log`.
 
 ## 1. Fresh machine (GitHub)
