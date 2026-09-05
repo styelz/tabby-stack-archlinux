@@ -452,10 +452,16 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         speed = 0.20
         heat = 0.42
     elif stage == "switch" or switching or (working and kind == "gpu"):
-        if image_job:
-            phase, palette = "reloading", "switch"
+        want = str(data.get("switch_target") or "").strip().lower()
+        if want == "comfy":
+            phase = "loading comfy"
+        elif want == "llm":
+            phase = "loading llm"
+        elif image_job and mode == "comfy":
+            phase = "loading comfy"
         else:
-            phase, palette = "switching", "switch"
+            phase = "loading llm"
+        palette = "switch"
     elif image_job:
         phase, palette = ("rendering" if working else "comfy"), "image"
     elif working and stage == "tool":

@@ -190,6 +190,7 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["kind"], "gpu")
         self.assertTrue(payload["switching"])
         self.assertEqual(payload["stage"], "switch")
+        self.assertEqual(payload["switch_target"], "comfy")
         self.assertEqual(payload["profile"], "flux")
         self.assertIsNone(payload["gpu"]["utilization_pct"])
         self.assertNotIn("bob", repr(payload))
@@ -739,7 +740,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         assert a is not None and b is not None
         self.assertGreater(sum(b["fires"]), sum(a["fires"]))
 
-    def test_image_restore_is_reloading(self):
+    def test_image_restore_is_loading_llm(self):
         scene = self.kiosk.scene_from_state(
             {
                 "gpu_mode": "comfy",
@@ -747,10 +748,11 @@ class SaverKioskSceneTests(unittest.TestCase):
                 "busy": True,
                 "switching": True,
                 "stage": "switch",
+                "switch_target": "llm",
             },
             True,
         )
-        self.assertEqual(scene["phase"], "reloading")
+        self.assertEqual(scene["phase"], "loading llm")
         self.assertEqual(scene["palette"], "switch")
 
 

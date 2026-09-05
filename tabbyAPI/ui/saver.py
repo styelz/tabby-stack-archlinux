@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request
 
 SAFE_KINDS = frozenset({"chat", "code", "image", "gpu"})
 SAFE_STAGES = frozenset({"prefill", "decode", "tool", "image", "switch", "idle"})
+_COMFY_LOCKS = frozenset({"comfy", "flux"})
 _LEAK_KEYS = frozenset(
     {
         "occupant",
@@ -79,6 +80,32 @@ def _stage(raw: Any) -> str:
     return text if text in SAFE_STAGES else "idle"
 
 
+def _switch_target(raw: Any) -> str | None:
+    text = str(raw or "").strip().lower()
+    if text in {"comfy", "flux"}:
+        return "comfy"
+    if text == "llm":
+        return "llm"
+    return None
+
+
+def switch_load_what(lock_name: str, image_phase: str = "") -> str | None:
+    """llm or comfy for the kiosk HUD. None when this is not a model load."""
+    name = str(lock_name or "").strip().lower()
+    if name == "restart":
+        return None
+    if name in _COMFY_LOCKS:
+        return "comfy"
+    if name:
+        return "llm"
+    phase = str(image_phase or "").strip().lower()
+    if phase == "starting_comfy":
+        return "comfy"
+    if phase == "restoring_llm":
+        return "llm"
+    return None
+
+
 def _int_ge0(value: Any, default: int = 0) -> int:
     try:
         number = int(float(value))
@@ -124,6 +151,7 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
         "busy": bool(raw.get("busy") or queue.get("busy") or queue.get("live")),
         "switching": bool(raw.get("switching")),
         "restarting": bool(raw.get("restarting")),
+        "switch_target": _switch_target(raw.get("switch_target")),
         "kind": _kind(queue.get("kind") if queue.get("kind") is not None else raw.get("kind")),
         "stage": _stage(raw.get("stage")),
         "tokens": _int_ge0(raw.get("tokens")),
@@ -348,14 +376,21 @@ async def saver_state() -> dict[str, Any]:
     profile = profile_alias_for_model(tabby) or last_llm_profile_name() or last_profile()
     queue = stack_queue_snapshot("")
     ensure_gpu_cache()
+    job = active_mcp_image_job()
     weather = _compose_weather(
         switching=switching,
         restarting=restarting,
         queue=queue if isinstance(queue, dict) else {},
         decode=decode_snapshot(),
-        job=active_mcp_image_job(),
+        job=job,
         flights=iter_live_flights(),
     )
+    job_phase = str(getattr(job, "phase", "") or "") if job is not None else ""
+    switch_target = switch_load_what(lock_name, job_phase)
+    if switch_target is None and (switching or weather.get("stage") == "switch"):
+        switch_target = "comfy" if gpu_mode == "comfy" and not tabby else "llm"
+    if not (switching or weather.get("stage") == "switch"):
+        switch_target = None
     if weather.get("kind"):
         queue = dict(queue)
         queue["kind"] = weather["kind"]
@@ -367,6 +402,7 @@ async def saver_state() -> dict[str, Any]:
             "busy": bool(lock_held) or bool(queue.get("busy")) or thinking,
             "switching": switching,
             "restarting": restarting,
+            "switch_target": switch_target,
             "stack_queue": queue,
             "tokens": weather["tokens"],
             "stage": weather["stage"],
