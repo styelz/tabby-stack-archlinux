@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.32"
+SCRIPT_VERSION="1.0.35"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -87,11 +87,11 @@ USAGE
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
   curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash -s -- [options]
 
-With no --config file, the script starts with Simple setup (disk, user,
-password, this PC vs LAN). Choose Advanced for encryption, Omarchy,
-weights cache, extra models, and SSH tunnels. It uses the same dialog
-menus as install.sh when dialog is available (installed on the live ISO
-if needed). Press Enter to keep the default.
+With no --config file, the script starts with Simple setup (disk, hostname,
+user, password, weights source, this PC vs LAN). Choose Advanced for
+encryption, Omarchy, extra models, and SSH tunnels. It uses the same
+dialog menus as install.sh when dialog is available (installed on the live
+ISO if needed). Press Enter to keep the default.
 
 curl | bash needs a real terminal so the questions can be answered. Use
 bash, not sh. Pass flags after bash -s -- .
@@ -105,8 +105,10 @@ OPTIONS
   --locale NAME            Locale, without the leading # (default: en_US.UTF-8)
   --keymap NAME            Console keymap (default: us)
   --esp-size SIZE          EFI partition size (default: 2G)
-  --simple                 Short wizard: disk, user, password, this PC vs LAN.
-                           Skips Omarchy (always). No LUKS unless --encrypt.
+  --simple                 Short wizard: disk, hostname, user, password,
+                           weights source (Hugging Face / USB / path),
+                           this PC vs LAN. Skips Omarchy (always). No LUKS
+                           unless --encrypt.
   --advanced               Full settings wizard (encryption, Omarchy, cache,
                            models, bind address, public URL, SSH tunnel)
   --encrypt                LUKS on the root partition (Advanced default; Simple
@@ -131,6 +133,7 @@ OPTIONS
                            from the environment instead of prompting
   --dry-run                Print the plan and exit (does not write the disk)
   --self-test              Run built-in helper tests
+  --self-test-gauge        Draw a real dialog --gauge for 2s (needs a tty)
   -h, --help               Show this help
 
 ENVIRONMENT
@@ -149,9 +152,10 @@ unless you set the split password variables.
 The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
-weights) and must finish before reboot. Simple setup asks disk, user,
-password, and who can connect, then keeps that same dialog up with the
-live log while Arch and tabby-stack install. Advanced asks every setting.
+weights) and must finish before reboot. Simple setup asks disk, hostname,
+user, password, weights source, and who can connect, then keeps that same
+dialog up with the live log while Arch and tabby-stack install. Advanced
+asks every setting.
 install.sh is non-interactive from here so it does not open a second
 dialog. The NVIDIA driver loads on the first real boot; linger then
 starts the API.
@@ -433,6 +437,7 @@ ui_title_bar() {
 }
 
 # Repaints so a long pacstrap / pip / download stays visibly alive.
+# Writes the dialog --gauge protocol to stdout (the pipe into dialog).
 watch_installer_ui() {
   local stop="$1" width="$2" lines="$3"
   local pct heading body last="" step_t=$SECONDS ticks=0 nested spin='|/-\' ch
@@ -453,81 +458,9 @@ watch_installer_ui() {
     ch=${spin:$((ticks % 4)):1}
     body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
     printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
-      "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
+      "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" || break
     sleep 0.5
   done
-}
-
-# Fallback only if dialog --gauge cannot start. Same layout as dialog:
-# titled top edge, log in the middle, thermometer at the bottom.
-progress_ui_begin() {
-  {
-    printf '\033[?1049l\033[?25l\033[0m'
-    stty sane
-    stty -tostop || true
-    printf '\033[44m\033[2J\033[H'
-  } </dev/tty >/dev/tty 2>/dev/null || true
-}
-
-progress_ui_paint() {
-  local pct=0 heading="Working..." nested ch
-  local w h inner fill empty r c title elapsed log_n i line spin='|/-\'
-  local -a log_arr=()
-  [[ -n "${TSOS_GAUGE_DIR:-}" ]] || return 0
-  w=$(gauge_width)
-  h=$(gauge_height)
-  inner=$((w - 2))
-  ((inner < 12)) && return 0
-  c=$(( (TSOS_UI_COLS - w) / 2 + 1 ))
-  r=$(( (TSOS_UI_ROWS - h) / 2 + 1 ))
-  ((c < 1)) && c=1
-  ((r < 1)) && r=1
-
-  [[ -f "$TSOS_GAUGE_DIR/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null || true)
-  [[ -f "$TSOS_GAUGE_DIR/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null || true)
-  [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
-  if nested=$(nested_percent); then
-    pct=$nested
-  fi
-  ((pct > 100)) && pct=100
-  ((pct < 0)) && pct=0
-
-  TSOS_UI_TICKS=$((${TSOS_UI_TICKS:-0} + 1))
-  if [[ "$heading" != "${TSOS_UI_LAST:-}" ]]; then
-    TSOS_UI_LAST=$heading
-    TSOS_UI_STEP_T=$SECONDS
-  fi
-  ch=${spin:$((TSOS_UI_TICKS % 4)):1}
-  elapsed=$(fmt_elapsed "$((SECONDS - ${TSOS_UI_STEP_T:-0}))")
-  title="Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})"
-
-  fill=$((pct * inner / 100))
-  empty=$((inner - fill))
-  log_n=$((h - 6))
-  ((log_n < 1)) && log_n=1
-  mapfile -t log_arr < <(tsos_log_snippet "$log_n" "$inner")
-
-  {
-    printf '\033[?25l\033[44m'
-    printf '\033[%s;%sH\033[1;37;44m+%s+' "$r" "$c" "$(ui_title_bar "$inner" "$title")"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[1;33;44m|%s|' "$r" "$c" "$(ui_pad "$heading" "$inner")"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[0;37;44m|%s|' "$r" "$c" "$(ui_pad "${ch}  ${elapsed} on this step" "$inner")"
-    i=0
-    while ((i < log_n)); do
-      r=$((r + 1))
-      line=${log_arr[i]:-}
-      printf '\033[%s;%sH\033[0;37;44m|%s|' "$r" "$c" "$(ui_pad "$line" "$inner")"
-      i=$((i + 1))
-    done
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[0;37;44m|' "$r" "$c"
-    printf '\033[7;37;44m%s' "$(printf '%*s' "$fill" '')"
-    printf '\033[0;37;44m%s|' "$(printf '%*s' "$empty" '')"
-    r=$((r + 1))
-    printf '\033[%s;%sH\033[1;37;44m+%s+\033[0m' "$r" "$c" "$(printf '%*s' "$inner" '' | tr ' ' '-')"
-  } >/dev/tty 2>/dev/null || true
 }
 
 # gauge_update writes files only. Never printf a percent line to /dev/tty
@@ -545,15 +478,8 @@ gauge_stop() {
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true
   fi
-  if [[ -n "${TSOS_WATCH_PID:-}" ]]; then
-    kill "$TSOS_WATCH_PID" 2>/dev/null || true
-    wait "$TSOS_WATCH_PID" 2>/dev/null || true
-    TSOS_WATCH_PID=""
-  fi
-  exec 3>&- || true
   rm -rf "${TSOS_GAUGE_DIR:-}"
   TSOS_GAUGE_DIR=""
-  TSOS_GAUGE_FIFO=""
   TSOS_GAUGE_H=""
   TSOS_GAUGE_W=""
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
@@ -566,11 +492,12 @@ gauge_stop() {
   printf '\033[?25h\033[0m' >/dev/tty 2>/dev/null || true
 }
 
-# Work in the background. Parent runs dialog --gauge (same look as the
-# question screens). If dialog cannot start, paint a matching box ourselves.
+# Official dialog pattern, tested in a 24x80 pty: percent protocol on a
+# pipe, widget on the saved tty (fd 4/5). A homemade +-| box is not used
+# on top of this — that is what looked "ugly" vs the question screens.
 run_with_gauge() {
   local work_fn=$1
-  local rc=0 err=""
+  local rc=0 err="" h w
 
   ensure_work_term
   quiet_kernel_console
@@ -584,23 +511,9 @@ run_with_gauge() {
   TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
   printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
   printf '%s\n' "Starting the install..." >"$TSOS_GAUGE_DIR/heading"
-  TSOS_UI_TICKS=0
-  TSOS_UI_LAST=""
-  TSOS_UI_STEP_T=$SECONDS
-
-  if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && have_console && need_cmd dialog; then
-    TSOS_GAUGE_H=$(gauge_height)
-    TSOS_GAUGE_W=$(gauge_width)
-    TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
-    mkfifo -m 600 "$TSOS_GAUGE_FIFO"
-    exec 3<>"$TSOS_GAUGE_FIFO"
-    watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((TSOS_GAUGE_W - 6))" "$((TSOS_GAUGE_H - 8))" &
-    TSOS_WATCH_PID=$!
-  fi
 
   (
     exec </dev/null
-    exec 3>&- || true
     TSOS_WORK_CHILD=1
     trap 'rc=$?
           printf "%s\n" "$rc" >"$TSOS_GAUGE_DIR/rc" 2>/dev/null || true
@@ -612,30 +525,19 @@ run_with_gauge() {
         gauge_stop || true
         exit 130' INT TERM
 
-  if [[ -n "${TSOS_GAUGE_FIFO:-}" ]]; then
-    exec 3>&- || true
-    dialog --keep-tite --no-shadow --backtitle "$BACKTITLE" \
+  if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && need_cmd dialog; then
+    h=$(gauge_height)
+    w=$(gauge_width)
+    set +e
+    (
+      set +e
+      watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$((h - 8))"
+    ) | dialog --keep-tite --no-shadow --backtitle "$BACKTITLE" \
       --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
-      --gauge "Starting the install..." "$TSOS_GAUGE_H" "$TSOS_GAUGE_W" 0 \
-      <"$TSOS_GAUGE_FIFO" >/dev/tty 2>"$TSOS_GAUGE_DIR/dialog.err" || true
-    if [[ -s "$TSOS_GAUGE_DIR/dialog.err" ]]; then
-      printf '%s\n' "dialog --gauge: $(tr '\n' ' ' <"$TSOS_GAUGE_DIR/dialog.err")" >>"$TSOS_LOG"
-    fi
-    if [[ -n "${TSOS_WATCH_PID:-}" ]]; then
-      kill "$TSOS_WATCH_PID" 2>/dev/null || true
-      wait "$TSOS_WATCH_PID" 2>/dev/null || true
-      TSOS_WATCH_PID=""
-    fi
-  fi
-
-  if kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; then
-    progress_ui_begin
-    progress_ui_paint
-    while kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; do
-      sleep 0.4
-      progress_ui_paint
-    done
-    progress_ui_paint
+      --gauge "Starting the install..." "$h" "$w" 0 >&4 2>&5
+    set -e
+  else
+    wait "$TSOS_WORK_PID" || true
   fi
 
   wait "$TSOS_WORK_PID" || true
@@ -649,19 +551,20 @@ run_with_gauge() {
   if [[ -f "$TSOS_GAUGE_DIR/error" ]]; then
     err=$(cat "$TSOS_GAUGE_DIR/error" 2>/dev/null || true)
   fi
-  gauge_stop
 
   if [[ "$rc" != 0 ]]; then
-    if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && have_console; then
-      dialog_tty --backtitle "$BACKTITLE" --title "Install failed" \
+    if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && need_cmd dialog && [[ -n "${TSOS_SAVED_FD:-}" ]]; then
+      dialog --backtitle "$BACKTITLE" --title "Install failed" \
         --msgbox "${err:-The install stopped (exit ${rc}).}
 
 Full log:
-  ${TSOS_LOG}" 16 70 || true
+  ${TSOS_LOG}" 16 70 >&4 2>&5 || true
     fi
+    gauge_stop
     printf 'error: %s\n' "${err:-exit ${rc}}" >&2
     exit "$rc"
   fi
+  gauge_stop
 }
 
 ui_cancel() {
@@ -906,6 +809,62 @@ ui_password() {
     out=$(read_secret "$title: ")
   fi
   REPLY=$out
+}
+
+# Password + verify on one page. Sets REPLY and REPLY2. Same tty rule as
+# ui_password: do not wrap this in $( ).
+ui_password_pair() {
+  local title="$1"
+  local text="$2"
+  local width height form_h flen lab_w tmp rc
+  local -a lines=()
+  REPLY=""
+  REPLY2=""
+  width=$(box_width)
+  form_h=2
+  lab_w=18
+  flen=$((width - lab_w - 6))
+  ((flen < 16)) && flen=16
+  text=$(fit_text "$text" "$width" "$(($(box_rows_max) - form_h - 8))")
+  height=$(($(text_rows "$text" "$width") + form_h + 8))
+  if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
+    tmp=$(mktemp "${TMPDIR:-/tmp}/tsos-dialog.XXXXXX") || return 1
+    set +e
+    if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
+      dialog --backtitle "$BACKTITLE" --title "$title" --insecure \
+        --passwordform "$text" "$height" "$width" "$form_h" \
+        "Password:" 1 1 "" 1 "$lab_w" "$flen" 128 \
+        "Verify password:" 2 1 "" 2 "$lab_w" "$flen" 128 \
+        2> "$tmp" >/dev/tty
+    else
+      dialog --backtitle "$BACKTITLE" --title "$title" --insecure \
+        --passwordform "$text" "$height" "$width" "$form_h" \
+        "Password:" 1 1 "" 1 "$lab_w" "$flen" 128 \
+        "Verify password:" 2 1 "" 2 "$lab_w" "$flen" 128 \
+        2> "$tmp"
+    fi
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+      rm -f "$tmp"
+      ui_cancel
+    fi
+    mapfile -t lines < "$tmp"
+    rm -f "$tmp"
+    REPLY=${lines[0]-}
+    REPLY2=${lines[1]-}
+  elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
+    # whiptail has no two-field password form.
+    ui_password "$title" "$text"
+    local first=$REPLY
+    ui_password "Verify password" "Type the same password again."
+    REPLY2=$REPLY
+    REPLY=$first
+  else
+    printf '%s\n' "$text" >/dev/tty
+    REPLY=$(read_secret "Password: ")
+    REPLY2=$(read_secret "Verify password: ")
+  fi
 }
 
 ui_ask_until() {
@@ -1240,12 +1199,76 @@ simple_plan_notes() {
 Simple setup — you can change listen address, models, and
 tunnels later in Settings, or re-run and pick Advanced.
 
+  hostname:      ${TARGET_HOSTNAME:-tsos}
   access:        ${access} (${TABBY_NETWORK_HOST:-127.0.0.1}:${TABBY_NETWORK_PORT:-5000})
-  models:        ${TABBY_MODELS:-core} from Hugging Face
+  models:        ${TABBY_MODELS:-core}
+  weights:       ${TABBY_CACHE:-Hugging Face}
   encryption:    $(encrypt_label)
   Omarchy:       not installed
 
 EOF
+}
+
+# Hugging Face, a USB copy, or a typed folder. --tabby-cache skips the ask.
+prompt_weights_source() {
+  local title="${1:-Weights source}"
+  local cache_choice
+  if [[ -z "${CACHE_FROM_CLI:-}" ]]; then
+    if ((USE_TUI)); then
+      cache_choice=$(ui_menu "$title" \
+"Where should the installer get model weights?
+
+Hugging Face — download models that fit this NVIDIA GPU.
+A local path — search that folder (USB copy, old tabby-stack,
+or model dirs). Name it now; the new root mounts at /mnt next.
+
+Mount the USB first if you want that option (not under /mnt)." \
+        hf "Hugging Face (models that fit this GPU)" \
+        usb "Use /run/media/usb/tabby-stack" \
+        custom "Type another path")
+      case "$cache_choice" in
+        hf|none) TABBY_CACHE="" ;;
+        usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
+        custom)
+          TABBY_CACHE=$(ui_input "Weights cache path" \
+"Folder to search for existing weights. Any of these work:
+
+  /run/media/usb/tabby-stack
+  /run/media/usb/tabby-stack/tabbyAPI/models
+  /tmp/tabby-weights
+
+The installer lists what it finds next. Blank = Hugging Face." \
+            "$TABBY_CACHE")
+          ;;
+        *) TABBY_CACHE="$cache_choice" ;;
+      esac
+    else
+      printf '%s\n' >/dev/tty \
+"Weights: hf = Hugging Face, usb = /run/media/usb/tabby-stack, or type a folder path."
+      cache_choice=$(ask "Weights source (hf / usb / path)" "${TABBY_CACHE:-hf}")
+      case "$cache_choice" in
+        hf|HF|"") TABBY_CACHE="" ;;
+        usb|USB) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
+        *) TABBY_CACHE="$cache_choice" ;;
+      esac
+    fi
+  fi
+
+  if [[ -n "$TABBY_CACHE" && ! -d "$TABBY_CACHE" ]]; then
+    if ((USE_TUI)); then
+      if ui_yesno "Cache not found" \
+"That path is not a directory:
+  ${TABBY_CACHE}
+
+Yes = Hugging Face models that fit this GPU.
+No = leave the path (install will download anything missing)." 1; then
+        TABBY_CACHE=""
+      fi
+    else
+      printf 'warning: %s is not a directory; Hugging Face will fill gaps.\n' \
+        "$TABBY_CACHE" >/dev/tty
+    fi
+  fi
 }
 
 pick_install_mode() {
@@ -1256,21 +1279,20 @@ pick_install_mode() {
   local choice
   if ((USE_TUI)); then
     choice=$(ui_menu "Setup type" \
-"Simple (recommended) asks only for the disk, a username,
-a password, and whether other computers on your network
-can connect.
+"Simple (recommended) asks for the disk, hostname, username,
+password, where model weights come from, and whether other
+computers on your network can connect.
 
 Advanced asks every setting: encryption, Omarchy desktop,
-weights cache, extra models, bind address, public URL,
-and SSH tunnel.
+extra models, bind address, public URL, and SSH tunnel.
 
 Omarchy is not installed in Simple." \
-      simple "Simple — disk, user, password, this PC vs LAN" \
+      simple "Simple — disk, hostname, user, weights, this PC vs LAN" \
       advanced "Advanced — every setting")
   else
     printf '\n' >/dev/tty
-    printf '%s\n' "Simple (recommended): disk, user, password, this PC vs LAN." >/dev/tty
-    printf '%s\n' "Advanced: encryption, Omarchy, cache, models, tunnel." >/dev/tty
+    printf '%s\n' "Simple (recommended): disk, hostname, user, weights, this PC vs LAN." >/dev/tty
+    printf '%s\n' "Advanced: encryption, Omarchy, extra models, tunnel." >/dev/tty
     printf '%s\n' "Omarchy is not installed in Simple." >/dev/tty
     choice=$(ask_until "Setup type (simple / advanced)" "simple" valid_install_mode)
   fi
@@ -1300,8 +1322,10 @@ prompt_settings_simple_text() {
   show_available_disks
   printf '\n' >/dev/tty
 
-  ask_install_disk "1 / 4  -  Target disk"
+  ask_install_disk "1 / 5  -  Target disk"
+  TARGET_HOSTNAME=$(ask_until "Hostname" "$TARGET_HOSTNAME" valid_hostname)
   TARGET_USER=$(ask_until "Username" "$TARGET_USER" valid_username)
+  prompt_weights_source "Weights source"
   if [[ -z "${HOST_FROM_CLI:-}" ]]; then
     TABBY_NETWORK_HOST=$(ui_listen_access "Who can connect")
   fi
@@ -1315,13 +1339,15 @@ prompt_settings_simple_tui() {
 
 You will be asked for:
   • which disk to wipe
+  • a hostname
   • a username
+  • where model weights come from (Hugging Face, USB, or a path)
   • whether other computers on your network can connect
   • a password (login; the disk is not encrypted unless you
     passed --encrypt)
 
-Omarchy is not installed. Encryption, extra models, a USB
-cache, and SSH tunnels are under Advanced.
+Omarchy is not installed. Encryption, extra models, and SSH
+tunnels are under Advanced.
 
 After you confirm the wipe, this same dialog stays up with
 a progress bar and the live log. install.sh does not open
@@ -1329,16 +1355,24 @@ a second dialog.
 
 Esc cancels."
 
-  ask_install_disk "1 / 4  -  Target disk"
+  ask_install_disk "1 / 5  -  Target disk"
 
-  TARGET_USER=$(ui_ask_until "2 / 4  -  Username" \
+  TARGET_HOSTNAME=$(ui_ask_until "2 / 5  -  Hostname" \
+"Name of the installed system (not the live ISO hostname).
+
+Letters, digits, and hyphens. Example: tsos" \
+    "$TARGET_HOSTNAME" valid_hostname)
+
+  TARGET_USER=$(ui_ask_until "3 / 5  -  Username" \
 "Regular wheel user that runs tabby-stack.
 
 Lowercase, not root. Example: tabby" \
     "$TARGET_USER" valid_username)
 
+  prompt_weights_source "4 / 5  -  Weights source"
+
   if [[ -z "${HOST_FROM_CLI:-}" ]]; then
-    TABBY_NETWORK_HOST=$(ui_listen_access "3 / 4  -  Who can connect")
+    TABBY_NETWORK_HOST=$(ui_listen_access "5 / 5  -  Who can connect")
   fi
   TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
 }
@@ -1382,7 +1416,7 @@ prompt_settings_text() {
     fi
   fi
 
-  TABBY_CACHE=$(ask "Weights cache path (optional; Hugging Face if blank)" "$TABBY_CACHE")
+  prompt_weights_source "Weights source"
   TABBY_MODELS=$(ask_until "Models (core / all / comma-separated ids)" "${TABBY_MODELS:-core}" valid_models)
   TABBY_NETWORK_HOST=$(ui_listen_host "TabbyAPI listen address" "${TABBY_NETWORK_HOST:-127.0.0.1}")
   TABBY_NETWORK_HOST="${TABBY_NETWORK_HOST:-127.0.0.1}"
@@ -1517,34 +1551,7 @@ Default follows the current setting ($(encrypt_label))." \
     fi
   fi
 
-  local cache_choice
-  cache_choice=$(ui_menu "6 / 10  -  Weights source" \
-"Where should the installer get model weights?
-
-Hugging Face — download models that fit this NVIDIA GPU.
-A local path — search that folder (USB copy, old tabby-stack,
-or model dirs). Name it now; the new root mounts at /mnt next.
-
-Mount the USB first if you want that option (not under /mnt)." \
-    hf "Hugging Face (models that fit this GPU)" \
-    usb "Use /run/media/usb/tabby-stack" \
-    custom "Type another path")
-  case "$cache_choice" in
-    hf|none) TABBY_CACHE="" ;;
-    usb) TABBY_CACHE="/run/media/usb/tabby-stack" ;;
-    custom)
-      TABBY_CACHE=$(ui_input "Weights cache path" \
-"Folder to search for existing weights. Any of these work:
-
-  /run/media/usb/tabby-stack
-  /run/media/usb/tabby-stack/tabbyAPI/models
-  /tmp/tabby-weights
-
-The installer lists what it finds next. Blank = Hugging Face." \
-        "$TABBY_CACHE")
-      ;;
-    *) TABBY_CACHE="$cache_choice" ;;
-  esac
+  prompt_weights_source "6 / 10  -  Weights source"
 
   prompt_tabby_settings_tui
 }
@@ -1553,17 +1560,6 @@ prompt_tabby_settings_tui() {
   local gpu_label vram
   vram=$(gpu_vram_mib)
   gpu_label=$(gpu_prompt_label "$vram")
-
-  if [[ -n "$TABBY_CACHE" && ! -d "$TABBY_CACHE" ]]; then
-    if ui_yesno "Cache not found" \
-"That path is not a directory:
-  ${TABBY_CACHE}
-
-Yes = Hugging Face models that fit this GPU.
-No = leave the path (install will download anything missing)." 1; then
-      TABBY_CACHE=""
-    fi
-  fi
 
   TABBY_MODELS=""
   if [[ -n "$TABBY_CACHE" && -d "$TABBY_CACHE" ]]; then
@@ -2027,6 +2023,9 @@ self_test() {
   apply_simple_defaults
   check "$ENCRYPT" 1 "simple --encrypt kept"
   check "$OMARCHY_MODE" skip "simple still skips omarchy"
+  TARGET_HOSTNAME=studio
+  apply_simple_defaults
+  check "$TARGET_HOSTNAME" studio "simple keeps hostname"
 
   if valid_omarchy_mode now && valid_omarchy_mode skip && ! valid_omarchy_mode later; then
     printf 'ok   omarchy now/skip\n'
@@ -2062,6 +2061,32 @@ self_test() {
     die "self-test failed"
   fi
   log "self-test passed"
+}
+
+self_test_gauge() {
+  USE_TUI=1
+  TUI=dialog
+  need_cmd dialog || die "dialog is not installed (needed for --self-test-gauge)"
+  TSOS_LOG="${TMPDIR:-/tmp}/tsos-gauge-selftest.log"
+  : >"$TSOS_LOG"
+  # Same sequence as the ISO after the last question: a dialog widget on
+  # /dev/tty, then the gauge. Do not restore_tty in between — that is the
+  # leftover-password-box path. `dialog --timeout` does not fire on a
+  # password field; GNU timeout needs --foreground so dialog still owns the
+  # tty. The real installer waits for OK.
+  set +e
+  timeout --foreground 1 dialog --backtitle "$BACKTITLE" --title "Password" \
+    --insecure --passwordbox "Set a password for tabby (and root)." 8 50 >/dev/tty
+  set -e
+  dummy_gauge_work() {
+    gauge_update 10 "Preparing disk"
+    sleep 0.4
+    gauge_update 22 "Installing Arch packages"
+    sleep 0.8
+    gauge_update 100 "Finished"
+  }
+  run_with_gauge dummy_gauge_work
+  printf 'GAUGE_TEST_OK\n'
 }
 
 parse_args() {
@@ -2182,6 +2207,10 @@ parse_args() {
         ;;
       --self-test)
         self_test
+        exit 0
+        ;;
+      --self-test-gauge)
+        self_test_gauge
         exit 0
         ;;
       -h | --help)
@@ -2333,10 +2362,9 @@ collect_passwords() {
     local first second
     if ((USE_TUI)); then
       while true; do
-        ui_password "Password" "$pw_text"
+        ui_password_pair "Password" "$pw_text"
         first=$REPLY
-        ui_password "Confirm password" "Type the same password again."
-        second=$REPLY
+        second=$REPLY2
         if [[ -z "$first" ]]; then
           ui_msg "Password required" "The password cannot be empty."
           continue
@@ -2348,8 +2376,9 @@ collect_passwords() {
         break
       done
     else
+      printf '%s\n' "$pw_text" >/dev/tty
       first=$(read_secret "Password: ")
-      second=$(read_secret "Confirm password: ")
+      second=$(read_secret "Verify password: ")
       [[ -n "$first" ]] || die "password cannot be empty"
       [[ "$first" == "$second" ]] || die "passwords did not match"
     fi

@@ -2,7 +2,7 @@
 
 A self-hosted coding assistant, web workspace, and image generator for an Arch Linux machine with an NVIDIA GPU.
 
-From the official Arch live ISO, the **tsos installer** (`tsos-installer.sh`) starts with **Simple** setup: disk, username, password, and whether other computers on the LAN can connect. Choose **Advanced** for encryption, Omarchy, a weights cache, extra models, and SSH tunnels. It then installs Arch and this stack in one pass:
+From the official Arch live ISO, the **tsos installer** (`tsos-installer.sh`) starts with **Simple** setup: disk, hostname, username, password, weights source (Hugging Face, USB, or a path), and whether other computers on the LAN can connect. Choose **Advanced** for encryption, Omarchy, extra models, and SSH tunnels. It then installs Arch and this stack in one pass:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash

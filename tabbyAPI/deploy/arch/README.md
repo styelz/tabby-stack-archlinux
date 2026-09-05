@@ -8,9 +8,9 @@ After install you do not need this chat. The same how-to is written to `HOW-TO-A
 
 ## 1. Fresh machine (GitHub)
 
-From the official Arch live ISO, `tsos-installer.sh` starts with **Simple** setup (disk, username, password, this PC vs LAN). It does not ask about Omarchy and does not install it. Disk encryption is off unless you pass `--encrypt`. After you confirm the wipe, the same dialog stays up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`.
+From the official Arch live ISO, `tsos-installer.sh` starts with **Simple** setup (disk, hostname, username, password, weights source, this PC vs LAN). It does not ask about Omarchy and does not install it. Disk encryption is off unless you pass `--encrypt`. After you confirm the wipe, the same dialog stays up: a progress bar, elapsed time, and a live log while Arch and `install.sh` run. `install.sh` does not open a second dialog. It does not reboot until that finishes. After reboot, linger starts the API. There is no first-boot `install.sh`.
 
-Choose **Advanced** for encryption, Omarchy (`now` requires LUKS, or `skip`), a weights cache (must be named before `/mnt` is wiped), extra models, bind address, public URL, and SSH tunnel.
+Choose **Advanced** for encryption, Omarchy (`now` requires LUKS, or `skip`), extra models, bind address, public URL, and SSH tunnel.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
@@ -35,7 +35,7 @@ The installer is a how-to as well as a script. On a terminal it uses **dialog** 
 2. **Who can connect** — this PC only (`127.0.0.1`) or other computers on the network (`0.0.0.0`)
 3. **Confirm** — install root `$HOME/tabby-stack`, models `core`, Hugging Face
 
-From the live ISO, Simple also asks for the **disk**, **username**, and **password** (login only; the disk is not encrypted). Omarchy is not shown and is not installed.
+From the live ISO, Simple also asks for the **disk**, **hostname**, **username**, **weights source** (Hugging Face, USB, or a path), and **password** (login only; the disk is not encrypted). Omarchy is not shown and is not installed.
 
 **Advanced** asks:
 
