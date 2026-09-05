@@ -38,7 +38,11 @@ TOOL_DESCRIPTION = (
     "only the URLs listed. Do not invent /v1/images/generated-*.png timestamps. "
     "Do not use the browser. Do not use Cursor's built-in GenerateImage tool. "
     "Prefix qwen-image: only for readable text (logo, poster, button). "
-    "Hero/header photos: describe a scene, not a website or UI."
+    "Hero/header photos: describe a scene, not a website or UI. "
+    "Set size to WIDTHxHEIGHT from the user's request (for example "
+    "1920x1080, 16:9, landscape, portrait). Do not leave every PNG at "
+    "1024x1024 when they asked for another size. Headers/banners: "
+    "1536x768. Portraits: 768x1344."
 )
 GET_JOB_DESCRIPTION = (
     "Optional debug poll for a TabbyAPI image job. generate_image already "
@@ -86,7 +90,11 @@ TOOLS: list[dict[str, Any]] = [
                             },
                             "size": {
                                 "type": "string",
-                                "description": "WIDTHxHEIGHT. Default 1024x1024.",
+                                "description": (
+                                    "WIDTHxHEIGHT from the user request. "
+                                    "Default 1024x1024 only when they did "
+                                    "not ask for another size."
+                                ),
                             },
                             "n": {
                                 "type": "integer",
@@ -119,7 +127,12 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "size": {
                     "type": "string",
-                    "description": "WIDTHxHEIGHT. Default 1024x1024.",
+                    "description": (
+                        "WIDTHxHEIGHT from the user request "
+                        "(16:9, landscape, portrait, 1920x1080). "
+                        "Default 1024x1024 only when they did not ask "
+                        "for another size."
+                    ),
                     "default": "1024x1024",
                 },
                 "n": {

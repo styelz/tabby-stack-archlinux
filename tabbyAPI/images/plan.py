@@ -18,6 +18,7 @@ from pathlib import Path
 
 from common.image_prompts import (
     MAX_PLANNED_IMAGES,
+    resolved_image_size,
     rewrite_comfy_prompt,
 )
 
@@ -39,12 +40,14 @@ MIXED_PLAN_SCHEMA = {
                     "filename": {"type": "string"},
                     "prompt": {"type": "string"},
                     "subject": {"type": "string"},
+                    "size": {"type": "string"},
                 },
             },
         },
     },
     "required": ["action", "images"],
 }
+
 CLASSIFY_SYSTEM = (
     "You organize image work for a local GPU. JSON only, no markdown. "
     "Read the whole conversation, especially This turn, the last assistant "
@@ -69,11 +72,15 @@ CLASSIFY_SYSTEM = (
     "a standalone generate-an-image line with no website/page. images must be [].\n"
     "images (generate only): filename is a basename like logo.png or mars.png, "
     "or a project path like pbptours/images/logo.png. prompt is the full Comfy "
-    "prompt. Logos, wordmarks, posters, buttons, and readable text start with "
-    "qwen-image:. Hero/header/banner photos are a real-world scene, not a "
-    "website screenshot. One file per named subject they asked to create. "
-    "Do not invent a category. Skip CSS, HTML, JavaScript, React, Vue, "
-    "pricing tiers, and etc."
+    "prompt. Optional size is WIDTHxHEIGHT. Honor requested dimensions "
+    "(1920x1080, 16:9, landscape, portrait). Banners/headers default to "
+    "1536x768; portraits/9:16 to 768x1344. Logos, wordmarks, posters, "
+    "buttons, and readable text start with qwen-image:. Hero/header/banner "
+    "images are a scene, not a website screenshot. Keep the user's "
+    "imaginary or fantasy description; do not substitute a stock real-world "
+    "photograph unless they asked for one. One file per named subject they "
+    "asked to create. Do not invent a category. Skip CSS, HTML, JavaScript, "
+    "React, Vue, pricing tiers, and etc."
 )
 _PLAN_CACHE: OrderedDict[str, "ImageTurnPlan"] = OrderedDict()
 _PLAN_CACHE_MAX = 24
@@ -203,7 +210,11 @@ def parse_plan_json(raw: str) -> list[dict[str, str]]:
         filename = str(row.get("filename") or row.get("output_path") or "").strip()
         subject = str(row.get("subject") or row.get("prompt") or "").strip()
         if filename or subject:
-            found.append({"filename": filename, "subject": subject})
+            row_out = {"filename": filename, "subject": subject}
+            size = str(row.get("size") or "").strip()
+            if size:
+                row_out["size"] = size
+            found.append(row_out)
     return found
 
 
@@ -286,6 +297,12 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
             {
                 "prompt": rewrite_comfy_prompt(subject),
                 "output_path": dest,
+                "size": resolved_image_size(
+                    prompt=subject,
+                    filename=filename or name,
+                    size=row.get("size"),
+                    spec=text,
+                ),
             }
         )
     return items

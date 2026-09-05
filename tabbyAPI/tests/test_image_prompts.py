@@ -570,5 +570,65 @@ class ImageTranslatorLogTests(unittest.TestCase):
         info.assert_not_called()
 
 
+class ImageSizeAndVarietyTests(unittest.TestCase):
+    def test_infer_pixels_ratios_and_slots(self):
+        from common.gpu_mode import parse_size
+        from common.image_prompts import infer_image_size
+
+        width, height = parse_size("1920x1080")
+        self.assertEqual(
+            infer_image_size("make it 1920x1080 please"),
+            f"{width}x{height}",
+        )
+        self.assertEqual(infer_image_size("a 16:9 wallpaper of dunes"), "1536x864")
+        self.assertEqual(infer_image_size("portrait phone wallpaper"), "768x1344")
+        self.assertEqual(infer_image_size("4:3 still life"), "1152x896")
+        self.assertEqual(infer_image_size("square icon"), "1024x1024")
+        self.assertEqual(infer_image_size("wide landscape of cliffs"), "1536x768")
+        self.assertEqual(infer_image_size("a fox", "header.png"), "1536x768")
+        self.assertIsNone(infer_image_size("a fox asleep under maple trees"))
+        self.assertIsNone(infer_image_size("readable text on a poster"))
+
+    def test_rectangle_redo_stays_landscape(self):
+        line = (
+            "use flux generate the logo image, it should be an image of an "
+            "atom with electrons swirling around it and be transparent "
+            "background and rectangle not square"
+        )
+        items = plan_image_redo(line, "pbptours")
+        self.assertEqual(items[0]["size"], "1536x768")
+
+    def test_imaginary_prompts_are_not_canned_photos(self):
+        dragon = rewrite_comfy_prompt(
+            "imaginary dragon made of stained glass over a crystal city"
+        )
+        self.assertIn("dragon", dragon.lower())
+        self.assertIn("stained glass", dragon.lower())
+        self.assertNotIn(SCENE_TAIL.split(",")[0], dragon)
+        mars = rewrite_comfy_prompt(
+            "an imaginary planet Mars with purple oceans and floating forests"
+        )
+        self.assertIn("purple oceans", mars.lower())
+        self.assertNotIn("rusty red deserts", mars.lower())
+        self.assertNotIn("photograph of planet Mars", mars)
+        hero = rewrite_comfy_prompt(
+            "fantasy hero banner of a made-up floating island with two moons"
+        )
+        self.assertIn("floating island", hero.lower())
+        self.assertNotIn("wide atmospheric photograph", hero)
+        self.assertNotIn(SCENE_TAIL.split(",")[0], hero)
+
+    def test_extracted_dest_keeps_size(self):
+        from common.image_prompts import parse_mixed_plan_json, plan_from_extracted
+
+        rows = parse_mixed_plan_json(
+            '{"images":[{"filename":"header.png","subject":"hills at dusk",'
+            '"size":"1536x768"}]}'
+        )
+        items = plan_from_extracted("build a site with a header", rows)
+        self.assertEqual(items[0]["size"], "1536x768")
+        self.assertTrue(items[0]["output_path"].endswith("header.png"))
+
+
 if __name__ == "__main__":
     unittest.main()

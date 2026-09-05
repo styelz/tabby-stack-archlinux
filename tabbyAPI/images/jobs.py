@@ -852,15 +852,20 @@ def _new_items(
             text = str(raw.get("prompt") or "").strip()
             if not text:
                 continue
+            from common.image_prompts import resolved_image_size
             from images.paths import safe_rel_png_path
 
+            rel = safe_rel_png_path(str(raw.get("output_path") or "").strip())
             parsed.append(
                 McpImageItem(
                     prompt=text,
-                    output_path=safe_rel_png_path(
-                        str(raw.get("output_path") or "").strip()
+                    output_path=rel,
+                    size=resolved_image_size(
+                        prompt=text,
+                        filename=rel,
+                        size=raw.get("size"),
+                        fallback=size or "1024x1024",
                     ),
-                    size=str(raw.get("size") or size or "1024x1024"),
                     count=max(1, min(int(raw.get("count") or raw.get("n") or 1), 4)),
                     seed=raw.get("seed", seed),
                     source_image=_item_source_path(raw),
@@ -868,14 +873,22 @@ def _new_items(
                 )
             )
     if prompt.strip():
+        from common.image_prompts import resolved_image_size
         from images.paths import safe_rel_png_path
 
+        rel = safe_rel_png_path(output_path)
+        explicit = size if size and str(size) != "1024x1024" else None
         parsed.insert(
             0,
             McpImageItem(
                 prompt=prompt.strip(),
-                output_path=safe_rel_png_path(output_path),
-                size=size or "1024x1024",
+                output_path=rel,
+                size=resolved_image_size(
+                    prompt=prompt.strip(),
+                    filename=rel,
+                    size=explicit,
+                    fallback=size or "1024x1024",
+                ),
                 count=max(1, min(int(count), 4)),
                 seed=seed,
             ),

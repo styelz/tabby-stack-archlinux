@@ -1048,6 +1048,11 @@ async def _start_prompt_job(
     chat_id: str | None = None,
 ):
     item: dict = {"prompt": prompt, "output_path": "images/generated.png"}
+    from common.image_prompts import infer_image_size
+
+    found_size = infer_image_size(prompt)
+    if found_size:
+        item["size"] = found_size
     if source_image is not None:
         item["source_image"] = str(Path(source_image))
     if denoise is not None:

@@ -555,6 +555,21 @@ class ImageJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[3].output_path, "images/generated-2.png")
         self.assertTrue(items[0].prompt.lower().startswith("qwen-image:"))
         self.assertFalse(items[1].prompt.lower().startswith("qwen-image:"))
+        self.assertEqual(items[1].size, "1536x768")
+
+    def test_new_items_keep_explicit_size(self):
+        from endpoints.core.image_jobs import _new_items
+
+        items = _new_items(
+            items=[
+                {
+                    "prompt": "a red cube",
+                    "output_path": "images/cube.png",
+                    "size": "1536x768",
+                }
+            ]
+        )
+        self.assertEqual(items[0].size, "1536x768")
 
     def test_new_items_keep_source_image(self):
         from endpoints.core.image_jobs import _new_items

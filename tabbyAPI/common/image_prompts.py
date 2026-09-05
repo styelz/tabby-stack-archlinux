@@ -22,6 +22,33 @@ FLUX_PREFIX = re.compile(r"(?is)^\s*flux\s*:\s*(.*)$")
 FORCE_FLUX_RE = re.compile(r"(?is)(?:^\s*(?:use\s+)?flux\s*:?\s*|\buse\s+flux\b)")
 NAMED_PNG_RE = re.compile(r"(?i)\b([\w.-]+\.png)\b")
 RECTANGLE_ASK = re.compile(r"(?is)\brectangl")
+PIXEL_SIZE_RE = re.compile(
+    r"(?<![\w.])(\d{3,4})\s*(?:[x×]|by)\s*(\d{3,4})(?![\w.])",
+    re.I,
+)
+RATIO_16_9_RE = re.compile(r"(?is)\b16\s*[:/]\s*9\b|\bwidescreen\b")
+RATIO_9_16_RE = re.compile(r"(?is)\b9\s*[:/]\s*16\b")
+RATIO_4_3_RE = re.compile(r"(?is)\b4\s*[:/]\s*3\b")
+SQUARE_ASK_RE = re.compile(r"(?is)\b(?:square|1\s*[:/]\s*1)\b")
+PORTRAIT_ASK_RE = re.compile(
+    r"(?is)\b(portrait|phone|instagram\s+stor(?:y|ies)|story\s*(?:size|format))\b"
+)
+LANDSCAPE_SLOT_RE = re.compile(
+    r"(?is)\b(landscape|banner|header|hero|masthead|wallpaper|rectangl)\b"
+)
+WIDE_BASENAME_RE = re.compile(r"(?i)^(header|banner)s?\.png$")
+IMAGINARY_RE = re.compile(
+    r"(?is)\b("
+    r"imaginary|imaginative|fantasy|fantastical|fictional|"
+    r"made[-\s]?up|original\s+creature|invented|mythical|mythic|"
+    r"surreal|dreamlike|otherworldly"
+    r")\b"
+)
+DEFAULT_IMAGE_SIZE = "1024x1024"
+SIZE_16_9 = "1536x864"
+SIZE_9_16 = "768x1344"
+SIZE_4_3 = "1152x896"
+SIZE_LANDSCAPE = "1536x768"
 LOGO_SLOT = re.compile(
     r"(?is)\b(logo|wordmark|word[-\s]?mark|favicon|brand\s*mark)\b"
 )
@@ -591,6 +618,84 @@ def _is_page_spec(body: str) -> bool:
     return len(_strip_noise(raw)) > PAGE_SPEC_MAX_LOGO_CHARS
 
 
+def normalize_image_size(size: str | None) -> str | None:
+    """Return WIDTHxHEIGHT after the Comfy 256–2048 / multiple-of-16 clamp."""
+    text = str(size or "").strip()
+    if not text:
+        return None
+    try:
+        from common.gpu_mode import parse_size
+
+        width, height = parse_size(text)
+    except (TypeError, ValueError):
+        return None
+    return f"{width}x{height}"
+
+
+def infer_image_size(
+    text: str = "",
+    filename: str = "",
+    *,
+    slots: bool = True,
+) -> str | None:
+    """Guess a Comfy size from pixels, ratios, or banner/portrait wording.
+
+    Slot words (hero/header/landscape) apply only when ``slots`` is true so a
+    page spec that mentions a header does not resize the logo too.
+    """
+    blob = f"{text or ''} {filename or ''}".strip()
+    name = (filename or "").replace("\\", "/").split("/")[-1]
+    if blob:
+        pixels = PIXEL_SIZE_RE.search(blob)
+        if pixels:
+            found = normalize_image_size(f"{pixels.group(1)}x{pixels.group(2)}")
+            if found:
+                return found
+        if RATIO_16_9_RE.search(blob):
+            return SIZE_16_9
+        if RATIO_9_16_RE.search(blob):
+            return SIZE_9_16
+        if RATIO_4_3_RE.search(blob):
+            return SIZE_4_3
+        if slots and PORTRAIT_ASK_RE.search(blob):
+            return SIZE_9_16
+        if slots and (LANDSCAPE_SLOT_RE.search(blob) or RECTANGLE_ASK.search(blob)):
+            return SIZE_LANDSCAPE
+        if SQUARE_ASK_RE.search(blob) and not RECTANGLE_ASK.search(blob):
+            return DEFAULT_IMAGE_SIZE
+    if WIDE_BASENAME_RE.match(name):
+        return SIZE_LANDSCAPE
+    return None
+
+
+def resolved_image_size(
+    *,
+    prompt: str = "",
+    filename: str = "",
+    size: str | None = None,
+    spec: str = "",
+    fallback: str = DEFAULT_IMAGE_SIZE,
+) -> str:
+    """Prefer an explicit item size, then cues on this dest, then the spec."""
+    explicit = normalize_image_size(size)
+    if explicit:
+        return explicit
+    inferred = infer_image_size(prompt, filename)
+    if inferred:
+        return inferred
+    from_spec = infer_image_size(spec, filename, slots=False)
+    if from_spec:
+        return from_spec
+    from_name = infer_image_size("", filename)
+    if from_name:
+        return from_name
+    return normalize_image_size(fallback) or DEFAULT_IMAGE_SIZE
+
+
+def _is_imaginary(text: str) -> bool:
+    return bool(IMAGINARY_RE.search(text or ""))
+
+
 def _isolated_logo_prompt(raw: str, body: str) -> str:
     """Short Qwen mark. Drop leftover HTML/SPA instructions."""
     brand = company_name(raw)
@@ -638,11 +743,14 @@ def rewrite_comfy_prompt(prompt: str) -> str:
     wants_text = bool(TEXT_INTENT.search(body))
     explicit_ui = bool(EXPLICIT_UI.search(body))
     planet = PLANET_NAME_RE.search(body)
+    imaginary = _is_imaginary(body)
 
     if is_hero and not wants_text and not explicit_ui:
         cleaned = _strip_noise(HERO_SLOT.sub(" ", body))
         cleaned = re.sub(r"(?is)\b(ui|ux|gui|interface)\b", " ", cleaned)
         cleaned = _strip_transparent_words(_collapse(cleaned))
+        if imaginary:
+            return cleaned or _strip_transparent_words(_collapse(body)) or original
         if len(cleaned) < 8:
             cleaned = "wide atmospheric photograph, rich color, cinematic lighting"
         return f"{cleaned}, {SCENE_TAIL}"
@@ -652,6 +760,7 @@ def rewrite_comfy_prompt(prompt: str) -> str:
         and not is_logo
         and not wants_text
         and not explicit_ui
+        and not imaginary
     ):
         if chroma:
             return _planet_chroma(planet.group(1))
@@ -739,7 +848,11 @@ def parse_mixed_plan_json(raw: str) -> list[dict[str, str]]:
         filename = str(row.get("filename") or row.get("output_path") or "").strip()
         subject = str(row.get("subject") or row.get("prompt") or "").strip()
         if filename or subject:
-            found.append({"filename": filename, "subject": subject})
+            row_out = {"filename": filename, "subject": subject}
+            size = str(row.get("size") or "").strip()
+            if size:
+                row_out["size"] = size
+            found.append(row_out)
     return found
 
 
@@ -766,10 +879,17 @@ def plan_from_extracted(text: str, rows: list[dict[str, str]]) -> list[dict[str,
             name = "header.png"
         subject = str(row.get("subject") or slug).strip() or slug
         seen.add(slug)
+        dest = f"{dest_dir}/{name}".replace("//", "/")
         items.append(
             {
                 "prompt": rewrite_comfy_prompt(subject),
-                "output_path": f"{dest_dir}/{name}".replace("//", "/"),
+                "output_path": dest,
+                "size": resolved_image_size(
+                    prompt=subject,
+                    filename=name,
+                    size=row.get("size"),
+                    spec=raw,
+                ),
             }
         )
     return items
@@ -843,6 +963,11 @@ def plan_mixed_images(text: str) -> list[dict[str, str]]:
             {
                 "prompt": rewrite_comfy_prompt(prompt),
                 "output_path": path,
+                "size": resolved_image_size(
+                    prompt=prompt,
+                    filename=name,
+                    spec=raw,
+                ),
             }
         )
 
@@ -892,9 +1017,8 @@ def plan_image_redo(text: str, site: str = "") -> list[dict[str, str]]:
     item = {
         "prompt": rewrite_comfy_prompt(raw),
         "output_path": path,
+        "size": resolved_image_size(prompt=raw, filename=filename, spec=raw),
     }
-    if RECTANGLE_ASK.search(raw):
-        item["size"] = "1536x768"
     return [item]
 
 

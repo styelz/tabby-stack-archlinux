@@ -254,6 +254,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(dests, ["images/logo.png", "images/mars.png"])
         self.assertTrue(items[0]["prompt"].lower().startswith("qwen-image:"))
         self.assertNotIn("qwen-image:", items[1]["prompt"].lower())
+        self.assertEqual(items[0]["size"], "1024x1024")
+
+    def test_explicit_size_on_extracted_dest_survives(self):
+        blob = (
+            '{"images":[{"filename":"header.png","subject":"rolling hills",'
+            '"size":"1536x768"}]}'
+        )
+        items = plan_from_extracted("build a site", parse_plan_json(blob))
+        self.assertEqual(items[0]["size"], "1536x768")
+        self.assertTrue(items[0]["output_path"].endswith("header.png"))
 
     def test_empty_generate_does_not_invent_a_png(self):
         plan = parse_turn_plan('{"action":"generate","images":[]}')
@@ -321,6 +331,8 @@ class PlanTests(unittest.TestCase):
         self.assertIn("## Assets PNG/WebP dests", CLASSIFY_SYSTEM)
         self.assertIn("CSS-only plan whose Assets are None", CLASSIFY_SYSTEM)
         self.assertNotIn("Build of a CSS plan, questions", CLASSIFY_SYSTEM)
+        self.assertIn("WIDTHxHEIGHT", CLASSIFY_SYSTEM)
+        self.assertNotIn("real-world scene", CLASSIFY_SYSTEM)
 
 
 class BuildPlanAssetRasterTests(unittest.TestCase):
