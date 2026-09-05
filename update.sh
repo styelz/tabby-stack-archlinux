@@ -602,12 +602,27 @@ install_tsctl() {
   [[ -f "$zshc" ]] && sudo -n install -D -m 0644 "$zshc" /usr/share/zsh/site-functions/_tsctl 2>/dev/null || true
 }
 
+install_tabby_gpu() {
+  local src="$DEST/tabbyAPI/deploy/arch/tabby-gpu.service"
+  local tabby="$DEST/tabbyAPI"
+  [[ -f "$src" ]] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  sed -e "s|__TABBY_DIR__|$tabby|g" "$src" > "$tmp"
+  if sudo -n install -m 644 "$tmp" /etc/systemd/system/tabby-gpu.service 2>/dev/null; then
+    sudo -n systemctl daemon-reload 2>/dev/null || true
+    sudo -n systemctl enable --now tabby-gpu 2>/dev/null || true
+  fi
+  rm -f "$tmp"
+}
+
 finish_git_update() {
   local new_head=""
   new_head="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)"
   ensure_nopasswd_sudo
   install_tsos_motd
   install_tsctl
+  install_tabby_gpu
   collect_restart_files "${TABBY_UPDATE_FROM_REV:-none}" "$new_head"
   printf '%s\n' "==> from_rev=${TABBY_UPDATE_FROM_REV:-none} to_rev=$new_head restart_files=${#RESTART_FILES[@]} restart=${RESTART_API:-auto}" >> "$UPDATE_LOG"
   write_restart_prompt_json

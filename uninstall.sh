@@ -351,10 +351,12 @@ else
 fi
 
 echo
-echo "Stopping TTY screensaver and removing tsctl"
+echo "Stopping TTY screensaver, GPU fan unit, and removing tsctl"
 if need_cmd systemctl; then
   run sudo -n systemctl disable --now tabby-saver
   run sudo -n rm -f /etc/systemd/system/tabby-saver.service
+  run sudo -n systemctl disable --now tabby-gpu
+  run sudo -n rm -f /etc/systemd/system/tabby-gpu.service
   run sudo -n systemctl daemon-reload
 fi
 run sudo -n rm -f /usr/local/bin/tsctl \

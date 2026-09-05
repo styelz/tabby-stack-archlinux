@@ -22,7 +22,7 @@ Treat the API like OpenAI: chat and HTTP. Some editors only accept `https://`; t
   - **Gallery** — generated images (the administrator can see every account)
   - **Logs** — live TabbyAPI and ComfyUI output
   - **Users** — administrator-only account creation. Extra users get Chat, Code, Status, Gallery, and Logs; they cannot create accounts
-  - **Settings** — administrator-only Tabby `config.yml`, system `tabby.env`, and screensaver. Same keys from the shell: `tsctl`
+  - **Settings** — administrator-only Tabby `config.yml`, system `tabby.env`, screensaver, and GPU fan/power. Same keys from the shell: `tsctl`
   - **Account menu** — Download backup / Restore backup for this signed-in account (chats, Code files, prefs, gallery). After a fresh install, recreate extra Tabby users, then each person restores their own zip.
 - The GPU is shared. Browser UI and editor `/v1` requests wait in one queue.
 

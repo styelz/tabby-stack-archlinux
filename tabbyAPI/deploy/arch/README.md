@@ -163,6 +163,21 @@ tsctl screensaver status
 tsctl list
 tsctl network host=0.0.0.0
 tsctl screensaver enable
+tsctl gpu status
+tsctl gpu quiet
+tsctl gpu auto
+tsctl gpu fan_speed=40
+```
+
+### GPU fan / power
+
+`tsctl gpu` (and Settings → GPU) writes `tabby.env` and the `tabby-gpu` systemd unit applies it as root via NVML. `auto` leaves NVIDIA idle fan-stop. `quiet` / `balanced` / `performance` are temperature curves (`quiet` also lowers the power limit). `custom` uses `fan_speed` percent (manual floor is often 30%). Power limit `0` means the profile default. Persistence mode is optional (`tsctl gpu persistence=on`).
+
+Needs passwordless sudo (the installer writes that). Fan control is not available as a normal user.
+
+```bash
+tsctl gpu status
+journalctl -u tabby-gpu -e
 ```
 
 ## 4. IDE / agents
@@ -211,6 +226,6 @@ A leftover `tabby-stack-archlinux` clone next to the install is optional after t
 | Chat `switch to …` returns 500 / `creationflags is only supported on Windows` | Re-run `install.sh` (it patches the spawn), then `systemctl --user restart tabbyapi` |
 | Reply says `ComfyUI is not running` after a chat or `switch to qwen` | That was a missing LLM, not Flux. Re-run `install.sh` (it now defaults to qwen 9B), then `systemctl --user restart tabbyapi` and wait ~65s |
 | First start hangs / no `:5000` | Model is loading before the port opens. qwen ~65s; qwen35 ~3 min. First Linux boot may compile Triton. |
-| `tabby-saver` fails to start | Needs `python-pygame`, `python-numpy`, a free TTY, and `video` group. Do not enable beside Omarchy. `tsctl screensaver status` and `journalctl -u tabby-saver -e`. |
+| `tabby-gpu` fan stays on auto | Needs passwordless sudo and `/etc/systemd/system/tabby-gpu.service`. `tsctl gpu status` and `journalctl -u tabby-gpu -e`. GeForce fan writes are root NVML only. |
 
 `update.sh` is the usual way to pull new code. Re-running `install.sh` is still safe for missing weights: it skips files that already exist. A healthy venv is rebuilt only when `update.sh` runs (pip -U).

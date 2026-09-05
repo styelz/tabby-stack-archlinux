@@ -1,0 +1,17 @@
+[Unit]
+Description=Tabby-stack NVIDIA fan curve and power limit
+Documentation=file://__TABBY_DIR__/deploy/arch/README.md
+After=systemd-modules-load.service nvidia-persistenced.service
+ConditionPathExists=/usr/bin/nvidia-smi
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-__TABBY_DIR__/deploy/arch/tabby.env
+WorkingDirectory=__TABBY_DIR__
+ExecStart=/usr/bin/python -u __TABBY_DIR__/common/gpu_control.py daemon --env __TABBY_DIR__/deploy/arch/tabby.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

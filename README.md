@@ -78,7 +78,7 @@ Other pages:
 | **Gallery** | Preview and download generated images; administrators can see all users |
 | **Logs** | Live and historical TabbyAPI and ComfyUI output |
 | **Users** | Administrator-only account creation, password reset, and deletion |
-| **Settings** | Administrator-only Tabby `config.yml`, system `tabby.env`, and screensaver. Shell: `tsctl` |
+| **Settings** | Administrator-only Tabby `config.yml`, system `tabby.env`, screensaver, and GPU fan/power. Shell: `tsctl` |
 
 <img width="1919" height="1123" alt="image" src="https://github.com/user-attachments/assets/1b7ab6fe-6a12-4947-b1bd-23bae0175447" />
 

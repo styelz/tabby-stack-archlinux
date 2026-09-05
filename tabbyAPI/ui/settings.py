@@ -134,6 +134,63 @@ SAVER_ENV_NAMES = frozenset(item["env"] for item in SAVER_FIELDS) | {
     "TABBY_SAVER_URL",
 }
 
+GPU_FIELDS = (
+    {
+        "name": "profile",
+        "env": "TABBY_GPU_PROFILE",
+        "label": "Fan profile",
+        "description": "auto leaves NVIDIA fan-stop. quiet / balanced / performance follow temperature. custom uses Fan speed %.",
+        "kind": "select",
+        "choices": ["auto", "quiet", "balanced", "performance", "custom"],
+        "optional": False,
+        "default": "auto",
+    },
+    {
+        "name": "fan_speed",
+        "env": "TABBY_GPU_FAN_SPEED",
+        "label": "Fan speed %",
+        "description": "Used when profile is custom. 0 = driver auto. Manual floor is usually 30%.",
+        "kind": "int",
+        "optional": True,
+        "default": 0,
+    },
+    {
+        "name": "power_limit",
+        "env": "TABBY_GPU_POWER_LIMIT",
+        "label": "Power limit (W)",
+        "description": "0 = profile default (quiet is about half the card's range; others use the driver default). Clamped to the GPU min/max.",
+        "kind": "int",
+        "optional": True,
+        "default": 0,
+    },
+    {
+        "name": "persistence",
+        "env": "TABBY_GPU_PERSISTENCE",
+        "label": "Persistence mode",
+        "description": "Keep the NVIDIA driver loaded with no clients. Helps CUDA start and keeps power/fan limits after nvidia-smi exits.",
+        "kind": "bool",
+        "optional": False,
+        "default": True,
+    },
+)
+
+GPU_ALIASES = {
+    "profile": "profile",
+    "fan": "fan_speed",
+    "fan_speed": "fan_speed",
+    "fan-speed": "fan_speed",
+    "speed": "fan_speed",
+    "power": "power_limit",
+    "power_limit": "power_limit",
+    "power-limit": "power_limit",
+    "pl": "power_limit",
+    "persistence": "persistence",
+    "persist": "persistence",
+    "pm": "persistence",
+}
+
+GPU_ENV_NAMES = frozenset(item["env"] for item in GPU_FIELDS)
+
 _ENV_ASSIGN = re.compile(r"^(\s*)(?:#\s*)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
@@ -342,7 +399,7 @@ def _parse_env(path: Path) -> dict[str, str]:
 
 
 def _system_schema(file_values: dict[str, str]) -> list[dict[str, Any]]:
-    known = {item["name"] for item in SYSTEM_FIELDS} | set(SAVER_ENV_NAMES)
+    known = {item["name"] for item in SYSTEM_FIELDS} | set(SAVER_ENV_NAMES) | set(GPU_ENV_NAMES)
     fields = []
     for item in SYSTEM_FIELDS:
         field = dict(item)
@@ -578,7 +635,7 @@ def _saver_payload(env_values: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _sudo_systemctl(args: list[str]) -> str:
+def _sudo_systemctl(args: list[str], *, what: str = "screensaver") -> str:
     import subprocess
 
     try:
@@ -589,10 +646,10 @@ def _sudo_systemctl(args: list[str]) -> str:
             timeout=30,
         )
     except Exception as exc:
-        return f"tabby.env saved; run tsctl screensaver enable from a terminal ({exc})"
+        return f"tabby.env saved; run tsctl {what} from a terminal ({exc})"
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
-        return f"tabby.env saved; systemd: {err}. Try: tsctl screensaver enable"
+        return f"tabby.env saved; systemd: {err}. Try: tsctl {what}"
     return ""
 
 
@@ -615,14 +672,14 @@ def apply_saver_unit(enabled: Optional[bool] = None) -> str:
     """Enable, disable, or restart tabby-saver so tabby.env timeouts apply."""
     if enabled is True:
         was_active = _systemctl_is("is-active", "tabby-saver")
-        warning = _sudo_systemctl(["enable", "--now", "tabby-saver"])
+        warning = _sudo_systemctl(["enable", "--now", "tabby-saver"], what="screensaver enable")
         if not warning and was_active:
-            warning = _sudo_systemctl(["restart", "tabby-saver"])
+            warning = _sudo_systemctl(["restart", "tabby-saver"], what="screensaver enable")
         return warning
     if enabled is False:
-        return _sudo_systemctl(["disable", "--now", "tabby-saver"])
+        return _sudo_systemctl(["disable", "--now", "tabby-saver"], what="screensaver disable")
     if _systemctl_is("is-active", "tabby-saver"):
-        return _sudo_systemctl(["restart", "tabby-saver"])
+        return _sudo_systemctl(["restart", "tabby-saver"], what="screensaver enable")
     return ""
 
 
@@ -648,6 +705,135 @@ def _apply_screensaver(updates: dict[str, Any]) -> str:
     if env_updates:
         _write_env(env_updates)
     return apply_saver_unit(enabled=enabled)
+
+
+def normalize_gpu_key(name: str) -> str:
+    key = str(name or "").strip()
+    if key in GPU_ALIASES:
+        return GPU_ALIASES[key]
+    env_match = next((item["name"] for item in GPU_FIELDS if item["env"] == key), None)
+    if env_match:
+        return env_match
+    raise SettingsError(f"Unknown GPU setting {name}")
+
+
+def _gpu_live_line() -> str:
+    try:
+        from common.gpu_control import format_status
+
+        return format_status()
+    except Exception as exc:
+        return str(exc)
+
+
+def _gpu_payload(env_values: dict[str, str]) -> dict[str, Any]:
+    fields = []
+    for item in GPU_FIELDS:
+        field = dict(item)
+        raw = env_values.get(item["env"], "")
+        kind = item["kind"]
+        if kind == "bool":
+            if str(raw).strip() == "":
+                value: Any = item.get("default")
+            else:
+                value = _env_truthy(raw)
+        elif kind == "int":
+            if str(raw).strip() == "":
+                value = item.get("default")
+            else:
+                try:
+                    value = int(str(raw).strip())
+                except ValueError:
+                    value = item.get("default")
+        elif kind == "select":
+            text = str(raw).strip().lower()
+            choices = item.get("choices") or []
+            value = text if text in choices else item.get("default")
+        else:
+            value = raw
+        field["value"] = value
+        field["set"] = bool(str(raw).strip())
+        field["live"] = value
+        fields.append(field)
+    live = _gpu_live_line()
+    description = (
+        "NVIDIA fan curve and power limit. Applied by the tabby-gpu unit (root NVML). "
+        f"Live: {live}"
+    )
+    return {
+        "name": "gpu",
+        "label": "GPU",
+        "description": description,
+        "path": str(ENV_PATH),
+        "fields": fields,
+        "status": live,
+    }
+
+
+def apply_gpu_unit() -> str:
+    """Enable and restart tabby-gpu so tabby.env fan/power settings apply."""
+    warning = _sudo_systemctl(["enable", "--now", "tabby-gpu"], what="gpu status")
+    if not warning:
+        restart = _sudo_systemctl(["restart", "tabby-gpu"], what="gpu status")
+        return restart
+    try:
+        from common.gpu_control import apply_as_root, settings_from_env
+
+        note = apply_as_root(settings_from_env(ENV_PATH))
+        extra = f" Applied once ({note}). Install tabby-gpu.service so this survives reboot."
+        return warning + extra
+    except Exception as exc:
+        return f"{warning} Direct apply failed: {exc}"
+
+
+def _apply_gpu(updates: dict[str, Any]) -> str:
+    env_updates: dict[str, Optional[str]] = {}
+    names = {str(key): normalize_gpu_key(str(key)) for key in updates}
+    if "fan_speed" in names.values() and "profile" not in names.values():
+        fan_key = next(key for key, name in names.items() if name == "fan_speed")
+        try:
+            fan_val = int(updates[fan_key] or 0)
+        except (TypeError, ValueError):
+            fan_val = 0
+        if fan_val > 0:
+            updates = dict(updates)
+            updates["profile"] = "custom"
+            names["profile"] = "profile"
+    for key, raw in updates.items():
+        name = normalize_gpu_key(str(key))
+        spec = next(item for item in GPU_FIELDS if item["name"] == name)
+        try:
+            coerced = _coerce_field(spec, raw)
+        except Exception as exc:
+            raise SettingsError(f"gpu.{name}: {exc}") from exc
+        if name == "profile":
+            text = str(coerced or "auto").strip().lower()
+            if text not in (spec.get("choices") or []):
+                raise SettingsError(f"gpu.profile must be one of {', '.join(spec['choices'])}")
+            env_updates[spec["env"]] = text
+        elif spec["kind"] == "bool":
+            if coerced is None:
+                env_updates[spec["env"]] = None
+            else:
+                env_updates[spec["env"]] = "1" if bool(coerced) else "0"
+        elif coerced is None or coerced == "":
+            env_updates[spec["env"]] = "0" if spec["kind"] == "int" else ""
+        else:
+            if name == "fan_speed":
+                value = int(coerced)
+                if value < 0 or value > 100:
+                    raise SettingsError("gpu.fan_speed must be 0-100")
+                env_updates[spec["env"]] = str(value)
+            elif name == "power_limit":
+                value = int(coerced)
+                if value < 0:
+                    raise SettingsError("gpu.power_limit must be >= 0")
+                env_updates[spec["env"]] = str(value)
+            else:
+                env_updates[spec["env"]] = str(coerced)
+    if env_updates:
+        _write_env(env_updates)
+    return apply_gpu_unit()
 
 
 def load_settings() -> dict[str, Any]:
@@ -695,8 +881,9 @@ def load_settings() -> dict[str, Any]:
             "fields": system,
         },
         "screensaver": _saver_payload(env_values),
+        "gpu": _gpu_payload(env_values),
         "paths": {"config": str(CONFIG_PATH), "env": str(ENV_PATH)},
-        "restart_hint": "Network, model, and tabby.env changes apply after Restart API. Screensaver enable/timeouts apply to tabby-saver.",
+        "restart_hint": "Network, model, and tabby.env changes apply after Restart API. Screensaver enable/timeouts apply to tabby-saver. GPU fan/power apply to tabby-gpu immediately.",
     }
 
 
@@ -704,6 +891,7 @@ def save_settings(body: dict[str, Any]) -> dict[str, Any]:
     tabby = body.get("tabby")
     system = body.get("system")
     screensaver = body.get("screensaver")
+    gpu = body.get("gpu")
     if tabby is not None:
         if not isinstance(tabby, dict):
             raise SettingsError("tabby must be an object")
@@ -729,13 +917,18 @@ def save_settings(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(screensaver, dict):
             raise SettingsError("screensaver must be an object")
         saver_warning = _apply_screensaver(screensaver)
+    gpu_warning = ""
+    if gpu is not None:
+        if not isinstance(gpu, dict):
+            raise SettingsError("gpu must be an object")
+        gpu_warning = _apply_gpu(gpu)
     reload_warning = ""
     try:
         _reload_live()
     except Exception as exc:
         reload_warning = f"Saved, but live reload failed: {exc}"
     data = load_settings()
-    warning = " ".join(part for part in (reload_warning, saver_warning) if part)
+    warning = " ".join(part for part in (reload_warning, saver_warning, gpu_warning) if part)
     if warning:
         data = dict(data)
         data["reload_warning"] = warning

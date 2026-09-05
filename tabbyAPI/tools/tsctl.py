@@ -17,9 +17,12 @@ if str(TABBY_ROOT) not in sys.path:
 from ui.settings import (  # noqa: E402
     SettingsError,
     load_settings,
+    normalize_gpu_key,
     normalize_saver_key,
     save_settings,
 )
+
+GPU_PROFILE_NAMES = ("auto", "quiet", "balanced", "performance", "custom")
 
 USAGE = """\
 tsctl — tabby-stack settings
@@ -31,9 +34,15 @@ tsctl — tabby-stack settings
   tsctl <section> <key>=<value>
   tsctl <section> <key> <value>
   tsctl screensaver enable|disable|status
+  tsctl gpu                     settings plus live sensors
+  tsctl gpu status              temperature, fan, power
+  tsctl gpu auto|quiet|balanced|performance|custom
+  tsctl gpu fan_speed=40        custom percent (driver min is often 30)
+  tsctl gpu power_limit=220     watts; 0 = profile default
+  tsctl gpu persistence=on
   tsctl restart                 restart TabbyAPI
 
-Sections match Settings: network, model, screensaver, system, …
+Sections match Settings: network, model, screensaver, gpu, system, …
 """
 
 
@@ -42,6 +51,8 @@ def _sections(data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     out = list(payload.get("tabby") or [])
     if payload.get("screensaver"):
         out.append(payload["screensaver"])
+    if payload.get("gpu"):
+        out.append(payload["gpu"])
     if payload.get("system"):
         out.append(payload["system"])
     return out
@@ -61,6 +72,8 @@ def field_by_name(section: dict[str, Any], key: str) -> dict[str, Any]:
     want = key.strip()
     if section.get("name") == "screensaver":
         want = normalize_saver_key(want)
+    elif section.get("name") == "gpu":
+        want = normalize_gpu_key(want)
     for field in section.get("fields") or []:
         if field.get("name") == want:
             return field
@@ -113,6 +126,8 @@ def apply_sets(section_name: str, pairs: list[tuple[str, str]]) -> dict[str, Any
         updates[field["name"]] = coerce_cli(field, raw)
     if name == "screensaver":
         return save_settings({"screensaver": updates})
+    if name == "gpu":
+        return save_settings({"gpu": updates})
     if name == "system":
         return save_settings({"system": updates})
     return save_settings({"tabby": {name: updates}})
@@ -130,6 +145,27 @@ def saver_status() -> int:
     )
     enabled = subprocess.run(
         ["systemctl", "is-enabled", "tabby-saver"],
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    print()
+    print(f"  systemd     {(active.stdout or '').strip() or 'unknown'} / {(enabled.stdout or '').strip() or 'unknown'}")
+    return 0
+
+
+def gpu_status() -> int:
+    data = load_settings()
+    section = find_section("gpu", data)
+    print_section(section)
+    active = subprocess.run(
+        ["systemctl", "is-active", "tabby-gpu"],
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    enabled = subprocess.run(
+        ["systemctl", "is-enabled", "tabby-gpu"],
         capture_output=True,
         text=True,
         timeout=8,
@@ -166,7 +202,7 @@ def report_save(data: dict[str, Any]) -> int:
 def complete_words(cword: int, words: list[str]) -> list[str]:
     data = load_settings()
     sections = [str(section["name"]) for section in _sections(data)]
-    extra = ["list", "help", "restart", "screensaver"]
+    extra = ["list", "help", "restart", "screensaver", "gpu"]
     if cword <= 1:
         return sorted(set(sections + extra))
     try:
@@ -176,8 +212,12 @@ def complete_words(cword: int, words: list[str]) -> list[str]:
     names = [str(field["name"]) for field in section.get("fields") or []]
     if section.get("name") == "screensaver":
         names.extend(["enable", "disable", "status", "timeout", "logout-timeout"])
+    if section.get("name") == "gpu":
+        names.extend([*GPU_PROFILE_NAMES, "status", "apply", "fan-speed", "power-limit"])
     if cword == 2:
         return sorted(set(names))
+    if cword == 3 and section.get("name") == "gpu" and words[2] in ("profile",):
+        return list(GPU_PROFILE_NAMES)
     return []
 
 
@@ -247,12 +287,30 @@ def tui_dialog() -> int:
             extra = []
             if section["name"] == "screensaver":
                 extra = ["enable", "Turn unit on", "disable", "Turn unit off"]
+            elif section["name"] == "gpu":
+                extra = [
+                    "status",
+                    "Live sensors",
+                    "auto",
+                    "Driver fan-stop",
+                    "quiet",
+                    "Slow curve / lower TDP",
+                    "balanced",
+                    "Normal curve",
+                    "performance",
+                    "Aggressive curve",
+                    "custom",
+                    "Use Fan speed %",
+                ]
+            prompt = str(section.get("description") or "Edit a setting")
+            if section["name"] == "gpu":
+                prompt = "Fan profile and power. Status shows live temperature and fans."
             code, key = run_dialog(
                 [
                     "--title",
                     str(section.get("label") or section["name"]),
                     "--menu",
-                    str(section.get("description") or "Edit a setting"),
+                    prompt,
                     "22",
                     "74",
                     "14",
@@ -268,18 +326,63 @@ def tui_dialog() -> int:
                 data = load_settings()
                 section = find_section("screensaver", data)
                 continue
+            if section["name"] == "gpu" and key == "status":
+                from common.gpu_control import format_status
+
+                run_dialog(["--msgbox", format_status() or "No GPU", "14", "70"])
+                continue
+            if section["name"] == "gpu" and key in GPU_PROFILE_NAMES:
+                body = save_settings({"gpu": {"profile": key}})
+                run_dialog(["--msgbox", str(body.get("reload_warning") or "ok"), "10", "70"])
+                data = load_settings()
+                section = find_section("gpu", data)
+                continue
             field = field_by_name(section, key)
-            code, value = run_dialog(
-                [
-                    "--title",
-                    str(field.get("label") or field["name"]),
-                    "--inputbox",
-                    str(field.get("description") or field["name"]),
-                    "12",
-                    "70",
-                    format_value(field.get("value")),
-                ]
-            )
+            if field.get("kind") == "select" and field.get("choices"):
+                items: list[str] = []
+                for choice in field["choices"]:
+                    items.extend([str(choice), str(choice)])
+                code, value = run_dialog(
+                    [
+                        "--title",
+                        str(field.get("label") or field["name"]),
+                        "--menu",
+                        str(field.get("description") or field["name"]),
+                        "16",
+                        "70",
+                        "8",
+                        *items,
+                    ]
+                )
+            elif field.get("kind") == "bool":
+                yes_args = ["--title", str(field.get("label") or field["name"])]
+                if not field.get("value"):
+                    yes_args.append("--defaultno")
+                code, _ignored = run_dialog(
+                    [
+                        *yes_args,
+                        "--yesno",
+                        str(field.get("description") or field["name"]),
+                        "10",
+                        "70",
+                    ]
+                )
+                if code not in (0, 1):
+                    continue
+                value = "true" if code == 0 else "false"
+                code = 0
+            else:
+                code, value = run_dialog(
+                    [
+                        "--title",
+                        str(field.get("label") or field["name"]),
+                        "--inputbox",
+                        str(field.get("description") or field["name"]),
+                        "12",
+                        "70",
+                        format_value(field.get("value")),
+                    ]
+                )
             if code != 0:
                 continue
             try:
@@ -311,6 +414,10 @@ def repl() -> int:
                     for field in section.get("fields") or []
                     if str(field["name"]).startswith(text)
                 ]
+                if section.get("name") == "gpu":
+                    options.extend(
+                        name for name in (*GPU_PROFILE_NAMES, "status") if name.startswith(text)
+                    )
             except SettingsError:
                 options = []
         return options[state] if state < len(options) else None
@@ -364,6 +471,21 @@ def dispatch(argv: list[str]) -> int:
             return saver_status()
         body = save_settings({"screensaver": {"enabled": rest[0] == "enable"}})
         return report_save(body)
+    if section_name == "gpu":
+        if not rest or rest[0] == "status":
+            return gpu_status()
+        if rest[0] == "apply":
+            from ui.settings import apply_gpu_unit
+
+            warning = apply_gpu_unit()
+            if warning:
+                print(warning, file=sys.stderr)
+                return 1
+            print("ok")
+            return 0
+        if rest[0] in GPU_PROFILE_NAMES and "=" not in rest[0] and len(rest) == 1:
+            body = save_settings({"gpu": {"profile": rest[0]}})
+            return report_save(body)
 
     data = load_settings()
     section = find_section(section_name, data)

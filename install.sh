@@ -2682,6 +2682,28 @@ if [[ -f "$SAVER_UNIT_SRC" ]]; then
   rm -f "$SAVER_TMP"
 fi
 
+# NVIDIA fan/power controller. Root NVML; Settings / tsctl gpu write tabby.env.
+GPU_UNIT_SRC="$DEST_TABBY/deploy/arch/tabby-gpu.service"
+if [[ ! -f "$GPU_UNIT_SRC" ]]; then
+  GPU_UNIT_SRC="$SCRIPT_DIR/tabby-gpu.service"
+fi
+if [[ -f "$GPU_UNIT_SRC" ]]; then
+  GPU_TMP="$(mktemp)"
+  sed -e "s|__TABBY_DIR__|$DEST_TABBY|g" "$GPU_UNIT_SRC" > "$GPU_TMP"
+  if sudo -n install -m 644 "$GPU_TMP" /etc/systemd/system/tabby-gpu.service \
+       >>"$INSTALL_LOG" 2>&1; then
+    sudo -n systemctl daemon-reload >>"$INSTALL_LOG" 2>&1 || true
+    if sudo -n systemctl enable --now tabby-gpu >>"$INSTALL_LOG" 2>&1; then
+      echo "Enabled tabby-gpu" >> "$INSTALL_LOG"
+    else
+      echo "WARNING: could not enable tabby-gpu" >> "$INSTALL_LOG"
+    fi
+  else
+    echo "WARNING: could not write /etc/systemd/system/tabby-gpu.service" >> "$INSTALL_LOG"
+  fi
+  rm -f "$GPU_TMP"
+fi
+
 if ! sudo -n loginctl enable-linger "$USER" >>"$INSTALL_LOG" 2>&1; then
   echo "WARNING: linger failed. Run: sudo loginctl enable-linger $USER" >> "$INSTALL_LOG"
 fi
@@ -2812,6 +2834,11 @@ Optional TTY screensaver (spare VT, default tty8)
   tsctl                         interactive settings (dialog)
   tsctl list                    every Settings section
   tsctl network host=0.0.0.0
+  tsctl gpu status              NVIDIA temp / fan / power
+  tsctl gpu quiet               fan curve + lower TDP
+  tsctl gpu auto                driver fan-stop
+  tsctl gpu fan_speed=40        custom percent
+  tsctl gpu power_limit=220     watts; 0 = profile default
 
 Management UI ($API_URL/v1/ui)
   Sign in with the Linux user that runs tabbyapi (admin), or a Tabby-only account.
