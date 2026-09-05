@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.39"
+SCRIPT_VERSION="1.0.40"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -196,6 +196,10 @@ die() {
   # Inside the background work process the parent still owns the gauge.
   # Printing to /dev/tty here is what put "error:" / percent lines on top
   # of the leftover password box. Signal the parent and exit this child.
+  if [[ "${TSOS_UDEV_PAUSED:-0}" == 1 ]]; then
+    udevadm control --start-exec-queue 2>/dev/null || true
+    TSOS_UDEV_PAUSED=0
+  fi
   if [[ "${TSOS_WORK_CHILD:-0}" == 1 ]]; then
     printf 'error: %s\n' "$*" >>"${TSOS_LOG:-/dev/null}"
     if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
@@ -2177,6 +2181,18 @@ self_test() {
   check "$(part_dev /dev/nvme0n1 2)" /dev/nvme0n1p2 "nvme p2"
   check "$(part_dev /dev/mmcblk0 1)" /dev/mmcblk0p1 "mmc p1"
   check "$(part_dev /dev/loop0 1)" /dev/loop0p1 "loop p1"
+  on=0
+  is_on_disk /dev/sda /dev/sda || on=1
+  check "$on" 0 "disk matches itself"
+  on=0
+  is_on_disk /dev/sda /dev/sda2 || on=1
+  check "$on" 0 "sda2 on sda"
+  on=0
+  is_on_disk /dev/sda /dev/sdb || on=1
+  check "$on" 1 "sdb not on sda"
+  on=0
+  is_on_disk /dev/nvme0n1 /dev/nvme0n1p2 || on=1
+  check "$on" 0 "nvme p2 on disk"
 
   DISK=/dev/sda
   BOOT_N=1
@@ -2739,19 +2755,187 @@ assign_partition_numbers() {
   setup_partitions
 }
 
-wipe_and_partition() {
-  log "Unmounting stale targets"
-  swapoff -a || true
-  if mountpoint -q "$TARGET"; then
-    umount -R "$TARGET" || true
+# True when DEV is DISK or a partition of it (/dev/sda vs /dev/sda2,
+# /dev/nvme0n1 vs /dev/nvme0n1p2). /dev/sda does not match /dev/sdb.
+is_on_disk() {
+  local disk=$1 dev=$2
+  [[ -n "$disk" && -n "$dev" ]] || return 1
+  [[ "$dev" == "$disk" || "$dev" == "$disk"[0-9]* || "$dev" == "$disk"p[0-9]* ]]
+}
+
+pause_udev_queue() {
+  udevadm control --stop-exec-queue 2>/dev/null || return 0
+  TSOS_UDEV_PAUSED=1
+}
+
+resume_udev_queue() {
+  [[ "${TSOS_UDEV_PAUSED:-0}" == 1 ]] || {
+    udevadm settle --timeout=8 2>/dev/null || true
+    return 0
+  }
+  udevadm control --start-exec-queue 2>/dev/null || true
+  TSOS_UDEV_PAUSED=0
+  udevadm settle --timeout=15 2>/dev/null || true
+}
+
+log_disk_holders() {
+  local disk=$1 part=${2:-}
+  log "lsblk:"
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$disk" 2>/dev/null | while IFS= read -r line; do
+    log "  $line"
+  done
+  if [[ -n "$part" ]]; then
+    local sys="/sys/class/block/${part##*/}/holders"
+    if [[ -d "$sys" ]]; then
+      log "holders of $part: $(ls -1 "$sys" 2>/dev/null | tr '\n' ' ')"
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+      log "fuser $part: $(fuser -vm "$part" 2>&1 | tr '\n' ' ')"
+    fi
   fi
+}
+
+# Drop mounts, swap, LUKS, LVM, and md on DISK so the kernel will reread
+# the partition table. A leftover mapper or udev probe is what makes
+# mkfs.btrfs print "device or resource busy" on a partition that lsblk
+# shows as unmounted.
+release_disk() {
+  local disk=$1
+  local tries=0 name type mp vg pv
+  swapoff -a || true
   if [[ -e "/dev/mapper/$CRYPT_NAME" ]]; then
     cryptsetup close "$CRYPT_NAME" || true
   fi
+  while ((tries < 8)); do
+    tries=$((tries + 1))
+    while read -r mp; do
+      [[ -n "$mp" && "$mp" != / ]] || continue
+      umount -R "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+    done < <(lsblk -lnr -o MOUNTPOINT "$disk" 2>/dev/null | awk 'NF && $1 != "/"' | sort -r)
+    local -a rows=()
+    mapfile -t rows < <(lsblk -lnp -o NAME,TYPE "$disk" 2>/dev/null || true)
+    local i
+    for ((i = ${#rows[@]} - 1; i >= 0; i--)); do
+      read -r name type <<<"${rows[i]}"
+      [[ -n "$name" ]] || continue
+      case "$type" in
+        crypt)
+          cryptsetup close "$name" 2>/dev/null || \
+            cryptsetup close "${name##*/}" 2>/dev/null || true
+          ;;
+        lvm|dm)
+          if command -v lvchange >/dev/null 2>&1; then
+            lvchange -an "$name" 2>/dev/null || true
+          fi
+          ;;
+      esac
+    done
+    if command -v pvs >/dev/null 2>&1 && command -v vgchange >/dev/null 2>&1; then
+      while read -r pv vg; do
+        [[ -n "$vg" ]] || continue
+        if is_on_disk "$disk" "$pv"; then
+          vgchange -an "$vg" 2>/dev/null || true
+        fi
+      done < <(pvs --noheadings -o pv_name,vg_name 2>/dev/null || true)
+    fi
+    if command -v mdadm >/dev/null 2>&1; then
+      mdadm --stop --scan 2>/dev/null || true
+    fi
+    # No mounts left on this disk (empty mountpoints only).
+    if ! lsblk -lnr -o MOUNTPOINT "$disk" 2>/dev/null | awk 'NF && $1 != "/" { found=1 } END { exit !found }'; then
+      return 0
+    fi
+    sleep 1
+  done
+  warn "could not fully release $disk; continuing"
+  log_disk_holders "$disk"
+}
+
+wipe_signatures() {
+  local disk=$1 name type
+  while read -r name type; do
+    [[ "$type" == part ]] || continue
+    wipefs -af "$name" 2>/dev/null || true
+  done < <(lsblk -lnp -o NAME,TYPE "$disk" 2>/dev/null || true)
+  wipefs -af "$disk" || warn "wipefs on $disk failed; sgdisk will zap the table anyway"
+}
+
+# sgdisk already notifies the kernel. A full partprobe (BLKRRPART) while
+# udev is opening the new nodes is a common "device busy" on sda2.
+notify_kernel_parts() {
+  udevadm settle --timeout=15 2>/dev/null || true
+  setup_partitions
+  if [[ -b "$BOOT_PART" && -b "$DATA_PART" ]]; then
+    return 0
+  fi
+  partx -u "$DISK" 2>/dev/null || true
+  udevadm settle --timeout=10 2>/dev/null || true
+  setup_partitions
+  if [[ -b "$BOOT_PART" && -b "$DATA_PART" ]]; then
+    return 0
+  fi
+  partprobe "$DISK" 2>/dev/null || blockdev --rereadpt "$DISK" 2>/dev/null || true
+  udevadm settle --timeout=10 2>/dev/null || true
+  setup_partitions
+}
+
+wait_for_parts() {
+  local i
+  for i in $(seq 1 40); do
+    setup_partitions
+    if [[ -b "$BOOT_PART" && -b "$DATA_PART" ]]; then
+      return 0
+    fi
+    sleep 0.25
+    if ((i % 8 == 0)); then
+      notify_kernel_parts
+    fi
+  done
+  die "partitions did not appear after partitioning:
+  EFI  $BOOT_PART
+  root $DATA_PART
+$(lsblk -o NAME,SIZE,TYPE "$DISK" 2>/dev/null || true)"
+}
+
+# Run mkfs / wipefs / cryptsetup with udev's helper queue stopped so blkid
+# cannot hold the new partition (EBUSY) the instant it appears.
+run_on_free_block() {
+  local part=$1
+  shift
+  local i rc=1
+  for i in 1 2 3 4 5 6 7 8; do
+    udevadm settle --timeout=10 2>/dev/null || true
+    pause_udev_queue
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    resume_udev_queue
+    if ((rc == 0)); then
+      return 0
+    fi
+    log "attempt $i on $part exited $rc; retrying"
+    log_disk_holders "$DISK" "$part"
+    release_disk "$DISK"
+    sleep 2
+  done
+  die "Could not use $part (last exit $rc). Often 'device or resource busy' from udev or a leftover LUKS/LVM mapper, not a mount.
+$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" 2>/dev/null || true)"
+}
+
+wipe_and_partition() {
+  log "Unmounting stale targets and releasing $DISK"
+  if mountpoint -q "$TARGET"; then
+    umount -R "$TARGET" || true
+  fi
+  release_disk "$DISK"
 
   log "Wiping $DISK"
-  wipefs -af "$DISK"
+  wipe_signatures "$DISK"
   sgdisk --zap-all "$DISK"
+  # Drop the old in-kernel partition table before creating the new one.
+  partx -d "$DISK" 2>/dev/null || true
+  udevadm settle --timeout=10 2>/dev/null || true
   sgdisk -og "$DISK"
 
   local data_type=8300
@@ -2773,33 +2957,40 @@ wipe_and_partition() {
   fi
 
   sgdisk -p "$DISK"
-  partprobe "$DISK"
-  udevadm settle || true
-  sleep 2
-  setup_partitions
+  notify_kernel_parts
+  wait_for_parts
   [[ -b "$BOOT_PART" ]] || die "EFI partition missing: $BOOT_PART"
   [[ -b "$DATA_PART" ]] || die "Root partition missing: $DATA_PART"
 }
 
 setup_storage() {
   log "Formatting EFI $BOOT_PART"
-  mkfs.fat -F32 -n EFI "$BOOT_PART"
+  run_on_free_block "$BOOT_PART" mkfs.fat -F32 -n EFI "$BOOT_PART"
+  # udisks/udev often mounts the new EFI filesystem; that holds the disk
+  # and is a common "busy" on the root partition next.
+  umount "$BOOT_PART" 2>/dev/null || true
+  while read -r mp; do
+    [[ -n "$mp" ]] || continue
+    umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+  done < <(lsblk -lnr -o MOUNTPOINT "$BOOT_PART" 2>/dev/null || true)
 
   local mapper
   if ((ENCRYPT)); then
     log "Creating LUKS on $DATA_PART"
-    wipefs -af "$DATA_PART" || true
-    printf '%s' "$LUKS_PASSWORD" | cryptsetup luksFormat --batch-mode -q --type luks2 --iter-time 2000 --key-file=- "$DATA_PART"
+    run_on_free_block "$DATA_PART" wipefs -af "$DATA_PART"
+    run_on_free_block "$DATA_PART" \
+      bash -c 'printf "%s" "$1" | cryptsetup luksFormat --batch-mode -q --type luks2 --iter-time 2000 --key-file=- "$2"' \
+      _ "$LUKS_PASSWORD" "$DATA_PART"
     printf '%s' "$LUKS_PASSWORD" | cryptsetup open -q --key-file=- "$DATA_PART" "$CRYPT_NAME"
     mapper="/dev/mapper/$CRYPT_NAME"
   else
     log "Formatting btrfs on $DATA_PART (no LUKS)"
-    wipefs -af "$DATA_PART" || true
+    run_on_free_block "$DATA_PART" wipefs -af "$DATA_PART"
     mapper="$DATA_PART"
   fi
 
   log "Creating btrfs on $mapper"
-  mkfs.btrfs -f -L tsos "$mapper"
+  run_on_free_block "$mapper" mkfs.btrfs -f -L tsos "$mapper"
   # -t matters: without it the kernel probes ext4 first and prints
   # "VFS: Can't find ext4 filesystem" straight to the console, over the gauge.
   mount -t btrfs "$mapper" "$TARGET"
