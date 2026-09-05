@@ -428,9 +428,10 @@ async def saver_state() -> dict[str, Any]:
     typical_s = _typical_switch_s(lock_name, switching, restarting, str(weather.get("stage") or ""))
     elapsed_s = weather["elapsed_s"]
     if typical_s is not None:
-        age = _lock_age_s()
-        if age > elapsed_s:
-            elapsed_s = age
+        # Occupancy elapsed is the chat/job that holds StackGate. The HUD
+        # says Loading LLM/Comfy here, so the clock is the switch lock
+        # (when that load started), not the run that triggered it.
+        elapsed_s = _lock_age_s()
     return sanitize_status(
         {
             "gpu_mode": gpu_mode,
