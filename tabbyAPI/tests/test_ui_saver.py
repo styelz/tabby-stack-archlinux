@@ -281,7 +281,7 @@ class SaverKioskSceneTests(unittest.TestCase):
     def test_hud_caption_title_cases_status_words(self):
         cap = self.kiosk.hud_caption
         self.assertEqual(cap("thinking"), "Thinking")
-        self.assertEqual(cap("planning"), "Planning")
+        self.assertEqual(cap("settling"), "Settling")
         self.assertEqual(cap("loading llm"), "Loading LLM")
         self.assertEqual(cap("restarting api"), "Restarting API")
 
@@ -318,7 +318,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertFalse(scene["live"])
         self.assertGreaterEqual(scene["speed"], 0.30)
         self.assertLess(scene["speed"], 0.55)
-        self.assertGreaterEqual(scene["intensity"], 0.45)
+        self.assertGreaterEqual(scene["intensity"], 0.38)
 
     def test_hud_idle_shows_clock_and_profile(self):
         idle = self.kiosk.scene_from_state(
@@ -567,7 +567,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(scene["phase"], "thinking")
         self.assertEqual(scene["palette"], "chat")
         self.assertTrue(scene["live"])
-        self.assertGreaterEqual(scene["intensity"], 0.75)
+        self.assertGreaterEqual(scene["intensity"], 0.50)
         self.assertGreater(scene["speed"], 0.5)
 
     def test_code_occupancy_while_decoding_is_thinking(self):
@@ -712,7 +712,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         for step in range(40):
             scene = follow.tick(hot, 0.04, 1.0 + step * 0.04)
         self.assertEqual(scene["phase"], "thinking")
-        self.assertGreater(scene["intensity"], 0.7)
+        self.assertGreater(scene["intensity"], 0.48)
         self.assertGreater(scene["weights"]["chat"], 0.8)
 
     def test_resume_on_idle_or_logout(self):
@@ -784,7 +784,7 @@ class SaverKioskSceneTests(unittest.TestCase):
             after += 0.04
             scene = follow.tick(idle, 0.04, after)
         self.assertEqual(scene["cycle"], "halt")
-        self.assertEqual(scene["phase"], "planning")
+        self.assertEqual(scene["phase"], "settling")
         after += 6.0
         scene = follow.tick(idle, 0.04, after)
         for _step in range(90):

@@ -34,11 +34,7 @@ ACCENT = (122, 162, 255)
 ACCENT2 = (139, 92, 246)
 WARN = (245, 197, 66)
 OK = (61, 214, 140)
-NAVY = (18, 24, 38)
-AMBER_DIM = (48, 34, 12)
-GREEN_DIM = (12, 42, 32)
 DOWN = (48, 10, 14)
-DOWN_HOT = (168, 36, 42)
 DOWN_TEXT = (232, 96, 90)
 
 VT_ACTIVATE = 0x5606
@@ -100,13 +96,19 @@ def _palette(stops: list[tuple[float, tuple[int, int, int]]]) -> list[tuple[int,
 
 
 PALETTES = {
-    "idle": _palette([(0.0, BG), (0.5, NAVY), (1.0, (38, 52, 88))]),
+    "idle": _palette([(0.0, BG), (0.5, (14, 18, 28)), (1.0, (26, 34, 56))]),
     "chat": _palette(
-        [(0.0, BG), (0.18, (40, 48, 110)), (0.42, ACCENT), (0.68, ACCENT2), (1.0, (255, 96, 140))]
+        [
+            (0.0, BG),
+            (0.22, (24, 30, 64)),
+            (0.48, (58, 78, 138)),
+            (0.74, (72, 48, 128)),
+            (1.0, (118, 48, 78)),
+        ]
     ),
-    "image": _palette([(0.0, BG), (0.38, AMBER_DIM), (1.0, WARN)]),
-    "switch": _palette([(0.0, BG), (0.4, GREEN_DIM), (1.0, OK)]),
-    "down": _palette([(0.0, (8, 4, 6)), (0.42, DOWN), (1.0, DOWN_HOT)]),
+    "image": _palette([(0.0, BG), (0.42, (32, 22, 8)), (1.0, (128, 96, 32))]),
+    "switch": _palette([(0.0, BG), (0.45, (8, 28, 22)), (1.0, (28, 96, 64))]),
+    "down": _palette([(0.0, (6, 3, 4)), (0.42, (32, 8, 10)), (1.0, (96, 22, 28))]),
 }
 
 
@@ -549,7 +551,7 @@ class SceneFollow:
         elif self.cycle == "boot":
             self.phase = "imagining"
         elif self.cycle == "halt":
-            self.phase = "planning"
+            self.phase = "settling"
         elif held:
             self.phase = str(target.get("phase") or self.phase)
         elif self.weights.get("idle", 0.0) > 0.65:
@@ -558,7 +560,7 @@ class SceneFollow:
             self.task_name = self.phase
             self._task_t0 = now
         self.runtime_s = max(0.0, now - self._task_t0) if self._task_t0 else 0.0
-        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "planning"}
+        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "settling"}
         if show_clock:
             clock_s = self.elapsed_s if self.elapsed_s > 0.5 else self.runtime_s
             runtime = _fmt_runtime(clock_s)
@@ -677,32 +679,32 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         pass
     elif not live:
         # Idle still has to drift: a nearly-static navy field reads as frozen.
-        intensity = min(0.52 + 0.18 * (vram / 100.0), 0.70)
+        intensity = min(0.40 + 0.14 * (vram / 100.0), 0.54)
         speed = 0.36 + 0.10 * (vram / 100.0)
-        heat = max(0.10, min(0.38, 0.12 + (temp - 38.0) / 90.0))
+        heat = max(0.08, min(0.28, 0.08 + (temp - 38.0) / 110.0))
     elif stage == "prefill":
-        intensity = 0.70 + 0.12 * (util / 100.0)
+        intensity = 0.48 + 0.10 * (util / 100.0)
         speed = 0.42 + 0.16 * (util / 100.0)
-        heat = max(0.28, min(0.85, 0.32 + (temp - 38.0) / 50.0))
+        heat = max(0.18, min(0.55, 0.22 + (temp - 38.0) / 70.0))
     elif stage == "tool":
-        intensity = 0.60
+        intensity = 0.42
         speed = 0.38
-        heat = max(0.22, min(0.70, 0.28 + (temp - 38.0) / 55.0))
+        heat = max(0.14, min(0.46, 0.18 + (temp - 38.0) / 75.0))
     elif stage == "image":
         frac = (image_n / image_of) if image_of > 0 else 0.45
-        intensity = 0.72 + 0.18 * frac
+        intensity = 0.50 + 0.12 * frac
         speed = 0.48 + 0.22 * frac
-        heat = max(0.35, min(1.0, 0.45 + (temp - 38.0) / 42.0))
+        heat = max(0.22, min(0.62, 0.28 + (temp - 38.0) / 55.0))
     else:
         # Job running: ignore nvidia-smi (often near 0 during decode).
-        intensity = 0.78 + 0.20 * (util / 100.0)
+        intensity = 0.52 + 0.14 * (util / 100.0)
         speed = 0.55 + 0.35 * (util / 100.0)
-        heat = max(0.35, min(1.0, 0.45 + (temp - 38.0) / 42.0))
+        heat = max(0.22, min(0.62, 0.28 + (temp - 38.0) / 55.0))
     return {
         "phase": phase,
         "palette": palette,
         "live": live,
-        "intensity": max(0.16, min(0.98, intensity)),
+        "intensity": max(0.14, min(0.72, intensity)),
         "speed": speed,
         "heat": heat,
         "mode": mode,
@@ -780,7 +782,7 @@ def _warm_palette(
         base = _shift_ramp(base, idle_hue)
     if name == "down" or heat <= 0.02:
         return base
-    return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
+    return [_mix(color, WARN, heat * 0.14 * (i / 255.0)) for i, color in enumerate(base)]
 
 
 def _u01(i: int, salt: int = 0) -> float:
@@ -1070,7 +1072,7 @@ def draw_neurons(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
 
 
 def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
-    """Center bloom + ring: imagining expands, planning contracts. Field stays on."""
+    """Center bloom + ring: imagining expands, settling contracts. Field stays on."""
     cycle = str(scene.get("cycle") or "")
     if cycle not in ("boot", "halt"):
         return
@@ -1615,7 +1617,7 @@ def _blended_palette(
         if down_w > 0.45:
             pass
         elif heat > 0.02:
-            color = _mix(color, WARN, heat * 0.28 * (i / 255.0))
+            color = _mix(color, WARN, heat * 0.14 * (i / 255.0))
         out.append(color)
     return out
 
@@ -1635,11 +1637,11 @@ def _field_common(width: int, height: int, scene: dict[str, Any]):
     breath_idle = 0.5 + 0.5 * lsin(st * 1.55)
     breath_live = 0.5 + 0.5 * lsin(st * 1.15)
     breath = breath_idle + (breath_live - breath_idle) * mix
-    gain = intensity * (0.82 + 0.18 * breath)
+    gain = intensity * (0.70 + 0.14 * breath)
     cx = (width - 1) * 0.5
     cy = (height - 1) * 0.5
     inv_diag = 1.0 / (math.hypot(cx, cy) + 1.0)
-    pulse = (0.22 + 0.06 * mix) * (0.45 + 0.55 * breath)
+    pulse = (0.14 + 0.04 * mix) * (0.40 + 0.50 * breath)
     ax = cx + lsin(st * 0.62) * cx * 0.38
     ay = cy + lsin(st * 0.47 + 1.2) * cy * 0.32
     bx = cx + lsin(st * 0.31 + 2.1) * cx * 0.45
@@ -1682,7 +1684,7 @@ def _draw_field_numpy(width: int, height: int, scene: dict[str, Any], np_mod: An
             + vsin(db * 0.051 + st * 0.88)
         ) * (1.0 / 6.0) + 0.5
         blob = pulse * np_mod.exp(-np_mod.minimum(da, db) * inv_diag * 2.4)
-        v_idle = 0.22 + wave * 0.70 * gain + glow * 0.50 + blob * 0.55
+        v_idle = 0.16 + wave * 0.52 * gain + glow * 0.32 + blob * 0.36
     if not use_idle:
         wave = (
             vsin(x * 0.041 + st)
@@ -1690,7 +1692,7 @@ def _draw_field_numpy(width: int, height: int, scene: dict[str, Any], np_mod: An
             + vsin((x + y) * 0.021 + st * 1.13)
             + vsin(dist * 0.048 - st * 0.47)
         ) * 0.25 + 0.5
-        v_live = 0.26 + wave * 0.46 * gain + glow * 0.72
+        v_live = 0.18 + wave * 0.34 * gain + glow * 0.38
     if use_idle:
         v = v_idle
     elif use_live:
@@ -1731,7 +1733,7 @@ def _draw_field_python(width: int, height: int, scene: dict[str, Any]) -> Any:
                     + lsin(db * 0.051 + st * 0.88)
                 ) * (1.0 / 6.0) + 0.5
                 blob = pulse * math.exp(-min(da, db) * inv_diag * 2.4)
-                v_idle = 0.22 + wave * 0.70 * gain + glow * 0.50 + blob * 0.55
+                v_idle = 0.16 + wave * 0.52 * gain + glow * 0.32 + blob * 0.36
             if not use_idle:
                 wave = (
                     lsin(x * 0.041 + st)
@@ -1739,7 +1741,7 @@ def _draw_field_python(width: int, height: int, scene: dict[str, Any]) -> Any:
                     + lsin((x + y) * 0.021 + st * 1.13)
                     + lsin(dist * 0.048 - st * 0.47)
                 ) * 0.25 + 0.5
-                v_live = 0.26 + wave * 0.46 * gain + glow * 0.72
+                v_live = 0.18 + wave * 0.34 * gain + glow * 0.38
             if use_idle:
                 v = v_idle
             elif use_live:
