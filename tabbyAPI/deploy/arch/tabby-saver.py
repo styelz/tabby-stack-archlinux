@@ -162,7 +162,7 @@ def idle_tod_hue(hour: float) -> float:
 
 def wall_clock_parts(stamp: float | None = None) -> tuple[str, str]:
     lt = time.localtime(stamp)
-    date = f"{time.strftime('%a', lt)} {lt.tm_mday} {time.strftime('%b', lt)}"
+    date = f"{time.strftime('%a', lt)} {lt.tm_mday:2d} {time.strftime('%b', lt)}"
     return time.strftime("%H:%M:%S", lt), date
 
 
@@ -1716,10 +1716,46 @@ def draw_field(
     return _draw_field_numpy(width, height, scene, np)
 
 
+HUD_CLOCK_SLOT = "00:00:00"
+HUD_WHISPER_SLOT = "VRAM 100%   100°C"
+HUD_STATS_SLOT = "GPU 100%   VRAM 100%   100°C"
+_HUD_MONO_PATHS = (
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+)
+
+
 def hud_font_sizes(height: int) -> tuple[int, int]:
     """pygame.Font sizes. 64/48 at 1080p, not smaller than 48/36."""
     h = max(1, int(height or 0))
     return max(48, round(h * 64 / 1080)), max(36, round(h * 48 / 1080))
+
+
+def hud_mono_path() -> str | None:
+    for path in _HUD_MONO_PATHS:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def make_hud_fonts(pygame_mod: Any, height: int) -> tuple[Any, Any]:
+    """Monospace HUD so digit width does not shift the block."""
+    large_n, small_n = hud_font_sizes(height)
+    path = hud_mono_path()
+    if path:
+        return pygame_mod.font.Font(path, large_n), pygame_mod.font.Font(path, small_n)
+    return pygame_mod.font.Font(None, large_n), pygame_mod.font.Font(None, small_n)
+
+
+def hud_anchor_center(face: Any, template: str, width: int, pad: int) -> int:
+    return max(pad, (int(width) - int(face.size(template)[0])) // 2)
+
+
+def hud_anchor_right(face: Any, template: str, right: int) -> int:
+    return int(right) - int(face.size(template)[0])
 
 
 def hud_halo_offsets(radius: int = 3) -> list[tuple[int, int]]:
@@ -1793,24 +1829,23 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         if scene.get("has_gpu"):
             vram = int(round(scene["vram"]))
             temp = int(round(scene["temp"]))
-            whisper = f"VRAM {vram}%   {temp}°C"
+            whisper = f"VRAM {vram:3d}%   {temp:3d}°C"
         fact = str(scene.get("idle_fact") or "").strip()
         if not fact:
             fact = pick_idle_fact(idle_fact_lines(load_idle_times(), float(scene.get("idle_s") or 0.0)), time.time())
         blit(profile, (pad, pad), MUTED_FADE)
-        blit(mode, (w - small.size(mode)[0] - pad, pad + 4), MUTED_FADE, use_small=True)
-        cx = (w - font.size(clock)[0]) // 2
+        blit(mode, (hud_anchor_right(small, mode, w - pad), pad + 4), MUTED_FADE, use_small=True)
+        cx = hud_anchor_center(font, HUD_CLOCK_SLOT, w, pad)
         cy = (h - main_h - small_h - gap) // 2
-        blit(clock, (max(pad, cx), cy), TEXT_FADE)
+        blit(clock, (cx, cy), TEXT_FADE)
         if date:
-            dx = (w - small.size(date)[0]) // 2
-            blit(date, (max(pad, dx), cy + main_h + gap), MUTED_FADE, use_small=True)
-        whisper_w = small.size(whisper)[0] if whisper else 0
+            blit(date, (cx, cy + main_h + gap), MUTED_FADE, use_small=True)
+        whisper_w = small.size(HUD_WHISPER_SLOT)[0] if whisper else 0
         fact_max = max(80, w - pad * 2 - (whisper_w + pad if whisper else 0))
         if fact:
             blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED_FADE, use_small=True)
         if whisper:
-            blit(whisper, (w - small.size(whisper)[0] - pad, h - pad - small_h), MUTED_FADE, use_small=True)
+            blit(whisper, (hud_anchor_right(small, HUD_WHISPER_SLOT, w - pad), h - pad - small_h), MUTED_FADE, use_small=True)
         return
 
     phase = str(scene["phase"])
@@ -1829,12 +1864,12 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         util = int(round(scene["util"]))
         vram = int(round(scene["vram"]))
         temp = int(round(scene["temp"]))
-        stats = f"GPU {util}%   VRAM {vram}%   {temp}°C"
+        stats = f"GPU {util:3d}%   VRAM {vram:3d}%   {temp:3d}°C"
     elif scene["connected"]:
         stats = ""
     else:
         stats = "api down"
-    max_left = max(80, w - pad - small.size(stats)[0] - pad) if stats else w - pad * 2
+    max_left = max(80, w - pad - small.size(HUD_STATS_SLOT)[0] - pad) if stats else w - pad * 2
 
     dest = str(scene.get("image_file") or "").strip()
     what = str(scene.get("image_what") or "").strip()
@@ -1870,9 +1905,9 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     else:
         phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
     blit(profile, (pad, pad), TEXT)
-    blit(mode, (w - small.size(mode)[0] - pad, pad + 4), ACCENT, use_small=True)
+    blit(mode, (hud_anchor_right(small, mode, w - pad), pad + 4), ACCENT, use_small=True)
     if clock:
-        blit(clock, (w - small.size(clock)[0] - pad, pad + 4 + small_h + gap), MUTED, use_small=True)
+        blit(clock, (hud_anchor_right(small, HUD_CLOCK_SLOT, w - pad), pad + 4 + small_h + gap), MUTED, use_small=True)
     extras = [line for line in (dest, what, note, tok_line, wait_line) if line]
     y = h - pad - main_h
     if extras:
@@ -1890,7 +1925,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         y += small_h + gap
     blit(phase, (pad, h - pad - main_h), phase_color)
     if stats:
-        blit(stats, (w - small.size(stats)[0] - pad, h - pad - small_h), MUTED, use_small=True)
+        blit(stats, (hud_anchor_right(small, HUD_STATS_SLOT, w - pad), h - pad - small_h), MUTED, use_small=True)
 
 
 def tty_nr(name: str) -> int:
@@ -2241,9 +2276,7 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             draw_cycle_fx(pygame, screen, scene)
             height = screen.get_size()[1]
             if height != font_h or font is None or small is None:
-                large_n, small_n = hud_font_sizes(height)
-                font = pygame.font.Font(None, large_n)
-                small = pygame.font.Font(None, small_n)
+                font, small = make_hud_fonts(pygame, height)
                 font_h = height
             draw_hud(screen, font, small, scene)
             pygame.display.flip()

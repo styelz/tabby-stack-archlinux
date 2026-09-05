@@ -47,6 +47,24 @@ class _FakeFont:
         return text
 
 
+class _PropFont:
+    """Uneven glyph widths so a recentered clock would visibly jump."""
+
+    def size(self, text: str) -> tuple[int, int]:
+        return (sum(4 if ch in "1: " else 9 for ch in text), 16)
+
+    def render(self, text: str, _aa: bool, _color: object) -> str:
+        return text
+
+
+def _last_xy(blits: list, text: str) -> tuple[int, int] | None:
+    pos = None
+    for args in blits:
+        if args and args[0] == text:
+            pos = args[1]
+    return pos
+
+
 class SaverLoopbackTests(unittest.TestCase):
     def test_loopback_peers_allowed(self):
         for host in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"):
@@ -308,6 +326,69 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertNotIn("thinking", idle_text)
         self.assertGreater(len(hot_screen.blits), 0)
         self.assertIn("thinking", hot_text)
+
+    def test_hud_clock_and_stats_keep_anchor(self):
+        font = _PropFont()
+        idle_narrow = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "profile": "qwen",
+                "busy": False,
+                "gpu": {"utilization_pct": 3, "vram_pct": 5, "temperature_c": 41},
+            },
+            True,
+        )
+        idle_wide = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "profile": "qwen",
+                "busy": False,
+                "gpu": {"utilization_pct": 99, "vram_pct": 100, "temperature_c": 99},
+            },
+            True,
+        )
+        idle_narrow["clock"] = "11:11:11"
+        idle_narrow["date"] = "Sat  5 Sep"
+        idle_wide["clock"] = "08:08:08"
+        idle_wide["date"] = "Sat 15 Sep"
+        a = _FakeScreen()
+        b = _FakeScreen()
+        self.kiosk.draw_hud(a, font, font, idle_narrow)
+        self.kiosk.draw_hud(b, font, font, idle_wide)
+        self.assertEqual(_last_xy(a.blits, "11:11:11"), _last_xy(b.blits, "08:08:08"))
+        self.assertEqual(_last_xy(a.blits, "Sat  5 Sep"), _last_xy(b.blits, "Sat 15 Sep"))
+        self.assertEqual(_last_xy(a.blits, "VRAM   5%    41°C"), _last_xy(b.blits, "VRAM 100%    99°C"))
+        hot_n = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "profile": "qwen",
+                "gpu": {"utilization_pct": 3, "vram_pct": 5, "temperature_c": 41},
+            },
+            True,
+        )
+        hot_w = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "profile": "qwen",
+                "gpu": {"utilization_pct": 99, "vram_pct": 100, "temperature_c": 99},
+            },
+            True,
+        )
+        hot_n["clock"] = "11:11:11"
+        hot_w["clock"] = "08:08:08"
+        ha = _FakeScreen()
+        hb = _FakeScreen()
+        self.kiosk.draw_hud(ha, font, font, hot_n)
+        self.kiosk.draw_hud(hb, font, font, hot_w)
+        self.assertEqual(_last_xy(ha.blits, "11:11:11"), _last_xy(hb.blits, "08:08:08"))
+        self.assertEqual(
+            _last_xy(ha.blits, "GPU   3%   VRAM   5%    41°C"),
+            _last_xy(hb.blits, "GPU  99%   VRAM 100%    99°C"),
+        )
 
     def test_idle_hud_alpha_holds_then_fades(self):
         alpha = self.kiosk.idle_hud_alpha
