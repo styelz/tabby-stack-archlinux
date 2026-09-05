@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.29"
+SCRIPT_VERSION="1.0.30"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -163,10 +163,13 @@ EOF
 }
 
 TSOS_LOG="${TSOS_LOG:-/tmp/tsos-installer.log}"
-TSOS_GAUGE_PID=""
 TSOS_WATCH_PID=""
+TSOS_WORK_PID=""
+TSOS_WORK_CHILD=0
 TSOS_GAUGE_DIR=""
 TSOS_GAUGE_FIFO=""
+TSOS_GAUGE_H=""
+TSOS_GAUGE_W=""
 TSOS_SAVED_FD=""
 TSOS_UI_ROWS=24
 TSOS_UI_COLS=80
@@ -185,6 +188,16 @@ warn() {
   printf 'warning: %s\n' "$*" >&2
 }
 die() {
+  # Inside the background work process the parent still owns the gauge.
+  # Printing to /dev/tty here is what put "error:" / percent lines on top
+  # of the leftover password box. Signal the parent and exit this child.
+  if [[ "${TSOS_WORK_CHILD:-0}" == 1 ]]; then
+    printf 'error: %s\n' "$*" >>"${TSOS_LOG:-/dev/null}"
+    if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
+      printf '%s\n' "$*" >"$TSOS_GAUGE_DIR/error"
+    fi
+    exit 1
+  fi
   if declare -F gauge_stop >/dev/null; then
     gauge_stop || true
   fi
@@ -249,35 +262,28 @@ enable_tui_if_possible() {
 }
 
 restore_tty() {
-  # Full terminal reset. stty sane alone does not clear a leftover ncurses
-  # alternate-screen or broken line discipline. The `reset` command (tset -e)
-  # reinitialises the terminal driver and redoes terminfo init, which fixes
-  # dialog gauge failures after a previous ncurses session.
-  if command -v reset >/dev/null 2>&1; then
-    reset </dev/tty >/dev/tty 2>/dev/null || true
-  else
-    {
-      command -v tput >/dev/null 2>&1 && {
-        tput rmcup || true
-        tput rmkx || true
-        tput cnorm || true
-        tput sgr0 || true
-      }
-      printf '\033[?1049l\033[?25h\033[m'
-      stty sane
-    } >/dev/tty 2>/dev/null || true
-  fi
+  # Non-interactive. Do not call `reset`/`tset`: those can print terminfo
+  # settings and wait for RETURN, which looks like the installer dropped out
+  # of the UI. RIS (\033c) clears leftover ncurses without prompting.
+  {
+    printf '\033c\033[?1049l\033[?25h\033[m'
+    command -v tput >/dev/null 2>&1 && {
+      tput rmcup || true
+      tput rmkx || true
+      tput cnorm || true
+      tput sgr0 || true
+    }
+    stty sane
+  } </dev/tty >/dev/tty 2>/dev/null || true
 }
 
-# Work phase: one dialog --gauge in the background for the whole run, fed
-# through a FIFO on fd 3. Two rules keep it on screen:
-#   * the dialog child must not inherit fd 3 (3>&-), or the FIFO never
-#     reaches EOF and gauge_stop hangs forever
-#   * every child must write to the log, never to /dev/tty, or it paints
-#     over the box
-# After the question boxes, restore the tty before this starts. Those boxes
-# run ncurses; if the gauge is launched on a half-restored terminal it dies
-# and wipe/sgdisk land on the raw console.
+# Work phase: dialog --gauge MUST run in the foreground. A background
+# --gauge cannot initialise ncurses on the Linux console (tcsetattr from a
+# background job fails with SIGTTOU/EIO). That is why previous versions
+# "broke out" of the UI: dialog died, then gauge_update painted
+# `[ 22%] Installing Arch packages` onto /dev/tty under the leftover
+# password box. The install work therefore runs in a background process;
+# the parent blocks in dialog (or a one-line bar if dialog is missing).
 ensure_work_term() {
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
@@ -422,104 +428,17 @@ watch_installer_ui() {
   done
 }
 
-# After the questions, never dump pacstrap/pip onto the raw console. Redirect
-# first; the dialog box is the view of that log. If dialog cannot start, keep
-# the redirect and paint a one-line bar on /dev/tty.
-# Background --gauge must ignore SIGTTIN/SIGTTOU: ncurses opens /dev/tty,
-# and a stopped gauge looks like the installer "dropped out" while wipe
-# continues. The subprocess opens /dev/tty afresh so ncurses sees a clean fd.
-start_gauge_dialog() {
-  local h="$1" w="$2"
-  local -a extra=()
-  [[ "${3:-}" == keep-tite ]] && extra=(--keep-tite)
-  (
-    trap '' TTIN TTOU
-    exec </dev/null
-    exec dialog --backtitle "$BACKTITLE" "${extra[@]}" \
-      --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
-      --gauge "Starting the install..." "$h" "$w" 0 \
-      <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&-
-  ) &
-  TSOS_GAUGE_PID=$!
-}
-
-gauge_dialog_running() {
-  [[ -n "${TSOS_GAUGE_PID:-}" ]] || return 1
-  kill -0 "$TSOS_GAUGE_PID" 2>/dev/null || return 1
-  local st
-  st=$(ps -o state= -p "$TSOS_GAUGE_PID" 2>/dev/null || true)
-  st=${st// /}
-  [[ "$st" != T ]]
-}
-
-gauge_start() {
-  ((USE_TUI)) || return 1
-  have_console || [[ -t 1 ]] || return 1
-  # Full terminal reset — the password dialog leaves ncurses state that
-  # prevents a background --gauge from initialising.
-  restore_tty
-  sleep 0.3
-  set +m 2>/dev/null || true
-  ensure_work_term
-  quiet_kernel_console
-  touch "$TSOS_LOG"
-  if [[ -z "${TSOS_SAVED_FD:-}" ]]; then
-    exec 4>&1 5>&2
-    TSOS_SAVED_FD=1
-    exec >>"$TSOS_LOG" 2>&1
-  fi
-  [[ "$TUI" == dialog ]] || return 0
-  clear >/dev/tty 2>/dev/null || true
-  local h w
-  h=$(gauge_height)
-  w=$(gauge_width)
-  TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
-  TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
-  mkfifo -m 600 "$TSOS_GAUGE_FIFO"
-  printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
-  printf '%s\n' "Starting the install..." >"$TSOS_GAUGE_DIR/heading"
-  # O_RDWR: opening the FIFO does not block before dialog is reading it.
-  exec 3<>"$TSOS_GAUGE_FIFO"
-  # 3>&- is load bearing. Without it dialog holds the write end open.
-  # Try plain first (restore_tty already cleaned the terminal). If that fails,
-  # retry with --keep-tite (skips smcup/rmcup entirely).
-  start_gauge_dialog "$h" "$w"
-  sleep 0.6
-  if ! gauge_dialog_running; then
-    kill -9 "$TSOS_GAUGE_PID" 2>/dev/null || true
-    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
-    restore_tty
-    sleep 0.3
-    start_gauge_dialog "$h" "$w" keep-tite
-    sleep 0.6
-  fi
-  if ! gauge_dialog_running; then
-    exec 3>&- || true
-    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
-    rm -rf "$TSOS_GAUGE_DIR"
-    TSOS_GAUGE_PID=""
-    TSOS_GAUGE_DIR=""
-    TSOS_GAUGE_FIFO=""
-    return 0
-  fi
-  watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$((h - 9))" &
-  TSOS_WATCH_PID=$!
-  return 0
-}
-
+# gauge_update writes files only. Never printf a percent line to /dev/tty
+# from the work process — that is the leak under the leftover password box.
 gauge_update() {
   local pct="$1" msg="$2"
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     printf '%s\n' "$pct" >"$TSOS_GAUGE_DIR/pct"
     printf '%s\n' "$msg" >"$TSOS_GAUGE_DIR/heading"
-  elif [[ -n "${TSOS_SAVED_FD:-}" ]]; then
-    printf '\r\033[K  [%3s%%] %s' "$pct" "$msg" >/dev/tty 2>/dev/null || true
   fi
   log "[${pct}%] $msg"
 }
 
-# Order matters: stop the watcher first, then close fd 3. Any process still
-# holding the write end keeps dialog waiting for EOF.
 gauge_stop() {
   if [[ -n "${TSOS_GAUGE_DIR:-}" ]]; then
     touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true
@@ -530,19 +449,11 @@ gauge_stop() {
     TSOS_WATCH_PID=""
   fi
   exec 3>&- || true
-  if [[ -n "${TSOS_GAUGE_PID:-}" ]]; then
-    local i=0
-    while kill -0 "$TSOS_GAUGE_PID" 2>/dev/null && ((i < 30)); do
-      sleep 0.1
-      i=$((i + 1))
-    done
-    kill "$TSOS_GAUGE_PID" 2>/dev/null || true
-    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
-    TSOS_GAUGE_PID=""
-  fi
   rm -rf "${TSOS_GAUGE_DIR:-}"
   TSOS_GAUGE_DIR=""
   TSOS_GAUGE_FIFO=""
+  TSOS_GAUGE_H=""
+  TSOS_GAUGE_W=""
   if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
     exec 1>&4 2>&5
     exec 4>&- 5>&-
@@ -553,6 +464,108 @@ gauge_stop() {
   printf '\n' >/dev/tty 2>/dev/null || true
 }
 
+# Paint a one-line bar on the console. Only the foreground parent calls this,
+# and only when dialog is not drawing the gauge.
+gauge_text_bar() {
+  local pct=0 heading="Working..."
+  [[ -f "$TSOS_GAUGE_DIR/pct" ]] && pct=$(cat "$TSOS_GAUGE_DIR/pct" 2>/dev/null || true)
+  [[ -f "$TSOS_GAUGE_DIR/heading" ]] && heading=$(cat "$TSOS_GAUGE_DIR/heading" 2>/dev/null || true)
+  [[ "$pct" =~ ^[0-9]+$ ]] || pct=0
+  printf '\r\033[K  [%3s%%] %s' "$pct" "$heading" >/dev/tty 2>/dev/null || true
+}
+
+# Run work_fn in the background. The parent blocks in dialog --gauge so
+# ncurses owns the tty. When work finishes it touches stop; the watcher
+# exits, the FIFO hits EOF, dialog returns.
+run_with_gauge() {
+  local work_fn=$1
+  local rc=0 err=""
+
+  restore_tty
+  ensure_work_term
+  quiet_kernel_console
+  touch "$TSOS_LOG"
+  if [[ -z "${TSOS_SAVED_FD:-}" ]]; then
+    exec 4>&1 5>&2
+    TSOS_SAVED_FD=1
+    exec >>"$TSOS_LOG" 2>&1
+  fi
+
+  TSOS_GAUGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tsos-ui.XXXXXX")
+  printf '%s\n' 0 >"$TSOS_GAUGE_DIR/pct"
+  printf '%s\n' "Starting the install..." >"$TSOS_GAUGE_DIR/heading"
+
+  if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && have_console && need_cmd dialog; then
+    TSOS_GAUGE_H=$(gauge_height)
+    TSOS_GAUGE_W=$(gauge_width)
+    TSOS_GAUGE_FIFO="$TSOS_GAUGE_DIR/gauge"
+    mkfifo -m 600 "$TSOS_GAUGE_FIFO"
+    exec 3<>"$TSOS_GAUGE_FIFO"
+    watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((TSOS_GAUGE_W - 6))" "$((TSOS_GAUGE_H - 9))" &
+    TSOS_WATCH_PID=$!
+  fi
+
+  (
+    exec 3>&- || true
+    TSOS_WORK_CHILD=1
+    trap 'rc=$?
+          printf "%s\n" "$rc" >"$TSOS_GAUGE_DIR/rc" 2>/dev/null || true
+          touch "$TSOS_GAUGE_DIR/stop" 2>/dev/null || true' EXIT
+    "$work_fn"
+  ) &
+  TSOS_WORK_PID=$!
+  trap '[[ -n "${TSOS_WORK_PID:-}" ]] && kill "$TSOS_WORK_PID" 2>/dev/null || true
+        gauge_stop || true
+        exit 130' INT TERM
+
+  if [[ -n "${TSOS_GAUGE_FIFO:-}" ]]; then
+    exec 3>&- || true
+    clear >/dev/tty 2>/dev/null || true
+    # --keep-tite: draw on this screen, not an alternate buffer the password
+    # box may have left behind. Foreground: ncurses can tcsetattr.
+    dialog --keep-tite --backtitle "$BACKTITLE" \
+      --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
+      --gauge "Starting the install..." "$TSOS_GAUGE_H" "$TSOS_GAUGE_W" 0 \
+      <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty || true
+  fi
+
+  # dialog returned. If work is still running (dialog died), keep a one-line
+  # bar on a cleared screen until the child finishes — never under a box.
+  if kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; then
+    clear >/dev/tty 2>/dev/null || true
+    while kill -0 "$TSOS_WORK_PID" 2>/dev/null && [[ ! -f "$TSOS_GAUGE_DIR/stop" ]]; do
+      gauge_text_bar
+      sleep 0.5
+    done
+    printf '\n' >/dev/tty 2>/dev/null || true
+  fi
+
+  wait "$TSOS_WORK_PID" || true
+  TSOS_WORK_PID=""
+  trap - INT TERM
+  rc=1
+  if [[ -f "$TSOS_GAUGE_DIR/rc" ]]; then
+    rc=$(tr -dc '0-9' <"$TSOS_GAUGE_DIR/rc" 2>/dev/null || true)
+  fi
+  [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
+  if [[ -f "$TSOS_GAUGE_DIR/error" ]]; then
+    err=$(cat "$TSOS_GAUGE_DIR/error" 2>/dev/null || true)
+  fi
+  gauge_stop
+
+  if [[ "$rc" != 0 ]]; then
+    if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && have_console; then
+      dialog_tty --backtitle "$BACKTITLE" --title "Install failed" \
+        --msgbox "${err:-The install stopped (exit ${rc}).}
+
+Full log:
+  ${TSOS_LOG}" 16 70 || true
+    fi
+    printf 'error: %s\n' "${err:-exit ${rc}}" >&2
+    exit "$rc"
+  fi
+}
+
 ui_cancel() {
   die "Installer cancelled."
 }
@@ -561,8 +574,7 @@ ui_cancel() {
 # The widget must go to /dev/tty (not a pipe). --stdout is not an option: it
 # needs /dev/tty too and fails in some chroots.
 # Sets DIALOG_OUT. Do not wrap this in $( ): that runs ncurses in a subshell
-# and leaves the tty unrestored, so the later background gauge dies and
-# wipe/partition paint on the raw console.
+# and leaves the tty unrestored.
 dialog_read() {
   local tmp rc
   DIALOG_OUT=""
@@ -777,7 +789,7 @@ ui_yesno() {
 }
 
 # Sets REPLY. Call this in the current shell (not $(ui_password)): capturing
-# stdout runs the password box in a subshell and the next --gauge dies.
+# stdout runs the password box in a subshell and leaves the tty unrestored.
 ui_password() {
   local title="$1"
   local text="$2"
@@ -1924,6 +1936,25 @@ self_test() {
     printf 'FAIL omarchy mode: now/skip only\n' >&2
     failed=1
   fi
+
+  # The percent meter must never be printed by gauge_update (that was the
+  # leak under the leftover password box). It writes files; the foreground
+  # dialog paints them.
+  local gdir gout saved_log
+  gdir=$(mktemp -d "${TMPDIR:-/tmp}/tsos-gauge-test.XXXXXX")
+  saved_log=$TSOS_LOG
+  TSOS_GAUGE_DIR=$gdir
+  TSOS_SAVED_FD=1
+  TSOS_LOG="$gdir/log"
+  : >"$TSOS_LOG"
+  gout=$(gauge_update 22 "Installing Arch packages" 2>&1)
+  check "$gout" "" "gauge_update silent on stdout"
+  check "$(cat "$gdir/pct")" "22" "gauge pct file"
+  check "$(cat "$gdir/heading")" "Installing Arch packages" "gauge heading file"
+  TSOS_GAUGE_DIR=""
+  TSOS_SAVED_FD=""
+  TSOS_LOG=$saved_log
+  rm -rf "$gdir"
 
   if ((failed)); then
     die "self-test failed"
@@ -3435,6 +3466,16 @@ load_existing_tsos_conf() {
 }
 
 # Finish install.sh after a chroot failure. /mnt must still be the new system.
+resume_tabby_work() {
+  gauge_update 40 "Resuming tabby-stack"
+  run_tabby_install_chroot
+  if [[ "$OMARCHY_MODE" == "now" ]]; then
+    gauge_update 96 "Installing Omarchy"
+  fi
+  install_omarchy_chroot
+  cleanup
+}
+
 resume_tabby_install() {
   [[ -f "$TARGET/etc/arch-release" ]] || \
     die "$TARGET is not an Arch install. Leave the new system mounted at $TARGET (do not reboot off the ISO)."
@@ -3449,17 +3490,35 @@ resume_tabby_install() {
     die "missing $stack_home/install.sh under $TARGET"
   write_nopasswd_sudoers "$TARGET"
   refresh_tabby_stack_in_target
-  gauge_start || true
-  gauge_update 40 "Resuming tabby-stack"
+  run_with_gauge resume_tabby_work
+  final_message
+  offer_reboot
+}
+
+install_os_work() {
+  log "Starting the install..."
+  gauge_update 2 "Preparing disk"
+  preflight
+  disable_live_mkinitcpio_hooks
+  timedatectl set-ntp true || true
+  preserve_tabby_cache
+  gauge_update 8 "Wiping and partitioning"
+  wipe_and_partition
+  gauge_update 15 "Formatting and mounting"
+  setup_storage
+  gauge_update 22 "Installing Arch packages"
+  install_base
+  gauge_update 38 "Configuring the new system"
+  write_chroot_files
+  configure_chroot
+  write_tabby_bootstrap
   run_tabby_install_chroot
   if [[ "$OMARCHY_MODE" == "now" ]]; then
     gauge_update 96 "Installing Omarchy"
   fi
   install_omarchy_chroot
+  gauge_update 98 "Cleaning up"
   cleanup
-  gauge_stop
-  final_message
-  offer_reboot
 }
 
 main() {
@@ -3499,33 +3558,7 @@ main() {
   fi
   confirm_wipe
   collect_passwords
-  gauge_start || true
-  log "Starting the install..."
-  gauge_update 2 "Preparing disk"
-  preflight
-  disable_live_mkinitcpio_hooks
-  timedatectl set-ntp true || true
-  preserve_tabby_cache
-  gauge_update 8 "Wiping and partitioning"
-  wipe_and_partition
-  gauge_update 15 "Formatting and mounting"
-  setup_storage
-  gauge_update 22 "Installing Arch packages"
-  install_base
-  gauge_update 38 "Configuring the new system"
-  write_chroot_files
-  configure_chroot
-  write_tabby_bootstrap
-  run_tabby_install_chroot
-  if [[ "$OMARCHY_MODE" == "now" ]]; then
-    gauge_update 96 "Installing Omarchy"
-  fi
-  install_omarchy_chroot
-  if [[ -n "${TSOS_SAVED_FD:-}" ]]; then
-    gauge_update 98 "Cleaning up"
-  fi
-  cleanup
-  gauge_stop
+  run_with_gauge install_os_work
   final_message
   offer_reboot
 }
