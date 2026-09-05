@@ -2,6 +2,12 @@
 
 A self-hosted coding assistant, web workspace, and image generator for an Arch Linux machine with an NVIDIA GPU.
 
+From the official Arch live ISO, the **tsos installer** (`tsos-installer.sh`) asks for disk, user, optional Omarchy, weights cache, model set, and API URLs, then installs Arch and this stack in one pass:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
+```
+
 Use it from Cursor, VS Code, Continue, Cline, another OpenAI-compatible client, or the built-in browser IDE. Editors keep their own tools and files. The browser Code tab is a self-contained IDE on this host that uses the same Chat Completions API. Prompts, project files, and generated images stay on hardware you control.
 
 ## What you get
@@ -28,7 +34,13 @@ flowchart LR
 
 ## Install
 
-Requirements: Arch Linux, an NVIDIA GPU, internet access, and enough disk space for the selected model set. Run the installer as your normal user, not as root.
+**Fresh machine:** boot the official Arch live ISO and run the tsos installer. It does not reboot until Arch and `install.sh` finish. After reboot, linger starts the API.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/styelz/tabby-stack-archlinux/main/tsos-installer.sh | bash
+```
+
+**Already-installed Arch:** NVIDIA GPU, internet, and enough disk for the selected model set. Run as your normal user, not as root.
 
 ```bash
 sudo pacman -S --needed git

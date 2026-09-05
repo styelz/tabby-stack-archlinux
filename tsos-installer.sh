@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.26"
+SCRIPT_VERSION="1.0.27"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -252,6 +252,9 @@ restore_tty() {
 #     reaches EOF and gauge_stop hangs forever
 #   * every child must write to the log, never to /dev/tty, or it paints
 #     over the box
+# After the question boxes, restore the tty before this starts. Those boxes
+# run ncurses; if the gauge is launched on a half-restored terminal it dies
+# and wipe/sgdisk land on the raw console.
 ensure_work_term() {
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
@@ -399,9 +402,38 @@ watch_installer_ui() {
 # After the questions, never dump pacstrap/pip onto the raw console. Redirect
 # first; the dialog box is the view of that log. If dialog cannot start, keep
 # the redirect and paint a one-line bar on /dev/tty.
+# Background --gauge must ignore SIGTTIN/SIGTTOU: ncurses opens /dev/tty,
+# and a stopped gauge looks like the installer "dropped out" while wipe
+# continues. --keep-tite draws on the visible screen so a leftover rmcup
+# from the password box cannot hide the bar on the alternate buffer.
+start_gauge_dialog() {
+  local h="$1" w="$2"
+  local -a extra=()
+  [[ "${3:-}" == keep-tite ]] && extra=(--keep-tite)
+  (
+    trap '' TTIN TTOU
+    exec dialog --backtitle "$BACKTITLE" "${extra[@]}" \
+      --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
+      --gauge "Starting the install..." "$h" "$w" 0 \
+      <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&-
+  ) &
+  TSOS_GAUGE_PID=$!
+}
+
+gauge_dialog_running() {
+  [[ -n "${TSOS_GAUGE_PID:-}" ]] || return 1
+  kill -0 "$TSOS_GAUGE_PID" 2>/dev/null || return 1
+  local st
+  st=$(ps -o state= -p "$TSOS_GAUGE_PID" 2>/dev/null || true)
+  st=${st// /}
+  [[ "$st" != T ]]
+}
+
 gauge_start() {
   ((USE_TUI)) || return 1
   have_console || [[ -t 1 ]] || return 1
+  restore_tty
+  set +m 2>/dev/null || true
   ensure_work_term
   quiet_kernel_console
   touch "$TSOS_LOG"
@@ -423,12 +455,16 @@ gauge_start() {
   # O_RDWR: opening the FIFO does not block before dialog is reading it.
   exec 3<>"$TSOS_GAUGE_FIFO"
   # 3>&- is load bearing. Without it dialog holds the write end open.
-  dialog --backtitle "$BACKTITLE" --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
-    --gauge "Starting the install..." "$h" "$w" 0 \
-    <"$TSOS_GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
-  TSOS_GAUGE_PID=$!
+  start_gauge_dialog "$h" "$w" keep-tite
   sleep 0.4
-  if ! kill -0 "$TSOS_GAUGE_PID" 2>/dev/null; then
+  if ! gauge_dialog_running; then
+    kill -9 "$TSOS_GAUGE_PID" 2>/dev/null || true
+    wait "$TSOS_GAUGE_PID" 2>/dev/null || true
+    restore_tty
+    start_gauge_dialog "$h" "$w"
+    sleep 0.4
+  fi
+  if ! gauge_dialog_running; then
     exec 3>&- || true
     wait "$TSOS_GAUGE_PID" 2>/dev/null || true
     rm -rf "$TSOS_GAUGE_DIR"
@@ -493,12 +529,14 @@ ui_cancel() {
 }
 
 # dialog draws the widget on stdout and returns the typed value on stderr.
-# Callers use $(dialog_read ...), so stdout here is a capture pipe: the widget
-# has to go to /dev/tty or nothing is drawn and the console just sits there
-# waiting for a keypress. --stdout is not an option: it needs /dev/tty too and
-# fails in some chroots.
+# The widget must go to /dev/tty (not a pipe). --stdout is not an option: it
+# needs /dev/tty too and fails in some chroots.
+# Sets DIALOG_OUT. Do not wrap this in $( ): that runs ncurses in a subshell
+# and leaves the tty unrestored, so the later background gauge dies and
+# wipe/partition paint on the raw console.
 dialog_read() {
   local tmp rc
+  DIALOG_OUT=""
   tmp=$(mktemp "${TMPDIR:-/tmp}/tsos-dialog.XXXXXX") || return 1
   set +e
   if [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
@@ -518,7 +556,7 @@ dialog_read() {
     rm -f "$tmp"
     return "$rc"
   fi
-  cat "$tmp"
+  IFS= read -r DIALOG_OUT <"$tmp" || true
   rm -f "$tmp"
   return 0
 }
@@ -566,7 +604,8 @@ ui_input() {
   text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
   height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default")" || ui_cancel
+    dialog_read --title "$title" --inputbox "$text" "$height" "$width" "$default" || ui_cancel
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox "$text" "$height" "$width" "$default" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -596,7 +635,8 @@ ui_menu() {
   height=$(($(text_rows "$text" "$width") + list + 7))
   ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@")" || ui_cancel
+    dialog_read --title "$title" --menu "$text" "$height" "$width" "$list" "$@" || ui_cancel
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --menu "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -644,7 +684,8 @@ ui_checklist() {
   height=$(($(text_rows "$text" "$width") + list + 7))
   ((height > max)) && height=$max
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@")" || ui_cancel
+    dialog_read --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" || ui_cancel
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --checklist "$text" "$height" "$width" "$list" "$@" 3>&1 1>&2 2>&3)" || ui_cancel
   else
@@ -706,22 +747,26 @@ ui_yesno() {
   fi
 }
 
+# Sets REPLY. Call this in the current shell (not $(ui_password)): capturing
+# stdout runs the password box in a subshell and the next --gauge dies.
 ui_password() {
   local title="$1"
   local text="$2"
   local out=""
   local width height
+  REPLY=""
   width=$(box_width)
   text=$(fit_text "$text" "$width" "$(($(box_rows_max) - 7))")
   height=$(($(text_rows "$text" "$width") + 7))
   if [[ "$USE_TUI" -eq 1 && "$TUI" == dialog ]]; then
-    out="$(dialog_read --title "$title" --insecure --passwordbox "$text" "$height" "$width")" || ui_cancel
+    dialog_read --title "$title" --insecure --passwordbox "$text" "$height" "$width" || ui_cancel
+    out=$DIALOG_OUT
   elif [[ "$USE_TUI" -eq 1 && "$TUI" == whiptail ]]; then
     out="$(whiptail --backtitle "$BACKTITLE" --title "$title" --passwordbox "$text" "$height" "$width" 3>&1 1>&2 2>&3)" || ui_cancel
   else
     out=$(read_secret "$title: ")
   fi
-  printf '%s' "$out"
+  REPLY=$out
 }
 
 ui_ask_until() {
@@ -1938,8 +1983,10 @@ collect_passwords() {
     local first second
     if ((USE_TUI)); then
       while true; do
-        first=$(ui_password "Password" "$pw_text")
-        second=$(ui_password "Confirm password" "Type the same password again.")
+        ui_password "Password" "$pw_text"
+        first=$REPLY
+        ui_password "Confirm password" "Type the same password again."
+        second=$REPLY
         if [[ -z "$first" ]]; then
           ui_msg "Password required" "The password cannot be empty."
           continue
@@ -2148,8 +2195,8 @@ setup_storage() {
   if ((ENCRYPT)); then
     log "Creating LUKS on $DATA_PART"
     wipefs -af "$DATA_PART" || true
-    printf '%s' "$LUKS_PASSWORD" | cryptsetup luksFormat --batch-mode --type luks2 --iter-time 2000 --key-file=- "$DATA_PART"
-    printf '%s' "$LUKS_PASSWORD" | cryptsetup open --key-file=- "$DATA_PART" "$CRYPT_NAME"
+    printf '%s' "$LUKS_PASSWORD" | cryptsetup luksFormat --batch-mode -q --type luks2 --iter-time 2000 --key-file=- "$DATA_PART"
+    printf '%s' "$LUKS_PASSWORD" | cryptsetup open -q --key-file=- "$DATA_PART" "$CRYPT_NAME"
     mapper="/dev/mapper/$CRYPT_NAME"
   else
     log "Formatting btrfs on $DATA_PART (no LUKS)"
