@@ -1036,6 +1036,18 @@ def page_references_dests(username: str, chat_id: str, dests: list[str]) -> bool
     return all(_path_mentioned(blob, dest) for dest in wanted)
 
 
+def unreferenced_dests(username: str, chat_id: str, dests: list[str]) -> list[str]:
+    """Planned dests that HTML/CSS/JS do not name yet."""
+    wanted = [str(dest or "").strip() for dest in dests or []]
+    wanted = [dest for dest in wanted if dest]
+    if not wanted or not username or not chat_id:
+        return wanted
+    blob = _project_blob(username, chat_id)
+    if not blob.strip():
+        return wanted
+    return [dest for dest in wanted if not _path_mentioned(blob, dest)]
+
+
 _HERO_ALIAS_STEMS = frozenset(
     {"header", "hero", "banner", "hero-background", "hero_background"}
 )

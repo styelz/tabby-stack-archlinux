@@ -83,6 +83,9 @@ _CREATE_SITE_RE = re.compile(
 )
 _PAGE_LOGO_RE = re.compile(r"(?is)\b(?:a\s+)?logo\b")
 _PAGE_HERO_RE = re.compile(r"(?is)\b(?:header|hero)\s+(?:photo|image|picture)s?\b")
+_PAGE_WIRE_RE = re.compile(
+    r"(?is)\b(?:opaci|opaque|blend|on (?:each |the )?(?:home page|panels?|cards?|sections?))\b"
+)
 _NAMED_HTML_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9._/-])((?:[A-Za-z0-9._/-]+/)?[A-Za-z0-9._-]+\.html?)\b"
 )
@@ -666,6 +669,12 @@ def _dests_already_on_page(
         return False
 
 
+def _ask_needs_page_wire(data: ChatCompletionRequest) -> bool:
+    from common.phrase_switch import last_user_text
+
+    return bool(_PAGE_WIRE_RE.search(last_user_text(data) or ""))
+
+
 def _missing_requested_pages(
     owner: str | None, chat_id: str | None, data
 ) -> list[str]:
@@ -765,6 +774,34 @@ def _inject_missing_page_files(data: ChatCompletionRequest, job) -> None:
     )
 
 
+def _inject_unwired_dests(data: ChatCompletionRequest, job) -> None:
+    owner = str(getattr(job, "owner", "") or "")
+    chat_id = str(getattr(job, "chat_id", "") or "")
+    dests = [
+        str(row.get("output_path") or "").strip()
+        for row in _job_plan_items(job)
+        if str(row.get("output_path") or "").strip()
+    ]
+    if not dests or not owner or not chat_id:
+        return
+    try:
+        from ui.workspace import unreferenced_dests
+
+        missing = unreferenced_dests(owner, chat_id, dests)
+    except Exception:
+        missing = dests
+    if not missing:
+        return
+    listed = ", ".join(f"`{path}`" for path in missing)
+    _append_user_facts(
+        data,
+        "These image dests are not used on the page yet: "
+        f"{listed}. Update the existing HTML/CSS now (img src or CSS url(), "
+        "including opacity/size they asked for) with Write or StrReplace. "
+        "Do not stop for pictures until the page references them.",
+    )
+
+
 def _keep_writing_page(code_response, job, data=None) -> bool:
     if int(getattr(job, "code_turns", 0) or 0) >= MAX_CODE_TURNS:
         return False
@@ -772,20 +809,21 @@ def _keep_writing_page(code_response, job, data=None) -> bool:
     owner = str(getattr(job, "owner", "") or "")
     chat_id = str(getattr(job, "chat_id", "") or "")
     missing_html = _missing_requested_pages(owner, chat_id, data) if data is not None else []
+    unwired = not _dests_already_on_page(owner, chat_id, _job_plan_items(job))
     if not code_response:
         return False
     message = _assistant_message(code_response)
     if not _file_write_pairs(message):
-        return False
+        return bool(unwired and _tool_call_pairs(message))
     pages = _page_write_paths(message)
     if not pages:
-        return not _workspace_has_page_files(job)
+        return not _workspace_has_page_files(job) or unwired
     written = list(getattr(job, "written_pages", None) or [])
     new_pages = [path for path in pages if path not in written]
     if new_pages:
         job.written_pages = written + new_pages
         return True
-    return bool(missing_css or missing_html)
+    return bool(missing_css or missing_html or unwired)
 
 
 async def _write_page_then_maybe_launch(data, job, disconnect_handler):
@@ -813,21 +851,22 @@ async def _write_page_then_maybe_launch(data, job, disconnect_handler):
             code_response = extra
         if _keep_writing_page(code_response, job, data):
             return code_response, False
+    if not _dests_already_on_page(owner, chat_id, _job_plan_items(job)) and can_retry:
+        _inject_unwired_dests(data, job)
+        extra = await _write_site_code(data, disconnect_handler)
+        if extra is not None:
+            code_response = extra
+        if _keep_writing_page(code_response, job, data):
+            return code_response, False
+        message = _assistant_message(code_response)
+        if _tool_call_pairs(message):
+            return code_response, False
     return code_response, True
 
 
 def _first_code_pass_holds_llm(code_response, *, page_ready: bool = False) -> bool:
-    """Hold Comfy for page writes. Skip only when dests are already on the page."""
-    if not code_response:
-        return False
-    message = _assistant_message(code_response)
-    if message is None:
-        return False
-    if _file_write_pairs(message):
-        return not page_ready
-    if page_ready:
-        return False
-    return bool(str(getattr(message, "content", None) or "").strip())
+    """Hold Comfy for page tools. Skip only for a pure dest replace."""
+    return not page_ready
 
 
 def _tool_call_pairs(message) -> list[tuple[str, dict]]:
@@ -1593,7 +1632,8 @@ async def handle(
                 keep = _first_code_pass_holds_llm(
                     code_response,
                     page_ready=_dests_already_on_page(owner, chat_id, plan.items)
-                    and _explicit_new_rasters(data),
+                    and _explicit_new_rasters(data)
+                    and not _ask_needs_page_wire(data),
                 )
                 started = await _start_mixed_job(
                     plan.items,
