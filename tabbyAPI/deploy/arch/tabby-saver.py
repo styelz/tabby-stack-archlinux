@@ -1719,35 +1719,12 @@ def draw_field(
 HUD_CLOCK_SLOT = "00:00:00"
 HUD_WHISPER_SLOT = "VRAM 100%   100°C"
 HUD_STATS_SLOT = "GPU 100%   VRAM 100%   100°C"
-_HUD_MONO_PATHS = (
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-)
 
 
 def hud_font_sizes(height: int) -> tuple[int, int]:
     """pygame.Font sizes. 64/48 at 1080p, not smaller than 48/36."""
     h = max(1, int(height or 0))
     return max(48, round(h * 64 / 1080)), max(36, round(h * 48 / 1080))
-
-
-def hud_mono_path() -> str | None:
-    for path in _HUD_MONO_PATHS:
-        if os.path.isfile(path):
-            return path
-    return None
-
-
-def make_hud_fonts(pygame_mod: Any, height: int) -> tuple[Any, Any]:
-    """Monospace HUD so digit width does not shift the block."""
-    large_n, small_n = hud_font_sizes(height)
-    path = hud_mono_path()
-    if path:
-        return pygame_mod.font.Font(path, large_n), pygame_mod.font.Font(path, small_n)
-    return pygame_mod.font.Font(None, large_n), pygame_mod.font.Font(None, small_n)
 
 
 def hud_anchor_center(face: Any, template: str, width: int, pad: int) -> int:
@@ -2276,7 +2253,9 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             draw_cycle_fx(pygame, screen, scene)
             height = screen.get_size()[1]
             if height != font_h or font is None or small is None:
-                font, small = make_hud_fonts(pygame, height)
+                large_n, small_n = hud_font_sizes(height)
+                font = pygame.font.Font(None, large_n)
+                small = pygame.font.Font(None, small_n)
                 font_h = height
             draw_hud(screen, font, small, scene)
             pygame.display.flip()
