@@ -776,6 +776,20 @@ async def _chat_stream_collector(
                     )
 
                 if streaming_mode:
+                    # A chunk can span the end of the reasoning phase (merged
+                    # generator results). Emit the reasoning tail as its own
+                    # frame so no SSE frame carries both reasoning_content and
+                    # content: clients treat the first content delta as the
+                    # phase transition.
+                    if mc.reasoning and delta_reasoning and delta_content:
+                        reasoning_frame = dict(generation)
+                        reasoning_frame["delta_reasoning_content"] = delta_reasoning
+                        reasoning_frame["delta_content"] = ""
+                        reasoning_frame["delta_tool_calls"] = ""
+                        reasoning_frame["finish_reason"] = None
+                        await gen_queue.put(reasoning_frame)
+                        delta_reasoning = ""
+
                     if delta_content:
                         if len(collected_logprobs):
                             generation["logprob_response"] = ChatCompletionLogprobs(

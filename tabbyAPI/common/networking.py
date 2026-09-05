@@ -117,37 +117,86 @@ class DisconnectHandler:
         self.cleanup_tasks = {}
         self.description = description
 
+        # A background task owns the request's receive channel and flags a
+        # disconnect as soon as it arrives, so poll() becomes a plain flag
+        # check that never suspends the caller or yields to the generator.
+        #
+        # Only a real Starlette request exposes receive(): nested generate()
+        # (mixed dest extract) passes no request, and console flights pass the
+        # is_disconnected() stand-in from generation_request(). Those keep the
+        # abort_event path so occupancy can still cancel them.
+        self._watcher = None
+        if request is not None and callable(getattr(request, "receive", None)):
+            try:
+                self._watcher = asyncio.create_task(self._watch())
+            except RuntimeError:
+                # No running loop (constructed outside async context); fall
+                # back to polling is_disconnected() in poll().
+                self._watcher = None
+
+    async def _watch(self):
+        """Wait for the client to disconnect and flag it."""
+
+        try:
+            # The request body is already consumed, so the only messages left
+            # are stray http.request events (ignored) and the eventual
+            # http.disconnect. Uvicorn also sends http.disconnect once the
+            # response completes, so this task always terminates on its own
+            # even if cleanup() is never called.
+            while True:
+                message = await self.request.receive()
+                if message["type"] == "http.disconnect":
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Disconnect watcher for {self.description} stopped: {exc}")
+            return
+
+        self.disconnected = True
+        self.abort_event.set()
+
     async def poll(self):
         """
-        Poll the request status a maximum of 20 times per second. Once request is disconnected
-        runs scheduled cleanup tasks and raises asyncio.CancelledError. Caller is responsible for
-        forwarding the error back to the endpoint function. The endpoint fn should call poll() at
-        least once before returning a non-canceled response
+        Check whether the request has disconnected. Once disconnected (or the
+        abort_event is set), runs scheduled cleanup tasks and raises
+        asyncio.CancelledError. Caller is responsible for forwarding the error
+        back to the endpoint function. The endpoint fn should call poll() at
+        least once before returning a non-canceled response.
 
-        Nested generate() (mixed dest extract) has no Starlette Request. Then
-        poll only cancels if abort_event is set.
+        With a background watcher this does not suspend the caller. Otherwise
+        (nested generate() or the console-flight stand-in) it polls
+        is_disconnected() at most 20 times per second and honors abort_event.
         """
 
-        now = time.time()
-        if now < self.last_poll + 0.05:
+        if self._watcher is not None:
+            triggered = self.disconnected or self.abort_event.is_set()
+        else:
+            now = time.time()
+            if now < self.last_poll + 0.05:
+                return
+            self.last_poll = now
+
+            http_gone = False
+            if self.request is not None and callable(
+                getattr(self.request, "is_disconnected", None)
+            ):
+                http_gone = await self.request.is_disconnected()
+
+            triggered = http_gone or self.abort_event.is_set()
+
+        if not triggered:
             return
-        self.last_poll = now
 
-        http_gone = False
-        if self.request is not None:
-            http_gone = await self.request.is_disconnected()
+        self.abort_event.set()
 
-        if http_gone or self.abort_event.is_set():
-            if self.abort_event is not None:
-                self.abort_event.set()
+        await self.cleanup()
 
-            await self.cleanup()
+        if not self.disconnected:
+            xlogger.error(f"Request disconnected: {self.description}")
+            self.disconnected = True
 
-            if not self.disconnected:
-                xlogger.error(f"Request disconnected: {self.description}")
-                self.disconnected = True
-
-            raise asyncio.CancelledError(f"Request disconnected: {self.description}")
+        raise asyncio.CancelledError(f"Request disconnected: {self.description}")
 
     async def add_cleanup_task(self, key, func, args):
         # Intentionally strict
@@ -160,6 +209,8 @@ class DisconnectHandler:
 
     # Safe to call redundantly, each cleanup task must be called exactly once
     async def cleanup(self):
+        if self._watcher is not None:
+            self._watcher.cancel()
         for func, args in self.cleanup_tasks.values():
             await func(*args)
         self.cleanup_tasks = {}

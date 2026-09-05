@@ -110,8 +110,13 @@ class ModelLoadRequest(BaseModel):
     )
     chunk_size: Optional[int] = None
     output_chunking: Optional[bool] = True
+    cpu_moe_offload_layers: Optional[int] = None
+    cpu_moe_split_experts: Optional[int] = None
+    cpu_moe_threads: Optional[int] = None
+    ngram_ram: Optional[bool] = None
     prompt_template: Optional[str] = None
     vision: Optional[bool] = None
+    vision_offload: Optional[bool] = None
     tool_format: Optional[str] = None
     template_vars_force: Optional[dict] = None
     template_vars_default: Optional[dict] = None

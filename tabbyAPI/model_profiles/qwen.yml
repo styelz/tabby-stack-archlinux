@@ -8,6 +8,7 @@ model:
   max_batch_size: 1
   autosplit_reserve: [384]
   vision: true
+  vision_offload: true
   template_vars_default: {}
   template_vars_force:
     enable_thinking: true

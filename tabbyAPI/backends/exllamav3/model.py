@@ -180,7 +180,7 @@ class ExllamaV3Container:
         self = cls()
 
         # Make sure ExllamaV3 is up to date
-        check_package_version("exllamav3", "1.4.1")
+        check_package_version("exllamav3", "1.4.6")
 
         self.model_dir = model_directory
         self.hf_model = hf_model
@@ -191,12 +191,44 @@ class ExllamaV3Container:
         # Set CPU offload layers
         self.config.infer_params.moe_cpu_offload = unwrap(kwargs.get("cpu_moe_offload_layers"), 0)
 
+        # Per-layer expert split: the tail N routed experts of every eligible
+        # MoE layer run on the CPU, with dynamic placement keeping hot experts
+        # in VRAM
+        cpu_moe_split_experts = unwrap(kwargs.get("cpu_moe_split_experts"), 0)
+        if cpu_moe_split_experts:
+            if self.config.infer_params.moe_cpu_offload:
+                raise ValueError(
+                    "cpu_moe_split_experts and cpu_moe_offload_layers are "
+                    "mutually exclusive: the split offloads part of every MoE "
+                    "layer instead of whole layers."
+                )
+            if unwrap(kwargs.get("tensor_parallel"), False):
+                raise ValueError("cpu_moe_split_experts is not supported with tensor parallelism.")
+            self.config.infer_params.moe_cpu_split = cpu_moe_split_experts
+
+        # Worker thread count for both CPU MoE modes; None defers to the
+        # EXL3_MOE_CPU_THREADS env variable, then half the CPU core count
+        cpu_moe_threads = kwargs.get("cpu_moe_threads")
+        if cpu_moe_threads is not None:
+            self.config.infer_params.moe_cpu_threads = cpu_moe_threads
+
+        # Load an n-gram embedding table (PLE models) fully into system RAM
+        # instead of streaming rows from disk per forward. Must be set before
+        # the model weights are loaded
+        if unwrap(kwargs.get("ngram_ram"), False):
+            self.config.infer_params.ngram_stream_from_disk = False
+            xlogger.info("Loading n-gram embeddings into system RAM (ngram_ram).")
+
         # Prepare vision model if requested in config
         self.vision_model = None
         self.use_vision = kwargs.get("vision", False)
+        # Must be set before the vision component is loaded
+        self.config.infer_params.vision_pinned = unwrap(kwargs.get("vision_offload"), False)
         if self.use_vision:
             if "vision" in self.config.model_classes:
                 self.vision_model = Model.from_config(self.config, component="vision")
+                if self.config.infer_params.vision_pinned:
+                    xlogger.info("Keeping vision model weights in system RAM (vision_offload).")
             else:
                 xlogger.warning(
                     "The provided model does not have vision capabilities that are "
@@ -538,6 +570,24 @@ class ExllamaV3Container:
             chunk_size = rounded_chunk_size
 
         return chunk_size
+
+    def job_max_rq_tokens(self, max_tokens: int) -> Optional[int]:
+        """
+        Output chunk size for a job, or None to allocate the whole completion up front.
+
+        ExLlamaV3 reserves cache pages for prompt + max_rq_tokens per round, aligned up
+        to a page (or recurrent checkpoint) boundary, regardless of max_new_tokens. A
+        completion that fits inside a single chunk never requeues, so chunking it would
+        only over-reserve pages and reduce concurrency. Reserve exactly what it needs.
+        """
+
+        if self.max_rq_tokens is None or max_tokens <= 0:
+            return self.max_rq_tokens
+
+        if max_tokens <= self.max_rq_tokens:
+            return None
+
+        return self.max_rq_tokens
 
     def create_cache(self, raw_cache_mode: str, model: Model):
         # Cast exl2 types to exl3
@@ -909,6 +959,10 @@ class ExllamaV3Container:
                 embeddings=mm_embeddings,
             )
         )
+        max_tokens = unwrap(params.max_tokens, 0)
+        if max_tokens <= 0:
+            max_tokens = self.max_seq_len - context_len - 1
+
         generator = self.generator.generator
         allocation_boundary = (
             generator.recurrent_checkpoint_interval
@@ -918,9 +972,9 @@ class ExllamaV3Container:
         validate_context_requirements(
             context_len,
             self.max_seq_len,
-            unwrap(params.max_tokens, 0),
+            max_tokens,
             self.cache.max_num_tokens,
-            self.max_rq_tokens,
+            self.job_max_rq_tokens(max_tokens),
             allocation_boundary,
         )
 
@@ -1356,6 +1410,7 @@ class ExllamaV3Container:
             max_tokens = self.max_seq_len - context_len - 1
 
         # Validate the initial job before the generator's page-allocation assertion
+        max_rq_tokens = self.job_max_rq_tokens(max_tokens)
         generator = self.generator.generator
         allocation_boundary = (
             generator.recurrent_checkpoint_interval
@@ -1367,7 +1422,7 @@ class ExllamaV3Container:
             self.max_seq_len,
             max_tokens,
             self.cache.max_num_tokens,
-            self.max_rq_tokens,
+            max_rq_tokens,
             allocation_boundary,
         )
 
@@ -1417,7 +1472,7 @@ class ExllamaV3Container:
             embeddings=mm_embeddings_content,
             return_top_tokens=params.top_logprobs,
             return_probs=bool(params.logprobs) or bool(params.top_logprobs),
-            max_rq_tokens=self.max_rq_tokens,
+            max_rq_tokens=max_rq_tokens,
             stop_on_loop=params.get_stop_on_loop(),
             filters=grammar_handler.filters,
         )
@@ -1462,7 +1517,9 @@ class ExllamaV3Container:
 
                 chunk = unwrap(result.get("text"), "")
                 if chunk:
-                    chunk_tokens = result.get("token_ids", self.tokenizer.encode(chunk))
+                    chunk_tokens = result.get("token_ids")
+                    if chunk_tokens is None:
+                        chunk_tokens = self.tokenizer.encode(chunk)
                     full_response += chunk
 
                     # Extract token IDs as a plain list for downstream consumers
