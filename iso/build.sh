@@ -20,7 +20,9 @@ need() { command -v "$1" >/dev/null || { echo "missing command: $1" >&2; exit 1;
   exit 1
 }
 
-pacman -Sy --noconfirm --needed archiso git python curl rsync docker xorriso squashfs-tools
+pacman -Sy --noconfirm --needed \
+  archiso git python curl rsync docker xorriso squashfs-tools \
+  base-devel openssl zlib xz tk readline sqlite bzip2 ncurses gdbm libffi
 for cmd in mkarchiso repo-add git curl rsync xorriso unsquashfs; do need "$cmd"; done
 
 rm -rf "$WORK"
