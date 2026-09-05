@@ -886,23 +886,85 @@ def draw_cycle_fx(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
             pygame_mod.draw.circle(screen, _mix(BG, color, 0.18), (cx, cy), inner, 1)
 
 
-# Idle-only: faint geometric outlines on staggered cadences.
-# At idle speed ~0.36 that is roughly 25–55s between appearances, ~6s visible.
-_SLEEP_ACTORS = (
-    ("diamond", 8.6, 0.15, 0.20, 0.42, 1.00),
-    ("zzz", 11.4, 0.62, 0.72, 0.30, 0.85),
-    ("hex", 14.1, 0.33, 0.58, 0.66, 0.92),
-    ("ring", 17.5, 0.08, 0.84, 0.20, 1.10),
-    ("tri", 9.8, 0.81, 0.38, 0.76, 0.88),
-    ("diamond", 19.2, 0.47, 0.12, 0.58, 0.78),
+# Idle-only: faint light in the field, not clip-art on top of it.
+# Slots are only a cadence. Kind, place, and tint are hashed per appearance.
+# At idle speed ~0.36 a slot is ~60–130s; some beats rest so it does not loop.
+_SLEEP_KINDS = (
+    "bloom",
+    "lens",
+    "halo",
+    "diamond",
+    "crescent",
+    "vesica",
+    "petal",
+    "twin",
+    "spark",
+    "wedge",
 )
-_SLEEP_LIFE = 0.24
-_SLEEP_LO = (72, 90, 132)
-_SLEEP_HI = (176, 196, 236)
+_SLEEP_SLOTS = (
+    (22.5, 0.06),
+    (31.0, 0.38),
+    (39.5, 0.61),
+    (48.0, 0.87),
+)
+_SLEEP_LIFE = 0.20
+_SLEEP_FADE = 0.08
+_SLEEP_TINT = (36, 52, 82)
+_SLEEP_ACCENTS = (
+    (28, 64, 88),
+    (48, 40, 92),
+    (40, 58, 70),
+    (52, 46, 72),
+    (32, 56, 80),
+)
+
+
+def _sleep_unit(slot: int, cycle: int, salt: int) -> float:
+    return _u01(slot + 3, int(cycle) * 10007 + salt)
+
+
+def _sleep_pick_index(slot: int, cycle: int, count: int, salt: int) -> int:
+    n = max(1, int(count))
+    cyc = int(cycle)
+    raw = int(_sleep_unit(slot, cyc, salt) * n) % n
+    prev = int(_sleep_unit(slot, cyc - 1, salt) * n) % n
+    prev_prev = int(_sleep_unit(slot, cyc - 2, salt) * n) % n
+    if prev == prev_prev:
+        prev = (prev + 1 + int(_sleep_unit(slot, cyc - 1, salt + 1) * (n - 1))) % n
+    if raw == prev:
+        raw = (raw + 1 + int(_sleep_unit(slot, cyc, salt + 1) * (n - 1))) % n
+    return raw
+
+
+def _sleep_xy(slot: int, cycle: int) -> tuple[float, float]:
+    def at(cyc: int) -> tuple[float, float]:
+        return (
+            0.12 + 0.76 * _sleep_unit(slot, cyc, 41),
+            0.14 + 0.72 * _sleep_unit(slot, cyc, 43),
+        )
+
+    x, y = at(cycle)
+    px, py = at(cycle - 1)
+    if (x - px) * (x - px) + (y - py) * (y - py) < 0.045:
+        x = 0.12 + 0.76 * ((x + 0.37) % 1.0)
+        y = 0.14 + 0.72 * ((y + 0.29) % 1.0)
+    return x, y
+
+
+def _sleep_tint_for(slot: int, cycle: int) -> tuple[int, int, int]:
+    shift = (_sleep_unit(slot, cycle, 61) - 0.5) * 0.22
+    base = _shift_color(_SLEEP_TINT, shift)
+    accent = _SLEEP_ACCENTS[_sleep_pick_index(slot, cycle, len(_SLEEP_ACCENTS), 67)]
+    mixed = _mix(base, accent, 0.16 + 0.28 * _sleep_unit(slot, cycle, 71))
+    return (
+        max(18, min(70, mixed[0] + int(10 * (_sleep_unit(slot, cycle, 73) - 0.5)))),
+        max(24, min(86, mixed[1] + int(12 * (_sleep_unit(slot, cycle, 74) - 0.5)))),
+        max(40, min(118, mixed[2] + int(14 * (_sleep_unit(slot, cycle, 75) - 0.5)))),
+    )
 
 
 def idle_sleeper_items(scene: dict[str, Any], width: int, height: int) -> list[dict[str, Any]]:
-    """Unit sprites that fade in while the field is fully idle. Empty otherwise."""
+    """Soft luminous breaths while the field is fully idle. Empty otherwise."""
     if overlay_amount(scene) > 0.04:
         return []
     if str(scene.get("cycle") or "idle") != "idle":
@@ -916,134 +978,365 @@ def idle_sleeper_items(scene: dict[str, Any], width: int, height: int) -> list[d
     w = max(1, int(width))
     h = max(1, int(height))
     out: list[dict[str, Any]] = []
-    for i, (kind, period, phase, x0, y0, scale) in enumerate(_SLEEP_ACTORS):
+    placed: list[tuple[float, float]] = []
+    used_kinds: set[str] = set()
+    n_kinds = len(_SLEEP_KINDS)
+    for slot, (period, phase) in enumerate(_SLEEP_SLOTS):
         period = max(1.0, float(period))
-        u = (st / period + phase + hue) % 1.0
+        clock = st / period + phase + hue
+        u = clock % 1.0
         if u > _SLEEP_LIFE:
             continue
-        fade = _smoothstep(u / 0.06) * _smoothstep((_SLEEP_LIFE - u) / 0.07)
+        cycle = int(math.floor(clock - u + 1e-9))
+        if _sleep_unit(slot, cycle, 13) < 0.24:
+            continue
+        fade = _smoothstep(u / _SLEEP_FADE) * _smoothstep((_SLEEP_LIFE - u) / _SLEEP_FADE)
         if fade <= 0.02:
             continue
+        kind_i = _sleep_pick_index(slot, cycle, n_kinds, 17)
+        kind = _SLEEP_KINDS[kind_i]
+        if kind in used_kinds:
+            kind = _SLEEP_KINDS[(kind_i + 1 + int(_sleep_unit(slot, cycle, 19) * (n_kinds - 1))) % n_kinds]
+        used_kinds.add(kind)
+        x, y = _sleep_xy(slot, cycle)
+        for ox, oy in placed:
+            if (x - ox) * (x - ox) + (y - oy) * (y - oy) < 0.05:
+                x = 0.12 + 0.76 * ((x + 0.41) % 1.0)
+                y = 0.14 + 0.72 * ((y + 0.33) % 1.0)
         drift = u / _SLEEP_LIFE
-        x = x0 + 0.035 * lsin(st * 0.41 + i * 1.7)
-        y = y0 + 0.025 * lsin(st * 0.33 + i * 2.1) - 0.055 * drift
-        x = 0.06 if x < 0.06 else 0.94 if x > 0.94 else x
-        y = 0.08 if y < 0.08 else 0.90 if y > 0.90 else y
+        dx = 0.028 * (_sleep_unit(slot, cycle, 23) - 0.5)
+        dy = -0.010 - 0.022 * _sleep_unit(slot, cycle, 24)
+        x += dx * drift + 0.006 * lsin(st * 0.11 + slot * 1.7)
+        y += dy * drift + 0.004 * lsin(st * 0.09 + slot * 2.1)
+        x = 0.08 if x < 0.08 else 0.92 if x > 0.92 else x
+        y = 0.10 if y < 0.10 else 0.88 if y > 0.88 else y
+        placed.append((x, y))
+        scale = 0.70 + 0.75 * _sleep_unit(slot, cycle, 29)
+        breath = 0.88 + 0.12 * lsin(st * 0.20 + slot * 1.3)
         out.append(
             {
                 "kind": kind,
                 "x": int(round(x * (w - 1))),
                 "y": int(round(y * (h - 1))),
-                "size": max(18, int(round(h * 0.050 * scale))),
-                "amt": fade,
-                "flip": _u01(i + 3, int(hue * 97) + i) > 0.5,
+                "size": max(12, int(round(h * 0.15 * scale))),
+                "amt": fade * breath,
+                "angle": TWO_PI * _sleep_unit(slot, cycle, 31),
+                "tint": _sleep_tint_for(slot, cycle),
+                "seed": slot * 10007 + cycle,
             }
         )
     return out
 
 
-def _sleep_ink(amt: float) -> tuple[int, int, int]:
-    """Stay in idle navy-blue. Never mix toward black or the field will stamp."""
-    return _mix(_SLEEP_LO, _SLEEP_HI, 0.22 + 0.55 * _clamp01(amt))
+def _sleep_add_color(lift: float, tint: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
+    t = _clamp01(lift)
+    ink = tint or _SLEEP_TINT
+    return (
+        max(0, min(36, int(ink[0] * t))),
+        max(0, min(44, int(ink[1] * t))),
+        max(0, min(52, int(ink[2] * t))),
+    )
 
 
-def _sleep_thick(size: int) -> int:
-    return 1 if size < 36 else 2
+def _blit_sleep_add(
+    pygame_mod: Any, screen: Any, surf: Any, cx: int, cy: int, angle: float = 0.0
+) -> None:
+    if abs(angle) > 0.03:
+        surf = pygame_mod.transform.rotate(surf, -angle * 180.0 / math.pi)
+    flags = getattr(pygame_mod, "BLEND_RGB_ADD", 0)
+    screen.blit(surf, (cx - surf.get_width() // 2, cy - surf.get_height() // 2), special_flags=flags)
 
 
-def _draw_z_glyph(
+def _sleep_blank(pygame_mod: Any, width: int, height: int) -> Any:
+    surf = pygame_mod.Surface((max(3, int(width)), max(3, int(height))))
+    surf.fill((0, 0, 0))
+    return surf
+
+
+def _sleep_ellipse_sheet(
+    pygame_mod: Any,
+    rx: int,
+    ry: int,
+    amt: float,
+    tint: tuple[int, int, int],
+    hole: float = 0.0,
+) -> Any | None:
+    amt = _clamp01(amt)
+    rx = max(4, int(rx))
+    ry = max(4, int(ry))
+    if amt <= 0.02:
+        return None
+    w = rx * 2 + 3
+    h = ry * 2 + 3
+    surf = _sleep_blank(pygame_mod, w, h)
+    ox, oy = w // 2, h // 2
+    steps = max(5, min(10, min(rx, ry) // 2))
+    for i in range(steps, 0, -1):
+        t = i / float(steps)
+        fall = (1.0 - t) ** 1.7
+        color = _sleep_add_color(amt * (0.16 + 0.84 * fall) * 0.38, tint)
+        if color == (0, 0, 0):
+            continue
+        ww = max(1, int(round(rx * t)))
+        hh = max(1, int(round(ry * t)))
+        pygame_mod.draw.ellipse(surf, color, (ox - ww, oy - hh, ww * 2, hh * 2))
+    if hole > 0.08:
+        inner_x = max(1, int(round(rx * hole)))
+        inner_y = max(1, int(round(ry * hole)))
+        pygame_mod.draw.ellipse(
+            surf, (0, 0, 0), (ox - inner_x, oy - inner_y, inner_x * 2, inner_y * 2)
+        )
+    return surf
+
+
+def _sleep_nested_poly(
+    pygame_mod: Any,
+    pts: list[tuple[float, float]],
+    amt: float,
+    tint: tuple[int, int, int],
+) -> Any | None:
+    if len(pts) < 3 or _clamp01(amt) <= 0.02:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    pad = 3
+    w = max(6, int(math.ceil(maxx - minx)) + pad * 2)
+    h = max(6, int(math.ceil(maxy - miny)) + pad * 2)
+    surf = _sleep_blank(pygame_mod, w, h)
+    ox = -minx + pad
+    oy = -miny + pad
+    cx = sum(xs) / len(pts) + ox
+    cy = sum(ys) / len(pts) + oy
+    shifted = [(p[0] + ox, p[1] + oy) for p in pts]
+    steps = 7
+    for i in range(steps, 0, -1):
+        t = i / float(steps)
+        fall = (1.0 - t) ** 1.55
+        color = _sleep_add_color(amt * (0.18 + 0.82 * fall) * 0.36, tint)
+        if color == (0, 0, 0):
+            continue
+        scaled = [(cx + (px - cx) * t, cy + (py - cy) * t) for px, py in shifted]
+        pygame_mod.draw.polygon(surf, color, scaled)
+    return surf
+
+
+def _sleep_disc_sheet(
+    pygame_mod: Any,
+    discs: list[tuple[float, float, float]],
+    amt: float,
+    tint: tuple[int, int, int],
+) -> Any | None:
+    if not discs or _clamp01(amt) <= 0.02:
+        return None
+    xs = [x + r for x, _y, r in discs] + [x - r for x, _y, r in discs]
+    ys = [y + r for _x, y, r in discs] + [y - r for _x, y, r in discs]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    pad = 3
+    w = max(6, int(math.ceil(maxx - minx)) + pad * 2)
+    h = max(6, int(math.ceil(maxy - miny)) + pad * 2)
+    surf = _sleep_blank(pygame_mod, w, h)
+    ox = -minx + pad
+    oy = -miny + pad
+    steps = 6
+    for i in range(steps, 0, -1):
+        t = i / float(steps)
+        fall = (1.0 - t) ** 1.6
+        color = _sleep_add_color(amt * (0.16 + 0.84 * fall) * 0.38, tint)
+        if color == (0, 0, 0):
+            continue
+        for x, y, r in discs:
+            rad = max(1, int(round(r * t)))
+            pygame_mod.draw.circle(surf, color, (int(round(x + ox)), int(round(y + oy))), rad)
+    return surf
+
+
+def _draw_sleeping_bloom(
     pygame_mod: Any,
     screen: Any,
-    x: int,
-    y: int,
+    cx: int,
+    cy: int,
     size: int,
-    color: tuple[int, int, int],
-    thick: int = 1,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    s = max(4, int(size))
-    t = max(1, int(thick))
-    pygame_mod.draw.line(screen, color, (x, y), (x + s, y), t)
-    pygame_mod.draw.line(screen, color, (x + s, y), (x, y + s), t)
-    pygame_mod.draw.line(screen, color, (x, y + s), (x + s, y + s), t)
+    rx = max(6, int(size * (0.88 + 0.18 * abs(math.cos(angle)))))
+    ry = max(5, int(size * (0.62 + 0.16 * abs(math.sin(angle * 1.2)))))
+    surf = _sleep_ellipse_sheet(pygame_mod, rx, ry, amt, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle * 0.25)
 
 
-def _outline_poly(
+def _draw_sleeping_lens(
     pygame_mod: Any,
     screen: Any,
-    pts: list[tuple[int, int]],
-    color: tuple[int, int, int],
-    width: int,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    if len(pts) < 3:
-        return
-    pygame_mod.draw.polygon(screen, color, pts, max(1, width))
+    surf = _sleep_ellipse_sheet(
+        pygame_mod, max(10, int(size * 1.48)), max(4, int(size * 0.34)), amt * 0.92, tint
+    )
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
+
+
+def _draw_sleeping_halo(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
+) -> None:
+    rx = max(10, int(size * 1.18))
+    ry = max(8, int(rx * (0.78 + 0.22 * abs(math.sin(angle)))))
+    surf = _sleep_ellipse_sheet(pygame_mod, rx, ry, amt * 0.80, tint, hole=0.58 + 0.10 * abs(math.cos(angle)))
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle * 0.2)
 
 
 def _draw_sleeping_diamond(
-    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    ink = _sleep_ink(amt)
-    w = _sleep_thick(size)
-    rx = max(8, int(size * 0.72))
-    ry = max(7, int(size * 0.58))
-    if flip:
-        rx, ry = ry, rx
-    pts = [(cx, cy - ry), (cx + rx, cy), (cx, cy + ry), (cx - rx, cy)]
-    _outline_poly(pygame_mod, screen, pts, ink, w)
-    zs = max(5, size // 5)
-    _draw_z_glyph(pygame_mod, screen, cx + rx + 2, cy - ry - zs, zs, ink, 1)
+    rx = max(8, size * 0.82)
+    ry = max(7, size * 0.62)
+    pts = [(0.0, -ry), (rx, 0.0), (0.0, ry), (-rx, 0.0)]
+    surf = _sleep_nested_poly(pygame_mod, pts, amt, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
 
 
-def _draw_sleeping_hex(
-    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+def _draw_sleeping_crescent(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    ink = _sleep_ink(amt)
-    w = _sleep_thick(size)
-    r = max(8, int(size * 0.70))
-    twist = 0.52 if flip else 0.0
-    pts = []
-    for i in range(6):
-        a = twist + i * (math.pi / 3.0)
-        pts.append((int(round(cx + r * math.cos(a))), int(round(cy + r * math.sin(a)))))
-    _outline_poly(pygame_mod, screen, pts, ink, w)
+    r = max(8, int(size * 0.92))
+    surf = _sleep_ellipse_sheet(pygame_mod, r, r, amt, tint)
+    if surf is None:
+        return
+    punch = max(5, int(r * 0.78))
+    ox = int(round(math.cos(angle) * r * 0.42))
+    oy = int(round(math.sin(angle) * r * 0.42))
+    pygame_mod.draw.circle(surf, (0, 0, 0), (surf.get_width() // 2 + ox, surf.get_height() // 2 + oy), punch)
+    _blit_sleep_add(pygame_mod, screen, surf, cx, cy)
 
 
-def _draw_sleeping_tri(
-    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float, flip: bool
+def _draw_sleeping_vesica(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    ink = _sleep_ink(amt)
-    w = _sleep_thick(size)
-    h = max(8, int(size * 0.78))
-    b = max(8, int(size * 0.82))
-    if flip:
-        pts = [(cx, cy + h), (cx + b, cy - h // 2), (cx - b, cy - h // 2)]
-    else:
-        pts = [(cx, cy - h), (cx + b, cy + h // 2), (cx - b, cy + h // 2)]
-    _outline_poly(pygame_mod, screen, pts, ink, w)
+    r = max(6, size * 0.48)
+    span = r * 0.62
+    discs = [(-span, 0.0, r), (span, 0.0, r)]
+    surf = _sleep_disc_sheet(pygame_mod, discs, amt * 0.9, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
 
 
-def _draw_sleeping_zzz(
-    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
+def _draw_sleeping_petal(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    ink = _sleep_ink(amt)
-    s0 = max(6, int(size * 0.42))
-    _draw_z_glyph(pygame_mod, screen, cx - s0, cy + s0 // 4, s0, ink, 1)
-    s1 = max(7, int(size * 0.58))
-    _draw_z_glyph(pygame_mod, screen, cx, cy - s1 // 5, s1, ink, 1)
-    s2 = max(8, int(size * 0.74))
-    _draw_z_glyph(pygame_mod, screen, cx + s1 // 2, cy - s2, s2, ink, 1)
+    discs: list[tuple[float, float, float]] = []
+    n = 5
+    for i in range(n):
+        t = i / float(n - 1)
+        discs.append((0.0, (t - 0.55) * size * 1.15, max(2.5, size * (0.42 - 0.28 * t))))
+    surf = _sleep_disc_sheet(pygame_mod, discs, amt, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
 
 
-def _draw_sleeping_ring(
-    pygame_mod: Any, screen: Any, cx: int, cy: int, size: int, amt: float
+def _draw_sleeping_twin(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
 ) -> None:
-    ink = _sleep_ink(amt)
-    w = _sleep_thick(size)
-    r = max(8, int(size * 0.70))
-    pygame_mod.draw.circle(screen, ink, (cx, cy), r, w)
-    inner = max(3, r // 2)
-    if inner + w < r:
-        pygame_mod.draw.circle(screen, ink, (cx, cy), inner, 1)
+    r = max(5, size * 0.40)
+    span = r * 1.15
+    discs = [(-span, 0.0, r), (span, 0.0, r * 0.82)]
+    surf = _sleep_disc_sheet(pygame_mod, discs, amt * 0.88, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
+
+
+def _draw_sleeping_spark(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
+    seed: int,
+) -> None:
+    n = 3 + int(_u01(seed, 5) * 3)
+    discs: list[tuple[float, float, float]] = []
+    for i in range(n):
+        a = angle + i * (TWO_PI / n) + _u01(seed, 7 + i) * 0.7
+        rad = size * (0.28 + 0.55 * _u01(seed, 11 + i))
+        discs.append((math.cos(a) * rad, math.sin(a) * rad, max(2.0, size * (0.10 + 0.12 * _u01(seed, 13 + i)))))
+    surf = _sleep_disc_sheet(pygame_mod, discs, amt * 0.95, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy)
+
+
+def _draw_sleeping_wedge(
+    pygame_mod: Any,
+    screen: Any,
+    cx: int,
+    cy: int,
+    size: int,
+    amt: float,
+    angle: float,
+    tint: tuple[int, int, int],
+) -> None:
+    h = max(8, size * 0.92)
+    b = max(7, size * 0.70)
+    pts = [(0.0, -h), (b, h * 0.55), (-b, h * 0.55)]
+    surf = _sleep_nested_poly(pygame_mod, pts, amt * 0.9, tint)
+    if surf is not None:
+        _blit_sleep_add(pygame_mod, screen, surf, cx, cy, angle)
 
 
 def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
@@ -1051,16 +1344,29 @@ def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
     for item in idle_sleeper_items(scene, w, h):
         kind = item["kind"]
         x, y, size, amt = item["x"], item["y"], item["size"], item["amt"]
-        if kind == "hex":
-            _draw_sleeping_hex(pygame_mod, screen, x, y, size, amt, item["flip"])
-        elif kind == "tri":
-            _draw_sleeping_tri(pygame_mod, screen, x, y, size, amt, item["flip"])
-        elif kind == "ring":
-            _draw_sleeping_ring(pygame_mod, screen, x, y, size, amt)
-        elif kind == "zzz":
-            _draw_sleeping_zzz(pygame_mod, screen, x, y, size, amt)
+        angle = float(item.get("angle") or 0.0)
+        tint = item.get("tint") or _SLEEP_TINT
+        seed = int(item.get("seed") or 0)
+        if kind == "lens":
+            _draw_sleeping_lens(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "halo":
+            _draw_sleeping_halo(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "diamond":
+            _draw_sleeping_diamond(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "crescent":
+            _draw_sleeping_crescent(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "vesica":
+            _draw_sleeping_vesica(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "petal":
+            _draw_sleeping_petal(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "twin":
+            _draw_sleeping_twin(pygame_mod, screen, x, y, size, amt, angle, tint)
+        elif kind == "spark":
+            _draw_sleeping_spark(pygame_mod, screen, x, y, size, amt, angle, tint, seed)
+        elif kind == "wedge":
+            _draw_sleeping_wedge(pygame_mod, screen, x, y, size, amt, angle, tint)
         else:
-            _draw_sleeping_diamond(pygame_mod, screen, x, y, size, amt, item["flip"])
+            _draw_sleeping_bloom(pygame_mod, screen, x, y, size, amt, angle, tint)
 
 
 def _blended_palette(
@@ -1661,10 +1967,10 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
             data, ok = bus.snapshot()
             scene = follow.tick(scene_from_state(data, ok), dt, now)
             field = draw_field(max(64, args.width), max(36, args.height), scene)
+            draw_sleepers(pygame, field, scene)
             screen.blit(pygame.transform.smoothscale(field, screen.get_size()), (0, 0))
             draw_neurons(pygame, screen, scene)
             draw_cycle_fx(pygame, screen, scene)
-            draw_sleepers(pygame, screen, scene)
             height = screen.get_size()[1]
             if height != font_h or font is None or small is None:
                 large_n, small_n = hud_font_sizes(height)
