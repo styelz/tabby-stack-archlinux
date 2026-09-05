@@ -9717,9 +9717,10 @@ function mountChat(root) {
       return { label: "Building", kind: "chat", processing: true };
     }
     const refusesImages =
-      /\bdo(?:\s+not|n't)\s+(?:generate|draw|create|render|make)\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)\b/i.test(
+      /\bdo(?:\s+not|n't)\s+(?:generate|draw|create|render|make|regenerate)\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?|pics?)\b/i.test(
         lower
       ) ||
+      /\bdo(?:\s+not|n't)\s+regenerate\b/i.test(lower) ||
       /\bno\s+new\s+(?:images?|pictures?|photos?)\b/i.test(lower) ||
       /\bwithout\s+(?:any\s+)?(?:new\s+)?(?:images?|pictures?|photos?)\b/i.test(lower);
     if (
@@ -12592,7 +12593,7 @@ function mountChat(root) {
     const userStopped = stopKind === "stop";
     const imageHoldOpen =
       !userStopped
-      && (activity.kind === "image" || Boolean(working.heldJobId))
+      && Boolean(working.heldJobId)
       && !looksLikeImageReply(assembled);
     if (!imageHoldOpen) poll.stop();
     hideStackQueue();
@@ -12614,7 +12615,7 @@ function mountChat(root) {
     const resumeEmpty = Boolean((resume || networkTries) && !stopKind && emptyReply);
     const imageHoldEmpty =
       !userStopped
-      && (activity.kind === "image" || Boolean(working.heldJobId))
+      && Boolean(working.heldJobId)
       && !looksLikeImageReply(assembled);
     if (resumeEmpty) {
       working.discard();
