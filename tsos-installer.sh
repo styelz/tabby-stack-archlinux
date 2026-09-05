@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.40"
+SCRIPT_VERSION="1.0.43"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -66,7 +66,7 @@ CACHE_FROM_CLI=""
 DEFAULT_DISK=/dev/sda
 TUI=""
 USE_TUI=0
-BACKTITLE="tabby-stack OS installer  (tsos ${SCRIPT_VERSION})"
+BACKTITLE="tsos ${SCRIPT_VERSION}  ·  tabby-stack"
 
 TARGET="/mnt"
 CRYPT_NAME="$MAPPER_NAME"
@@ -155,8 +155,9 @@ The live ISO's HOSTNAME (usually archiso) is ignored on purpose.
 tabby-stack install.sh runs in the chroot on the live ISO (Python, venvs,
 weights) and must finish before reboot. Simple setup opens a review menu
 (disk, hostname, user, weights, this PC vs LAN). Advanced adds locale,
-encryption, Omarchy, models, and tunnels. After you confirm the wipe, the
-same dialog stays up with the live log while Arch and tabby-stack install.
+encryption, Omarchy, models, and tunnels. After you confirm the wipe, the install screen stays up with
+the step list, a progress bar, and the live log while Arch
+and tabby-stack install.
 install.sh is non-interactive from here so it does not open a second
 dialog. The NVIDIA driver loads on the first real boot; linger then
 starts the API.
@@ -251,6 +252,65 @@ tui_cmd() {
   fi
 }
 
+# Dark cyan dialog theme. The default blue-on-grey boxes look like 1998;
+# this is the same widgets with a current TUI palette. Invalid keys are
+# ignored by older dialog.
+write_dialogrc() {
+  local f="${TMPDIR:-/tmp}/tsos-dialogrc"
+  cat >"$f" <<'EOF'
+use_shadow = OFF
+use_colors = ON
+use_scrollbar = ON
+visit_items = OFF
+aspect = 0
+# Tab in a form jumps to OK by default and skips later fields. form_NEXT
+# walks password then verify then the buttons, like a normal dialog.
+bindkey formfield TAB form_NEXT
+bindkey formbox TAB form_NEXT
+bindkey formfield BTAB form_prev
+bindkey formbox BTAB form_prev
+screen_color = (WHITE,BLACK,OFF)
+shadow_color = (BLACK,BLACK,OFF)
+dialog_color = (WHITE,BLACK,OFF)
+title_color = (CYAN,BLACK,ON)
+border_color = (CYAN,BLACK,ON)
+border2_color = (CYAN,BLACK,OFF)
+gauge_color = (BLACK,CYAN,ON)
+button_active_color = (BLACK,CYAN,OFF)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (BLACK,CYAN,ON)
+button_key_inactive_color = (CYAN,BLACK,ON)
+button_label_active_color = (BLACK,CYAN,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+menubox_color = (WHITE,BLACK,OFF)
+menubox_border_color = (CYAN,BLACK,ON)
+menubox_border2_color = (CYAN,BLACK,OFF)
+item_color = (WHITE,BLACK,OFF)
+item_selected_color = (BLACK,CYAN,ON)
+tag_color = (CYAN,BLACK,ON)
+tag_selected_color = (BLACK,CYAN,ON)
+tag_key_color = (YELLOW,BLACK,ON)
+tag_key_selected_color = (BLACK,CYAN,ON)
+check_color = (WHITE,BLACK,OFF)
+check_selected_color = (BLACK,CYAN,ON)
+form_active_text_color = (BLACK,CYAN,OFF)
+form_text_color = (WHITE,BLACK,OFF)
+form_item_readonly_color = (WHITE,BLACK,ON)
+inputbox_color = (WHITE,BLACK,OFF)
+inputbox_border_color = (CYAN,BLACK,ON)
+inputbox_border2_color = (CYAN,BLACK,OFF)
+searchbox_color = (WHITE,BLACK,OFF)
+searchbox_title_color = (CYAN,BLACK,ON)
+searchbox_border_color = (CYAN,BLACK,ON)
+position_indicator_color = (CYAN,BLACK,ON)
+uarrow_color = (CYAN,BLACK,ON)
+darrow_color = (CYAN,BLACK,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
+separator_color = (CYAN,BLACK,OFF)
+EOF
+  export DIALOGRC="$f"
+}
+
 ensure_dialog() {
   tui_cmd
   # whiptail has only a one-field passwordbox, so accepting it here makes
@@ -273,6 +333,7 @@ enable_tui_if_possible() {
     USE_TUI=1
     # Every box is sized against the console, so read it before the questions.
     ensure_work_term
+    [[ "$TUI" == dialog ]] && write_dialogrc
   fi
 }
 
@@ -312,18 +373,18 @@ ensure_work_term() {
   ((TSOS_UI_COLS >= 50)) || TSOS_UI_COLS=80
 }
 
-# Same chrome as the question screens. Do not use LINES-1: --backtitle
-# plus a full-height gauge is "Window too small" on the ISO console.
+# The install gauge has no backtitle (saves a row). Do not use LINES-1:
+# a full-height box is "Window too small" on the ISO console.
 gauge_height() {
-  local h=$((TSOS_UI_ROWS - 6))
-  ((h > 18)) && h=18
+  local h=$((TSOS_UI_ROWS - 4))
+  ((h > 20)) && h=20
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((TSOS_UI_COLS - 8))
-  ((w > 70)) && w=70
+  local w=$((TSOS_UI_COLS - 4))
+  ((w > 76)) && w=76
   ((w < 50)) && w=50
   printf '%s' "$w"
 }
@@ -402,7 +463,7 @@ tsos_log_snippet() {
   [[ -f "$TSOS_LOG" ]] || return 0
   tail -n 80 "$TSOS_LOG" 2>/dev/null \
     | tr '\r' '\n' \
-    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' \
+    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' -e 's/\\Z[0-7bBrRuUn]//g' \
     | tr -cd '\11\12\15\40-\176' \
     | grep -v '^[[:space:]]*$' \
     | tail -n "$lines" \
@@ -452,6 +513,102 @@ ui_title_bar() {
     "$(printf '%*s' "$right" '' | tr ' ' '-')"
 }
 
+# minpct|short|heading substring. Used by the install stepper.
+gauge_steps() {
+  printf '%s\n' \
+    '0|Disk|Preparing disk' \
+    '8|Wipe|Wiping' \
+    '15|Format|Formatting' \
+    '22|Arch|Arch packages' \
+    '38|Setup|Configuring' \
+    '45|App|tabby-stack'
+  if [[ "${OMARCHY_MODE:-skip}" == now ]]; then
+    printf '%s\n' '96|Desk|Omarchy'
+  fi
+  printf '%s\n' '98|Done|Cleaning'
+}
+
+gauge_step_index() {
+  local heading=$1 pct=$2
+  local minpct short match i=0 best=0
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if [[ -n "$match" && "$heading" == *"$match"* ]]; then
+      printf '%s' "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done < <(gauge_steps)
+  i=0
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if [[ "$pct" =~ ^[0-9]+$ ]] && ((pct >= minpct)); then
+      best=$i
+    fi
+    i=$((i + 1))
+  done < <(gauge_steps)
+  printf '%s' "$best"
+}
+
+gauge_stepper_line() {
+  local inner=$1 heading=$2 pct=$3
+  local cur i=0 piece line="" mark short minpct match
+  cur=$(gauge_step_index "$heading" "$pct")
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if ((i < cur)); then
+      mark="[x]"
+    elif ((i == cur)); then
+      mark="[>]"
+    else
+      mark="[ ]"
+    fi
+    piece="$mark $short"
+    if [[ -n "$line" ]] && ((${#line} + 2 + ${#piece} > inner)); then
+      break
+    fi
+    [[ -n "$line" ]] && line+="  "
+    line+="$piece"
+    i=$((i + 1))
+  done < <(gauge_steps)
+  ui_pad "$line" "$inner"
+}
+
+gauge_status_line() {
+  local inner=$1 elapsed=$2
+  local left right room
+  left="${DISK:-}"
+  [[ -n "$left" && -n "${TARGET_HOSTNAME:-}" ]] && left+="  ·  "
+  left+="${TARGET_HOSTNAME:-tsos}"
+  right=$(fmt_elapsed "$elapsed")
+  room=$((inner - ${#right} - 1))
+  ((room < 8)) && room=8
+  printf '%s %s' "$(ui_pad "$left" "$room")" "$right"
+}
+
+gauge_heading_line() {
+  local inner=$1 heading=$2 elapsed=$3 spin=$4
+  local right=" ${elapsed}  ${spin}"
+  local room=$((inner - ${#right}))
+  ((room < 10)) && room=10
+  printf '%s%s' "$(ui_pad "$heading" "$room")" "$right"
+}
+
+gauge_rule() {
+  local inner=$1
+  printf '%*s' "$inner" '' | tr ' ' '-'
+}
+
+# Status, step chips, current heading, then the live log under a rule.
+gauge_chrome() {
+  local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
+  printf '%s\n%s\n%s\n%s\n' \
+    "$(gauge_status_line "$inner" "$total_elapsed")" \
+    "$(gauge_stepper_line "$inner" "$heading" "$pct")" \
+    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")" \
+    "$(gauge_rule "$inner")"
+}
+
 # Repaints so a long pacstrap / pip / download stays visibly alive.
 # Writes the dialog --gauge protocol to stdout (the pipe into dialog).
 watch_installer_ui() {
@@ -472,8 +629,8 @@ watch_installer_ui() {
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
-    printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
+    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch")
+    printf 'XXX\n%s\n%s\n%s\nXXX\n' \
       "$pct" "$body" "$(tsos_log_snippet "$lines" "$width")" || break
     sleep 0.5
   done
@@ -509,11 +666,11 @@ gauge_stop() {
 }
 
 # Official dialog pattern, tested in a 24x80 pty: percent protocol on a
-# pipe, widget on the saved tty (fd 4/5). A homemade +-| box is not used
-# on top of this — that is what looked "ugly" vs the question screens.
+# pipe, widget on the saved tty (fd 4/5). No backtitle on this screen —
+# that extra row plus a tall box is "Window too small" on the ISO console.
 run_with_gauge() {
   local work_fn=$1
-  local rc=0 err="" h w
+  local rc=0 err="" h w log_n
 
   ensure_work_term
   quiet_kernel_console
@@ -542,14 +699,18 @@ run_with_gauge() {
         exit 130' INT TERM
 
   if [[ "${USE_TUI:-0}" -eq 1 && "${TUI:-}" == dialog ]] && need_cmd dialog; then
+    [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
     h=$(gauge_height)
     w=$(gauge_width)
+    log_n=$((h - 10))
+    ((log_n < 3)) && log_n=3
+    printf '\033[H\033[J' >/dev/tty 2>/dev/null || true
     set +e
     (
       set +e
-      watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$((h - 8))"
-    ) | dialog --keep-tite --no-shadow --backtitle "$BACKTITLE" \
-      --title "Installing tabby-stack OS  (tsos ${SCRIPT_VERSION})" \
+      watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
+    ) | dialog --keep-tite --no-shadow --no-collapse \
+      --title "Installing tabby-stack OS" \
       --gauge "Starting the install..." "$h" "$w" 0 >&4 2>&5
     set -e
   else
@@ -1747,7 +1908,8 @@ prompt_review_hub() {
 looks right.
 
 Esc aborts. Next you type the disk path to confirm the wipe.
-After that, this same dialog stays up with the live log." \
+After that, the install screen stays up: steps, a progress
+bar, and the live log." \
       "${items[@]}") || ui_cancel
     UI_ALLOW_BACK=1
     case "$choice" in
@@ -1797,8 +1959,8 @@ then Start install.
 Omarchy is not installed. Encryption, extra models, and SSH
 tunnels are under Advanced.
 
-After the wipe confirm, this same dialog stays up with a
-progress bar and the live log.
+After the wipe confirm, the install screen stays up with
+the step list, a progress bar, and the live log.
 
 Esc on the review menu cancels. Esc on a setting goes back."
 
@@ -1889,9 +2051,9 @@ Needed
 
 A review menu lists every setting. Open a row to change it,
 then Start install. You type the disk path to confirm the
-wipe. After that, this same dialog stays up: a progress bar,
-elapsed time, and the live install log. install.sh does not
-open a second dialog.
+wipe. After that, the install screen stays up: steps, a
+progress bar, elapsed time, and the live log. install.sh
+does not open a second dialog.
 
 Esc on the review menu cancels. Esc on a setting goes back."
 
@@ -2276,6 +2438,25 @@ self_test() {
   check "$(hub_desc "$(printf 'a%.0s' {1..60})" 20)" "aaaaaaaaaaaaaaaaa..." "hub_desc truncates"
   tb=$(ui_title_bar 10 Hi)
   check "$tb" "--- Hi ---" "ui_title_bar"
+  OMARCHY_MODE=skip
+  DISK=/dev/sda
+  TARGET_HOSTNAME=studio
+  check "$(gauge_step_index "Installing Arch packages" 22)" "3" "arch step index"
+  check "$(gauge_step_index "Starting the install..." 0)" "0" "start step index"
+  check "$(gauge_step_index "Cleaning up" 98)" "6" "done step index"
+  check "$(gauge_step_index "Installing tabby-stack" 45)" "5" "app step index"
+  local stepper
+  stepper=$(gauge_stepper_line 70 "Installing Arch packages" 22)
+  case "$stepper" in
+    *'[x] Disk'*'[>] Arch'*'[ ] App'*) printf 'ok   stepper chips\n' ;;
+    *) printf 'FAIL stepper chips: %q\n' "$stepper" >&2; failed=1 ;;
+  esac
+  local chrome
+  chrome=$(gauge_chrome "Installing Arch packages" 22 70 5 90 '|')
+  case "$chrome" in
+    *'/dev/sda'*'studio'*'[>] Arch'*'Installing Arch packages'*) printf 'ok   gauge chrome\n' ;;
+    *) printf 'FAIL gauge chrome: %q\n' "$chrome" >&2; failed=1 ;;
+  esac
   TSOS_GAUGE_DIR=""
   TSOS_SAVED_FD=""
   TSOS_LOG=$saved_log
@@ -2291,6 +2472,7 @@ self_test_gauge() {
   USE_TUI=1
   TUI=dialog
   need_cmd dialog || die "dialog is not installed (needed for --self-test-gauge)"
+  write_dialogrc
   TSOS_LOG="${TMPDIR:-/tmp}/tsos-gauge-selftest.log"
   : >"$TSOS_LOG"
   # Same sequence as the ISO after the last question: a dialog widget on
@@ -2792,13 +2974,106 @@ log_disk_holders() {
     if command -v fuser >/dev/null 2>&1; then
       log "fuser $part: $(fuser -vm "$part" 2>&1 | tr '\n' ' ')"
     fi
+    if command -v findmnt >/dev/null 2>&1; then
+      log "findmnt $part: $(findmnt -n -S "$part" 2>/dev/null | tr '\n' ' ')"
+    fi
+  fi
+  # Do not run `btrfs filesystem show` here: it can scan and re-register the
+  # old device. sysfs is enough to see whether the module still holds it.
+  if [[ -d /sys/fs/btrfs ]]; then
+    log "sysfs btrfs: $(ls -1 /sys/fs/btrfs 2>/dev/null | grep -v '^features$' | tr '\n' ' ')"
   fi
 }
 
-# Drop mounts, swap, LUKS, LVM, and md on DISK so the kernel will reread
-# the partition table. A leftover mapper or udev probe is what makes
-# mkfs.btrfs print "device or resource busy" on a partition that lsblk
-# shows as unmounted.
+# True when some btrfs mount is NOT this install disk (the live ISO itself,
+# or another drive). Leftover /mnt from a previous tsos run does not count.
+btrfs_held_by_live_iso() {
+  local disk=$1 src tgt fstype raw
+  while read -r src tgt fstype; do
+    [[ "$fstype" == btrfs ]] || continue
+    raw=${src%%[*}
+    if is_on_disk "$disk" "$raw"; then
+      continue
+    fi
+    if [[ "$tgt" == "$TARGET" || "$tgt" == "$TARGET"/* ]]; then
+      continue
+    fi
+    return 0
+  done < <(findmnt -n -o SOURCE,TARGET,FSTYPE -t btrfs 2>/dev/null || true)
+  return 1
+}
+
+# Re-running the installer leaves the previous btrfs registered in the
+# kernel even after umount. lsblk then shows sda2 unmounted, fuser is
+# empty, and mkfs.btrfs still gets EBUSY (it opens O_EXCL). Same layout
+# (2G EFI + rest root) means the old /dev/sda2 node never goes away.
+forget_btrfs_on_disk() {
+  local disk=$1 name type
+  if command -v btrfs >/dev/null 2>&1; then
+    btrfs device scan --forget "$disk" >/dev/null 2>&1 || true
+    while read -r name type; do
+      [[ "$type" == part ]] || continue
+      btrfs device scan --forget "$name" >/dev/null 2>&1 || true
+    done < <(lsblk -lnp -o NAME,TYPE "$disk" 2>/dev/null || true)
+  fi
+  # Arch live ISO is squashfs/overlay. Unload the module so it cannot keep
+  # a struct btrfs_fs_info after a lazy umount from the previous run.
+  if btrfs_held_by_live_iso "$disk"; then
+    log "not unloading btrfs: another filesystem on this live system uses it"
+    return 0
+  fi
+  if lsmod 2>/dev/null | grep -q '^btrfs'; then
+    log "unloading btrfs module so it cannot hold $disk"
+    if modprobe -r btrfs >/dev/null 2>&1; then
+      modprobe btrfs >/dev/null 2>&1 || true
+    else
+      warn "could not unload btrfs (device still referenced)"
+      log "sysfs btrfs: $(ls -1 /sys/fs/btrfs 2>/dev/null | grep -v '^features$' | tr '\n' ' ')"
+    fi
+  fi
+}
+
+kill_disk_users() {
+  local disk=$1 mp name type pid cwd root p mi
+  local base=${disk##*/}
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -km "$TARGET" >/dev/null 2>&1 || true
+    while read -r mp; do
+      [[ -n "$mp" && "$mp" != / ]] || continue
+      fuser -km "$mp" >/dev/null 2>&1 || true
+    done < <(lsblk -lnr -o MOUNTPOINT "$disk" 2>/dev/null || true)
+    # No -m on the raw nodes: that would mean "every process on this fs".
+    # We only want whoever still has the block device open (blkid, mkfs).
+    fuser -k "$disk" >/dev/null 2>&1 || true
+    while read -r name type; do
+      [[ "$type" == part ]] || continue
+      fuser -k "$name" >/dev/null 2>&1 || true
+    done < <(lsblk -lnp -o NAME,TYPE "$disk" 2>/dev/null || true)
+  fi
+  for pid in /proc/[0-9]*; do
+    p=${pid#/proc/}
+    [[ "$p" == "1" || "$p" == "$$" || "$p" == "$PPID" ]] && continue
+    cwd=$(readlink "$pid/cwd" 2>/dev/null || true)
+    root=$(readlink "$pid/root" 2>/dev/null || true)
+    if [[ "$cwd" == "$TARGET" || "$cwd" == "$TARGET"/* ||
+          "$root" == "$TARGET" || "$root" == "$TARGET"/* ]]; then
+      kill -KILL "$p" 2>/dev/null || true
+    fi
+  done
+  for mi in /proc/[0-9]*/mountinfo; do
+    [[ -e "$mi" ]] || continue
+    if grep -Eq "/dev/${base}(p?[0-9]+)?( |$|\\[)" "$mi" 2>/dev/null || \
+       grep -Eq " ${TARGET}(/| )" "$mi" 2>/dev/null; then
+      p=${mi#/proc/}
+      p=${p%/mountinfo}
+      [[ "$p" == "1" || "$p" == "$$" || "$p" == "$PPID" ]] && continue
+      kill -KILL "$p" 2>/dev/null || true
+    fi
+  done
+}
+
+# Drop mounts, swap, LUKS, LVM, md, and the kernel's leftover btrfs
+# registration so mkfs.btrfs can open the root partition exclusively.
 release_disk() {
   local disk=$1
   local tries=0 name type mp vg pv
@@ -2808,10 +3083,19 @@ release_disk() {
   fi
   while ((tries < 8)); do
     tries=$((tries + 1))
+    kill_disk_users "$disk"
+    sleep 1
     while read -r mp; do
       [[ -n "$mp" && "$mp" != / ]] || continue
-      umount -R "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+      if ((tries < 6)); then
+        umount -R "$mp" 2>/dev/null || true
+      else
+        umount -R "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+      fi
     done < <(lsblk -lnr -o MOUNTPOINT "$disk" 2>/dev/null | awk 'NF && $1 != "/"' | sort -r)
+    if mountpoint -q "$TARGET"; then
+      umount -R "$TARGET" 2>/dev/null || true
+    fi
     local -a rows=()
     mapfile -t rows < <(lsblk -lnp -o NAME,TYPE "$disk" 2>/dev/null || true)
     local i
@@ -2841,11 +3125,10 @@ release_disk() {
     if command -v mdadm >/dev/null 2>&1; then
       mdadm --stop --scan 2>/dev/null || true
     fi
-    # No mounts left on this disk (empty mountpoints only).
+    forget_btrfs_on_disk "$disk"
     if ! lsblk -lnr -o MOUNTPOINT "$disk" 2>/dev/null | awk 'NF && $1 != "/" { found=1 } END { exit !found }'; then
       return 0
     fi
-    sleep 1
   done
   warn "could not fully release $disk; continuing"
   log_disk_holders "$disk"
@@ -2860,11 +3143,31 @@ wipe_signatures() {
   wipefs -af "$disk" || warn "wipefs on $disk failed; sgdisk will zap the table anyway"
 }
 
+# Drop the in-kernel partition table after zap so sgdisk is not writing a
+# "new" GPT the kernel ignores (same 2G+rest layout as the previous run).
+reread_partition_table() {
+  local disk=$1 i
+  for i in $(seq 1 8); do
+    kill_disk_users "$disk"
+    forget_btrfs_on_disk "$disk"
+    partx -d "$disk" 2>/dev/null || true
+    if blockdev --rereadpt "$disk" 2>/dev/null; then
+      udevadm settle --timeout=15 2>/dev/null || true
+      return 0
+    fi
+    log "kernel still using the old partition table on $disk (try $i)"
+    sleep 1
+  done
+  warn "kernel did not drop the old partition table on $disk; continuing"
+  return 0
+}
+
 # sgdisk already notifies the kernel. A full partprobe (BLKRRPART) while
 # udev is opening the new nodes is a common "device busy" on sda2.
 notify_kernel_parts() {
   udevadm settle --timeout=15 2>/dev/null || true
   setup_partitions
+  forget_btrfs_on_disk "$DISK"
   if [[ -b "$BOOT_PART" && -b "$DATA_PART" ]]; then
     return 0
   fi
@@ -2904,8 +3207,10 @@ run_on_free_block() {
   shift
   local i rc=1
   for i in 1 2 3 4 5 6 7 8; do
+    kill_disk_users "$DISK"
     udevadm settle --timeout=10 2>/dev/null || true
     pause_udev_queue
+    forget_btrfs_on_disk "$DISK"
     set +e
     "$@"
     rc=$?
@@ -2919,7 +3224,7 @@ run_on_free_block() {
     release_disk "$DISK"
     sleep 2
   done
-  die "Could not use $part (last exit $rc). Often 'device or resource busy' from udev or a leftover LUKS/LVM mapper, not a mount.
+  die "Could not use $part (last exit $rc). Often leftover btrfs from a previous run in this live session (mkfs uses O_EXCL), or udev/LUKS/LVM.
 $(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" 2>/dev/null || true)"
 }
 
@@ -2933,9 +3238,7 @@ wipe_and_partition() {
   log "Wiping $DISK"
   wipe_signatures "$DISK"
   sgdisk --zap-all "$DISK"
-  # Drop the old in-kernel partition table before creating the new one.
-  partx -d "$DISK" 2>/dev/null || true
-  udevadm settle --timeout=10 2>/dev/null || true
+  reread_partition_table "$DISK"
   sgdisk -og "$DISK"
 
   local data_type=8300
@@ -3892,14 +4195,16 @@ cleanup() {
   if mountpoint -q "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null; then
     umount "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || umount -l "$TARGET$CACHE_CHROOT_PATH" 2>/dev/null || true
   fi
-  # Omarchy/chroot can leave processes on /mnt; a blocking umount looks hung.
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -km "$TARGET" 2>/dev/null || true
-    sleep 1
-  fi
+  # Chroot leftover processes keep btrfs busy after a successful install.
+  # Lazy umount hides that from lsblk, so the next wipe gets EBUSY on sda2.
+  kill_disk_users "$DISK"
+  sleep 1
   if ! umount -R "$TARGET" 2>/dev/null; then
-    umount -R -l "$TARGET" 2>/dev/null || true
+    kill_disk_users "$DISK"
+    sleep 1
+    umount -R "$TARGET" 2>/dev/null || umount -R -l "$TARGET" 2>/dev/null || true
   fi
+  forget_btrfs_on_disk "$DISK"
   if ((ENCRYPT)) && [[ -e "/dev/mapper/$CRYPT_NAME" ]]; then
     cryptsetup close "$CRYPT_NAME" || true
   fi

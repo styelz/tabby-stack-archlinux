@@ -15,7 +15,7 @@ EMBED_NAME="Qwen3-Embedding-0.6B"
 # Official Arch python is 3.14; python312 is AUR-only. Match the first-boot workaround.
 PYENV_VER="3.12.5"
 
-BACKTITLE="tabby-stack Arch installer"
+BACKTITLE="tabby-stack"
 TUI=""
 USE_TUI=0
 INTERACTIVE=1
@@ -157,9 +157,67 @@ tui_cmd() {
   fi
 }
 
+# Dark cyan dialog theme. Same palette as tsos-installer.sh.
+write_dialogrc() {
+  local f="${TMPDIR:-/tmp}/tabby-dialogrc"
+  cat >"$f" <<'EOF'
+use_shadow = OFF
+use_colors = ON
+use_scrollbar = ON
+visit_items = OFF
+aspect = 0
+# Tab in a form jumps to OK by default and skips later fields. form_NEXT
+# walks password then verify then the buttons, like a normal dialog.
+bindkey formfield TAB form_NEXT
+bindkey formbox TAB form_NEXT
+bindkey formfield BTAB form_prev
+bindkey formbox BTAB form_prev
+screen_color = (WHITE,BLACK,OFF)
+shadow_color = (BLACK,BLACK,OFF)
+dialog_color = (WHITE,BLACK,OFF)
+title_color = (CYAN,BLACK,ON)
+border_color = (CYAN,BLACK,ON)
+border2_color = (CYAN,BLACK,OFF)
+gauge_color = (BLACK,CYAN,ON)
+button_active_color = (BLACK,CYAN,OFF)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (BLACK,CYAN,ON)
+button_key_inactive_color = (CYAN,BLACK,ON)
+button_label_active_color = (BLACK,CYAN,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+menubox_color = (WHITE,BLACK,OFF)
+menubox_border_color = (CYAN,BLACK,ON)
+menubox_border2_color = (CYAN,BLACK,OFF)
+item_color = (WHITE,BLACK,OFF)
+item_selected_color = (BLACK,CYAN,ON)
+tag_color = (CYAN,BLACK,ON)
+tag_selected_color = (BLACK,CYAN,ON)
+tag_key_color = (YELLOW,BLACK,ON)
+tag_key_selected_color = (BLACK,CYAN,ON)
+check_color = (WHITE,BLACK,OFF)
+check_selected_color = (BLACK,CYAN,ON)
+form_active_text_color = (BLACK,CYAN,OFF)
+form_text_color = (WHITE,BLACK,OFF)
+form_item_readonly_color = (WHITE,BLACK,ON)
+inputbox_color = (WHITE,BLACK,OFF)
+inputbox_border_color = (CYAN,BLACK,ON)
+inputbox_border2_color = (CYAN,BLACK,OFF)
+searchbox_color = (WHITE,BLACK,OFF)
+searchbox_title_color = (CYAN,BLACK,ON)
+searchbox_border_color = (CYAN,BLACK,ON)
+position_indicator_color = (CYAN,BLACK,ON)
+uarrow_color = (CYAN,BLACK,ON)
+darrow_color = (CYAN,BLACK,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
+separator_color = (CYAN,BLACK,OFF)
+EOF
+  export DIALOGRC="$f"
+}
+
 ensure_dialog() {
   tui_cmd
   if [[ -n "$TUI" ]]; then
+    [[ "$TUI" == dialog ]] && write_dialogrc
     return 0
   fi
   if [[ "$INTERACTIVE" -eq 0 ]] || [[ ! -t 0 ]]; then
@@ -168,6 +226,7 @@ ensure_dialog() {
   echo "==> Installing dialog (ncurses menus and how-to screens)..."
   sudo pacman -S --needed --noconfirm dialog || true
   tui_cmd
+  [[ "$TUI" == dialog ]] && write_dialogrc
 }
 
 dialog_tty() {
@@ -503,15 +562,15 @@ work_term() {
 }
 
 gauge_height() {
-  local h=$((UI_ROWS - 6))
-  ((h > 18)) && h=18
+  local h=$((UI_ROWS - 4))
+  ((h > 20)) && h=20
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((UI_COLS - 8))
-  ((w > 70)) && w=70
+  local w=$((UI_COLS - 4))
+  ((w > 76)) && w=76
   ((w < 50)) && w=50
   printf '%s' "$w"
 }
@@ -521,10 +580,105 @@ install_log_snippet() {
   [[ -f "$INSTALL_LOG" ]] || return 0
   tail -n 80 "$INSTALL_LOG" 2>/dev/null \
     | tr '\r' '\n' \
-    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' \
+    | sed -e 's/\x1B\[[0-9;?]*[a-zA-Z]//g' -e 's/^XXX$//' -e 's/\\Z[0-7bBrRuUn]//g' \
     | grep -v '^[[:space:]]*$' \
     | tail -n "$lines" \
     | cut -c1-"$width" || true
+}
+
+ui_pad() {
+  local s=$1 n=$2
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  if (( n > 0 && ${#s} > n )); then
+    s=${s:0:n}
+  fi
+  printf '%-*s' "$n" "$s"
+}
+
+gauge_steps() {
+  printf '%s\n' \
+    '0|Setup|' \
+    '16|Python|' \
+    '22|Stack|' \
+    '40|API|' \
+    '84|Models|' \
+    '94|Finish|'
+}
+
+gauge_step_index() {
+  local heading=$1 pct=$2
+  local minpct short match i=0 best=0
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if [[ -n "$match" && "$heading" == *"$match"* ]]; then
+      printf '%s' "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done < <(gauge_steps)
+  i=0
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if [[ "$pct" =~ ^[0-9]+$ ]] && ((pct >= minpct)); then
+      best=$i
+    fi
+    i=$((i + 1))
+  done < <(gauge_steps)
+  printf '%s' "$best"
+}
+
+gauge_stepper_line() {
+  local inner=$1 heading=$2 pct=$3
+  local cur i=0 piece line="" mark short minpct match
+  cur=$(gauge_step_index "$heading" "$pct")
+  while IFS='|' read -r minpct short match; do
+    [[ -n "$short" ]] || continue
+    if ((i < cur)); then
+      mark="[x]"
+    elif ((i == cur)); then
+      mark="[>]"
+    else
+      mark="[ ]"
+    fi
+    piece="$mark $short"
+    if [[ -n "$line" ]] && ((${#line} + 2 + ${#piece} > inner)); then
+      break
+    fi
+    [[ -n "$line" ]] && line+="  "
+    line+="$piece"
+    i=$((i + 1))
+  done < <(gauge_steps)
+  ui_pad "$line" "$inner"
+}
+
+gauge_status_line() {
+  local inner=$1 elapsed=$2
+  local left right room
+  left="${DEST:-tabby-stack}"
+  [[ "${UPDATE_MODE:-0}" -eq 1 ]] && left="update  ·  $left"
+  right=$(fmt_elapsed "$elapsed")
+  room=$((inner - ${#right} - 1))
+  ((room < 8)) && room=8
+  printf '%s %s' "$(ui_pad "$left" "$room")" "$right"
+}
+
+gauge_heading_line() {
+  local inner=$1 heading=$2 elapsed=$3 spin=$4
+  local right=" ${elapsed}  ${spin}"
+  local room=$((inner - ${#right}))
+  ((room < 10)) && room=10
+  printf '%s%s' "$(ui_pad "$heading" "$room")" "$right"
+}
+
+gauge_chrome() {
+  local heading=$1 pct=$2 inner=$3 step_elapsed=$4 total_elapsed=$5 spin=$6
+  printf '%s\n%s\n%s\n%s\n' \
+    "$(gauge_status_line "$inner" "$total_elapsed")" \
+    "$(gauge_stepper_line "$inner" "$heading" "$pct")" \
+    "$(gauge_heading_line "$inner" "$heading" "$(fmt_elapsed "$step_elapsed")" "$spin")" \
+    "$(printf '%*s' "$inner" '' | tr ' ' '-')"
 }
 
 # Repaint the work dialog so a long pip / pacman / download stays visibly alive.
@@ -543,8 +697,8 @@ watch_progress_ui() {
       step_t=$SECONDS
     fi
     ch=${spin:$((ticks % 4)):1}
-    body=$(printf '%s\n%c  %s on this step' "$heading" "$ch" "$(fmt_elapsed "$((SECONDS - step_t))")")
-    printf 'XXX\n%s\n%s\n\n%s\nXXX\n' \
+    body=$(gauge_chrome "$heading" "$pct" "$width" "$((SECONDS - step_t))" "$SECONDS" "$ch")
+    printf 'XXX\n%s\n%s\n%s\nXXX\n' \
       "$pct" "$body" "$(install_log_snippet "$lines" "$width")" >&3 2>/dev/null || break
     sleep 0.5
   done
@@ -604,9 +758,11 @@ progress_start() {
 
   if need_cmd dialog && [[ -c /dev/tty ]] && { true >/dev/tty; } 2>/dev/null; then
     clear >/dev/tty 2>/dev/null || true
-    local h w gauge_title
+    local h w gauge_title log_n
     h=$(gauge_height)
     w=$(gauge_width)
+    log_n=$((h - 10))
+    ((log_n < 3)) && log_n=3
     gauge_title="Installing tabby-stack"
     [[ "$UPDATE_MODE" -eq 1 ]] && gauge_title="Updating tabby-stack"
     GAUGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tabby-gauge.XXXXXX")"
@@ -615,13 +771,14 @@ progress_start() {
     printf '%s\n' 0 >"$GAUGE_DIR/pct"
     printf '%s\n' "Starting..." >"$GAUGE_DIR/heading"
     exec 3<>"$GAUGE_FIFO"
-    dialog --backtitle "$BACKTITLE" --title "$gauge_title" \
+    [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
+    dialog --keep-tite --no-shadow --no-collapse --title "$gauge_title" \
       --gauge "Starting..." "$h" "$w" 0 \
       <"$GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
     GAUGE_PID=$!
     sleep 0.4
     if kill -0 "$GAUGE_PID" 2>/dev/null; then
-      watch_progress_ui "$GAUGE_DIR/stop" "$((w - 6))" "$((h - 9))" &
+      watch_progress_ui "$GAUGE_DIR/stop" "$((w - 6))" "$log_n" &
       GAUGE_WATCH_PID=$!
       GAUGE_MODE="dialog"
       return 0
