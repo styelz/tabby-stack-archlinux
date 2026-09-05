@@ -119,6 +119,7 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["stage"], "decode")
         self.assertEqual(payload["waiters"], 2)
         self.assertEqual(payload["elapsed_s"], 9)
+        self.assertIsNone(payload["typical_s"])
         self.assertEqual(payload["image_n"], None)
         self.assertEqual(payload["image_of"], None)
         self.assertEqual(payload["image_file"], "")
@@ -151,6 +152,20 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payload["image_n"])
         self.assertEqual(payload["image_file"], "")
         self.assertEqual(payload["image_what"], "")
+        self.assertIsNone(payload["typical_s"])
+
+    def test_typical_s_only_while_switching(self):
+        idle = saver.sanitize_status({"gpu_mode": "llm", "stage": "decode"})
+        self.assertIsNone(idle["typical_s"])
+        payload = saver.sanitize_status(
+            {
+                "gpu_mode": "llm",
+                "switching": True,
+                "stage": "switch",
+                "typical_s": 66,
+            }
+        )
+        self.assertEqual(payload["typical_s"], 66)
 
     def test_unknown_stage_becomes_idle(self):
         payload = saver.sanitize_status({"stage": "secret-thoughts", "tokens": -3})
@@ -192,6 +207,7 @@ class SaverSanitizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["stage"], "switch")
         self.assertEqual(payload["switch_target"], "comfy")
         self.assertEqual(payload["profile"], "flux")
+        self.assertEqual(payload["typical_s"], 37)
         self.assertIsNone(payload["gpu"]["utilization_pct"])
         self.assertNotIn("bob", repr(payload))
 
@@ -258,6 +274,34 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertLess(scene["speed"], 0.55)
         self.assertGreaterEqual(scene["intensity"], 0.45)
 
+    def test_hud_idle_shows_clock_and_profile(self):
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        idle["clock"] = "14:20"
+        idle["date"] = "Sat 5 Sep"
+        idle["idle_fact"] = "this box is a RTX 4070 Ti 12 GB"
+        hot = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "chat", "busy": True, "profile": "qwen"},
+            True,
+        )
+        idle_screen = _FakeScreen()
+        hot_screen = _FakeScreen()
+        font = _FakeFont()
+        self.kiosk.draw_hud(idle_screen, font, font, idle)
+        self.kiosk.draw_hud(hot_screen, font, font, hot)
+        idle_text = " ".join(str(item) for item in idle_screen.blits)
+        hot_text = " ".join(str(item) for item in hot_screen.blits)
+        self.assertGreater(len(idle_screen.blits), 0)
+        self.assertIn("qwen", idle_text)
+        self.assertIn("14:20", idle_text)
+        self.assertIn("Sat 5 Sep", idle_text)
+        self.assertIn("this box is a RTX 4070 Ti 12 GB", idle_text)
+        self.assertNotIn("thinking", idle_text)
+        self.assertGreater(len(hot_screen.blits), 0)
+        self.assertIn("thinking", hot_text)
+
     def test_hud_only_when_live(self):
         idle = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "profile": "qwen", "busy": False},
@@ -272,7 +316,7 @@ class SaverKioskSceneTests(unittest.TestCase):
         font = _FakeFont()
         self.kiosk.draw_hud(idle_screen, font, font, idle)
         self.kiosk.draw_hud(hot_screen, font, font, hot)
-        self.assertEqual(idle_screen.blits, [])
+        self.assertGreater(len(idle_screen.blits), 0)
         self.assertGreater(len(hot_screen.blits), 0)
 
     def test_neurons_only_fire_when_live(self):
@@ -680,6 +724,90 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertIn("0:08", text)
         self.assertIn("api down", text)
         self.assertIn("waiting for /health", text)
+
+    def test_hud_shows_waiters_and_toks(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "profile": "qwen",
+                "stage": "decode",
+                "tokens": 1842,
+                "waiters": 2,
+            },
+            True,
+        )
+        scene["token_rate"] = 12.0
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertIn("1842 tok", text)
+        self.assertIn("12/s", text)
+        self.assertIn("2 waiting", text)
+
+    def test_hud_shows_typical_switch(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "profile": "qwen",
+                "busy": True,
+                "switching": True,
+                "stage": "switch",
+                "switch_target": "llm",
+                "typical_s": 66,
+                "elapsed_s": 42,
+            },
+            True,
+        )
+        scene["runtime"] = "0:42"
+        screen = _FakeScreen()
+        self.kiosk.draw_hud(screen, _FakeFont(), _FakeFont(), scene)
+        text = " ".join(str(item) for item in screen.blits)
+        self.assertIn("loading llm", text)
+        self.assertIn("0:42", text)
+        self.assertIn("~1:06 typical", text)
+
+    def test_idle_facts_from_switch_times(self):
+        facts = self.kiosk.idle_fact_lines(
+            {
+                "gpu": "RTX 4070 Ti 12 GB",
+                "qwen": {"ready_s": 66},
+                "comfy": {"flux_s": 202, "qwen_image_s": 230},
+            },
+            125.0,
+        )
+        self.assertIn("this box is a RTX 4070 Ti 12 GB", facts)
+        self.assertIn("qwen warm switch ~66s", facts)
+        self.assertIn("flux first picture ~3 min", facts)
+        self.assertIn("asleep  2m", facts)
+        self.assertEqual(
+            self.kiosk.pick_idle_fact(["a", "b", "c"], 0.0),
+            "a",
+        )
+        self.assertEqual(self.kiosk.pick_idle_fact(["a", "b", "c"], 45.0), "b")
+
+    def test_idle_tod_hue_dusk_is_warm(self):
+        self.assertLess(self.kiosk.idle_tod_hue(18.5), 0.0)
+        self.assertGreater(self.kiosk.idle_tod_hue(1.0), 0.0)
+        self.assertEqual(self.kiosk.idle_tod_hue(12.0), 0.0)
+
+    def test_follow_prefers_occupancy_elapsed(self):
+        follow = self.kiosk.SceneFollow()
+        hot = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "chat",
+                "busy": True,
+                "elapsed_s": 40,
+            },
+            True,
+        )
+        scene = follow.tick(hot, 0.04, 10.0)
+        for _step in range(40):
+            scene = follow.tick(hot, 0.04, 10.0 + 0.04 * (_step + 1))
+        self.assertEqual(scene["phase"], "thinking")
+        self.assertEqual(scene["runtime"], "0:40")
 
     def test_follow_snaps_to_down_when_api_drops(self):
         follow = self.kiosk.SceneFollow()

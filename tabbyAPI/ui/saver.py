@@ -6,6 +6,7 @@ The payload is GPU/occupancy weather only: no prompts, usernames, or chat ids.
 from __future__ import annotations
 
 import ipaddress
+import time
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -167,6 +168,7 @@ def sanitize_status(raw: dict[str, Any]) -> dict[str, Any]:
             if raw.get("elapsed_s") is not None
             else queue.get("elapsed_s")
         ),
+        "typical_s": _optional_int(raw.get("typical_s")),
         "gpu": {
             "utilization_pct": gpu.get("utilization_pct"),
             "vram_pct": _vram_pct(gpu) if gpu.get("vram_pct") is None else gpu.get("vram_pct"),
@@ -345,6 +347,34 @@ def _compose_weather(
     }
 
 
+def _typical_switch_s(
+    lock_name: str, switching: bool, restarting: bool, stage: str
+) -> int | None:
+    if not (switching or restarting or stage == "switch"):
+        return None
+    name = str(lock_name or "").strip().lower()
+    if restarting or name == "restart":
+        name = "llm"
+    elif name in {"flux", "comfy"}:
+        name = "comfy"
+    elif not name:
+        name = "llm"
+    from common.switch_times import ready_seconds
+
+    return ready_seconds(name)
+
+
+def _lock_age_s() -> int:
+    from common.phrase_switch import LOCK
+
+    try:
+        if LOCK.exists():
+            return max(0, int(time.time() - LOCK.stat().st_mtime))
+    except OSError:
+        pass
+    return 0
+
+
 async def saver_state() -> dict[str, Any]:
     """Occupancy weather only — never wait on nvidia-smi or HealthManager.
 
@@ -395,6 +425,12 @@ async def saver_state() -> dict[str, Any]:
         queue = dict(queue)
         queue["kind"] = weather["kind"]
     thinking = weather["stage"] in {"prefill", "decode", "tool"}
+    typical_s = _typical_switch_s(lock_name, switching, restarting, str(weather.get("stage") or ""))
+    elapsed_s = weather["elapsed_s"]
+    if typical_s is not None:
+        age = _lock_age_s()
+        if age > elapsed_s:
+            elapsed_s = age
     return sanitize_status(
         {
             "gpu_mode": gpu_mode,
@@ -411,7 +447,8 @@ async def saver_state() -> dict[str, Any]:
             "image_file": weather["image_file"],
             "image_what": weather["image_what"],
             "waiters": weather["waiters"],
-            "elapsed_s": weather["elapsed_s"],
+            "elapsed_s": elapsed_s,
+            "typical_s": typical_s,
             "gpu": cached_nvidia_stats(),
         }
     )

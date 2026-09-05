@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 BG = (11, 13, 18)
@@ -141,6 +142,88 @@ def _fmt_runtime(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def idle_tod_hue(hour: float) -> float:
+    """Idle field only: cooler after midnight, warmer around dusk."""
+    h = hour % 24.0
+    if 16.0 <= h < 21.0:
+        peak = 18.5
+        dist = abs(h - peak) / 2.5
+        return -0.08 * max(0.0, 1.0 - dist)
+    if h >= 21.0 or h < 5.0:
+        return 0.08
+    if 5.0 <= h < 8.0:
+        return 0.04 * (1.0 - (h - 5.0) / 3.0)
+    return 0.0
+
+
+def wall_clock_parts(stamp: float | None = None) -> tuple[str, str]:
+    lt = time.localtime(stamp)
+    date = f"{time.strftime('%a', lt)} {lt.tm_mday} {time.strftime('%b', lt)}"
+    return time.strftime("%H:%M", lt), date
+
+
+_TIMES_PATH = Path(__file__).resolve().parents[2] / "model_profiles" / "switch_times.json"
+_IDLE_TIMES: dict[str, Any] | None = None
+
+
+def load_idle_times() -> dict[str, Any]:
+    global _IDLE_TIMES
+    if _IDLE_TIMES is not None:
+        return _IDLE_TIMES
+    try:
+        data = json.loads(_TIMES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        data = {}
+    _IDLE_TIMES = data if isinstance(data, dict) else {}
+    return _IDLE_TIMES
+
+
+def _ready_s(entry: Any) -> int | None:
+    if isinstance(entry, dict) and entry.get("ready_s") is not None:
+        try:
+            return max(1, int(round(float(entry["ready_s"]))))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def idle_fact_lines(times: dict[str, Any], idle_s: float) -> list[str]:
+    facts: list[str] = []
+    gpu = str(times.get("gpu") or "").strip()
+    if gpu:
+        facts.append(f"this box is a {gpu}")
+    qwen = _ready_s(times.get("qwen"))
+    if qwen:
+        facts.append(f"qwen warm switch ~{qwen}s")
+    comfy = times.get("comfy") if isinstance(times.get("comfy"), dict) else {}
+    flux = comfy.get("flux_s") if isinstance(comfy, dict) else None
+    if flux is not None:
+        try:
+            mins = max(1, int(round(float(flux) / 60.0)))
+            facts.append(f"flux first picture ~{mins} min")
+        except (TypeError, ValueError):
+            pass
+    qimg = comfy.get("qwen_image_s") if isinstance(comfy, dict) else None
+    if qimg is not None:
+        try:
+            mins = max(1, int(round(float(qimg) / 60.0)))
+            facts.append(f"qwen-image first picture ~{mins} min")
+        except (TypeError, ValueError):
+            pass
+    asleep = max(0, int(idle_s))
+    if asleep >= 60:
+        facts.append(f"asleep  {asleep // 60}m")
+    elif asleep >= 12:
+        facts.append(f"asleep  {asleep}s")
+    return facts
+
+
+def pick_idle_fact(facts: list[str], wall: float) -> str:
+    if not facts:
+        return ""
+    return facts[int(wall // 45.0) % len(facts)]
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -248,6 +331,15 @@ class SceneFollow:
         self.task_name = ""
         self._task_t0 = 0.0
         self.runtime_s = 0.0
+        self.waiters = 0.0
+        self.elapsed_s = 0.0
+        self.typical_s = 0.0
+        self.idle_s = 0.0
+        self._idle_t0 = 0.0
+        self.idle_hue = 0.0
+        self.clock = ""
+        self.date = ""
+        self.idle_fact = ""
 
     def _hold_live(self, want: bool, now: float) -> bool:
         if want:
@@ -360,6 +452,22 @@ class SceneFollow:
             self.image_file = dest_file
             self.image_what = dest_what
         self.note = str(target.get("note") or "")
+        self.waiters = float(target.get("waiters") or 0.0)
+        self.elapsed_s = max(0.0, float(target.get("elapsed_s") or 0.0))
+        dest_typical = target.get("typical_s")
+        self.typical_s = max(0.0, float(dest_typical)) if dest_typical is not None else 0.0
+        wall = time.time()
+        self.clock, self.date = wall_clock_parts(wall)
+        lt = time.localtime(wall)
+        self.idle_hue = idle_tod_hue(lt.tm_hour + lt.tm_min / 60.0)
+        if self.cycle == "idle" and not held:
+            if self._idle_t0 <= 0.0:
+                self._idle_t0 = now
+            self.idle_s = max(0.0, now - self._idle_t0)
+        else:
+            self._idle_t0 = 0.0
+            self.idle_s = 0.0
+        self.idle_fact = pick_idle_fact(idle_fact_lines(load_idle_times(), self.idle_s), wall)
         if not self.connected or dest == "down":
             self.phase = str(target.get("phase") or "restarting api")
         elif self.cycle == "boot":
@@ -374,8 +482,12 @@ class SceneFollow:
             self.task_name = self.phase
             self._task_t0 = now
         self.runtime_s = max(0.0, now - self._task_t0) if self._task_t0 else 0.0
-        show_clock = self.phase not in {"idle"} or dest == "down"
-        runtime = _fmt_runtime(self.runtime_s) if show_clock else ""
+        show_clock = dest == "down" or self.phase not in {"idle", "imagining", "dreaming"}
+        if show_clock:
+            clock_s = self.elapsed_s if self.elapsed_s > 0.5 else self.runtime_s
+            runtime = _fmt_runtime(clock_s)
+        else:
+            runtime = ""
         return {
             "phase": self.phase,
             "palette": self.palette,
@@ -406,6 +518,14 @@ class SceneFollow:
             "note": self.note,
             "runtime": runtime,
             "runtime_s": self.runtime_s,
+            "waiters": self.waiters,
+            "elapsed_s": self.elapsed_s,
+            "typical_s": self.typical_s,
+            "idle_s": self.idle_s,
+            "idle_hue": self.idle_hue,
+            "clock": self.clock,
+            "date": self.date,
+            "idle_fact": self.idle_fact,
         }
 
 
@@ -523,6 +643,7 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
         "note": note,
         "waiters": _num(data.get("waiters")),
         "elapsed_s": _num(data.get("elapsed_s")),
+        "typical_s": _num(data.get("typical_s")) if data.get("typical_s") is not None else None,
     }
 
 
@@ -562,11 +683,13 @@ class StateBus:
 
 
 def _warm_palette(
-    name: str, heat: float, hue: float = 0.0
+    name: str, heat: float, hue: float = 0.0, idle_hue: float = 0.0
 ) -> list[tuple[int, int, int]]:
     base = PALETTES.get(name) or PALETTES["idle"]
     if name == "chat":
         base = _shift_ramp(base, hue)
+    elif name == "idle":
+        base = _shift_ramp(base, idle_hue)
     if name == "down" or heat <= 0.02:
         return base
     return [_mix(color, WARN, heat * 0.28 * (i / 255.0)) for i, color in enumerate(base)]
@@ -1376,16 +1499,20 @@ def draw_sleepers(pygame_mod: Any, screen: Any, scene: dict[str, Any]) -> None:
 
 
 def _blended_palette(
-    weights: dict[str, float], heat: float, hue: float = 0.0
+    weights: dict[str, float], heat: float, hue: float = 0.0, idle_hue: float = 0.0
 ) -> list[tuple[int, int, int]]:
     names = [name for name, w in weights.items() if w > 0.01 and name in PALETTES]
     if not names:
         names = ["idle"]
     total = sum(weights[name] for name in names) or 1.0
-    ramps = {
-        name: (_shift_ramp(PALETTES[name], hue) if name == "chat" else PALETTES[name])
-        for name in names
-    }
+    ramps = {}
+    for name in names:
+        ramp = PALETTES[name]
+        if name == "chat":
+            ramp = _shift_ramp(ramp, hue)
+        elif name == "idle":
+            ramp = _shift_ramp(ramp, idle_hue)
+        ramps[name] = ramp
     out: list[tuple[int, int, int]] = []
     for i in range(256):
         r = g = b = 0.0
@@ -1407,12 +1534,13 @@ def _blended_palette(
 
 def _field_common(width: int, height: int, scene: dict[str, Any]):
     hue = float(scene.get("hue") or 0.0)
+    idle_hue = float(scene.get("idle_hue") or 0.0)
     weights = scene.get("weights")
     if isinstance(weights, dict) and weights:
         mixed = {str(k): float(v) for k, v in weights.items()}
-        palette = _blended_palette(mixed, float(scene["heat"]), hue)
+        palette = _blended_palette(mixed, float(scene["heat"]), hue, idle_hue)
     else:
-        palette = _warm_palette(str(scene["palette"]), float(scene["heat"]), hue)
+        palette = _warm_palette(str(scene["palette"]), float(scene["heat"]), hue, idle_hue)
     intensity = float(scene["intensity"])
     mix = overlay_amount(scene)
     st = float(scene.get("st", 0.0))
@@ -1588,22 +1716,68 @@ def _hud_fit(face: Any, text: str, max_w: int) -> str:
 
 
 def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
-    showing = bool(scene.get("live")) or overlay_amount(scene) > 0.02
-    if str(scene.get("cycle") or "") in ("boot", "halt"):
-        showing = True
-    if str(scene.get("palette") or "") == "down" or not scene.get("connected"):
-        showing = True
-    if not showing:
-        return
+    cycle = str(scene.get("cycle") or "")
+    down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
+    active = bool(scene.get("live")) or cycle in ("boot", "halt")
+    idle_quiet = bool(scene.get("connected")) and not down and not active
     w, h = screen.get_size()
     profile = str(scene["profile"])
     mode = str(scene["mode"]).upper()
+    clock, date = str(scene.get("clock") or "").strip(), str(scene.get("date") or "").strip()
+    if not clock:
+        clock, date = wall_clock_parts()
+    shadow = (0, 0, 0)
+    halo = hud_halo_offsets(3)
+    pad = max(32, int(round(h * 32 / 1080)))
+    main_h = font.size("Ag")[1]
+    small_h = small.size("Ag")[1]
+    gap = max(6, int(round(h * 8 / 1080)))
+
+    def blit(text: str, pos: tuple[int, int], color, use_small: bool = False) -> None:
+        face = small if use_small else font
+        x, y = pos
+        img = face.render(text, True, shadow)
+        for dx, dy in halo:
+            screen.blit(img, (x + dx, y + dy))
+        screen.blit(face.render(text, True, color), pos)
+
+    if idle_quiet:
+        whisper = ""
+        if scene.get("has_gpu"):
+            vram = int(round(scene["vram"]))
+            temp = int(round(scene["temp"]))
+            whisper = f"VRAM {vram}%   {temp}°C"
+        fact = str(scene.get("idle_fact") or "").strip()
+        if not fact:
+            fact = pick_idle_fact(idle_fact_lines(load_idle_times(), float(scene.get("idle_s") or 0.0)), time.time())
+        blit(profile, (pad, pad), MUTED)
+        blit(mode, (w - small.size(mode)[0] - pad, pad + 4), MUTED, use_small=True)
+        cx = (w - font.size(clock)[0]) // 2
+        cy = (h - main_h - small_h - gap) // 2
+        blit(clock, (max(pad, cx), cy), TEXT)
+        if date:
+            dx = (w - small.size(date)[0]) // 2
+            blit(date, (max(pad, dx), cy + main_h + gap), MUTED, use_small=True)
+        whisper_w = small.size(whisper)[0] if whisper else 0
+        fact_max = max(80, w - pad * 2 - (whisper_w + pad if whisper else 0))
+        if fact:
+            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED, use_small=True)
+        if whisper:
+            blit(whisper, (w - small.size(whisper)[0] - pad, h - pad - small_h), MUTED, use_small=True)
+        return
+
     phase = str(scene["phase"])
     runtime = str(scene.get("runtime") or "").strip()
     if runtime:
         phase = f"{phase}   {runtime}"
+    typical = scene.get("typical_s")
+    try:
+        typical_n = float(typical) if typical is not None else 0.0
+    except (TypeError, ValueError):
+        typical_n = 0.0
+    if typical_n >= 1.0:
+        phase = f"{phase}   ~{_fmt_runtime(typical_n)} typical"
     note = str(scene.get("note") or "").strip()
-    down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
     if scene["connected"] and scene.get("has_gpu") and not down:
         util = int(round(scene["util"]))
         vram = int(round(scene["vram"]))
@@ -1613,12 +1787,6 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         stats = ""
     else:
         stats = "api down"
-    shadow = (0, 0, 0)
-    halo = hud_halo_offsets(3)
-    pad = max(32, int(round(h * 32 / 1080)))
-    main_h = font.size("Ag")[1]
-    small_h = small.size("Ag")[1]
-    gap = max(6, int(round(h * 8 / 1080)))
     max_left = max(80, w - pad - small.size(stats)[0] - pad) if stats else w - pad * 2
 
     dest = str(scene.get("image_file") or "").strip()
@@ -1632,40 +1800,46 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         n_i, of_i = 0, 0
     if dest and of_i > 1 and n_i > 0:
         dest = f"{dest}  {n_i}/{of_i}"
+    try:
+        waiters = int(round(float(scene.get("waiters") or 0)))
+    except (TypeError, ValueError):
+        waiters = 0
+    wait_line = f"{waiters} waiting" if waiters > 0 else ""
+    tok_line = ""
+    try:
+        tokens = int(round(float(scene.get("tokens") or 0)))
+    except (TypeError, ValueError):
+        tokens = 0
+    try:
+        rate = float(scene.get("token_rate") or 0.0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    stage = str(scene.get("stage") or "")
+    if active and stage in {"prefill", "decode", "tool"} and (tokens > 0 or rate >= 0.5):
+        tok_line = f"{tokens} tok   {int(round(rate))}/s" if rate >= 0.5 else f"{tokens} tok"
 
-    def blit(text: str, pos: tuple[int, int], color, use_small: bool = False) -> None:
-        face = small if use_small else font
-        x, y = pos
-        img = face.render(text, True, shadow)
-        for dx, dy in halo:
-            screen.blit(img, (x + dx, y + dy))
-        screen.blit(face.render(text, True, color), pos)
-
-    active = bool(scene.get("live")) or str(scene.get("cycle") or "") in ("boot", "halt")
     if down:
         phase_color = DOWN_TEXT
     else:
         phase_color = WARN if not scene["connected"] else (OK if active else MUTED)
     blit(profile, (pad, pad), TEXT)
     blit(mode, (w - small.size(mode)[0] - pad, pad + 4), ACCENT, use_small=True)
+    if clock:
+        blit(clock, (w - small.size(clock)[0] - pad, pad + 4 + small_h + gap), MUTED, use_small=True)
+    extras = [line for line in (dest, what, note, tok_line, wait_line) if line]
     y = h - pad - main_h
-    extra = 0
-    if dest:
-        extra += 1
-    if what:
-        extra += 1
-    if note:
-        extra += 1
-    if extra:
-        y -= extra * (small_h + gap)
-    if dest:
-        blit(_hud_fit(small, dest, max_left), (pad, y), TEXT, use_small=True)
-        y += small_h + gap
-    if what:
-        blit(_hud_fit(small, what, max_left), (pad, y), MUTED, use_small=True)
-        y += small_h + gap
-    if note:
-        blit(_hud_fit(small, note, max_left), (pad, y), MUTED, use_small=True)
+    if extras:
+        y -= len(extras) * (small_h + gap)
+    for line, color in (
+        (dest, TEXT),
+        (what, MUTED),
+        (note, MUTED),
+        (tok_line, MUTED),
+        (wait_line, MUTED),
+    ):
+        if not line:
+            continue
+        blit(_hud_fit(small, line, max_left), (pad, y), color, use_small=True)
         y += small_h + gap
     blit(phase, (pad, h - pad - main_h), phase_color)
     if stats:
