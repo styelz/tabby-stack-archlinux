@@ -458,17 +458,11 @@ def scene_from_state(data: dict[str, Any] | None, connected: bool) -> dict[str, 
             phase, palette = "switching", "switch"
     elif image_job:
         phase, palette = ("rendering" if working else "comfy"), "image"
-    elif working and kind == "code":
-        phase, palette = ("using tools" if stage == "tool" else "writing code"), "chat"
     elif working and stage == "tool":
         phase, palette = "using tools", "chat"
-    elif working and kind == "chat" and stage == "prefill":
-        phase, palette = "thinking", "chat"
-    elif working and kind == "chat":
-        phase, palette = "thinking", "chat"
-    elif working and stage == "prefill":
-        phase, palette = "thinking", "chat"
-    elif working and stage == "decode":
+    elif working and (kind == "code" or kind == "chat" or stage in {"prefill", "decode"}):
+        # Code occupancy is the UI workspace, not the LLM phase. Prefill/decode
+        # there is still Thinking, same as Chat.
         phase, palette = "thinking", "chat"
     elif working:
         phase, palette = "in use", "chat"

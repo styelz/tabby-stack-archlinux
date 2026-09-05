@@ -351,6 +351,25 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreaterEqual(scene["intensity"], 0.75)
         self.assertGreater(scene["speed"], 0.5)
 
+    def test_code_occupancy_while_decoding_is_thinking(self):
+        scene = self.kiosk.scene_from_state(
+            {
+                "gpu_mode": "llm",
+                "kind": "code",
+                "busy": True,
+                "stage": "decode",
+                "gpu": {"utilization_pct": 0, "vram_pct": 70, "temperature_c": 48},
+            },
+            True,
+        )
+        self.assertEqual(scene["phase"], "thinking")
+        self.assertEqual(scene["palette"], "chat")
+        tools = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "kind": "code", "busy": True, "stage": "tool"},
+            True,
+        )
+        self.assertEqual(tools["phase"], "using tools")
+
     def test_prefill_stage_is_live_without_busy_flag(self):
         scene = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "stage": "prefill", "busy": False, "kind": "chat"},
