@@ -398,6 +398,24 @@ class SaverKioskSceneTests(unittest.TestCase):
             self.kiosk.saver_url("http://127.0.0.1:5000/"),
             "http://127.0.0.1:5000/v1/ui/saver/state",
         )
+        self.assertEqual(
+            self.kiosk.origin_peer("http://127.0.0.1:5000/v1/ui/saver/state"),
+            ("127.0.0.1", 5000),
+        )
+
+    def test_ingest_timeout_keeps_last_but_closed_port_is_down(self):
+        bus = self.kiosk.StateBus()
+        live = {"gpu_mode": "llm", "busy": True, "kind": "chat", "stage": "decode"}
+        bus.ingest(live, True)
+        self.assertTrue(bus.snapshot()[1])
+        bus.ingest(None, True)
+        data, ok = bus.snapshot()
+        self.assertTrue(ok)
+        self.assertEqual(data["stage"], "decode")
+        bus.ingest(None, False)
+        data, ok = bus.snapshot()
+        self.assertFalse(ok)
+        self.assertEqual(data["stage"], "decode")
 
     def test_follow_keeps_plasma_phase_when_speed_jumps(self):
         follow = self.kiosk.SceneFollow()

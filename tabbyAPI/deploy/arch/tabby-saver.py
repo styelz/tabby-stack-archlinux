@@ -15,12 +15,14 @@ import json
 import math
 import os
 import select
+import socket
 import struct
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -151,6 +153,28 @@ def _num(value: Any, default: float = 0.0) -> float:
 def saver_url(base: str) -> str:
     root = (base or "http://127.0.0.1:5000").rstrip("/")
     return f"{root}/v1/ui/saver/state"
+
+
+def origin_peer(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return host, int(port)
+
+
+def tcp_up(host: str, port: int, timeout: float = 0.2) -> bool:
+    """True when something is listening. Does not wait on the event loop."""
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+    except OSError:
+        return False
+    try:
+        sock.close()
+    except OSError:
+        pass
+    return True
 
 
 def fetch_state(url: str, timeout: float = 0.8) -> dict[str, Any] | None:
@@ -513,17 +537,27 @@ class StateBus:
         with self.lock:
             return self.data, self.ok
 
+    def ingest(self, payload: dict[str, Any] | None, reachable: bool) -> None:
+        """HTTP JSON vs TCP. A hung generate times out but keeps the port open."""
+        with self.lock:
+            if payload is not None:
+                self.data = payload
+                self.ok = True
+                return
+            if not reachable:
+                self.ok = False
+                return
+            if self.data is None:
+                self.ok = False
+
     def run(self, url: str, interval: float) -> None:
+        host, port = origin_peer(url)
         while not self.stop.is_set():
-            payload = fetch_state(url)
-            with self.lock:
-                if payload is not None:
-                    self.data = payload
-                    self.ok = True
-                # A timeout is not "API restarting". Decode blocks the event
-                # loop, so /saver/state often misses while the LLM is thinking.
-                # Keep the last snapshot; real restarts set restarting=True
-                # on a successful poll before the process dies.
+            reachable = tcp_up(host, port)
+            payload = fetch_state(url) if reachable else None
+            if payload is None:
+                reachable = tcp_up(host, port)
+            self.ingest(payload, reachable)
             self.stop.wait(interval)
 
 
