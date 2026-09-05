@@ -57,6 +57,9 @@ _DISMISS_EVENT_NAMES = (
     "JOYAXISMOTION",
     "JOYHATMOTION",
 )
+HUD_IDLE_HOLD_S = 300.0
+HUD_IDLE_FADE_S = 12.0
+HUD_IDLE_HIDE_ALPHA = 0.02
 
 SIN_BITS = 12
 SIN_SIZE = 1 << SIN_BITS
@@ -160,6 +163,29 @@ def wall_clock_parts(stamp: float | None = None) -> tuple[str, str]:
     lt = time.localtime(stamp)
     date = f"{time.strftime('%a', lt)} {lt.tm_mday} {time.strftime('%b', lt)}"
     return time.strftime("%H:%M", lt), date
+
+
+def idle_hud_alpha(
+    idle_s: float,
+    hold_s: float = HUD_IDLE_HOLD_S,
+    fade_s: float = HUD_IDLE_FADE_S,
+) -> float:
+    """1 while the idle clock is up, then linear fade to 0 after hold_s."""
+    s = max(0.0, float(idle_s or 0.0))
+    hold = max(0.0, float(hold_s))
+    fade = max(0.0, float(fade_s))
+    if s <= hold:
+        return 1.0
+    if fade <= 0.0:
+        return 0.0
+    return _clamp01(1.0 - (s - hold) / fade)
+
+
+def idle_hud_quiet(scene: dict[str, Any]) -> bool:
+    cycle = str(scene.get("cycle") or "")
+    down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
+    active = bool(scene.get("live")) or cycle in ("boot", "halt")
+    return bool(scene.get("connected")) and not down and not active
 
 
 _TIMES_PATH = Path(__file__).resolve().parents[2] / "model_profiles" / "switch_times.json"
@@ -357,6 +383,11 @@ class SceneFollow:
         else:
             self._cycle_started = now
 
+    def wake_idle_hud(self, now: float) -> None:
+        """Restart the idle HUD hold (mouse peek while the clock is hidden)."""
+        self._idle_t0 = now
+        self.idle_s = 0.0
+
     def _tick_cycle(self, held: bool, now: float) -> None:
         if held:
             if self.cycle == "idle":
@@ -468,6 +499,7 @@ class SceneFollow:
             self._idle_t0 = 0.0
             self.idle_s = 0.0
         self.idle_fact = pick_idle_fact(idle_fact_lines(load_idle_times(), self.idle_s), wall)
+        hud_alpha = idle_hud_alpha(self.idle_s) if self.cycle == "idle" and not held else 1.0
         if not self.connected or dest == "down":
             self.phase = str(target.get("phase") or "restarting api")
         elif self.cycle == "boot":
@@ -526,6 +558,7 @@ class SceneFollow:
             "clock": self.clock,
             "date": self.date,
             "idle_fact": self.idle_fact,
+            "hud_alpha": hud_alpha,
         }
 
 
@@ -1719,7 +1752,7 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
     cycle = str(scene.get("cycle") or "")
     down = str(scene.get("palette") or "") == "down" or not scene.get("connected")
     active = bool(scene.get("live")) or cycle in ("boot", "halt")
-    idle_quiet = bool(scene.get("connected")) and not down and not active
+    idle_quiet = idle_hud_quiet(scene)
     w, h = screen.get_size()
     profile = str(scene["profile"])
     mode = str(scene["mode"]).upper()
@@ -1742,6 +1775,19 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         screen.blit(face.render(text, True, color), pos)
 
     if idle_quiet:
+        try:
+            hud_alpha = float(scene.get("hud_alpha"))
+        except (TypeError, ValueError):
+            hud_alpha = idle_hud_alpha(float(scene.get("idle_s") or 0.0))
+        if hud_alpha <= HUD_IDLE_HIDE_ALPHA:
+            return
+        if hud_alpha < 0.999:
+            shadow = _mix(BG, shadow, hud_alpha)
+            TEXT_FADE = _mix(BG, TEXT, hud_alpha)
+            MUTED_FADE = _mix(BG, MUTED, hud_alpha)
+        else:
+            TEXT_FADE = TEXT
+            MUTED_FADE = MUTED
         whisper = ""
         if scene.get("has_gpu"):
             vram = int(round(scene["vram"]))
@@ -1750,20 +1796,20 @@ def draw_hud(screen: Any, font, small, scene: dict[str, Any]) -> None:
         fact = str(scene.get("idle_fact") or "").strip()
         if not fact:
             fact = pick_idle_fact(idle_fact_lines(load_idle_times(), float(scene.get("idle_s") or 0.0)), time.time())
-        blit(profile, (pad, pad), MUTED)
-        blit(mode, (w - small.size(mode)[0] - pad, pad + 4), MUTED, use_small=True)
+        blit(profile, (pad, pad), MUTED_FADE)
+        blit(mode, (w - small.size(mode)[0] - pad, pad + 4), MUTED_FADE, use_small=True)
         cx = (w - font.size(clock)[0]) // 2
         cy = (h - main_h - small_h - gap) // 2
-        blit(clock, (max(pad, cx), cy), TEXT)
+        blit(clock, (max(pad, cx), cy), TEXT_FADE)
         if date:
             dx = (w - small.size(date)[0]) // 2
-            blit(date, (max(pad, dx), cy + main_h + gap), MUTED, use_small=True)
+            blit(date, (max(pad, dx), cy + main_h + gap), MUTED_FADE, use_small=True)
         whisper_w = small.size(whisper)[0] if whisper else 0
         fact_max = max(80, w - pad * 2 - (whisper_w + pad if whisper else 0))
         if fact:
-            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED, use_small=True)
+            blit(_hud_fit(small, fact, fact_max), (pad, h - pad - small_h), MUTED_FADE, use_small=True)
         if whisper:
-            blit(whisper, (w - small.size(whisper)[0] - pad, h - pad - small_h), MUTED, use_small=True)
+            blit(whisper, (w - small.size(whisper)[0] - pad, h - pad - small_h), MUTED_FADE, use_small=True)
         return
 
     phase = str(scene["phase"])
@@ -1942,6 +1988,25 @@ def is_dismiss_event(event: Any, pygame_mod: Any, windowed: bool) -> str | None:
     if event.type in types:
         return "dismiss"
     return None
+
+
+def field_input_action(
+    event: Any,
+    pygame_mod: Any,
+    windowed: bool,
+    *,
+    idle_quiet: bool = False,
+    hud_alpha: float = 1.0,
+) -> str | None:
+    """Peek the idle clock on mouse move when it has faded; otherwise dismiss."""
+    if (
+        not windowed
+        and idle_quiet
+        and hud_alpha <= HUD_IDLE_HIDE_ALPHA
+        and event.type == getattr(pygame_mod, "MOUSEMOTION", None)
+    ):
+        return "peek"
+    return is_dismiss_event(event, pygame_mod, windowed)
 
 
 class InputWatch:
@@ -2133,13 +2198,29 @@ def run_visible_field(args: argparse.Namespace, bus: StateBus, follow: SceneFoll
     clock = pygame.time.Clock()
     prev = time.monotonic()
     grace_until = prev if args.window else prev + 0.6
+    scene: dict[str, Any] | None = None
     try:
         while True:
             now = time.monotonic()
             for event in pygame.event.get():
-                action = is_dismiss_event(event, pygame, args.window)
+                quiet = idle_hud_quiet(scene) if scene else False
+                raw_alpha = None if scene is None else scene.get("hud_alpha")
+                try:
+                    hud_alpha = 1.0 if raw_alpha is None else float(raw_alpha)
+                except (TypeError, ValueError):
+                    hud_alpha = 1.0
+                action = field_input_action(
+                    event,
+                    pygame,
+                    args.window,
+                    idle_quiet=quiet,
+                    hud_alpha=hud_alpha,
+                )
                 if action == "quit":
                     return "quit"
+                if action == "peek":
+                    follow.wake_idle_hud(now)
+                    continue
                 if action == "dismiss" and now >= grace_until:
                     return "dismiss"
             dt = now - prev

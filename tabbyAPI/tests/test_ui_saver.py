@@ -302,6 +302,42 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertGreater(len(hot_screen.blits), 0)
         self.assertIn("thinking", hot_text)
 
+    def test_idle_hud_alpha_holds_then_fades(self):
+        alpha = self.kiosk.idle_hud_alpha
+        self.assertEqual(alpha(0.0), 1.0)
+        self.assertEqual(alpha(299.0), 1.0)
+        self.assertAlmostEqual(alpha(306.0), 0.5)
+        self.assertEqual(alpha(312.0), 0.0)
+        self.assertEqual(alpha(400.0), 0.0)
+
+    def test_hud_idle_hidden_after_fade_draws_nothing(self):
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        idle["clock"] = "14:20"
+        idle["date"] = "Sat 5 Sep"
+        idle["idle_fact"] = "this box is a RTX 4070 Ti 12 GB"
+        idle["hud_alpha"] = 0.0
+        screen = _FakeScreen()
+        font = _FakeFont()
+        self.kiosk.draw_hud(screen, font, font, idle)
+        self.assertEqual(len(screen.blits), 0)
+
+    def test_wake_idle_hud_restores_alpha(self):
+        follow = self.kiosk.SceneFollow()
+        idle = self.kiosk.scene_from_state(
+            {"gpu_mode": "llm", "profile": "qwen", "busy": False},
+            True,
+        )
+        shown = follow.tick(idle, 0.04, 10.0)
+        self.assertEqual(shown["hud_alpha"], 1.0)
+        hidden = follow.tick(idle, 0.04, 10.0 + 320.0)
+        self.assertEqual(hidden["hud_alpha"], 0.0)
+        follow.wake_idle_hud(10.0 + 320.0)
+        woken = follow.tick(idle, 0.04, 10.0 + 320.04)
+        self.assertEqual(woken["hud_alpha"], 1.0)
+
     def test_hud_only_when_live(self):
         idle = self.kiosk.scene_from_state(
             {"gpu_mode": "llm", "profile": "qwen", "busy": False},
@@ -645,6 +681,41 @@ class SaverKioskSceneTests(unittest.TestCase):
         self.assertEqual(self.kiosk.is_dismiss_event(mouse, pygame, False), "dismiss")
         self.assertEqual(self.kiosk.is_dismiss_event(esc, pygame, True), "quit")
         self.assertIsNone(self.kiosk.is_dismiss_event(key, pygame, True))
+
+    def test_field_input_peeks_mouse_only_when_idle_hud_hidden(self):
+        pygame = SimpleNamespace(
+            QUIT=256,
+            KEYDOWN=768,
+            KEYUP=769,
+            MOUSEMOTION=1024,
+            MOUSEBUTTONDOWN=1025,
+            K_ESCAPE=27,
+            K_q=113,
+        )
+        key = SimpleNamespace(type=768, key=97)
+        mouse = SimpleNamespace(type=1024, key=0)
+        click = SimpleNamespace(type=1025, key=0)
+        action = self.kiosk.field_input_action
+        self.assertEqual(
+            action(mouse, pygame, False, idle_quiet=True, hud_alpha=1.0),
+            "dismiss",
+        )
+        self.assertEqual(
+            action(mouse, pygame, False, idle_quiet=True, hud_alpha=0.5),
+            "dismiss",
+        )
+        self.assertEqual(
+            action(mouse, pygame, False, idle_quiet=True, hud_alpha=0.0),
+            "peek",
+        )
+        self.assertEqual(
+            action(key, pygame, False, idle_quiet=True, hud_alpha=0.0),
+            "dismiss",
+        )
+        self.assertEqual(
+            action(click, pygame, False, idle_quiet=True, hud_alpha=0.0),
+            "dismiss",
+        )
 
     def test_parse_args_idle_default_is_two_minutes(self):
         args = self.kiosk.parse_args([])
