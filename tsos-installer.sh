@@ -22,7 +22,7 @@ SCRIPT_NAME="${0##*/}"
 if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" || "$SCRIPT_NAME" == "sh" || "$SCRIPT_NAME" == "-sh" ]]; then
   SCRIPT_NAME="tsos-installer.sh"
 fi
-SCRIPT_VERSION="1.0.44"
+SCRIPT_VERSION="1.0.45"
 
 # Generic defaults. Do not default TARGET_HOSTNAME from $HOSTNAME — the live
 # ISO sets HOSTNAME=archiso.
@@ -3042,7 +3042,11 @@ kill_disk_users() {
   local disk=$1 mp name type pid cwd root p mi
   local base=${disk##*/}
   if command -v fuser >/dev/null 2>&1; then
-    fuser -km "$TARGET" >/dev/null 2>&1 || true
+    # `fuser -m /mnt` when /mnt is only a directory means "the live root
+    # filesystem" and kills the installer itself. Use -m only for a real mount.
+    if mountpoint -q "$TARGET" 2>/dev/null; then
+      fuser -km "$TARGET" >/dev/null 2>&1 || true
+    fi
     while read -r mp; do
       [[ -n "$mp" && "$mp" != / ]] || continue
       fuser -km "$mp" >/dev/null 2>&1 || true
