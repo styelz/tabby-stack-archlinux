@@ -49,7 +49,7 @@ cd "$HOME/tabby-stack"
 bash install.sh
 ```
 
-The installer starts with **Simple** setup (a review menu: this PC vs LAN; core models from Hugging Face into `$HOME/tabby-stack`). Choose **Advanced** for a USB cache, extra models, bind address, public URL, reverse SSH tunnel, and screensaver.
+The installer starts with **Simple** setup (a review menu: this PC vs LAN; core models from Hugging Face into `$HOME/tabby-stack`; TTY screensaver on). Choose **Advanced** for a USB cache, extra models, bind address, public URL, reverse SSH tunnel, or to turn the screensaver off.
 
 Simple uses the **core** set (qwen 9B, Flux, Qwen-Image, CPU embedder). Advanced can add every larger switchable model profile (`all`).
 

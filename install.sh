@@ -45,7 +45,7 @@ Usage: $(basename "$0") [--update] [--simple|--advanced]
     arch-chroot /mnt /usr/bin/runuser -u USER -- env \\
       HOME=/home/USER USER=USER LOGNAME=USER TERM=linux \\
       TABBY_ISO_CHROOT=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
-      TABBY_INSTALL_ROOT=/home/USER/tabby-stack \\
+      TABBY_INSTALL_ROOT=/home/USER/tabby-stack TABBY_SAVER_ENABLED=1 \\
       bash /home/USER/tabby-stack/install.sh
 EOF
 }
@@ -571,17 +571,14 @@ work_term() {
 }
 
 gauge_height() {
-  local h=$((UI_ROWS - 4))
+  local h=$((UI_ROWS - 5))
   ((h > 20)) && h=20
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((UI_COLS - 4))
-  ((w > 76)) && w=76
-  ((w < 50)) && w=50
-  printf '%s' "$w"
+  box_width
 }
 
 install_log_snippet() {
@@ -781,7 +778,7 @@ progress_start() {
     printf '%s\n' "Starting..." >"$GAUGE_DIR/heading"
     exec 3<>"$GAUGE_FIFO"
     [[ -n "${DIALOGRC:-}" ]] || write_dialogrc
-    dialog --keep-tite --no-shadow --no-collapse --title "$gauge_title" \
+    dialog --no-collapse --backtitle "$BACKTITLE" --title "$gauge_title" \
       --gauge "Starting..." "$h" "$w" 0 \
       <"$GAUGE_FIFO" >/dev/tty 2>/dev/tty 3>&- &
     GAUGE_PID=$!
@@ -1730,7 +1727,8 @@ Simple setup installs into:
 
 A review menu lists who can connect. Open that row to change
 it, then Start install. Extra models, a USB cache, a public
-URL, an SSH tunnel, and screensaver options are under Advanced.
+URL, and an SSH tunnel are under Advanced. The TTY screensaver
+is on by default (disable later with tsctl screensaver disable).
 
 Needed
   • Arch Linux, your user (not root), internet
@@ -1896,7 +1894,11 @@ apply_saver_defaults() {
   TABBY_SAVER_USER_TTY="${TABBY_SAVER_USER_TTY:-tty1}"
   if [[ -z "${TABBY_SAVER_ENABLED:-}" ]]; then
     if [[ "${UPDATE_MODE:-0}" -eq 1 ]]; then
+      # Update all must not flip an existing box on. tabby.env wins if set.
       TABBY_SAVER_ENABLED=0
+    elif [[ "${TABBY_ISO_CHROOT:-}" == 1 ]]; then
+      # Live-ISO DISPLAY/loginctl is not the installed machine. TSOS is a TTY box.
+      TABBY_SAVER_ENABLED=1
     elif graphical_session_present; then
       TABBY_SAVER_ENABLED=0
     else
@@ -1916,7 +1918,7 @@ TABBY_INSTALL_ROOT=$DEST
 TABBY_NETWORK_HOST=$TABBY_NETWORK_HOST
 TABBY_NETWORK_PORT=$TABBY_NETWORK_PORT
 TABBY_MODELS=$MODEL_SET
-TABBY_SAVER_ENABLED=${TABBY_SAVER_ENABLED:-0}
+TABBY_SAVER_ENABLED=${TABBY_SAVER_ENABLED:-1}
 TABBY_SAVER_IDLE_S=${TABBY_SAVER_IDLE_S:-120}
 TABBY_SAVER_LOGOUT_IDLE_S=${TABBY_SAVER_LOGOUT_IDLE_S:-10}
 TABBY_SAVER_HUD_S=${TABBY_SAVER_HUD_S:-300}
@@ -2635,10 +2637,10 @@ PACKAGES=(
   nodejs
   npm
   docker
+  # Screensaver deps: always install so Settings / tsctl enable works later.
+  python-pygame
+  python-numpy
 )
-if [[ "${TABBY_SAVER_ENABLED:-0}" == "1" ]]; then
-  PACKAGES+=(python-pygame python-numpy)
-fi
 
 ensure_sudo
 if need_cmd sudo; then
@@ -3090,8 +3092,8 @@ if [[ -f "$COMFY_UNIT_SRC" ]]; then
   sed "s|__COMFY_DIR__|$DEST_COMFY|g" "$COMFY_UNIT_SRC" > "$UNIT_DIR/comfyui.service"
 fi
 
-# Opt-in KMS kiosk. Written as a system unit so it can own a TTY without a
-# desktop session. Enabled only when TABBY_SAVER_ENABLED=1.
+# KMS kiosk on a spare VT. Default on for TTY/TSOS; off if a desktop owns the GPU.
+# python-pygame/numpy and video/input/tty are always installed so enable later works.
 SAVER_UNIT_SRC="$DEST_TABBY/deploy/arch/tabby-saver.service"
 if [[ ! -f "$SAVER_UNIT_SRC" ]]; then
   SAVER_UNIT_SRC="$SCRIPT_DIR/tabby-saver.service"
@@ -3115,16 +3117,27 @@ if [[ -f "$SAVER_UNIT_SRC" ]]; then
        >>"$INSTALL_LOG" 2>&1; then
     sudo -n systemctl daemon-reload >>"$INSTALL_LOG" 2>&1 || true
     echo "Wrote /etc/systemd/system/tabby-saver.service" >> "$INSTALL_LOG"
-    if [[ "${TABBY_SAVER_ENABLED:-0}" == "1" ]]; then
-      sudo -n usermod -aG video,input,tty "$USER" >>"$INSTALL_LOG" 2>&1 || true
-      if sudo -n systemctl enable --now tabby-saver >>"$INSTALL_LOG" 2>&1; then
+    sudo -n usermod -aG video,input,tty "$USER" >>"$INSTALL_LOG" 2>&1 || true
+    if [[ "${TABBY_SAVER_ENABLED:-1}" == "1" ]]; then
+      if sudo -n systemctl enable tabby-saver >>"$INSTALL_LOG" 2>&1; then
         echo "Enabled tabby-saver" >> "$INSTALL_LOG"
       else
-        echo "WARNING: could not enable tabby-saver" >> "$INSTALL_LOG"
+        sudo -n mkdir -p /etc/systemd/system/multi-user.target.wants >>"$INSTALL_LOG" 2>&1 || true
+        if sudo -n ln -sfn /etc/systemd/system/tabby-saver.service \
+             /etc/systemd/system/multi-user.target.wants/tabby-saver.service \
+             >>"$INSTALL_LOG" 2>&1; then
+          echo "Enabled tabby-saver via wants symlink" >> "$INSTALL_LOG"
+        else
+          echo "WARNING: could not enable tabby-saver" >> "$INSTALL_LOG"
+        fi
+      fi
+      # ISO chroot has no target GPU/TTY; first real boot starts the enabled unit.
+      if [[ "${TABBY_ISO_CHROOT:-}" != 1 ]]; then
+        sudo -n systemctl start tabby-saver >>"$INSTALL_LOG" 2>&1 || true
       fi
     fi
   else
-    echo "WARNING: could not write /etc/systemd/system/tabby-saver.service (opt-in screensaver)" >> "$INSTALL_LOG"
+    echo "WARNING: could not write /etc/systemd/system/tabby-saver.service" >> "$INSTALL_LOG"
   fi
   rm -f "$SAVER_TMP"
 fi
@@ -3268,8 +3281,8 @@ Start / stop
   Do not run start.bat.
   If you used a USB cache you can unmount it.
 
-Optional TTY screensaver (spare VT, default tty8)
-  Settings / tsctl, or this install, can enable it. Do not enable beside Omarchy.
+TTY screensaver (spare VT, default tty8; on unless a desktop owns the GPU)
+  Do not leave it enabled beside Omarchy. Settings / tsctl can disable it.
   tsctl screensaver enable
   tsctl screensaver timeout=120
   tsctl screensaver logout-timeout=10

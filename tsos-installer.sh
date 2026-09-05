@@ -356,10 +356,9 @@ restore_tty() {
   } </dev/tty >/dev/tty 2>/dev/null || true
 }
 
-# Work phase: dialog --gauge in the foreground, sized like the question
-# boxes (not full-screen). A 23-row gauge plus backtitle does not fit the
-# 24x80 ISO console, so dialog exited and left a raw percent line. Install
-# work runs in the background and only writes the log.
+# Work phase: dialog --gauge in the foreground. Same backtitle, shadow,
+# and box size as the question screens. A 23-row box plus backtitle is
+# "Window too small" on the 24x80 ISO console, so height stays capped.
 ensure_work_term() {
   case "${TERM:-}" in
     "" | dumb | unknown) export TERM=linux ;;
@@ -376,20 +375,16 @@ ensure_work_term() {
   ((TSOS_UI_COLS >= 50)) || TSOS_UI_COLS=80
 }
 
-# The install gauge has no backtitle (saves a row). Do not use LINES-1:
-# a full-height box is "Window too small" on the ISO console.
+# Leave rows for backtitle + shadow + a line of screen margin (ISO is 24x80).
 gauge_height() {
-  local h=$((TSOS_UI_ROWS - 4))
+  local h=$((TSOS_UI_ROWS - 5))
   ((h > 20)) && h=20
   ((h < 12)) && h=12
   printf '%s' "$h"
 }
 
 gauge_width() {
-  local w=$((TSOS_UI_COLS - 4))
-  ((w > 76)) && w=76
-  ((w < 50)) && w=50
-  printf '%s' "$w"
+  box_width
 }
 
 fmt_elapsed() {
@@ -669,8 +664,8 @@ gauge_stop() {
 }
 
 # Official dialog pattern, tested in a 24x80 pty: percent protocol on a
-# pipe, widget on the saved tty (fd 4/5). No backtitle on this screen —
-# that extra row plus a tall box is "Window too small" on the ISO console.
+# pipe, widget on the saved tty (fd 4/5). Same flags as the question
+# screens (backtitle, shadow) so this page matches the rest of the installer.
 run_with_gauge() {
   local work_fn=$1
   local rc=0 err="" h w log_n
@@ -712,8 +707,9 @@ run_with_gauge() {
     (
       set +e
       watch_installer_ui "$TSOS_GAUGE_DIR/stop" "$((w - 6))" "$log_n"
-    ) | dialog --keep-tite --no-shadow --no-collapse \
-      --title "Installing tabby-stack OS" \
+    ) | dialog --no-collapse \
+      --backtitle "$BACKTITLE" \
+      --title "Installing" \
       --gauge "Starting the install..." "$h" "$w" 0 >&4 2>&5
     set -e
   else
@@ -1400,6 +1396,7 @@ apply_simple_defaults() {
   TABBY_SSH_REMOTE=""
   TABBY_SSH_FORWARD=""
   TABBY_SSH_KEY=""
+  TABBY_SAVER_ENABLED=1
 }
 
 simple_plan_notes() {
@@ -1417,6 +1414,7 @@ tunnels later in Settings, or re-run and pick Advanced.
   weights:       ${TABBY_CACHE:-Hugging Face}
   encryption:    $(encrypt_label)
   Omarchy:       not installed
+  screensaver:   on (tty8)
 
 EOF
 }
@@ -2396,6 +2394,7 @@ self_test() {
   check "$OMARCHY_MODE" skip "simple skips omarchy"
   check "$ENCRYPT" 0 "simple encrypt off"
   check "$TABBY_MODELS" core "simple models core"
+  check "$TABBY_SAVER_ENABLED" 1 "simple screensaver on"
   ENCRYPT=1
   ENCRYPT_FROM_CLI=1
   OMARCHY_MODE=now
@@ -3421,6 +3420,11 @@ extra_groups=wheel
 if getent group docker >/dev/null 2>&1; then
   extra_groups+=,docker
 fi
+for g in video input tty; do
+  if getent group "$g" >/dev/null 2>&1; then
+    extra_groups+=",$g"
+  fi
+done
 if ! id -u "$TARGET_USER" >/dev/null 2>&1; then
   useradd -m -G "$extra_groups" -s /bin/bash "$TARGET_USER"
 else
@@ -3471,11 +3475,14 @@ else
 fi
 mkinitcpio -P
 
+# nvidia-drm.modeset=1 is required for the TTY KMS screensaver.
 if [[ "$ENCRYPT" == "1" ]]; then
-  CMDLINE="cryptdevice=UUID=${LUKS_UUID}:${CRYPT_NAME} root=/dev/mapper/${CRYPT_NAME} rw rootfstype=btrfs rootflags=subvol=@"
+  CMDLINE="cryptdevice=UUID=${LUKS_UUID}:${CRYPT_NAME} root=/dev/mapper/${CRYPT_NAME} rw rootfstype=btrfs rootflags=subvol=@ nvidia-drm.modeset=1"
 else
-  CMDLINE="root=UUID=${ROOT_UUID} rw rootfstype=btrfs rootflags=subvol=@"
+  CMDLINE="root=UUID=${ROOT_UUID} rw rootfstype=btrfs rootflags=subvol=@ nvidia-drm.modeset=1"
 fi
+install -d /etc/modprobe.d
+printf '%s\n' 'options nvidia_drm modeset=1' >/etc/modprobe.d/nvidia-drm.conf
 
 write_limine_conf() {
   local dest=$1
@@ -3733,17 +3740,50 @@ lan_ips() {
   fi
 }
 
+tabby_active_state() {
+  local state="" uid
+  state=$(systemctl --user show -p ActiveState --value tabbyapi 2>/dev/null || true)
+  if [[ -z "$state" || "$state" == "inactive" ]]; then
+    uid=$(id -u "$TARGET_USER" 2>/dev/null || true)
+    if [[ -n "$uid" && -d "/run/user/$uid" ]]; then
+      state=$(XDG_RUNTIME_DIR="/run/user/$uid" \
+        systemctl --user show -p ActiveState --value tabbyapi 2>/dev/null || true)
+    fi
+  fi
+  printf '%s' "${state:-}"
+}
+
 health_line() {
   local url="http://127.0.0.1:${TABBY_NETWORK_PORT}/health"
-  local body
-  body=$(curl -sf --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
+  local body state up
+  # Do not use curl -f: a 503 still means the API is up and loading.
+  body=$(curl -sS --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
   if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
     paint "$C_GREEN" "healthy"
-  elif [[ -n "$body" ]]; then
-    paint "$C_YELLOW" "up (not healthy yet)"
-  else
-    paint "$C_RED" "not listening"
+    return 0
   fi
+  if [[ -n "$body" ]]; then
+    paint "$C_YELLOW" "initializing"
+    return 0
+  fi
+  state=$(tabby_active_state)
+  case "$state" in
+    active|activating|reloading)
+      paint "$C_YELLOW" "initializing"
+      return 0
+      ;;
+    failed)
+      paint "$C_RED" "failed"
+      return 0
+      ;;
+  esac
+  up=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 9999)
+  if [[ -f "/var/lib/systemd/linger/${TARGET_USER}" ]] \
+     && [[ "$up" =~ ^[0-9]+$ ]] && ((up < 180)); then
+    paint "$C_YELLOW" "initializing"
+    return 0
+  fi
+  paint "$C_RED" "not listening"
 }
 
 install_status() {
@@ -3828,7 +3868,11 @@ note "Settings in /v1/ui (admin) edits the same files"
 line "Extra keys:" "${TOKENS_FILE}"
 printf '\n'
 line "Status:" "$(install_status)"
-line "API health:" "$(health_line)"
+api_health=$(health_line)
+line "API health:" "$api_health"
+if [[ "$api_health" == *initializing* ]]; then
+  note "loading the model — first boot compiles CUDA kernels (~2–3 min)"
+fi
 line "Unit:" "systemctl --user status tabbyapi"
 line "Logs:" "journalctl --user -u tabbyapi -f"
 line "tsctl:" "tsctl   (stack settings; same as Settings in /v1/ui)"
@@ -4012,6 +4056,10 @@ run_tabby_install_chroot() {
   log "This stays on the live ISO until it finishes. Full log: $stack_home/tabby-install.log"
   gauge_update 45 "Installing tabby-stack"
 
+  local saver_default=1
+  if [[ "${OMARCHY_MODE:-skip}" == "now" ]]; then
+    saver_default=0
+  fi
   local -a run_env=(
     HOME="/home/${TARGET_USER}"
     USER="$TARGET_USER"
@@ -4033,6 +4081,9 @@ run_tabby_install_chroot() {
     TABBY_SSH_FORWARD="${TABBY_SSH_FORWARD:-}"
     TABBY_SSH_KEY="${TABBY_SSH_KEY:-}"
     COMFYUI_URL="${COMFYUI_URL:-http://127.0.0.1:8188}"
+    TABBY_SAVER_ENABLED="${TABBY_SAVER_ENABLED:-$saver_default}"
+    DISPLAY=
+    WAYLAND_DISPLAY=
   )
   log "install.sh will use the settings from this UI (no second dialog)"
   if [[ -n "${HF_TOKEN:-}" ]]; then
@@ -4081,7 +4132,7 @@ or:
   arch-chroot ${TARGET} /usr/bin/runuser -u ${TARGET_USER} -- env \\
     HOME=/home/${TARGET_USER} USER=${TARGET_USER} LOGNAME=${TARGET_USER} TERM=linux \\
     TABBY_ISO_CHROOT=1 TABBY_SKIP_NVIDIA_REBOOT=1 \\
-    TABBY_INSTALL_ROOT=${stack_home} \\
+    TABBY_INSTALL_ROOT=${stack_home} TABBY_SAVER_ENABLED=1 \\
     bash ${stack_home}/install.sh"
   fi
 

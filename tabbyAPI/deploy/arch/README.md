@@ -141,7 +141,7 @@ Manual start (same as the unit):
 
 ### TTY activity screensaver
 
-A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal field. It is **not** a real attention heatmap. **Do not enable this if Omarchy or any graphical session already owns the GPU.** The installer asks; default is on for a headless/TTY box and off if a desktop is already running.
+A CPU-rendered KMS kiosk on a spare TTY that paints GPU / occupancy as a thermal field. It is **not** a real attention heatmap. **Do not enable this if Omarchy or any graphical session already owns the GPU.** Fresh TTY/TSOS installs enable it by default and always install `python-pygame`, `python-numpy`, and the `video`/`input`/`tty` groups. Advanced can turn it off; Omarchy installs leave it off.
 
 ```bash
 tsctl screensaver enable

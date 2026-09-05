@@ -93,7 +93,7 @@ SAVER_FIELDS = (
         "description": "KMS kiosk on a spare TTY. Do not enable if a desktop already owns the GPU.",
         "kind": "bool",
         "optional": False,
-        "default": False,
+        "default": True,
     },
     {
         "name": "timeout",

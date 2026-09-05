@@ -96,17 +96,50 @@ lan_ips() {
   fi
 }
 
+tabby_active_state() {
+  local state="" uid
+  state=$(systemctl --user show -p ActiveState --value tabbyapi 2>/dev/null || true)
+  if [[ -z "$state" || "$state" == "inactive" ]]; then
+    uid=$(id -u "$TARGET_USER" 2>/dev/null || true)
+    if [[ -n "$uid" && -d "/run/user/$uid" ]]; then
+      state=$(XDG_RUNTIME_DIR="/run/user/$uid" \
+        systemctl --user show -p ActiveState --value tabbyapi 2>/dev/null || true)
+    fi
+  fi
+  printf '%s' "${state:-}"
+}
+
 health_line() {
   local url="http://127.0.0.1:${TABBY_NETWORK_PORT}/health"
-  local body
-  body=$(curl -sf --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
+  local body state up
+  # Do not use curl -f: a 503 still means the API is up and loading.
+  body=$(curl -sS --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || true)
   if [[ "$body" == *'"status":"healthy"'* || "$body" == *'"status": "healthy"'* ]]; then
     paint "$C_GREEN" "healthy"
-  elif [[ -n "$body" ]]; then
-    paint "$C_YELLOW" "up (not healthy yet)"
-  else
-    paint "$C_RED" "not listening"
+    return 0
   fi
+  if [[ -n "$body" ]]; then
+    paint "$C_YELLOW" "initializing"
+    return 0
+  fi
+  state=$(tabby_active_state)
+  case "$state" in
+    active|activating|reloading)
+      paint "$C_YELLOW" "initializing"
+      return 0
+      ;;
+    failed)
+      paint "$C_RED" "failed"
+      return 0
+      ;;
+  esac
+  up=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 9999)
+  if [[ -f "/var/lib/systemd/linger/${TARGET_USER}" ]] \
+     && [[ "$up" =~ ^[0-9]+$ ]] && ((up < 180)); then
+    paint "$C_YELLOW" "initializing"
+    return 0
+  fi
+  paint "$C_RED" "not listening"
 }
 
 install_status() {
@@ -191,7 +224,11 @@ note "Settings in /v1/ui (admin) edits the same files"
 line "Extra keys:" "${TOKENS_FILE}"
 printf '\n'
 line "Status:" "$(install_status)"
-line "API health:" "$(health_line)"
+api_health=$(health_line)
+line "API health:" "$api_health"
+if [[ "$api_health" == *initializing* ]]; then
+  note "loading the model — first boot compiles CUDA kernels (~2–3 min)"
+fi
 line "Unit:" "systemctl --user status tabbyapi"
 line "Logs:" "journalctl --user -u tabbyapi -f"
 line "tsctl:" "tsctl   (stack settings; same as Settings in /v1/ui)"
