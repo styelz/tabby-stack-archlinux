@@ -340,7 +340,7 @@ def planned_dest_fact_list(items: Iterable[dict[str, str]]) -> str:
         return ""
     listed = ", ".join(names)
     return (
-        f"Write every HTML/CSS/JS file for this page now. "
+        f"Write or update every HTML/CSS/JS file for this page now. "
         f"Point img src or CSS url() at these exact local paths: {listed}. "
         "Do not Write PNG, WebP, GIF, or placeholder image files. "
         "Do not generate images. Do not write Python drawing scripts. "

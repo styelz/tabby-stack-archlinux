@@ -1024,6 +1024,18 @@ def referenced_project_paths(username: str, chat_id: str) -> set[str]:
     return {rel for rel in paths if _path_mentioned(blob, rel)}
 
 
+def page_references_dests(username: str, chat_id: str, dests: list[str]) -> bool:
+    """True when every dest is already named in HTML/CSS/JS."""
+    wanted = [str(dest or "").strip() for dest in dests or []]
+    wanted = [dest for dest in wanted if dest]
+    if not wanted or not username or not chat_id:
+        return False
+    blob = _project_blob(username, chat_id)
+    if not blob.strip():
+        return False
+    return all(_path_mentioned(blob, dest) for dest in wanted)
+
+
 _HERO_ALIAS_STEMS = frozenset(
     {"header", "hero", "banner", "hero-background", "hero_background"}
 )

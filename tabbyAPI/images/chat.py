@@ -650,6 +650,22 @@ def _requested_pages_on_disk(owner: str | None, chat_id: str | None, data) -> bo
     return not _missing_requested_pages(owner, chat_id, data)
 
 
+def _dests_already_on_page(
+    owner: str | None, chat_id: str | None, items: list[dict[str, str]]
+) -> bool:
+    """True when every planned dest is already named in the page files."""
+    dests = [str(row.get("output_path") or "").strip() for row in items or []]
+    dests = [dest for dest in dests if dest]
+    if not dests or not owner or not chat_id:
+        return False
+    try:
+        from ui.workspace import page_references_dests
+
+        return page_references_dests(owner, chat_id, dests)
+    except Exception:
+        return False
+
+
 def _missing_requested_pages(
     owner: str | None, chat_id: str | None, data
 ) -> list[str]:
@@ -801,7 +817,7 @@ async def _write_page_then_maybe_launch(data, job, disconnect_handler):
 
 
 def _first_code_pass_holds_llm(code_response, *, page_ready: bool = False) -> bool:
-    """Hold Comfy for page writes. A replace on an existing site must not wait."""
+    """Hold Comfy for page writes. Skip only when dests are already on the page."""
     if not code_response:
         return False
     message = _assistant_message(code_response)
@@ -1576,7 +1592,7 @@ async def handle(
                 code_response = await _write_site_code(data, disconnect_handler)
                 keep = _first_code_pass_holds_llm(
                     code_response,
-                    page_ready=_requested_pages_on_disk(owner, chat_id, data)
+                    page_ready=_dests_already_on_page(owner, chat_id, plan.items)
                     and _explicit_new_rasters(data),
                 )
                 started = await _start_mixed_job(

@@ -300,7 +300,7 @@ class PlanTests(unittest.TestCase):
         )
         self.assertIn("images/logo.png", text)
         self.assertIn("images/mars.png", text)
-        self.assertIn("Write every HTML/CSS/JS file", text)
+        self.assertIn("Write or update every HTML/CSS/JS file", text)
         self.assertIn("after you finish the page", text)
 
     def test_classify_blob_includes_history_priors_and_this_turn(self):
@@ -823,7 +823,7 @@ class ChatHoldTests(unittest.IsolatedAsyncioTestCase):
         launch.assert_not_awaited()
         wait.assert_not_awaited()
         self.assertIn("images/logo.png", captured["user"])
-        self.assertIn("Write every HTML/CSS/JS file", captured["user"])
+        self.assertIn("Write or update every HTML/CSS/JS file", captured["user"])
         message = response.choices[0].message
         self.assertEqual(message.tool_calls[0].function.name, "Write")
         self.assertIn("index.html", message.tool_calls[0].function.arguments)
