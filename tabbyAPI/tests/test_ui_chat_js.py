@@ -149,6 +149,8 @@ class ChatJsStopQueueSteerTests(unittest.TestCase):
         self.assertIn('function applyStackOccupancy(data, working, kind)', self.src)
         self.assertNotIn("function showIdleOccupancy(hint)", self.src)
         self.assertIn("queued && !ownChat", self.src)
+        self.assertIn("function tabbyOccupancyHintIsOwnRun(hint)", self.src)
+        self.assertIn("opts.occupancy", self.src)
         self.assertIn("function summaryFromCodeSteps(steps)", self.src)
         self.assertIn("function compactToolTitle(step)", self.src)
         self.assertIn("function lastPendingToolIndex(steps, incoming)", self.src)

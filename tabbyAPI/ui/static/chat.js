@@ -26,6 +26,25 @@ function tabbyCleanStatusLabel(text) {
     .trim();
 }
 
+function tabbyOccupancyHintIsOwnRun(hint) {
+  const text = String(hint || "");
+  return /Your session is running/i.test(text)
+    || /Your previous request is still running/i.test(text);
+}
+
+function tabbyStatusLabelPriority(text) {
+  const label = String(text || "").trim();
+  if (/^(Rendering|Starting Comfy|Reloading the coding model|Planning the picture|Working on the picture)/i.test(label)) {
+    return 3;
+  }
+  if (/^(Starting the picture|Switching|Restarting|Loading|Writing|Summarizing|Continuing)/i.test(label)) {
+    return 2;
+  }
+  if (/^Queued$/i.test(label)) return 1;
+  if (/^Thinking$/i.test(label)) return 0;
+  return 2;
+}
+
 function tabbyLooksLikeChatNotImage(raw) {
   const text = String(raw || "").trim();
   if (!text) return false;
@@ -9948,6 +9967,7 @@ function mountChat(root) {
     label.className = "think-label";
     const initialLabel = tabbyCleanStatusLabel(status_label) || (activity && activity.label) || "Thinking";
     label.textContent = String(initialLabel);
+    let activityLabel = String(initialLabel);
     const timeEl = document.createElement("span");
     timeEl.className = "think-time";
     const stepsEl = document.createElement("span");
@@ -10302,6 +10322,14 @@ function mountChat(root) {
         if (finished || !text) return;
         const next = tabbyCleanStatusLabel(text);
         if (!next) return;
+        if (
+          opts
+          && opts.occupancy
+          && tabbyStatusLabelPriority(next) < tabbyStatusLabelPriority(activityLabel)
+        ) {
+          return;
+        }
+        activityLabel = next;
         label.textContent = next;
         head.hidden = false;
         if (opts && opts.processing != null) setProcessing(opts.processing);
@@ -10350,7 +10378,8 @@ function mountChat(root) {
         if (!text) return;
         reasoningFromModel = true;
         reasoningText = text;
-        if (!finished) {
+        if (!finished && tabbyStatusLabelPriority(activityLabel) < 3) {
+          activityLabel = "Thinking";
           label.textContent = "Thinking";
           head.hidden = false;
           setProcessing(false);
@@ -11383,7 +11412,7 @@ function mountChat(root) {
           advanceChecklistForImageStatus(labelForJob(data.job), flightChatId, data.job);
         }
         const queue = data && data.stack_queue;
-        if (queue && queue.queued && (!queue.mine || stackWaiting)) {
+        if (queue && queue.queued && !queue.mine) {
           return;
         }
         if (kind === "image") {
@@ -11603,14 +11632,22 @@ function mountChat(root) {
   }
 
   function showStackQueue(hint, working) {
-    stackWaitHint = String(hint || "").trim() || STACK_QUEUE_HINT;
+    const text = String(hint || "").trim();
+    if (tabbyOccupancyHintIsOwnRun(text)) {
+      return;
+    }
+    stackWaitHint = text || STACK_QUEUE_HINT;
     stackWaiting = true;
     if (waitingMark) waitingMark.textContent = "Queued";
     startStackWaitClock();
     paintStackWaitElapsed();
     if (waitingBar) waitingBar.hidden = false;
     if (working) {
-      working.setActivity("Queued", { processing: true, note: stackWaitHint });
+      working.setActivity("Queued", {
+        processing: true,
+        note: stackWaitHint,
+        occupancy: true,
+      });
     }
     paintCompose();
   }
@@ -11633,10 +11670,7 @@ function mountChat(root) {
       if (waitingBar) waitingBar.hidden = true;
       return;
     }
-    hideStackQueue(live, {
-      label: kind === "image" ? "Starting the picture" : "Thinking",
-      processing: kind === "image",
-    });
+    hideStackQueue(live);
   }
 
   function hideStackQueue(working, resume) {
@@ -11651,6 +11685,7 @@ function mountChat(root) {
       working.setActivity(resume.label || "Thinking", {
         processing: resume.processing,
         note: resume.note,
+        occupancy: true,
       });
     }
     paintCompose();
